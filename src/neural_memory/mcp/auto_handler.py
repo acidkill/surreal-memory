@@ -165,9 +165,7 @@ class AutoHandler:
             else "No memories saved",
         }
 
-    async def _save_detected_memories_no_dedup(
-        self, detected: list[dict[str, Any]]
-    ) -> list[str]:
+    async def _save_detected_memories_no_dedup(self, detected: list[dict[str, Any]]) -> list[str]:
         """Save detected memories WITHOUT dedup checks. For emergency flush only.
 
         Auto-redacts high-severity sensitive content before saving.

@@ -1,6 +1,6 @@
 {
   "name": "neural-memory",
-  "version": "1.0.0",
+  "version": "2.3.0",
   "description": "Persistent memory for AI agents — remember decisions, recall context, learn habits across sessions",
   "author": {
     "name": "NeuralMemory Contributors"
@@ -9,5 +9,11 @@
   "repository": "https://github.com/nhadaututtheky/neural-memory",
   "license": "MIT",
   "keywords": ["memory", "ai", "agents", "persistence", "context", "mcp"],
-  "skills": "./src/neural_memory/skills/"
+  "skills": "./src/neural_memory/skills/",
+  "mcpServers": {
+    "neural-memory": {
+      "command": "python",
+      "args": ["-m", "neural_memory.mcp"]
+    }
+  }
 }

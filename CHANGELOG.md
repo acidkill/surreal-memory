@@ -43,6 +43,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Dependency warning suppression** — pyvi/NumPy DeprecationWarnings are now suppressed at import time with targeted `filterwarnings`
 
+## [2.3.0] - 2026-02-16
+
+### Added
+
+- **Emergency flush** (`nmem_auto action="flush"`) — Pre-compaction emergency capture that skips dedup, lowers confidence threshold to 0.5, enables all memory types regardless of config, and boosts priority +2. Tag `emergency_flush` applied to all captured memories. Inspired by OpenClaw Memory's Layer 3 (`memoryFlush`)
+- **Session gap detection** — `nmem_session(action="get")` now returns `gap_detected: true` when content may have been lost between sessions (e.g. user ran `/new` without saving). Uses MD5 fingerprint stored on `session_set`/`session_end` to detect gaps from older code paths missing fingerprints
+- **Auto-capture preference patterns** — Detects explicit preferences ("I prefer...", "always use..."), corrections ("that's wrong...", "actually, it should be..."), and Vietnamese equivalents. New memory type `preference` with 0.85 confidence
+- **Windows surrogate crash fix** — MCP server now strips lone surrogate characters (U+D800-U+DFFF) from tool arguments before processing, preventing `UnicodeEncodeError` on Windows stdio pipes
+
+### Fixed
+
+- **CI lint failure** — Fixed ruff RUF002 (ambiguous EN DASH `–` in docstring) in `mcp/server.py`
+
+### Changed
+
+- **Release workflow hardened** — `release.yml` now validates tag version matches `pyproject.toml` + `__init__.py` before publishing, and runs full CI (lint + typecheck + test) as a gate before PyPI upload
+
 ## [Unreleased]
 
 ### Fixed
