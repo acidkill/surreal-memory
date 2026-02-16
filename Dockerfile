@@ -12,8 +12,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Install dependencies
-COPY pyproject.toml .
+# Install dependencies + source
+COPY pyproject.toml README.md ./
+COPY src/ ./src/
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir ".[server]"
 
@@ -29,8 +30,9 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Copy source code
 COPY src/ ./src/
 
-# Create non-root user
-RUN useradd --create-home --shell /bin/bash appuser
+# Create non-root user + data directory with correct permissions
+RUN useradd --create-home --shell /bin/bash appuser && \
+    mkdir -p /data && chown appuser:appuser /data
 USER appuser
 
 # Expose port
