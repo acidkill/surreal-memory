@@ -43,10 +43,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Dependency warning suppression** — pyvi/NumPy DeprecationWarnings are now suppressed at import time with targeted `filterwarnings`
 
+## [2.3.1] - 2026-02-17
+
+### Refactored
+
+- **Engine cleanup** — Removed 176 lines of dead code across 6 engine modules
+  - Deduplicated stop-word sets into shared `_STOP_WORDS` frozenset in `conflict_detection.py`
+  - Replaced manual `Fiber()` constructor with `dc_replace()` in `consolidation.py`
+  - Removed unused `reconstitute_answer()` from `retrieval_context.py`
+  - Hoisted expansion suffix/prefix constants to module level in `retrieval.py`
+  - Used `heapq.nlargest` instead of sorted+slice in retrieval reinforcement
+  - Typed consolidation dispatch dict with `Callable[[], Awaitable[None]]` instead of `Any`
+
+### Fixed
+
+- **Unreachable break in dream** — Outer loop guard added to prevent quadratic blowup when activated neuron list is large (max 50K pairs)
+- **JSON snapshot validation** — `brain_versioning.py` now validates parsed JSON is a dict before field access
+
 ## [2.3.0] - 2026-02-16
 
 ### Added
 
+- **PreCompact + Stop auto-flush hooks** — Pre-compaction hook fires before context compression, parallel CI tests support
 - **Emergency flush** (`nmem_auto action="flush"`) — Pre-compaction emergency capture that skips dedup, lowers confidence threshold to 0.5, enables all memory types regardless of config, and boosts priority +2. Tag `emergency_flush` applied to all captured memories. Inspired by OpenClaw Memory's Layer 3 (`memoryFlush`)
 - **Session gap detection** — `nmem_session(action="get")` now returns `gap_detected: true` when content may have been lost between sessions (e.g. user ran `/new` without saving). Uses MD5 fingerprint stored on `session_set`/`session_end` to detect gaps from older code paths missing fingerprints
 - **Auto-capture preference patterns** — Detects explicit preferences ("I prefer...", "always use..."), corrections ("that's wrong...", "actually, it should be..."), and Vietnamese equivalents. New memory type `preference` with 0.85 confidence
@@ -55,6 +73,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **CI lint failure** — Fixed ruff RUF002 (ambiguous EN DASH `–` in docstring) in `mcp/server.py`
+- **CI stress test timeouts** — Skipped stress tests on GitHub runners to prevent CI timeout failures
 
 ### Changed
 
