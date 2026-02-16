@@ -19,7 +19,7 @@ Resolution actions:
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as dc_replace
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
@@ -326,21 +326,7 @@ async def resolve_conflicts(
 
         # 3. Update neuron state with reduced confidence
         if existing_state:
-            from neural_memory.core.neuron import NeuronState
-
-            is_superseded = update.new_weight < supersede_threshold
-            new_state = NeuronState(
-                neuron_id=existing_state.neuron_id,
-                activation_level=update.new_weight,
-                access_frequency=existing_state.access_frequency,
-                last_activated=existing_state.last_activated,
-                decay_rate=existing_state.decay_rate,
-                created_at=existing_state.created_at,
-                firing_threshold=existing_state.firing_threshold,
-                refractory_until=existing_state.refractory_until,
-                refractory_period_ms=existing_state.refractory_period_ms,
-                homeostatic_target=existing_state.homeostatic_target,
-            )
+            new_state = dc_replace(existing_state, activation_level=update.new_weight)
             await storage.update_neuron_state(new_state)
 
         # 4. Mark existing neuron as disputed

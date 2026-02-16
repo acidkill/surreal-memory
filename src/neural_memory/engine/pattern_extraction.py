@@ -17,6 +17,7 @@ from uuid import uuid4
 
 from neural_memory.core.neuron import Neuron, NeuronType
 from neural_memory.core.synapse import Synapse, SynapseType
+from neural_memory.engine.clustering import UnionFind
 from neural_memory.engine.memory_stages import MaturationRecord, MemoryStage
 from neural_memory.utils.timeutils import utcnow
 
@@ -123,18 +124,7 @@ def _cluster_by_tags(
 ) -> list[list[Fiber]]:
     """Cluster fibers by tag Jaccard similarity using Union-Find."""
     n = len(fibers)
-    parent = list(range(n))
-
-    def find(x: int) -> int:
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]  # path compression
-            x = parent[x]
-        return x
-
-    def union(a: int, b: int) -> None:
-        ra, rb = find(a), find(b)
-        if ra != rb:
-            parent[ra] = rb
+    uf = UnionFind(n)
 
     for i in range(n):
         for j in range(i + 1, n):
@@ -143,17 +133,13 @@ def _cluster_by_tags(
             intersection = len(tags_a & tags_b)
             union_size = len(tags_a | tags_b)
             if union_size > 0 and intersection / union_size >= threshold:
-                union(i, j)
+                uf.union(i, j)
 
-    # Group by root
-    groups: dict[int, list[Fiber]] = {}
-    for i in range(n):
-        root = find(i)
-        if root not in groups:
-            groups[root] = []
-        groups[root].append(fibers[i])
-
-    return list(groups.values())
+    # Group by root, return Fiber objects
+    return [
+        [fibers[i] for i in indices]
+        for indices in uf.groups().values()
+    ]
 
 
 def _extract_from_cluster(fibers: list[Fiber]) -> ExtractedPattern | None:

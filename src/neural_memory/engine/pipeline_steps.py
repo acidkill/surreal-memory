@@ -28,7 +28,7 @@ Step dependency graph::
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as dc_replace
 from typing import TYPE_CHECKING, Any
 
 from neural_memory.core.fiber import Fiber
@@ -640,18 +640,7 @@ class ConfirmatoryBoostStep:
                 if syn.source_id == anchor.id:
                     boosted_weight = min(1.0, syn.weight + 0.1)
                     if boosted_weight != syn.weight:
-                        boosted = Synapse(
-                            id=syn.id,
-                            source_id=syn.source_id,
-                            target_id=syn.target_id,
-                            type=syn.type,
-                            weight=boosted_weight,
-                            direction=syn.direction,
-                            metadata=syn.metadata,
-                            reinforced_count=syn.reinforced_count,
-                            last_activated=syn.last_activated,
-                            created_at=syn.created_at,
-                        )
+                        boosted = dc_replace(syn, weight=boosted_weight)
                         try:
                             await storage.update_synapse(boosted)
                         except (ValueError, AttributeError):

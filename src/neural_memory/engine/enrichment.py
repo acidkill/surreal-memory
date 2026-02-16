@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from neural_memory.core.synapse import Synapse, SynapseType
+from neural_memory.engine.clustering import UnionFind
 
 if TYPE_CHECKING:
     from neural_memory.storage.base import NeuralStorage
@@ -122,19 +123,8 @@ async def find_cross_cluster_links(
 
     n = len(tagged_fibers)
 
-    # Union-Find for clustering
-    parent: dict[int, int] = {i: i for i in range(n)}
-
-    def find(x: int) -> int:
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    def union(a: int, b: int) -> None:
-        ra, rb = find(a), find(b)
-        if ra != rb:
-            parent[ra] = rb
+    # Union-Find clustering
+    uf = UnionFind(n)
 
     for i in range(n):
         for j in range(i + 1, n):
@@ -143,14 +133,10 @@ async def find_cross_cluster_links(
             intersection = len(tags_a & tags_b)
             union_size = len(tags_a | tags_b)
             if union_size > 0 and intersection / union_size >= tag_overlap_threshold:
-                union(i, j)
+                uf.union(i, j)
 
     # Group fibers by cluster root
-    clusters: dict[int, list[int]] = defaultdict(list)
-    for i in range(n):
-        clusters[find(i)].append(i)
-
-    cluster_list = [indices for indices in clusters.values() if len(indices) >= 1]
+    cluster_list = [indices for indices in uf.groups().values() if len(indices) >= 1]
     if len(cluster_list) < 2:
         return []
 

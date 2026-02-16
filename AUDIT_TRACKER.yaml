@@ -92,7 +92,7 @@ phases:
         category: DEAD_CODE_REDUNDANCY
         desc: "Union-Find with path compression copy-pasted 5 times across 3 files (~120 lines). Jaccard clustering loop also duplicated."
         recommendation: "Extract reusable UnionFind class + cluster_by_jaccard() utility into engine/clustering.py"
-        status: DEFERRED_NEXT  # clustering.py created, integration pending
+        status: FIXED  # clustering.py UnionFind integrated into all 3 files
       - severity: HIGH
         file: retrieval.py
         category: SRP_GOD_FUNCTION
@@ -110,7 +110,7 @@ phases:
         category: IMMUTABILITY_VIOLATION
         desc: "6 call sites manually construct frozen dataclass instances field-by-field instead of replace()"
         recommendation: "Use dataclasses.replace() per project immutability rules"
-        status: DEFERRED_NEXT  # 6 call sites across 4 files
+        status: FIXED  # 4 genuine call sites replaced with dc_replace() (5th was new construction)
       - severity: MEDIUM
         file: consolidation.py
         category: SRP
@@ -182,7 +182,7 @@ phases:
         category: ALGORITHMIC
         desc: "_infer() fiber tagging O(tags x fibers). 100 tags x 10K fibers = 1M iterations."
         fix: "Build inverted index tag->fiber_ids, batch-update at end"
-        status: DEFERRED_NEXT  # algorithmic refactor needed
+        status: FIXED  # inverted index + accumulated writes (also fixed tag overwrite bug)
       - severity: HIGH
         file: retrieval.py
         lines: [858, 867]
@@ -224,7 +224,7 @@ phases:
         category: ALGORITHMIC
         desc: "Fiber synapse_id cleanup iterates all fibers x avg_synapses. O(fibers x synapses_per_fiber)."
         fix: "Build inverted index synapse_id->fiber_ids"
-        status: DEFERRED_NEXT  # algorithmic optimization
+        status: FIXED  # inverted index to skip unaffected fibers
       - severity: MEDIUM
         file: consolidation.py
         lines: [496, 500]
@@ -412,12 +412,24 @@ phases:
         files: [conflict_detection.py]
         status: VERIFIED
       - date: "2026-02-17"
-        desc: "Created UnionFind utility class (integration pending)"
-        files: [clustering.py]
-        status: PARTIAL
+        desc: "Created UnionFind utility class + integrated into all 3 consumer files"
+        files: [clustering.py, consolidation.py, enrichment.py, pattern_extraction.py]
+        status: VERIFIED
       - date: "2026-02-17"
         desc: "Fixed stale version assertion 2.3.0 -> 2.3.1"
         files: [test_health_fixes.py]
+        status: VERIFIED
+      - date: "2026-02-17"
+        desc: "Replace 4 manual frozen dataclass constructions with dc_replace()"
+        files: [pipeline_steps.py, conflict_detection.py, lifecycle.py]
+        status: VERIFIED
+      - date: "2026-02-17"
+        desc: "Optimize _infer() fiber tagging: inverted index + accumulated writes (fixed tag overwrite bug)"
+        files: [consolidation.py]
+        status: VERIFIED
+      - date: "2026-02-17"
+        desc: "Optimize synapse_id cleanup: inverted index to skip unaffected fibers"
+        files: [consolidation.py]
         status: VERIFIED
 
   phase_2:

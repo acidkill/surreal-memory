@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from neural_memory.core.fiber import Fiber
+from neural_memory.engine.clustering import UnionFind
 from neural_memory.core.neuron import Neuron, NeuronType
 from neural_memory.core.synapse import Synapse, SynapseType
 from neural_memory.utils.timeutils import utcnow
@@ -327,11 +328,21 @@ class ConsolidationEngine:
             return
 
         # Update fiber synapse_ids to remove pruned refs
-        # Reuse fibers already fetched for salience cache
+        # Build inverted index: synapse_id -> fiber indices (only for pruned IDs)
         fibers = fibers_for_salience
-        for fiber in fibers:
-            removed = fiber.synapse_ids & pruned_synapse_ids
-            if removed and not dry_run:
+        synapse_to_fiber_idx: dict[str, list[int]] = {}
+        for idx, fiber in enumerate(fibers):
+            for sid in fiber.synapse_ids & pruned_synapse_ids:
+                synapse_to_fiber_idx.setdefault(sid, []).append(idx)
+
+        # Only update fibers that reference pruned synapses
+        affected_indices: set[int] = set()
+        for indices in synapse_to_fiber_idx.values():
+            affected_indices.update(indices)
+
+        for idx in affected_indices:
+            if not dry_run:
+                fiber = fibers[idx]
                 updated_fiber = dc_replace(
                     fiber,
                     synapse_ids=fiber.synapse_ids - pruned_synapse_ids,
@@ -394,19 +405,8 @@ class ConsolidationEngine:
                 for j_pos in range(i_pos + 1, len(indices_list)):
                     candidate_pairs.add((indices_list[i_pos], indices_list[j_pos]))
 
-        # Union-Find
-        parent: dict[int, int] = {i: i for i in range(n)}
-
-        def find(x: int) -> int:
-            while parent[x] != x:
-                parent[x] = parent[parent[x]]
-                x = parent[x]
-            return x
-
-        def union(a: int, b: int) -> None:
-            ra, rb = find(a), find(b)
-            if ra != rb:
-                parent[ra] = rb
+        # Union-Find clustering
+        uf = UnionFind(n)
 
         # Only compute Jaccard for actual candidate pairs
         for i, j in candidate_pairs:
@@ -427,13 +427,10 @@ class ConsolidationEngine:
                     else self._config.merge_overlap_threshold
                 )
                 if jaccard >= effective_threshold:
-                    union(i, j)
+                    uf.union(i, j)
 
         # Group fibers by root
-        groups: dict[int, list[int]] = {}
-        for i in range(n):
-            root = find(i)
-            groups.setdefault(root, []).append(i)
+        groups = uf.groups()
 
         # Merge groups with more than 1 member
         for members in groups.values():
@@ -774,18 +771,35 @@ class ConsolidationEngine:
             assoc_tags = generate_associative_tags(all_candidates, content_map, existing_tags)
 
             normalizer = TagNormalizer()
+
+            # Build inverted index: neuron_id -> fiber indices
+            neuron_to_fiber_idx: dict[str, set[int]] = {}
+            for idx, fiber in enumerate(fibers):
+                for nid in fiber.neuron_ids:
+                    neuron_to_fiber_idx.setdefault(nid, set()).add(idx)
+
+            # Accumulate all new tags per fiber, then write once
+            fiber_new_tags: dict[int, set[str]] = {}
             for atag in assoc_tags:
                 normalized_tag = normalizer.normalize(atag.tag)
-                # Find fibers containing source neurons and add tag
-                for fiber in fibers:
-                    if fiber.neuron_ids & atag.source_neuron_ids:
-                        updated_auto_tags = fiber.auto_tags | {normalized_tag}
-                        if updated_auto_tags != fiber.auto_tags:
-                            updated_fiber = dc_replace(fiber, auto_tags=updated_auto_tags)
-                            try:
-                                await self._storage.update_fiber(updated_fiber)
-                            except Exception:
-                                logger.debug("Associative tag update failed", exc_info=True)
+                # Find affected fibers via inverted index
+                affected: set[int] = set()
+                for nid in atag.source_neuron_ids:
+                    if nid in neuron_to_fiber_idx:
+                        affected |= neuron_to_fiber_idx[nid]
+                for idx in affected:
+                    fiber_new_tags.setdefault(idx, set()).add(normalized_tag)
+
+            # Write accumulated tags in a single pass
+            for idx, new_tags in fiber_new_tags.items():
+                fiber = fibers[idx]
+                updated_auto_tags = fiber.auto_tags | new_tags
+                if updated_auto_tags != fiber.auto_tags:
+                    updated_fiber = dc_replace(fiber, auto_tags=updated_auto_tags)
+                    try:
+                        await self._storage.update_fiber(updated_fiber)
+                    except Exception:
+                        logger.debug("Associative tag update failed", exc_info=True)
 
             # Log drift detection
             drift_reports = normalizer.detect_drift(existing_tags)
