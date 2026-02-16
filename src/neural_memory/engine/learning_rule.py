@@ -107,6 +107,9 @@ def hebbian_update(
     if config is None:
         config = LearningConfig()
 
+    # Clamp to valid range on entry
+    current_weight = max(0.0, min(config.weight_max, current_weight))
+
     # Zero pre or post activation → no learning (biological constraint)
     if pre_activation <= 0.0 or post_activation <= 0.0:
         return WeightUpdate(

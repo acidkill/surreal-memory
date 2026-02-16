@@ -433,10 +433,11 @@ def _predicates_conflict(pred_a: str, pred_b: str) -> bool:
     # If predicates share many words, they likely agree (not contradict)
     words_a = set(pred_a.lower().split())
     words_b = set(pred_b.lower().split())
-    if words_a and words_b:
-        overlap = len(words_a & words_b) / min(len(words_a), len(words_b))
-        if overlap > 0.7:
-            return False
+    if not words_a or not words_b:
+        return False
+    overlap = len(words_a & words_b) / min(len(words_a), len(words_b))
+    if overlap > 0.7:
+        return False
 
     return True
 

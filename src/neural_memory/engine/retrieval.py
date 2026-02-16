@@ -671,7 +671,7 @@ class ReflexPipeline:
         if num_clusters == 0:
             return activations
 
-        per_cluster = max(1, k // num_clusters)
+        per_cluster = max(1, -(-k // num_clusters))  # ceiling division
         winner_ids: set[str] = set()
 
         for items in clusters.values():

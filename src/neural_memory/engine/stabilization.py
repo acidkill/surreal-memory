@@ -115,7 +115,7 @@ def stabilize(
 
         # Step 3: Homeostatic normalization — soft-scale mean toward target
         mean_level = sum(levels.values()) / len(levels)
-        if mean_level > 0.0:
+        if mean_level > 0.001:
             scale = 1.0 + config.homeostatic_strength * (
                 config.homeostatic_target / mean_level - 1.0
             )

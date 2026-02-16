@@ -155,9 +155,9 @@ def _compute_diff(
 
     neurons_modified: list[str] = []
     for nid in from_neuron_ids & to_neuron_ids:
-        if from_neurons[nid].get("content") != to_neurons[nid].get("content") or from_neurons[
-            nid
-        ].get("type") != to_neurons[nid].get("type"):
+        if from_neurons[nid].get("content", "") != to_neurons[nid].get(
+            "content", ""
+        ) or from_neurons[nid].get("type", "") != to_neurons[nid].get("type", ""):
             neurons_modified.append(nid)
     neurons_modified_tuple = tuple(sorted(neurons_modified))
 
