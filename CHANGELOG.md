@@ -5,6 +5,47 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.0] - 2026-02-17
+
+### Security
+
+- **6-phase security audit** — Comprehensive audit across 142K LOC / 190 files covering engine, storage, server, config, MCP/CLI, core, safety, utils, sync, integration, and extraction modules
+- **Path traversal fixes** — 3 CRITICAL path injection vulnerabilities in CLI commands (tools, brain import, shortcuts) patched with `resolve()` + `is_relative_to()`
+- **CORS hardening** — Replaced wildcard patterns with explicit localhost origins in FastAPI server
+- **TOML injection prevention** — Added `_sanitize_toml_str()` for user-provided dedup config fields
+- **API key masking** — `BrainModeConfig.to_dict()` now serializes api_key as `"***"` instead of plaintext
+- **Info leak prevention** — Removed internal IDs, adapter names, and filesystem paths from 5 error messages across MCP, integration, and sync modules
+- **WebSocket validation** — Brain ID format + length validation on subscribe action
+- **Path normalization** — `SQLiteStorage` and `NEURALMEMORY_DIR` env var paths now resolved with `Path.resolve()`
+
+### Fixed
+
+- **Frozen core models** — `Synapse`, `Fiber`, `NeuronState`, `BrainSnapshot`, `FreshnessResult`, `MemoryFreshnessReport`, `Entity`, `WeightedKeyword`, `TimeHint` dataclasses are now `frozen=True` per immutability contract
+- **merge_brain() atomicity** — Restore from backup on import failure instead of leaving empty brain
+- **import_brain() orphan** — Brain record INSERT moved inside transaction to prevent orphan on failure
+- **Division-by-zero guards** — `_predicates_conflict()` and homeostatic normalization protected against empty inputs
+- **Datetime hardening** — 4 `datetime.fromisoformat()` call sites wrapped with try/except + naive UTC enforcement
+- **Lateral inhibition** — Ceiling division for fair slot allocation across clusters
+- **suggest_memory_type** — Word boundary matching prevents false positives (e.g. "add" no longer matches "address")
+- **Git update command** — Detects current branch instead of hardcoded 'main'
+- **Dead code removal** — Removed unused `updated_at` field, duplicate index, stale imports
+
+### Performance
+
+- **N+1 query elimination** — `consolidation._prune()` pre-fetches neighbor synapses in batch (was 500+ serial queries); `activation.activate()` caches neighbors + batch state pre-fetch (was ~1000 queries); `conflict_detection` uses `asyncio.gather()` for parallel searches
+- **Export safety caps** — `export_brain()` limited to 50K neurons, 100K synapses, 50K fibers
+- **Bounds enforcement** — 15+ storage methods capped with `min(limit, MAX)`, schema tool limits enforced
+- **Regex pre-compilation** — `sensitive.py` and `trigger_engine.py` patterns compiled at module level with cache
+- **Enrichment optimization** — Early exit on empty tags + zero intersection in O(n^2) Jaccard loop
+- **ReDoS prevention** — Content length cap (100K chars) before regex matching in sensitive content detection
+
+### Changed
+
+- **BrainConfig.with_updates()** — Replaced 80-line manual field copy with `dataclasses.replace()`
+- **DriftReport.variants** — Changed from mutable `list` to `tuple` on frozen dataclass
+- **Mutable constants** — `VI_PERSON_PREFIXES` and `LOCATION_INDICATORS` converted to `frozenset`
+- **Error handling** — 8 bare `except Exception` blocks narrowed to specific exception types with logging
+
 ## [2.2.0] - 2026-02-13
 
 ### Added
