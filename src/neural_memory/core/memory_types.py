@@ -293,6 +293,18 @@ def get_decay_rate(memory_type: str) -> float:
         return 0.1
 
 
+def _has_keyword(content_lower: str, keyword: str) -> bool:
+    """Check if keyword appears as a whole word (not substring) in content."""
+    # Multi-word keywords: simple containment is fine (e.g. "need to", "found that")
+    if " " in keyword:
+        return keyword in content_lower
+    # Single-word: require word boundary to avoid false positives
+    # (e.g. "add" should not match "address")
+    import re
+
+    return bool(re.search(rf"\b{re.escape(keyword)}\b", content_lower))
+
+
 def suggest_memory_type(content: str) -> MemoryType:
     """Suggest a memory type based on content analysis.
 
@@ -308,21 +320,21 @@ def suggest_memory_type(content: str) -> MemoryType:
 
     # TODO patterns (highest priority - actionable)
     if any(
-        kw in content_lower
+        _has_keyword(content_lower, kw)
         for kw in ["todo", "need to", "should", "must", "fix", "implement", "add"]
     ):
         return MemoryType.TODO
 
     # Decision patterns
     if any(
-        kw in content_lower
+        _has_keyword(content_lower, kw)
         for kw in ["decided", "chose", "will use", "going with", "picked", "selected"]
     ):
         return MemoryType.DECISION
 
     # Instruction patterns (check BEFORE preference - "always use" vs "always")
     if any(
-        kw in content_lower
+        _has_keyword(content_lower, kw)
         for kw in [
             "always use",
             "never use",
@@ -334,31 +346,32 @@ def suggest_memory_type(content: str) -> MemoryType:
         return MemoryType.INSTRUCTION
 
     # Preference patterns
-    if any(kw in content_lower for kw in ["prefer", "like", "favorite", "hate"]):
+    if any(_has_keyword(content_lower, kw) for kw in ["prefer", "like", "favorite", "hate"]):
         return MemoryType.PREFERENCE
 
     # Insight patterns (check BEFORE error - "discovered" vs "issue")
     if any(
-        kw in content_lower
+        _has_keyword(content_lower, kw)
         for kw in ["learned", "realized", "discovered", "found that", "turns out"]
     ):
         return MemoryType.INSIGHT
 
     # Error patterns
     if any(
-        kw in content_lower
+        _has_keyword(content_lower, kw)
         for kw in ["error", "bug", "issue", "problem", "fail", "crash", "exception"]
     ):
         return MemoryType.ERROR
 
     # Workflow patterns
     if any(
-        kw in content_lower for kw in ["workflow", "process", "step", "flow", "pipeline", "deploy"]
+        _has_keyword(content_lower, kw)
+        for kw in ["workflow", "process", "step", "flow", "pipeline", "deploy"]
     ):
         return MemoryType.WORKFLOW
 
     # Reference patterns
-    if any(kw in content_lower for kw in ["http", "https", "docs", "documentation"]):
+    if any(_has_keyword(content_lower, kw) for kw in ["http", "https", "docs", "documentation"]):
         return MemoryType.REFERENCE
 
     # Default to fact

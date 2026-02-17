@@ -52,7 +52,7 @@ class SQLiteStorage(
     """
 
     def __init__(self, db_path: str | Path) -> None:
-        self._db_path = Path(db_path)
+        self._db_path = Path(db_path).resolve()
         self._conn: aiosqlite.Connection | None = None
         self._current_brain_id: str | None = None
         self._has_fts: bool = False

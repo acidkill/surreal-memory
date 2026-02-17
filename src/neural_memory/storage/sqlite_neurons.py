@@ -292,7 +292,7 @@ class SQLiteNeuronMixin:
         brain_id = self._get_brain_id()
 
         async with conn.execute(
-            "SELECT * FROM neuron_states WHERE brain_id = ?",
+            "SELECT * FROM neuron_states WHERE brain_id = ? LIMIT 10000",
             (brain_id,),
         ) as cursor:
             rows = await cursor.fetchall()

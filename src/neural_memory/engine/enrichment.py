@@ -127,11 +127,17 @@ async def find_cross_cluster_links(
     uf = UnionFind(n)
 
     for i in range(n):
+        tags_a = tagged_fibers[i].tags
+        if not tags_a:
+            continue
         for j in range(i + 1, n):
-            tags_a = tagged_fibers[i].tags
             tags_b = tagged_fibers[j].tags
+            if not tags_b:
+                continue
             intersection = len(tags_a & tags_b)
-            union_size = len(tags_a | tags_b)
+            if intersection == 0:
+                continue
+            union_size = len(tags_a) + len(tags_b) - intersection
             if union_size > 0 and intersection / union_size >= tag_overlap_threshold:
                 uf.union(i, j)
 

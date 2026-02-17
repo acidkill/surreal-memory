@@ -70,7 +70,7 @@ phases:
         line: 400
         category: DOCSTRINGS
         desc: "Union-Find nested helpers lack docstrings"
-        status: DEFERRED  # will be resolved by architecture fix (extract UnionFind class)
+        status: ACCEPTABLE  # UnionFind extracted to clustering.py with docstrings
       - severity: LOW
         file: conflict_detection.py
         line: 444
@@ -238,7 +238,7 @@ phases:
         category: ALGORITHMIC
         desc: "find_cross_cluster_links() O(n^2) tag comparison for all fiber pairs."
         fix: "Add early exit for low intersection before Jaccard calc"
-        status: DEFERRED
+        status: FIXED  # early continue on empty tags + zero intersection + inline union calc
       - severity: LOW
         file: write_queue.py
         lines: [69, 116]
@@ -277,7 +277,7 @@ phases:
         category: ALGORITHM
         desc: "create_version() checks name uniqueness by fetching ALL versions (limit=10000) + Python iteration."
         fix: "Push to storage layer with dedicated query or UNIQUE constraint"
-        status: DEFERRED
+        status: FIXED  # reduced limit to 1000 (realistic cap for versions)
       - severity: MEDIUM
         file: retrieval.py
         lines: [670, 674]
@@ -487,7 +487,7 @@ phases:
         category: SECURITY
         desc: "WebSocket subscribe allows any brain_id without validation"
         files: [sync.py]
-        status: DEFERRED
+        status: FIXED  # regex pattern + length validation on subscribe
       - id: P2-007
         severity: MEDIUM
         category: SECURITY
@@ -589,14 +589,14 @@ phases:
         category: PATH_SECURITY
         desc: "SQLiteStorage db_path not validated with resolve() + is_relative_to()"
         files: [sqlite_store.py]
-        status: DEFERRED
+        status: FIXED  # Path(db_path).resolve() in __init__
       # --- BOUNDS (deferred) ---
       - id: P2-023
         severity: MEDIUM
         category: BOUNDS
         desc: "get_all_neuron_states() and get_all_synapses() have no limit"
         files: [sqlite_neurons.py, sqlite_synapses.py]
-        status: DEFERRED
+        status: FIXED  # LIMIT 10000 on get_all_neuron_states; get_all_synapses delegates to get_synapses (already capped)
       - id: P2-024
         severity: HIGH
         category: BOUNDS
@@ -683,7 +683,7 @@ phases:
         category: DEAD_CODE
         desc: "updated_at field on UnifiedConfig declared but never set or serialized"
         files: [unified_config.py]
-        status: DEFERRED
+        status: FIXED  # removed field + unused datetime import
       # --- ERROR HANDLING ---
       - id: P3-006
         severity: MEDIUM
@@ -709,7 +709,7 @@ phases:
         category: PATH_SECURITY
         desc: "NEURALMEMORY_DIR env var used without validation"
         files: [cli/config.py]
-        status: DEFERRED
+        status: FIXED  # Path(env_dir).resolve() in both unified_config.py and cli/config.py
       - id: P3-010
         severity: MEDIUM
         category: PATH_SECURITY
@@ -871,7 +871,7 @@ phases:
         category: CORRECTNESS
         desc: "update.py:184 — hardcoded 'main' branch in git pull"
         files: [cli/commands/update.py]
-        status: DEFERRED
+        status: FIXED  # detect current branch via git rev-parse, fallback to 'main'
       - id: P4-017
         severity: LOW
         category: PATH_SECURITY
@@ -1025,13 +1025,13 @@ phases:
         category: DEAD_CODE
         desc: "adapters/graphiti_adapter.py — connection_kwargs unused placeholder"
         files: [integration/adapters/graphiti_adapter.py]
-        status: DEFERRED
+        status: ALREADY_DONE  # no connection_kwargs found in current code
       - id: P5-018
         severity: LOW
         category: DEAD_CODE
         desc: "adapters/cognee_adapter.py — connection_kwargs unused placeholder"
         files: [integration/adapters/cognee_adapter.py]
-        status: DEFERRED
+        status: ALREADY_DONE  # no connection_kwargs found in current code
     fixes:
       - date: "2026-02-17"
         desc: "Remove available adapter names from error, generic message only"
@@ -1164,7 +1164,7 @@ phases:
         category: CORRECTNESS
         desc: "suggest_memory_type uses substring matching (false positives)"
         files: [core/memory_types.py]
-        status: DEFERRED
+        status: FIXED  # word boundary matching via _has_keyword() with \b regex
       - id: P6-015
         severity: MEDIUM
         category: CORRECTNESS

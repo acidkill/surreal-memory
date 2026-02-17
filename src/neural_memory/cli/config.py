@@ -38,7 +38,7 @@ def get_default_data_dir() -> Path:
     # Check for env var first (new unified approach)
     env_dir = os.environ.get("NEURALMEMORY_DIR")
     if env_dir:
-        return Path(env_dir)
+        return Path(env_dir).resolve()
 
     # Check if new unified config exists
     unified_dir = Path.home() / ".neuralmemory"

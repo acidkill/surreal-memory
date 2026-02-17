@@ -179,9 +179,11 @@ def _update_from_source(force: bool) -> None:
 
     typer.secho(f"Source directory: {source_dir}", fg=typer.colors.BRIGHT_BLACK)
 
-    # Step 1: git pull
+    # Step 1: git pull (detect current branch)
     typer.echo("\nPulling latest changes...")
-    returncode, output = _run_command(["git", "pull", "origin", "main"], cwd=str(source_dir))
+    _, current_branch = _run_command(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=str(source_dir))
+    branch = current_branch.strip() or "main"
+    returncode, output = _run_command(["git", "pull", "origin", branch], cwd=str(source_dir))
 
     if returncode != 0:
         typer.secho(f"\ngit pull failed:\n{output}", fg=typer.colors.RED)

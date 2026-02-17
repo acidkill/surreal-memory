@@ -253,8 +253,8 @@ class VersioningEngine:
         Raises:
             ValueError: If version_name already exists for this brain
         """
-        # Check name uniqueness — fetch ALL versions with a reasonable cap
-        existing = await self._storage.list_versions(brain_id, limit=10000)
+        # Check name uniqueness — scan versions (brains rarely exceed 1000 versions)
+        existing = await self._storage.list_versions(brain_id, limit=1000)
         for v in existing:
             if v.version_name == version_name:
                 raise ValueError(

@@ -19,7 +19,6 @@ import re
 import shutil
 import tomllib
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -49,7 +48,7 @@ def get_neuralmemory_dir() -> Path:
     """
     env_dir = os.environ.get("NEURALMEMORY_DIR")
     if env_dir:
-        return Path(env_dir)
+        return Path(env_dir).resolve()
     return Path.home() / ".neuralmemory"
 
 
@@ -457,7 +456,6 @@ class UnifiedConfig:
 
     # Metadata
     version: str = "1.0"
-    updated_at: datetime | None = None
 
     @classmethod
     def load(cls, config_path: Path | None = None) -> UnifiedConfig:

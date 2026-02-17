@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -16,6 +17,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSo
 from neural_memory.utils.timeutils import utcnow
 
 logger = logging.getLogger(__name__)
+
+# Valid brain ID: alphanumeric, hyphens, underscores, dots (no path separators)
+_BRAIN_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_\-\.]+$")
+
 
 async def _require_local_request(request: Request) -> None:
     """Reject non-localhost requests to protect sync endpoints."""
@@ -328,7 +333,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
             elif action == "subscribe" and client_id:
                 brain_id = message.get("brain_id")
-                if brain_id:
+                if brain_id and _BRAIN_ID_PATTERN.match(brain_id) and len(brain_id) <= 128:
                     success = await sync_manager.subscribe(client_id, brain_id)
                     event_type = SyncEventType.SUBSCRIBED if success else SyncEventType.ERROR
                     await websocket.send_text(

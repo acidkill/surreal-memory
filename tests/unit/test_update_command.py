@@ -140,7 +140,8 @@ class TestUpdateCLI:
             patch(
                 "neural_memory.cli.commands.update._run_command",
                 side_effect=[
-                    (0, "Updating files..."),  # git pull
+                    (0, "main"),  # git rev-parse --abbrev-ref HEAD
+                    (0, "Updating files..."),  # git pull origin main
                     (0, "Successfully installed"),  # pip install -e .
                 ],
             ) as mock_run,
@@ -149,7 +150,7 @@ class TestUpdateCLI:
             result = runner.invoke(app, ["update"])
             assert result.exit_code == 0
             assert "Updated successfully" in result.output
-            assert mock_run.call_count == 2
+            assert mock_run.call_count == 3
 
     def test_update_unknown_mode(self) -> None:
         """Unknown install mode shows help message."""
