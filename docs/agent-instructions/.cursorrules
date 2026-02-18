@@ -1,0 +1,65 @@
+## Memory System — NeuralMemory
+
+This workspace uses NeuralMemory for persistent memory across sessions.
+You have access to nmem_* MCP tools. Use them PROACTIVELY.
+
+### Session Start (ALWAYS)
+
+1. `nmem_recap()` — Resume context from last session
+2. `nmem_context(limit=20, fresh_only=true)` — Load recent memories
+3. `nmem_session(action="get")` — Check current task/feature/progress
+
+If `gap_detected` is true, run `nmem_auto(action="flush", text="<recent context>")` to recover.
+
+### During Work — Auto-Remember
+
+When a DECISION is made:
+  nmem_remember(content="Decision: ...", type="decision", priority=7, tags=["project-name"])
+
+When a BUG is fixed:
+  nmem_remember(content="Fixed: ... by ...", type="error", priority=7)
+
+When user states a PREFERENCE:
+  nmem_remember(content="User prefers ...", type="preference", priority=6)
+
+When a FACT is learned:
+  nmem_remember(content="...", type="fact", priority=5)
+
+When a TODO is identified:
+  nmem_todo(task="...", priority=6)
+
+### During Work — Recall Before Asking
+
+ALWAYS check memory before asking the user a question:
+  nmem_recall(query="<topic>", depth=1)
+
+Depth: 0=instant, 1=context (default), 2=patterns, 3=deep traversal.
+
+### Session End
+
+  nmem_auto(action="process", text="<session summary>")
+  nmem_session(action="set", feature="...", task="...", progress=0.8)
+
+### Emergency Flush (before context reset)
+
+  nmem_auto(action="flush", text="<recent conversation>")
+
+### Codebase Indexing (first time)
+
+  nmem_index(action="scan", path="./src")
+
+After indexing, nmem_recall finds related code through the neural graph.
+
+### Project Context
+
+  nmem_eternal(action="save", project_name="MyApp", tech_stack=["React", "Node.js"])
+  nmem_eternal(action="save", decision="Use Redis", reason="Low latency caching")
+
+### Rules
+
+1. Be proactive — remember important info without being asked
+2. Check memory first — recall before asking repeated questions
+3. Use correct types — fact/decision/error/preference/todo/workflow
+4. Set priority — critical=7-10, normal=5, trivial=1-3
+5. Add tags — organize by project/topic
+6. Recap on start — always nmem_recap() at session beginning

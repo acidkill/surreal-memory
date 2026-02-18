@@ -1,317 +1,826 @@
-# MCP Server Guide
+# MCP Server Setup — All Editors & Clients
 
-NeuralMemory provides a Model Context Protocol (MCP) server for seamless integration with AI assistants like Claude.
+> **Copy-paste the config for your editor and you're done.**
+> No `nmem init` needed — the server auto-initializes on first use.
 
-## What is MCP?
+---
 
-MCP (Model Context Protocol) is a standard for AI tools to communicate with language models. NeuralMemory's MCP server exposes memory operations as tools that Claude can use directly.
+## Table of Contents
 
-## Setup
+- [Requirements](#requirements)
+- [Claude Code (Plugin)](#claude-code-plugin--recommended)
+- [Claude Code (Manual MCP)](#claude-code-manual-mcp)
+- [Cursor](#cursor)
+- [Windsurf (Codeium)](#windsurf-codeium)
+- [VS Code](#vs-code)
+- [Claude Desktop](#claude-desktop)
+- [Cline](#cline)
+- [Zed](#zed)
+- [Google Antigravity](#google-antigravity)
+- [JetBrains IDEs](#jetbrains-ides-intellij-pycharm-webstorm)
+- [Gemini CLI](#gemini-cli)
+- [Amazon Q Developer](#amazon-q-developer)
+- [Neovim](#neovim)
+- [Warp Terminal](#warp-terminal)
+- [Custom / Other MCP Clients](#custom--other-mcp-clients)
+- [Alternative: Python Module](#alternative-python-module-directly)
+- [Alternative: Docker](#alternative-docker)
+- [Environment Variables](#environment-variables)
+- [Resource Usage](#resource-usage)
+- [Available Tools](#available-tools)
+- [Resources](#resources)
+- [Agent Instructions](#agent-instructions)
+- [Troubleshooting](#troubleshooting)
 
-### Claude Code (Plugin — Recommended)
+---
+
+## Requirements
+
+- **Python 3.11+**
+- **pip** or **uv** package manager
+
+```bash
+# Install via pip
+pip install neural-memory
+
+# Or via uv (faster)
+uv pip install neural-memory
+```
+
+> **Note:** If using `uvx` (recommended for Claude Code), you don't need to install manually — `uvx` handles it automatically.
+
+---
+
+## Claude Code (Plugin — Recommended)
+
+The easiest way. One command installs everything:
 
 ```bash
 /plugin marketplace add nhadaututtheky/neural-memory
 /plugin install neural-memory@neural-memory-marketplace
 ```
 
-This configures the MCP server (via `uvx`), skills, commands, agent, and hooks — all automatically.
+This auto-configures the MCP server, skills, commands, agent, and hooks.
 
-### Cursor / Windsurf / Other MCP Clients
+**Done.** No further setup needed.
 
-```bash
-pip install neural-memory
+---
+
+## Claude Code (Manual MCP)
+
+If you prefer manual config, add to your project's `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "neural-memory": {
+      "command": "uvx",
+      "args": ["--from", "neural-memory", "nmem-mcp"]
+    }
+  }
+}
 ```
 
-Add to your editor's MCP config (e.g. `~/.cursor/mcp.json`):
+Or if you installed via pip (no `uvx`):
+
+```json
+{
+  "mcpServers": {
+    "neural-memory": {
+      "command": "nmem-mcp"
+    }
+  }
+}
+```
+
+---
+
+## Cursor
+
+Add to `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (project):
+
+```json
+{
+  "mcpServers": {
+    "neural-memory": {
+      "command": "nmem-mcp"
+    }
+  }
+}
+```
+
+**With uvx (no pip install needed):**
+
+```json
+{
+  "mcpServers": {
+    "neural-memory": {
+      "command": "uvx",
+      "args": ["--from", "neural-memory", "nmem-mcp"]
+    }
+  }
+}
+```
+
+Restart Cursor after adding the config.
+
+---
+
+## Windsurf (Codeium)
+
+Add to `~/.codeium/windsurf/mcp_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "neural-memory": {
+      "command": "nmem-mcp"
+    }
+  }
+}
+```
+
+**With uvx:**
+
+```json
+{
+  "mcpServers": {
+    "neural-memory": {
+      "command": "uvx",
+      "args": ["--from", "neural-memory", "nmem-mcp"]
+    }
+  }
+}
+```
+
+Restart Windsurf after adding.
+
+---
+
+## VS Code
+
+### With Continue Extension
+
+Add to `~/.continue/config.json` under `mcpServers`:
+
+```json
+{
+  "mcpServers": [
+    {
+      "name": "neural-memory",
+      "command": "nmem-mcp"
+    }
+  ]
+}
+```
+
+### With Copilot Chat (MCP support)
+
+Add to VS Code `settings.json`:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "neural-memory": {
+        "command": "nmem-mcp"
+      }
+    }
+  }
+}
+```
+
+### VS Code Extension (GUI)
+
+For a graphical experience, install the [NeuralMemory VS Code Extension](https://marketplace.visualstudio.com/items?itemName=neuralmem.neuralmemory) from the marketplace.
+
+---
+
+## Claude Desktop
+
+Add to `claude_desktop_config.json`:
+
+- **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "neural-memory": {
+      "command": "nmem-mcp"
+    }
+  }
+}
+```
+
+**With uvx:**
+
+```json
+{
+  "mcpServers": {
+    "neural-memory": {
+      "command": "uvx",
+      "args": ["--from", "neural-memory", "nmem-mcp"]
+    }
+  }
+}
+```
+
+**Windows — full path (if `nmem-mcp` not in PATH):**
+
+```json
+{
+  "mcpServers": {
+    "neural-memory": {
+      "command": "python",
+      "args": ["-m", "neural_memory.mcp"]
+    }
+  }
+}
+```
+
+Restart Claude Desktop after adding.
+
+---
+
+## Cline
+
+Add to Cline MCP settings (`cline_mcp_settings.json` in your VS Code workspace):
+
+```json
+{
+  "mcpServers": {
+    "neural-memory": {
+      "command": "nmem-mcp",
+      "disabled": false
+    }
+  }
+}
+```
+
+**With uvx:**
+
+```json
+{
+  "mcpServers": {
+    "neural-memory": {
+      "command": "uvx",
+      "args": ["--from", "neural-memory", "nmem-mcp"],
+      "disabled": false
+    }
+  }
+}
+```
+
+---
+
+## Zed
+
+Add to Zed `settings.json` (`~/.config/zed/settings.json`):
+
+```json
+{
+  "language_models": {
+    "mcp_servers": {
+      "neural-memory": {
+        "command": "nmem-mcp"
+      }
+    }
+  }
+}
+```
+
+---
+
+## Google Antigravity
+
+Google's AI-powered editor with built-in MCP Store.
+
+### Option 1: MCP Store (GUI)
+
+1. Open the **MCP Store** via the `...` dropdown at the top of the editor's agent panel
+2. Browse & install servers directly
+3. Authenticate if prompted
+
+### Option 2: Custom Config (for NeuralMemory)
+
+1. Open MCP Store → click **"Manage MCP Servers"**
+2. Click **"View raw config"**
+3. Add NeuralMemory to `mcp_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "neural-memory": {
+      "command": "nmem-mcp"
+    }
+  }
+}
+```
+
+**With uvx:**
+
+```json
+{
+  "mcpServers": {
+    "neural-memory": {
+      "command": "uvx",
+      "args": ["--from", "neural-memory", "nmem-mcp"]
+    }
+  }
+}
+```
+
+4. Save and restart the editor.
+
+> **Tip:** Antigravity also supports connecting to NeuralMemory's FastAPI server mode. Run `nmem serve` and connect via HTTP if you prefer server-side integration.
+
+---
+
+## JetBrains IDEs (IntelliJ, PyCharm, WebStorm)
+
+JetBrains IDEs support MCP via the built-in AI Assistant or the JetBrains AI plugin.
+
+Go to **Settings → Tools → AI Assistant → MCP Servers → Add**, or edit the config file directly:
+
+- **Location**: `.idea/mcpServers.json` (project) or global settings
+
+```json
+{
+  "mcpServers": {
+    "neural-memory": {
+      "command": "nmem-mcp"
+    }
+  }
+}
+```
+
+**With uvx:**
+
+```json
+{
+  "mcpServers": {
+    "neural-memory": {
+      "command": "uvx",
+      "args": ["--from", "neural-memory", "nmem-mcp"]
+    }
+  }
+}
+```
+
+Restart the IDE after adding.
+
+---
+
+## Gemini CLI
+
+Add to `~/.gemini/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "neural-memory": {
+      "command": "nmem-mcp"
+    }
+  }
+}
+```
+
+**With uvx:**
+
+```json
+{
+  "mcpServers": {
+    "neural-memory": {
+      "command": "uvx",
+      "args": ["--from", "neural-memory", "nmem-mcp"]
+    }
+  }
+}
+```
+
+---
+
+## Amazon Q Developer
+
+Add to `~/.aws/amazonq/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "neural-memory": {
+      "command": "nmem-mcp"
+    }
+  }
+}
+```
+
+**With uvx:**
+
+```json
+{
+  "mcpServers": {
+    "neural-memory": {
+      "command": "uvx",
+      "args": ["--from", "neural-memory", "nmem-mcp"]
+    }
+  }
+}
+```
+
+---
+
+## Neovim
+
+With [mcp-hub.nvim](https://github.com/ravitemer/mcphub.nvim) or similar MCP plugin, add to your `mcpservers.json`:
+
+```json
+{
+  "mcpServers": {
+    "neural-memory": {
+      "command": "nmem-mcp"
+    }
+  }
+}
+```
+
+Or configure in Lua:
+
+```lua
+require("mcphub").setup({
+  servers = {
+    ["neural-memory"] = {
+      command = "nmem-mcp",
+    },
+  },
+})
+```
+
+---
+
+## Warp Terminal
+
+Add to Warp's MCP config (`~/.warp/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "neural-memory": {
+      "command": "nmem-mcp"
+    }
+  }
+}
+```
+
+---
+
+## Custom / Other MCP Clients
+
+NeuralMemory uses **stdio transport** (JSON-RPC 2.0 over stdin/stdout). Any MCP-compatible client can connect:
+
+```json
+{
+  "name": "neural-memory",
+  "transport": "stdio",
+  "command": "nmem-mcp"
+}
+```
+
+Or with explicit Python:
+
+```json
+{
+  "name": "neural-memory",
+  "transport": "stdio",
+  "command": "python",
+  "args": ["-m", "neural_memory.mcp"]
+}
+```
+
+---
+
+## Alternative: Python Module Directly
+
+If `nmem-mcp` is not in your PATH, use the Python module:
 
 ```json
 {
   "neural-memory": {
-    "command": "nmem-mcp"
+    "command": "python",
+    "args": ["-m", "neural_memory.mcp"]
   }
 }
 ```
 
-No `nmem init` needed — the MCP server auto-initializes on first use.
+**macOS/Linux with specific Python:**
 
-### Restart your editor
+```json
+{
+  "neural-memory": {
+    "command": "python3",
+    "args": ["-m", "neural_memory.mcp"]
+  }
+}
+```
 
-After restarting, your AI assistant will have access to NeuralMemory tools.
+**Windows with full path:**
+
+```json
+{
+  "neural-memory": {
+    "command": "C:\\Users\\YOU\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+    "args": ["-m", "neural_memory.mcp"]
+  }
+}
+```
+
+---
+
+## Alternative: Docker
+
+```bash
+docker run -i --rm -v neuralmemory:/root/.neuralmemory ghcr.io/nhadaututtheky/neural-memory:latest nmem-mcp
+```
+
+```json
+{
+  "neural-memory": {
+    "command": "docker",
+    "args": [
+      "run", "-i", "--rm",
+      "-v", "neuralmemory:/root/.neuralmemory",
+      "ghcr.io/nhadaututtheky/neural-memory:latest",
+      "nmem-mcp"
+    ]
+  }
+}
+```
+
+---
+
+## Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `NEURALMEMORY_BRAIN` | `"default"` | Brain name to use |
+| `NEURALMEMORY_DATA_DIR` | `~/.neuralmemory` | Data directory |
+| `NEURAL_MEMORY_DEBUG` | `0` | Enable debug logging (`1` to enable) |
+| `MEM0_API_KEY` | — | Mem0 API key (for import) |
+| `COGNEE_API_KEY` | — | Cognee API key (for import) |
+
+**Example with custom brain:**
+
+```json
+{
+  "neural-memory": {
+    "command": "nmem-mcp",
+    "env": {
+      "NEURALMEMORY_BRAIN": "work"
+    }
+  }
+}
+```
+
+---
+
+## Resource Usage
+
+| Metric | Value |
+|--------|-------|
+| **RAM (idle)** | ~12-15 MB |
+| **RAM (active, small brain)** | ~30-35 MB |
+| **RAM (active, large brain)** | ~55-60 MB |
+| **CPU** | Near 0% when idle |
+| **Disk** | ~1-50 MB per brain (SQLite) |
+| **Startup time** | < 2 seconds |
+
+NeuralMemory is lightweight — it won't slow down your editor.
+
+---
 
 ## Available Tools
 
-### nmem_remember
+Once configured, these 22 tools are available to your AI assistant:
 
-Store a memory in the brain.
+### Core Memory
 
-**Parameters:**
+| Tool | Description |
+|------|-------------|
+| `nmem_remember` | Store a memory (fact, decision, insight, todo, error, etc.) |
+| `nmem_recall` | Query with spreading activation (depth 0-3) |
+| `nmem_context` | Inject recent context at session start |
+| `nmem_todo` | Quick TODO with 30-day expiry |
+| `nmem_auto` | Auto-capture memories from conversation text |
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `content` | string | Yes | Content to remember |
-| `memory_type` | string | No | fact, decision, todo, etc. |
-| `priority` | integer | No | 0-10 priority level |
-| `tags` | array | No | Tags for organization |
+### Brain Management
 
-**Example:**
-```json
-{
-  "content": "We decided to use PostgreSQL",
-  "memory_type": "decision",
-  "priority": 7,
-  "tags": ["database", "architecture"]
-}
-```
+| Tool | Description |
+|------|-------------|
+| `nmem_stats` | Brain statistics and freshness |
+| `nmem_health` | Brain health diagnostics (purity score, grade) |
+| `nmem_evolution` | Brain evolution metrics (maturation, plasticity) |
+| `nmem_version` | Brain version control (snapshot, rollback, diff) |
+| `nmem_transplant` | Copy memories between brains |
+| `nmem_conflicts` | View and resolve memory conflicts |
+| `nmem_alerts` | Brain health alerts lifecycle |
 
-**Response includes:**
+### Session & Context
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `success` | boolean | Whether storage succeeded |
-| `fiber_id` | string | ID of the created fiber |
-| `neurons_created` | integer | Number of neurons created |
-| `related_memories` | array | Up to 3 related existing memories (if any found) |
-| `maintenance_hint` | string | Brain maintenance suggestion (if health check triggered) |
+| Tool | Description |
+|------|-------------|
+| `nmem_session` | Track working session state and progress |
+| `nmem_eternal` | Save project context, decisions, instructions |
+| `nmem_recap` | Load saved context at session start |
 
-**Related Memories** — When storing a memory, NeuralMemory automatically discovers related existing memories via 2-hop spreading activation. Each related memory includes:
-- `fiber_id` — ID of the related fiber
-- `preview` — First 100 characters of content
-- `similarity` — Activation-based similarity score (0.0–1.0)
+### Learning & Training
 
-### nmem_recall
+| Tool | Description |
+|------|-------------|
+| `nmem_index` | Index codebase for code-aware recall |
+| `nmem_train` | Train brain from documentation files |
+| `nmem_train_db` | Train brain from database schema |
+| `nmem_habits` | Manage learned workflow habits |
+| `nmem_review` | Spaced repetition review system |
 
-Query memories using spreading activation.
+### Utilities
 
-**Parameters:**
+| Tool | Description |
+|------|-------------|
+| `nmem_suggest` | Autocomplete suggestions from brain neurons |
+| `nmem_import` | Import from ChromaDB, Mem0, Cognee, Graphiti, LlamaIndex |
+| `nmem_narrative` | Generate timeline/topic/causal narratives |
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `query` | string | Yes | Query to search for |
-| `depth` | integer | No | Search depth 0-3 |
-| `max_tokens` | integer | No | Max tokens in response |
-
-**Example:**
-```json
-{
-  "query": "database decision",
-  "depth": 1,
-  "max_tokens": 500
-}
-```
-
-### nmem_context
-
-Get recent memories for context injection.
-
-**Parameters:**
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `limit` | integer | No | Number of memories (default: 10) |
-| `fresh_only` | boolean | No | Only memories < 30 days |
-
-### nmem_todo
-
-Quick shortcut for TODO items.
-
-**Parameters:**
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `content` | string | Yes | Task description |
-| `priority` | integer | No | 0-10 priority (default: 5) |
-
-### nmem_stats
-
-Get brain statistics.
-
-**Parameters:** None
-
-**Returns:**
-```json
-{
-  "brain": "default",
-  "neurons": 150,
-  "synapses": 280,
-  "fibers": 45,
-  "memory_types": {
-    "fact": 20,
-    "decision": 15,
-    "todo": 10
-  }
-}
-```
-
-### nmem_auto
-
-Auto-capture memories from conversation text.
-
-**Parameters:**
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `action` | string | Yes | "analyze", "save", or "process" |
-| `text` | string | Yes | Text to analyze |
-| `detected` | array | No | Previously detected items (for save) |
-
-**Actions:**
-
-- `analyze` - Analyze text for memorable content
-- `save` - Save previously detected items
-- `process` - Analyze and save in one call
-
-### nmem_alerts
-
-View and manage brain health alerts.
-
-**Parameters:**
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `action` | string | Yes | "list" or "acknowledge" |
-| `alert_id` | string | No | Alert ID (required for acknowledge) |
-| `limit` | integer | No | Max alerts to list (default: 50) |
-
-**Actions:**
-
-- `list` — View active and seen alerts, sorted by severity
-- `acknowledge` — Mark an alert as handled (prevents auto-resolution)
-
-**Example — List:**
-```json
-{
-  "action": "list",
-  "limit": 10
-}
-```
-
-**Response:**
-```json
-{
-  "alerts": [
-    {
-      "id": "a1b2c3d4",
-      "alert_type": "high_neuron_count",
-      "severity": "medium",
-      "message": "High neuron count (5000). Consider running consolidation.",
-      "recommended_action": "prune",
-      "status": "active",
-      "created_at": "2026-02-18T10:30:00"
-    }
-  ],
-  "total": 1
-}
-```
-
-**Alert Types:** `high_neuron_count`, `high_fiber_count`, `high_synapse_count`, `low_connectivity`, `high_orphan_ratio`, `expired_memories`, `stale_fibers`
-
-**Alert Lifecycle:**
-
-```
-active → seen → acknowledged → resolved
-  │         │         │              │
-  │  (auto on    (manual via    (auto when
-  │   next tool   acknowledge)   condition
-  │   call)                      clears)
-  │
-  └── 6h dedup cooldown (same type suppressed)
-```
-
-Alerts are created automatically from health checks and surfaced as `pending_alerts` count in `nmem_remember`, `nmem_recall`, and `nmem_context` responses.
-
-### nmem_train_db
-
-Train a brain from database schema knowledge.
-
-**Parameters:**
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `action` | string | No | "train" (default) or "status" |
-| `connection_string` | string | Yes (train) | SQLite connection string (e.g., `sqlite:///path/to/db`) |
-| `domain_tag` | string | No | Tag applied to all schema knowledge (e.g., "ecommerce") |
-| `brain_name` | string | No | Target brain name (empty = current brain) |
-| `consolidate` | boolean | No | Run ENRICH consolidation after training (default: true) |
-| `max_tables` | integer | No | Maximum tables to process, 1-500 (default: 100) |
-
-**Example — Train:**
-```json
-{
-  "action": "train",
-  "connection_string": "sqlite:///data/ecommerce.db",
-  "domain_tag": "ecommerce",
-  "max_tables": 50
-}
-```
-
-**Example — Status:**
-```json
-{
-  "action": "status"
-}
-```
-
-**Response (train):**
-```json
-{
-  "tables_processed": 12,
-  "relationships_mapped": 8,
-  "patterns_detected": 5,
-  "neurons_created": 45,
-  "synapses_created": 32,
-  "schema_fingerprint": "a1b2c3d4e5f6g7h8",
-  "message": "Trained schema: 12 tables, 8 relationships, 5 patterns detected"
-}
-```
+---
 
 ## Resources
 
-The MCP server also provides resources for system prompts:
+The MCP server provides resources for system prompts:
 
-### neuralmemory://prompt/system
+| Resource URI | Description |
+|-------------|-------------|
+| `neuralmemory://prompt/system` | Full system prompt for AI assistants |
+| `neuralmemory://prompt/compact` | Compact version for token-limited contexts |
 
-Full system prompt explaining how to use NeuralMemory tools.
-
-### neuralmemory://prompt/compact
-
-Compact version for token-limited contexts.
-
-## System Prompt
-
-Claude receives guidance on when to use NeuralMemory:
-
-```markdown
-# When to REMEMBER
-
-- Important decisions and their rationale
-- Error solutions that might help later
-- User preferences and patterns
-- Architectural choices
-- Meeting outcomes and action items
-
-# When to RECALL
-
-- Before making similar decisions
-- When debugging familiar errors
-- To check user preferences
-- To understand project history
-
-# Auto-Capture
-
-After important conversations, use nmem_auto to automatically
-capture decisions, errors, and insights.
-```
-
-## Configuration
-
-### Get MCP Config
+### Get MCP Config via CLI
 
 ```bash
 nmem mcp-config
 ```
 
-Output:
+### View System Prompt via CLI
+
+```bash
+nmem prompt            # Full prompt
+nmem prompt --compact  # Compact version
+nmem prompt --json     # As JSON
+```
+
+---
+
+## Agent Instructions
+
+Copy these instructions into your project's `CLAUDE.md` (for Claude Code) or `.cursorrules` (for Cursor) to teach your AI assistant how to use NeuralMemory proactively.
+
+### For Claude Code
+
+See [`docs/agent-instructions/CLAUDE.md`](../agent-instructions/CLAUDE.md) for the full template.
+
+### For Cursor
+
+See [`docs/agent-instructions/.cursorrules`](../agent-instructions/.cursorrules) for the full template.
+
+### Quick Version (any editor)
+
+```markdown
+## Memory System — NeuralMemory
+
+This workspace uses NeuralMemory for persistent memory.
+Use nmem_* MCP tools PROACTIVELY.
+
+### Session Start (ALWAYS)
+1. nmem_recap() — Resume context
+2. nmem_context(limit=20, fresh_only=true) — Recent memories
+3. nmem_session(action="get") — Current task
+
+### Auto-Remember
+- Decision made → nmem_remember(content="...", type="decision", priority=7)
+- Bug fixed → nmem_remember(content="...", type="error", priority=7)
+- TODO found → nmem_todo(task="...", priority=6)
+
+### Auto-Recall
+Before asking user → nmem_recall(query="<topic>", depth=1)
+
+### Session End
+nmem_auto(action="process", text="<session summary>")
+nmem_session(action="set", feature="...", progress=0.8)
+```
+
+---
+
+## Troubleshooting
+
+### "nmem-mcp" not found
+
+```bash
+# Check if installed
+pip show neural-memory
+
+# Check if nmem-mcp is in PATH
+which nmem-mcp    # macOS/Linux
+where nmem-mcp    # Windows
+
+# If not found, use Python module instead
+python -m neural_memory.mcp
+```
+
+### Tools not appearing in editor
+
+1. Verify the MCP config file path is correct for your editor
+2. Restart the editor completely
+3. Check editor logs for MCP connection errors
+4. Test manually: `echo '{"jsonrpc":"2.0","method":"tools/list","id":1}' | nmem-mcp`
+
+### Python version mismatch
+
+```bash
+# NeuralMemory requires Python 3.11+
+python --version
+
+# If you have multiple Python versions, specify the full path
+```
+
+### Windows: encoding errors
+
+NeuralMemory handles Windows stdio encoding automatically. If you still see encoding issues:
+
+```json
+{
+  "neural-memory": {
+    "command": "python",
+    "args": ["-m", "neural_memory.mcp"],
+    "env": {
+      "PYTHONIOENCODING": "utf-8"
+    }
+  }
+}
+```
+
+### Permission denied (macOS/Linux)
+
+```bash
+chmod +x $(which nmem-mcp)
+```
+
+### uvx not found
+
+```bash
+# Install uv first
+pip install uv
+
+# Or use pipx
+pipx install neural-memory
+```
+
+### Debug mode
+
+```bash
+# Run with debug logging
+NEURAL_MEMORY_DEBUG=1 nmem-mcp
+```
+
+### Reset to fresh state
+
+```bash
+# macOS/Linux
+rm -rf ~/.neuralmemory
+
+# Windows
+rmdir /s /q %USERPROFILE%\.neuralmemory
+```
+
+---
+
+## Quick Reference
+
+| Editor | Config File | Config Format |
+|--------|-------------|---------------|
+| **Claude Code** | `.mcp.json` (project root) | `{ "mcpServers": { ... } }` |
+| **Cursor** | `~/.cursor/mcp.json` | `{ "mcpServers": { ... } }` |
+| **Windsurf** | `~/.codeium/windsurf/mcp_config.json` | `{ "mcpServers": { ... } }` |
+| **Claude Desktop** | See [path above](#claude-desktop) | `{ "mcpServers": { ... } }` |
+| **VS Code (Continue)** | `~/.continue/config.json` | `{ "mcpServers": [ ... ] }` |
+| **VS Code (Copilot)** | VS Code `settings.json` | `{ "mcp": { "servers": { ... } } }` |
+| **Cline** | `cline_mcp_settings.json` | `{ "mcpServers": { ... } }` |
+| **Zed** | `~/.config/zed/settings.json` | `{ "language_models": { "mcp_servers": { ... } } }` |
+| **Antigravity** | `mcp_config.json` (via MCP Store) | `{ "mcpServers": { ... } }` |
+| **JetBrains** | `.idea/mcpServers.json` | `{ "mcpServers": { ... } }` |
+| **Gemini CLI** | `~/.gemini/settings.json` | `{ "mcpServers": { ... } }` |
+| **Amazon Q** | `~/.aws/amazonq/mcp.json` | `{ "mcpServers": { ... } }` |
+| **Neovim** | `mcpservers.json` (plugin-dependent) | `{ "mcpServers": { ... } }` |
+| **Warp** | `~/.warp/mcp.json` | `{ "mcpServers": { ... } }` |
+
+**Minimum config for any editor:**
+
 ```json
 {
   "neural-memory": {
@@ -320,117 +829,4 @@ Output:
 }
 ```
 
-### View System Prompt
-
-```bash
-# Full prompt
-nmem prompt
-
-# Compact version
-nmem prompt --compact
-
-# As JSON
-nmem prompt --json
-```
-
-## Usage Examples
-
-### Claude Remembering a Decision
-
-```
-User: Let's use Redis for caching instead of Memcached
-
-Claude: [uses nmem_remember]
-I've stored this decision:
-- Content: "Using Redis for caching (chosen over Memcached)"
-- Type: decision
-- Tags: caching, infrastructure
-```
-
-### Claude Recalling Information
-
-```
-User: What caching solution did we pick?
-
-Claude: [uses nmem_recall]
-Based on my memory, you decided to use Redis for caching.
-This was chosen over Memcached.
-```
-
-### Claude Auto-Capturing
-
-```
-User: We spent 3 hours debugging the auth issue. Turns out
-      the JWT secret wasn't being loaded from env vars properly.
-
-Claude: [uses nmem_auto with action="process"]
-I've captured this for future reference:
-- Error: JWT secret not loading from environment variables
-- Solution: Ensure proper env var loading
-- Type: error
-```
-
-## Troubleshooting
-
-### Tools Not Appearing
-
-1. Verify installation: `nmem --version`
-2. Test MCP server: `nmem-mcp` (should wait for input)
-3. Check Claude Code logs for errors
-4. Restart Claude Code
-
-### Connection Issues
-
-1. Check Python path: `which python`
-2. Verify nmem-mcp is in PATH: `which nmem-mcp`
-3. Try Python module directly: `python -m neural_memory.mcp`
-
-### Tool Errors
-
-Enable debug logging:
-
-```bash
-NEURAL_MEMORY_DEBUG=1 nmem-mcp
-```
-
-Check the MCP communication:
-
-```bash
-# Test tool manually
-echo '{"method":"tools/list"}' | nmem-mcp
-```
-
-## Best Practices
-
-### 1. Let Claude Use Auto-Capture
-
-After complex conversations, remind Claude:
-
-```
-"Can you capture any important decisions or errors from our discussion?"
-```
-
-### 2. Ask Claude to Check Memory
-
-Before making decisions:
-
-```
-"Before we proceed, check if we've discussed this before."
-```
-
-### 3. Review with Stats
-
-Periodically:
-
-```
-"Show me the memory statistics for this project."
-```
-
-### 4. Use Typed Memories
-
-Encourage Claude to use appropriate types:
-
-- `decision` for choices
-- `error` for bug fixes
-- `fact` for configurations
-- `todo` for action items
+That's it. Copy, paste, restart. Done.
