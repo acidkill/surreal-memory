@@ -5,6 +5,55 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.0] - 2026-02-18
+
+### Added
+
+- **Spaced Repetition Engine** — Leitner box system (5 boxes: 1d, 3d, 7d, 14d, 30d) for memory reinforcement
+  - `ReviewSchedule` frozen dataclass: fiber_id, brain_id, box (1–5), next_review, streak, review_count
+  - `SpacedRepetitionEngine`: `get_review_queue()`, `process_review()` (calls `ReinforcementManager`), `auto_schedule_fiber()`
+  - `advance(success)` returns new schedule instance — box increments on success (max 5), resets to 1 on failure
+  - Auto-scheduling: fibers with `priority >= 7` are automatically scheduled in `_remember`
+  - `SQLiteReviewsMixin`: upsert, get_due, get_stats with `min(limit, 100)` cap
+  - `InMemoryReviewsMixin` for testing
+  - `ReviewHandler` MCP mixin: `nmem_review` tool (queue/mark/schedule/stats actions)
+  - Schema migration v14 → v15 (`review_schedules` table + 2 indexes)
+- **Memory Narratives** — Template-based markdown narrative generation (no LLM)
+  - 3 modes: `timeline` (date range), `topic` (spreading activation via `ReflexPipeline`), `causal` (CAUSED_BY chain traversal)
+  - `NarrativeItem` + `Narrative` frozen dataclasses with `to_markdown()` rendering
+  - Timeline mode: queries fibers by date range, sorts chronologically, groups by date headers
+  - Topic mode: runs SA query, fetches matched fibers, sorts by relevance
+  - Causal mode: uses `trace_causal_chain()` to follow CAUSED_BY synapses, builds cause→effect narrative
+  - `NarrativeHandler` MCP mixin: `nmem_narrative` tool (timeline/topic/causal actions)
+  - Configurable `max_fibers` with server-side cap of 50
+- **Semantic Synapse Discovery** — Offline consolidation using embeddings to find latent connections
+  - Batch embeds CONCEPT + ENTITY neurons, evaluates cosine similarity pairs above threshold
+  - Creates SIMILAR_TO synapses with `weight = similarity * 0.6` and `{"_semantic_discovery": True}` metadata
+  - Configurable: `semantic_discovery_similarity_threshold` (default 0.7), `semantic_discovery_max_pairs` (default 100)
+  - Integrated as Tier 5 (`SEMANTIC_LINK`) in `ConsolidationEngine` strategy dispatch
+  - 2× faster decay for unreinforced semantic synapses in `_prune` (reinforced_count < 2 → decay factor 0.5)
+  - Optional — gracefully skipped if `sentence-transformers` not installed
+  - `SemanticDiscoveryResult` dataclass: neurons_embedded, pairs_evaluated, synapses_created, skipped_existing
+- **Cross-Brain Recall** — Parallel spreading activation across multiple brains
+  - Extends `nmem_recall` with optional `brains` array parameter (max 5 brains)
+  - Resolves brain names → DB paths via `UnifiedConfig`, opens temporary `SQLiteStorage` per brain
+  - Parallel query via `asyncio.gather`, each brain runs independent `ReflexPipeline`
+  - SimHash-based deduplication across brain results (keeps higher confidence on collision)
+  - Confidence-sorted merge with `[brain_name]` prefixed context sections
+  - `CrossBrainFiber` + `CrossBrainResult` frozen dataclasses
+  - Temporary storage instances closed in `finally` blocks
+
+### Changed
+
+- **MCPServer mixin chain** — Added `ReviewHandler` + `NarrativeHandler` mixins (16 → 18 handler mixins)
+- **MCP tools** — Expanded from 21 to 23 (`nmem_review`, `nmem_narrative`)
+- **SQLite schema** — Version 14 → 15 (`review_schedules` table)
+- **`nmem_recall` schema** — Added `brains` array property for cross-brain queries
+- **`BrainConfig`** — Added `semantic_discovery_similarity_threshold` and `semantic_discovery_max_pairs` fields
+- **`ConsolidationEngine`** — Added `SEMANTIC_LINK` strategy enum + Tier 5 + `semantic_synapses_created` report field
+- **Consolidation prune** — Unreinforced semantic synapses (`_semantic_discovery` metadata) decay at 2× rate
+- Tests: 2399 passed (up from 2314), +85 new tests across 4 features
+
 ## [2.6.0] - 2026-02-18
 
 ### Added
