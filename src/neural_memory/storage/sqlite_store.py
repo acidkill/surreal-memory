@@ -20,6 +20,7 @@ from neural_memory.storage.sqlite_fibers import SQLiteFiberMixin
 from neural_memory.storage.sqlite_maturation import SQLiteMaturationMixin
 from neural_memory.storage.sqlite_neurons import SQLiteNeuronMixin
 from neural_memory.storage.sqlite_projects import SQLiteProjectMixin
+from neural_memory.storage.sqlite_reviews import SQLiteReviewsMixin
 from neural_memory.storage.sqlite_schema import (
     SCHEMA,
     SCHEMA_VERSION,
@@ -46,6 +47,7 @@ class SQLiteStorage(
     SQLiteVersioningMixin,
     SQLiteSyncStateMixin,
     SQLiteAlertsMixin,
+    SQLiteReviewsMixin,
     SQLiteBrainMixin,
     NeuralStorage,
 ):
@@ -294,6 +296,7 @@ class SQLiteStorage(
         conn = self._ensure_conn()
 
         brain_tables = (
+            "review_schedules",
             "alerts",
             "sync_states",
             "action_events",

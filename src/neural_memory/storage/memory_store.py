@@ -19,10 +19,11 @@ from neural_memory.engine.brain_versioning import BrainVersion
 from neural_memory.storage.base import NeuralStorage
 from neural_memory.storage.memory_brain_ops import InMemoryBrainMixin
 from neural_memory.storage.memory_collections import InMemoryCollectionsMixin
+from neural_memory.storage.memory_reviews import InMemoryReviewsMixin
 from neural_memory.utils.timeutils import utcnow
 
 
-class InMemoryStorage(InMemoryCollectionsMixin, InMemoryBrainMixin, NeuralStorage):
+class InMemoryStorage(InMemoryReviewsMixin, InMemoryCollectionsMixin, InMemoryBrainMixin, NeuralStorage):
     """NetworkX-based in-memory storage for development and testing.
 
     Data is lost when the process exits unless explicitly exported.
@@ -40,6 +41,7 @@ class InMemoryStorage(InMemoryCollectionsMixin, InMemoryBrainMixin, NeuralStorag
         self._co_activations: dict[str, list[dict[str, Any]]] = defaultdict(list)
         self._action_events: dict[str, list[dict[str, Any]]] = defaultdict(list)
         self._versions: dict[str, dict[str, tuple[BrainVersion, str]]] = defaultdict(dict)
+        self._review_schedules: dict[str, dict[str, Any]] = defaultdict(dict)
         self._current_brain_id: str | None = None
 
     @property
@@ -675,5 +677,6 @@ class InMemoryStorage(InMemoryCollectionsMixin, InMemoryBrainMixin, NeuralStorag
         self._projects[brain_id].clear()
         self._co_activations[brain_id].clear()
         self._action_events[brain_id].clear()
+        self._review_schedules.pop(brain_id, None)
         self._brains.pop(brain_id, None)
         # Note: versions are NOT cleared — they survive rollbacks (matches SQLite behavior)

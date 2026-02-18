@@ -63,6 +63,8 @@ class BrainConfig:
     embedding_similarity_threshold: float = 0.7
     embedding_activation_boost: float = 0.15
     freshness_weight: float = 0.0
+    semantic_discovery_similarity_threshold: float = 0.7
+    semantic_discovery_max_pairs: int = 100
 
     def with_updates(self, **kwargs: Any) -> BrainConfig:
         """Create a new config with updated values."""

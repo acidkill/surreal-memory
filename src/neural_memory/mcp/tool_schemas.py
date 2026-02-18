@@ -89,6 +89,11 @@ def get_tool_schemas() -> list[dict[str, Any]]:
                         "maximum": 90,
                         "description": "If set, warn about memories expiring within this many days. Adds expiry_warnings to response.",
                     },
+                    "brains": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional list of brain names to query across (max 5). When provided, runs parallel recall across all specified brains and merges results.",
+                    },
                 },
                 "required": ["query"],
             },
@@ -586,6 +591,74 @@ def get_tool_schemas() -> list[dict[str, Any]]:
                         "minimum": 1,
                         "maximum": 200,
                         "description": "Max alerts to list (default: 50)",
+                    },
+                },
+                "required": ["action"],
+            },
+        },
+        {
+            "name": "nmem_narrative",
+            "description": "Generate structured markdown narratives from memory. Three modes: timeline (date range), topic (spreading activation), causal (CAUSED_BY chain). No LLM required — template-based.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["timeline", "topic", "causal"],
+                        "description": "timeline=date-range narrative, topic=SA-driven topic narrative, causal=causal chain narrative",
+                    },
+                    "topic": {
+                        "type": "string",
+                        "description": "Topic to explore (required for topic and causal actions)",
+                    },
+                    "start_date": {
+                        "type": "string",
+                        "description": "Start date in ISO format (required for timeline, e.g., '2026-02-01')",
+                    },
+                    "end_date": {
+                        "type": "string",
+                        "description": "End date in ISO format (required for timeline, e.g., '2026-02-18')",
+                    },
+                    "max_fibers": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 50,
+                        "description": "Max fibers in narrative (default: 20)",
+                    },
+                    "max_depth": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 10,
+                        "description": "Max causal chain depth (default: 5, for causal action only)",
+                    },
+                },
+                "required": ["action"],
+            },
+        },
+        {
+            "name": "nmem_review",
+            "description": "Manage spaced repetition reviews. High-priority memories are auto-scheduled. Review reinforces neural pathways (Hebbian learning). Uses Leitner box system (5 boxes: 1d, 3d, 7d, 14d, 30d).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["queue", "mark", "schedule", "stats"],
+                        "description": "queue=get due reviews, mark=record review result, schedule=manually schedule a fiber, stats=review statistics",
+                    },
+                    "fiber_id": {
+                        "type": "string",
+                        "description": "Fiber ID (required for mark and schedule actions)",
+                    },
+                    "success": {
+                        "type": "boolean",
+                        "description": "Whether recall was successful (for mark action, default: true)",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 100,
+                        "description": "Max items in queue (default: 20)",
                     },
                 },
                 "required": ["action"],

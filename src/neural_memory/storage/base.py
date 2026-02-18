@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from neural_memory.core.fiber import Fiber
     from neural_memory.core.memory_types import MemoryType, Priority, TypedMemory
     from neural_memory.core.neuron import Neuron, NeuronState, NeuronType
+    from neural_memory.core.review_schedule import ReviewSchedule
     from neural_memory.core.synapse import Synapse, SynapseType
     from neural_memory.engine.brain_versioning import BrainVersion
     from neural_memory.engine.memory_stages import MaturationRecord, MemoryStage
@@ -966,6 +967,60 @@ class NeuralStorage(ABC):
 
         Returns:
             True if deleted, False if not found
+        """
+        raise NotImplementedError
+
+    # ========== Review Schedule Operations ==========
+
+    async def add_review_schedule(self, schedule: ReviewSchedule) -> str:
+        """Insert or update a review schedule (upsert by fiber_id + brain_id).
+
+        Args:
+            schedule: The review schedule to save
+
+        Returns:
+            The fiber ID
+        """
+        raise NotImplementedError
+
+    async def get_review_schedule(self, fiber_id: str) -> ReviewSchedule | None:
+        """Get a review schedule by fiber ID.
+
+        Args:
+            fiber_id: The fiber ID
+
+        Returns:
+            The review schedule if found, None otherwise
+        """
+        raise NotImplementedError
+
+    async def get_due_reviews(self, limit: int = 20) -> list[ReviewSchedule]:
+        """Get review schedules that are due (next_review <= now).
+
+        Args:
+            limit: Maximum results (capped at 100)
+
+        Returns:
+            List of due review schedules, oldest first
+        """
+        raise NotImplementedError
+
+    async def delete_review_schedule(self, fiber_id: str) -> bool:
+        """Delete a review schedule.
+
+        Args:
+            fiber_id: The fiber ID
+
+        Returns:
+            True if deleted, False if not found
+        """
+        raise NotImplementedError
+
+    async def get_review_stats(self) -> dict[str, int]:
+        """Get review statistics for the current brain.
+
+        Returns:
+            Dict with keys: total, due, box_1..box_5
         """
         raise NotImplementedError
 

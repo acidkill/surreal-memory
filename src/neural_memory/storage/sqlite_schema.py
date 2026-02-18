@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Schema version for migrations
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 # â”€â”€ Migrations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Each entry maps (from_version -> to_version) with a list of SQL statements.
@@ -211,6 +211,23 @@ MIGRATIONS: dict[tuple[int, int], list[str]] = {
         )""",
         "CREATE INDEX IF NOT EXISTS idx_alerts_status ON alerts(brain_id, status)",
         "CREATE INDEX IF NOT EXISTS idx_alerts_type ON alerts(brain_id, alert_type, status)",
+    ],
+    (14, 15): [
+        # Spaced repetition review schedules (Leitner box system)
+        """CREATE TABLE IF NOT EXISTS review_schedules (
+            fiber_id TEXT NOT NULL,
+            brain_id TEXT NOT NULL,
+            box INTEGER NOT NULL DEFAULT 1,
+            next_review TEXT,
+            last_reviewed TEXT,
+            review_count INTEGER DEFAULT 0,
+            streak INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (fiber_id, brain_id),
+            FOREIGN KEY (brain_id) REFERENCES brains(id) ON DELETE CASCADE
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_review_next ON review_schedules(brain_id, next_review)",
+        "CREATE INDEX IF NOT EXISTS idx_review_box ON review_schedules(brain_id, box)",
     ],
 }
 
@@ -522,4 +539,20 @@ CREATE TABLE IF NOT EXISTS alerts (
 );
 CREATE INDEX IF NOT EXISTS idx_alerts_status ON alerts(brain_id, status);
 CREATE INDEX IF NOT EXISTS idx_alerts_type ON alerts(brain_id, alert_type, status);
+
+-- Spaced repetition review schedules (Leitner box system)
+CREATE TABLE IF NOT EXISTS review_schedules (
+    fiber_id TEXT NOT NULL,
+    brain_id TEXT NOT NULL,
+    box INTEGER NOT NULL DEFAULT 1,
+    next_review TEXT,
+    last_reviewed TEXT,
+    review_count INTEGER DEFAULT 0,
+    streak INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (fiber_id, brain_id),
+    FOREIGN KEY (brain_id) REFERENCES brains(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_review_next ON review_schedules(brain_id, next_review);
+CREATE INDEX IF NOT EXISTS idx_review_box ON review_schedules(brain_id, box);
 """

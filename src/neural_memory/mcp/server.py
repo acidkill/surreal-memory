@@ -42,8 +42,10 @@ from neural_memory.mcp.expiry_cleanup_handler import ExpiryCleanupHandler
 from neural_memory.mcp.index_handler import IndexHandler
 from neural_memory.mcp.maintenance_handler import MaintenanceHandler
 from neural_memory.mcp.mem0_sync_handler import Mem0SyncHandler
+from neural_memory.mcp.narrative_handler import NarrativeHandler
 from neural_memory.mcp.onboarding_handler import OnboardingHandler
 from neural_memory.mcp.prompt import get_system_prompt
+from neural_memory.mcp.review_handler import ReviewHandler
 from neural_memory.mcp.scheduled_consolidation_handler import ScheduledConsolidationHandler
 from neural_memory.mcp.session_handler import SessionHandler
 from neural_memory.mcp.tool_handlers import ToolHandler
@@ -85,6 +87,8 @@ class MCPServer(
     DBTrainHandler,
     MaintenanceHandler,
     AlertHandler,
+    ReviewHandler,
+    NarrativeHandler,
     Mem0SyncHandler,
     OnboardingHandler,
     ExpiryCleanupHandler,
@@ -106,6 +110,8 @@ class MCPServer(
         DBTrainHandler      — _train_db (train DB schema into brain, status)
         MaintenanceHandler  — _check_maintenance, health pulse
         AlertHandler        — _alerts, persistent alert lifecycle
+        ReviewHandler       — _review, spaced repetition queue/mark/schedule/stats
+        NarrativeHandler    — _narrative, timeline/topic/causal narratives
         Mem0SyncHandler     — maybe_start_mem0_sync, background auto-sync
         OnboardingHandler   — _check_onboarding, fresh-brain guidance
         ExpiryCleanupHandler — _maybe_run_expiry_cleanup, auto-delete expired
@@ -184,6 +190,8 @@ class MCPServer(
             "nmem_train": self._train,
             "nmem_train_db": self._train_db,
             "nmem_alerts": self._alerts,
+            "nmem_review": self._review,
+            "nmem_narrative": self._narrative,
         }
         handler = dispatch.get(name)
         if handler:

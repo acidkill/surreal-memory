@@ -40,6 +40,7 @@ class ConsolidationStrategy(StrEnum):
     DREAM = "dream"
     LEARN_HABITS = "learn_habits"
     DEDUP = "dedup"
+    SEMANTIC_LINK = "semantic_link"
     ALL = "all"
 
 
@@ -90,6 +91,7 @@ class ConsolidationReport:
     habits_learned: int = 0
     action_events_pruned: int = 0
     duplicates_found: int = 0
+    semantic_synapses_created: int = 0
     merge_details: list[MergeDetail] = field(default_factory=list)
     dry_run: bool = False
 
@@ -110,6 +112,7 @@ class ConsolidationReport:
             f"  Habits learned: {self.habits_learned}",
             f"  Action events pruned: {self.action_events_pruned}",
             f"  Duplicates found: {self.duplicates_found}",
+            f"  Semantic synapses: {self.semantic_synapses_created}",
             f"  Duration: {self.duration_ms:.1f}ms",
         ]
         if self.merge_details:
@@ -161,6 +164,11 @@ class ConsolidationEngine:
                 ConsolidationStrategy.DREAM,
             }
         ),
+        frozenset(
+            {
+                ConsolidationStrategy.SEMANTIC_LINK,
+            }
+        ),
     )
 
     def __init__(
@@ -193,6 +201,7 @@ class ConsolidationEngine:
                 report, reference_time, dry_run
             ),
             ConsolidationStrategy.DEDUP: lambda: self._dedup(report, dry_run),
+            ConsolidationStrategy.SEMANTIC_LINK: lambda: self._semantic_link(report, dry_run),
         }
         handler = dispatch.get(strategy)
         if handler is not None:
@@ -297,6 +306,11 @@ class ConsolidationEngine:
             if is_dream and synapse.reinforced_count < 2:
                 dream_factor = 1.0 / self._dream_decay_multiplier
                 decayed = decayed.decay(factor=dream_factor)
+
+            # Semantic discovery synapses decay 2x faster unless reinforced
+            is_semantic = synapse.metadata.get("_semantic_discovery", False)
+            if is_semantic and synapse.reinforced_count < 2:
+                decayed = decayed.decay(factor=0.5)
 
             should_prune = decayed.weight < self._config.prune_weight_threshold
 
@@ -977,3 +991,39 @@ class ConsolidationEngine:
                         await self._storage.add_synapse(alias_synapse)
                     except ValueError:
                         logger.debug("ALIAS synapse already exists")
+
+    async def _semantic_link(
+        self,
+        report: ConsolidationReport,
+        dry_run: bool,
+    ) -> None:
+        """Discover and create SIMILAR_TO synapses via embedding similarity.
+
+        Optional — silently skips if embeddings are not available.
+        Created synapses decay 2x faster during pruning unless reinforced.
+        """
+        import logging
+
+        from neural_memory.engine.semantic_discovery import discover_semantic_synapses
+
+        logger = logging.getLogger(__name__)
+
+        brain_id = self._storage.current_brain_id
+        if not brain_id:
+            return
+        brain = await self._storage.get_brain(brain_id)
+        if not brain:
+            return
+
+        result = await discover_semantic_synapses(self._storage, brain.config)
+
+        if dry_run:
+            report.semantic_synapses_created = result.synapses_created
+            return
+
+        for synapse in result.synapses:
+            try:
+                await self._storage.add_synapse(synapse)
+                report.semantic_synapses_created += 1
+            except ValueError:
+                logger.debug("Semantic synapse already exists, skipping")

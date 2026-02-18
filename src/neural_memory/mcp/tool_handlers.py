@@ -218,6 +218,16 @@ class ToolHandler:
         finally:
             storage.enable_auto_save()
 
+        # Auto-schedule high-priority fibers for spaced repetition
+        if priority.value >= 7:
+            try:
+                from neural_memory.engine.spaced_repetition import SpacedRepetitionEngine
+
+                sr_engine = SpacedRepetitionEngine(storage, brain.config)
+                await sr_engine.auto_schedule_fiber(result.fiber.id, brain.id)
+            except Exception:
+                logger.debug("Auto-schedule for review failed (non-critical)", exc_info=True)
+
         self._fire_eternal_trigger(content)
 
         await self._record_tool_action("remember", content[:100])
@@ -351,6 +361,11 @@ class ToolHandler:
 
     async def _recall(self, args: dict[str, Any]) -> dict[str, Any]:
         """Query memories via spreading activation."""
+        # Cross-brain recall: early return if brains parameter is provided
+        brain_names = args.get("brains")
+        if brain_names and isinstance(brain_names, list) and len(brain_names) > 0:
+            return await self._cross_brain_recall(args, brain_names)
+
         storage = await self.get_storage()
         brain = await storage.get_brain(storage._current_brain_id or "")
         if not brain:
@@ -520,6 +535,51 @@ class ToolHandler:
             response.update(alert_info)
 
         return response
+
+    async def _cross_brain_recall(
+        self, args: dict[str, Any], brain_names: list[str]
+    ) -> dict[str, Any]:
+        """Handle cross-brain recall by querying multiple brains in parallel."""
+        from neural_memory.engine.cross_brain import cross_brain_recall
+
+        query = args.get("query", "")
+        if not query:
+            return {"error": "query is required"}
+
+        # Cap at 5 brains
+        brain_names = brain_names[:5]
+        depth = args.get("depth", 1)
+        max_tokens = min(args.get("max_tokens", 500), 10_000)
+
+        try:
+            result = await cross_brain_recall(
+                config=self.config,
+                brain_names=brain_names,
+                query=query,
+                depth=depth,
+                max_tokens=max_tokens,
+            )
+        except Exception:
+            logger.error("Cross-brain recall failed", exc_info=True)
+            return {"error": "Cross-brain recall failed"}
+
+        fibers_out = [
+            {
+                "fiber_id": f.fiber_id,
+                "source_brain": f.source_brain,
+                "summary": f.summary,
+                "confidence": f.confidence,
+            }
+            for f in result.fibers
+        ]
+
+        return {
+            "answer": result.merged_context,
+            "brains_queried": result.brains_queried,
+            "total_neurons_activated": result.total_neurons_activated,
+            "fibers": fibers_out,
+            "cross_brain": True,
+        }
 
     async def _context(self, args: dict[str, Any]) -> dict[str, Any]:
         """Get recent context."""
