@@ -83,3 +83,48 @@ def preset_cmd(
         typer.echo(
             f"  [{change['section']}] {change['key']}: {change['current']} -> {change['new']}"
         )
+
+
+@config_app.command("tier")
+def tier_cmd(
+    name: Annotated[
+        str,
+        typer.Argument(help="Tier name: minimal, standard, full"),
+    ] = "",
+    show: Annotated[
+        bool,
+        typer.Option("--show", "-s", help="Show current tier"),
+    ] = False,
+) -> None:
+    """Get or set the MCP tool tier to control token usage.
+
+    Tiers control which tools are exposed in tools/list:
+      minimal  — 4 core tools (~84% token savings)
+      standard — 8 tools (~69% savings)
+      full     — all 23 tools (default)
+
+    Hidden tools remain callable — only schema exposure changes.
+
+    Examples:
+        nmem config tier --show
+        nmem config tier standard
+        nmem config tier full
+    """
+    from neural_memory.unified_config import ToolTierConfig, UnifiedConfig, _VALID_TOOL_TIERS
+
+    config = UnifiedConfig.load()
+
+    if show or not name:
+        typer.echo(f"Current tool tier: {config.tool_tier.tier}")
+        typer.echo(f"Valid tiers: {', '.join(sorted(_VALID_TOOL_TIERS))}")
+        return
+
+    tier_value = name.lower().strip()
+    if tier_value not in _VALID_TOOL_TIERS:
+        typer.secho(f"Unknown tier: {name}", fg=typer.colors.RED)
+        typer.echo(f"Valid tiers: {', '.join(sorted(_VALID_TOOL_TIERS))}")
+        raise typer.Exit(1)
+
+    config.tool_tier = ToolTierConfig(tier=tier_value)
+    config.save()
+    typer.secho(f"Tool tier set to: {tier_value}", fg=typer.colors.GREEN)

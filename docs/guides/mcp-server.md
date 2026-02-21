@@ -600,7 +600,7 @@ NeuralMemory is lightweight — it won't slow down your editor.
 
 ## Available Tools
 
-Once configured, these 22 tools are available to your AI assistant:
+Once configured, these 23 tools are available to your AI assistant:
 
 ### Core Memory
 
@@ -649,6 +649,39 @@ Once configured, these 22 tools are available to your AI assistant:
 | `nmem_suggest` | Autocomplete suggestions from brain neurons |
 | `nmem_import` | Import from ChromaDB, Mem0, Cognee, Graphiti, LlamaIndex |
 | `nmem_narrative` | Generate timeline/topic/causal narratives |
+
+---
+
+## Tool Tiers
+
+By default all 23 tools are exposed on every API turn. If you want to reduce token overhead, configure a **tool tier** in `~/.neuralmemory/config.toml`:
+
+```toml
+[tool_tier]
+tier = "standard"   # minimal | standard | full
+```
+
+Or via CLI:
+
+```bash
+nmem config tier --show       # show current tier
+nmem config tier standard     # set to standard
+nmem config tier full         # reset to full
+```
+
+| Tier | Tools | Est. Tokens | Savings |
+|------|-------|-------------|---------|
+| `full` (default) | 23 | ~3,500 | — |
+| `standard` | 8 | ~1,400 | ~69% |
+| `minimal` | 4 | ~700 | ~84% |
+
+**Tier contents:**
+
+- **minimal** — `remember`, `recall`, `context`, `recap`
+- **standard** — minimal + `todo`, `session`, `auto`, `eternal`
+- **full** — all 23 tools
+
+> Hidden tools remain callable — only the schema listing changes. If the AI model already knows a tool name, it can still call it even when the tool is not exposed in `tools/list`.
 
 ---
 

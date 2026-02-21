@@ -49,7 +49,7 @@ from neural_memory.mcp.review_handler import ReviewHandler
 from neural_memory.mcp.scheduled_consolidation_handler import ScheduledConsolidationHandler
 from neural_memory.mcp.session_handler import SessionHandler
 from neural_memory.mcp.tool_handlers import ToolHandler
-from neural_memory.mcp.tool_schemas import get_tool_schemas
+from neural_memory.mcp.tool_schemas import get_tool_schemas_for_tier
 from neural_memory.mcp.train_handler import TrainHandler
 from neural_memory.mcp.version_check_handler import VersionCheckHandler
 from neural_memory.unified_config import get_config, get_shared_storage
@@ -163,8 +163,9 @@ class MCPServer(
         return None
 
     def get_tools(self) -> list[dict[str, Any]]:
-        """Return list of available MCP tools."""
-        return get_tool_schemas()
+        """Return list of available MCP tools, filtered by tier."""
+        tier = self.config.tool_tier.tier
+        return get_tool_schemas_for_tier(tier)
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Dispatch a tool call to the appropriate handler."""

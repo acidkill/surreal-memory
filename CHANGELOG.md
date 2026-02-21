@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.1] - 2026-02-21
+
+### Added
+
+- **MCP Tool Tiers** — Config-based filtering to reduce token overhead per API turn
+  - 3 tiers: `minimal` (4 tools, ~84% savings), `standard` (8 tools, ~69% savings), `full` (all 23, default)
+  - `ToolTierConfig` frozen dataclass in `unified_config.py` with `from_dict()`/`to_dict()`
+  - `get_tool_schemas_for_tier(tier)` in `tool_schemas.py` — filters schemas by tier
+  - `[tool_tier]` TOML section in `config.toml` for persistent configuration
+  - Hidden tools remain callable via dispatch — only schema exposure changes
+  - CLI command: `nmem config tier [--show | minimal | standard | full]`
+- **Description Compression** — All 23 tool descriptions compressed (~22% token reduction at full tier)
+
+### Changed
+
+- `MCPServer.get_tools()` now respects `config.tool_tier.tier` setting
+- `tool_schemas.py` refactored: `_ALL_TOOL_SCHEMAS` module-level list + `TOOL_TIERS` dict
+- Tests: added 28 new tests in `test_tool_tiers.py`
+
 ## [2.7.0] - 2026-02-18
 
 ### Added

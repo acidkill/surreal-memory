@@ -8,6 +8,7 @@ import pytest
 
 from neural_memory.mcp.auto_capture import analyze_text_for_memories
 from neural_memory.mcp.server import MCPServer, create_mcp_server, handle_message
+from neural_memory.unified_config import ToolTierConfig
 
 
 class TestMCPServer:
@@ -20,6 +21,7 @@ class TestMCPServer:
             mock_get_config.return_value = MagicMock(
                 current_brain="test-brain",
                 get_brain_db_path=MagicMock(return_value="/tmp/test-brain.db"),
+                tool_tier=ToolTierConfig(tier="full"),
             )
             return MCPServer()
 
@@ -29,6 +31,7 @@ class TestMCPServer:
             mock_get_config.return_value = MagicMock(
                 current_brain="test-brain",
                 get_brain_db_path=MagicMock(return_value="/tmp/test-brain.db"),
+                tool_tier=ToolTierConfig(tier="full"),
             )
             server = create_mcp_server()
             assert isinstance(server, MCPServer)
@@ -174,6 +177,7 @@ class TestMCPToolCalls:
             mock_get_config.return_value = MagicMock(
                 current_brain="test-brain",
                 get_brain_db_path=MagicMock(return_value="/tmp/test-brain.db"),
+                tool_tier=ToolTierConfig(tier="full"),
             )
             return MCPServer()
 
@@ -832,6 +836,7 @@ class TestMCPProtocol:
             mock_get_config.return_value = MagicMock(
                 current_brain="test-brain",
                 get_brain_db_path=MagicMock(return_value="/tmp/test-brain.db"),
+                tool_tier=ToolTierConfig(tier="full"),
             )
             return MCPServer()
 
@@ -945,6 +950,7 @@ class TestMCPResources:
             mock_get_config.return_value = MagicMock(
                 current_brain="test-brain",
                 get_brain_db_path=MagicMock(return_value="/tmp/test-brain.db"),
+                tool_tier=ToolTierConfig(tier="full"),
             )
             return MCPServer()
 
@@ -1038,6 +1044,7 @@ class TestMCPStorage:
             mock_get_config.return_value = MagicMock(
                 current_brain="test-brain",
                 get_brain_db_path=MagicMock(return_value="/tmp/test-brain.db"),
+                tool_tier=ToolTierConfig(tier="full"),
             )
             server = MCPServer()
 
@@ -1661,6 +1668,7 @@ class TestMCPImport:
             mock_get_config.return_value = MagicMock(
                 current_brain="test-brain",
                 get_brain_db_path=MagicMock(return_value="/tmp/test-brain.db"),
+                tool_tier=ToolTierConfig(tier="full"),
             )
             return MCPServer()
 
@@ -1936,6 +1944,7 @@ class TestMCPContextExtended:
             mock_get_config.return_value = MagicMock(
                 current_brain="test-brain",
                 get_brain_db_path=MagicMock(return_value="/tmp/test-brain.db"),
+                tool_tier=ToolTierConfig(tier="full"),
             )
             return MCPServer()
 

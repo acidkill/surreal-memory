@@ -258,6 +258,30 @@ class MaintenanceConfig:
         )
 
 
+_VALID_TOOL_TIERS = frozenset({"minimal", "standard", "full"})
+
+
+@dataclass(frozen=True)
+class ToolTierConfig:
+    """MCP tool tier configuration.
+
+    Controls which tools are exposed via tools/list to reduce token overhead.
+    Hidden tools remain callable via dispatch — only schema exposure changes.
+    """
+
+    tier: str = "full"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"tier": self.tier}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ToolTierConfig:
+        raw = str(data.get("tier", "full")).lower().strip()
+        if raw not in _VALID_TOOL_TIERS:
+            raw = "full"
+        return cls(tier=raw)
+
+
 @dataclass(frozen=True)
 class ConflictConfig:
     """Auto-conflict resolution configuration.
@@ -473,6 +497,9 @@ class UnifiedConfig:
     # Dedup settings
     dedup: DedupSettings = field(default_factory=DedupSettings)
 
+    # MCP tool tier settings
+    tool_tier: ToolTierConfig = field(default_factory=ToolTierConfig)
+
     # Mem0 auto-sync settings
     mem0_sync: Mem0SyncConfig = field(default_factory=Mem0SyncConfig)
 
@@ -522,6 +549,7 @@ class UnifiedConfig:
             conflict=ConflictConfig.from_dict(data.get("conflict", {})),
             safety=SafetyConfig.from_dict(data.get("safety", {})),
             dedup=DedupSettings.from_dict(data.get("dedup", {})),
+            tool_tier=ToolTierConfig.from_dict(data.get("tool_tier", {})),
             mem0_sync=Mem0SyncConfig.from_dict(data.get("mem0_sync", {})),
             json_output=data.get("cli", {}).get("json_output", False),
             default_depth=data.get("cli", {}).get("default_depth"),
@@ -633,6 +661,10 @@ class UnifiedConfig:
             lines.append(f"limit = {self.mem0_sync.limit}")
 
         lines += [
+            "",
+            "# MCP tool tier (minimal/standard/full)",
+            "[tool_tier]",
+            f'tier = "{self.tool_tier.tier}"',
             "",
             "# CLI preferences",
             "[cli]",
