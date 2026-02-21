@@ -83,7 +83,8 @@ async def compute_topology(
         )
 
     all_synapses: Sequence[SynapseLike] = (
-        _preloaded_synapses if _preloaded_synapses is not None else await storage.get_all_synapses()
+        _preloaded_synapses if _preloaded_synapses is not None
+        else await storage.get_all_synapses()  # type: ignore[assignment]
     )
 
     # ── Density (undirected: n*(n-1)/2) ────────────────────────

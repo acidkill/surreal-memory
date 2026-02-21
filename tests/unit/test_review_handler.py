@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
 from neural_memory.core.brain import Brain, BrainConfig
 from neural_memory.core.fiber import Fiber
 from neural_memory.core.neuron import Neuron, NeuronType
-from neural_memory.core.review_schedule import ReviewSchedule
 from neural_memory.mcp.review_handler import ReviewHandler
 from neural_memory.storage.memory_store import InMemoryStorage
 

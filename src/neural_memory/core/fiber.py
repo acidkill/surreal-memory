@@ -290,6 +290,7 @@ class Fiber:
         if self._pathway_index is None:
             index = {nid: i for i, nid in enumerate(self.pathway)}
             object.__setattr__(self, "_pathway_index", index)
+            return index
         return self._pathway_index
 
     def pathway_position(self, neuron_id: str) -> int | None:

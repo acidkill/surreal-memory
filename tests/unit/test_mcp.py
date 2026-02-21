@@ -1814,9 +1814,9 @@ class TestMCPImport:
             mock_get_adapter.return_value = MagicMock()
             await server.call_tool("nmem_import", {"source": "awf", "connection": brain_dir})
 
-        from pathlib import Path as _P
+        from pathlib import Path as BrainPath
 
-        resolved_brain_dir = str(_P(brain_dir).resolve())
+        resolved_brain_dir = str(BrainPath(brain_dir).resolve())
         mock_get_adapter.assert_called_once_with("awf", brain_dir=resolved_brain_dir)
 
 

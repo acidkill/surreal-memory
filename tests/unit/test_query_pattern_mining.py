@@ -9,8 +9,6 @@ import pytest_asyncio
 
 from neural_memory.core.action_event import ActionEvent
 from neural_memory.core.brain import Brain, BrainConfig
-from neural_memory.core.neuron import NeuronType
-from neural_memory.core.synapse import SynapseType
 from neural_memory.engine.query_pattern_mining import (
     QueryPatternCandidate,
     QueryPatternReport,
@@ -23,7 +21,6 @@ from neural_memory.engine.query_pattern_mining import (
 )
 from neural_memory.storage.memory_store import InMemoryStorage
 from neural_memory.utils.timeutils import utcnow
-
 
 # ── Fixtures ─────────────────────────────────────────────────────
 

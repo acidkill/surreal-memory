@@ -41,7 +41,8 @@ def read_hook_input() -> dict[str, Any]:
         raw = sys.stdin.read()
         if not raw.strip():
             return {}
-        return json.loads(raw)
+        result: dict[str, Any] = json.loads(raw)
+        return result
     except (json.JSONDecodeError, OSError):
         return {}
 
@@ -87,12 +88,12 @@ def read_transcript_tail(transcript_path: str, max_lines: int = MAX_TRANSCRIPT_L
 
 def _extract_text(entry: dict[str, Any]) -> str:
     """Extract text content from a transcript entry."""
-    # Format: {"role": "...", "content": "text"}
+    # Format: {"role": "...", "content": "text"}  # noqa: ERA001
     content = entry.get("content")
     if isinstance(content, str):
         return content
 
-    # Format: {"role": "...", "content": [{"type": "text", "text": "..."}]}
+    # Format: {"role": "...", "content": [{"type": "text", "text": "..."}]}  # noqa: ERA001
     if isinstance(content, list):
         parts = []
         for item in content:
@@ -102,7 +103,7 @@ def _extract_text(entry: dict[str, Any]) -> str:
                     parts.append(text)
         return "\n".join(parts)
 
-    # Format: {"type": "...", "message": {"content": [...]}}
+    # Format: {"type": "...", "message": {"content": [...]}}  # noqa: ERA001
     message = entry.get("message")
     if isinstance(message, dict):
         return _extract_text(message)
@@ -267,24 +268,24 @@ def main() -> None:
 
     if not text or len(text.strip()) < 50:
         # Too little content to analyze
-        print("No substantial content to flush", file=sys.stderr)
+        print("No substantial content to flush", file=sys.stderr)  # noqa: T201
         sys.exit(0)
 
     try:
         result = asyncio.run(flush_text(text))
         saved = result.get("saved", 0)
         if saved > 0:
-            print(
+            print(  # noqa: T201
                 f"[NeuralMemory] Pre-compact flush: captured {saved} memories",
                 file=sys.stderr,
             )
         else:
-            print(
+            print(  # noqa: T201
                 f"[NeuralMemory] Pre-compact flush: {result.get('message', 'no memories')}",
                 file=sys.stderr,
             )
     except Exception as exc:
-        print(f"[NeuralMemory] Flush error: {exc}", file=sys.stderr)
+        print(f"[NeuralMemory] Flush error: {exc}", file=sys.stderr)  # noqa: T201
         sys.exit(0)  # Don't block compaction on errors
 
 

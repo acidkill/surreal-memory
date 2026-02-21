@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -11,7 +12,7 @@ from neural_memory.mcp.tool_schemas import (
     get_tool_schemas,
     get_tool_schemas_for_tier,
 )
-from neural_memory.unified_config import ToolTierConfig, _VALID_TOOL_TIERS
+from neural_memory.unified_config import ToolTierConfig
 
 
 class TestToolTierConfig:
@@ -139,7 +140,7 @@ class TestToolTiers:
 class TestServerTierIntegration:
     """Test that MCPServer.get_tools() respects tier config."""
 
-    def _make_server(self, tier: str) -> "MCPServer":
+    def _make_server(self, tier: str) -> MCPServer:  # noqa: F821
         from neural_memory.mcp.server import MCPServer
 
         with patch("neural_memory.mcp.server.get_config") as mock:
@@ -166,12 +167,10 @@ class TestServerTierIntegration:
     async def test_hidden_tools_still_callable(self) -> None:
         """Tools hidden by tier should still be callable via dispatch."""
         server = self._make_server("minimal")
-        # nmem_stats is NOT in minimal tier
         tools = server.get_tools()
         exposed_names = {t["name"] for t in tools}
         assert "nmem_stats" not in exposed_names
 
-        # But call_tool dispatch should still find it
         with patch.object(server, "_stats", return_value={"status": "ok"}) as mock_stats:
             result = await server.call_tool("nmem_stats", {})
             mock_stats.assert_called_once_with({})
@@ -181,9 +180,7 @@ class TestServerTierIntegration:
 class TestConfigRoundTrip:
     """Test ToolTierConfig save/load round-trip via UnifiedConfig."""
 
-    def test_save_load_roundtrip(self, tmp_path: "Path") -> None:
-        from pathlib import Path
-
+    def test_save_load_roundtrip(self, tmp_path: Path) -> None:
         from neural_memory.unified_config import UnifiedConfig
 
         config = UnifiedConfig(
@@ -196,9 +193,7 @@ class TestConfigRoundTrip:
         loaded = UnifiedConfig.load(tmp_path / "config.toml")
         assert loaded.tool_tier.tier == "standard"
 
-    def test_save_load_default_tier(self, tmp_path: "Path") -> None:
-        from pathlib import Path
-
+    def test_save_load_default_tier(self, tmp_path: Path) -> None:
         from neural_memory.unified_config import UnifiedConfig
 
         config = UnifiedConfig(data_dir=tmp_path, current_brain="default")

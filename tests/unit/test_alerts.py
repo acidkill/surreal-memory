@@ -14,7 +14,6 @@ from neural_memory.mcp.maintenance_handler import HealthHint, HintSeverity
 from neural_memory.storage.sqlite_store import SQLiteStorage
 from neural_memory.utils.timeutils import utcnow
 
-
 # ── Fixtures ─────────────────────────────────────────────────────
 
 

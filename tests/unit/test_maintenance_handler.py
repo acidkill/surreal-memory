@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta
-
-from neural_memory.utils.timeutils import utcnow
+from datetime import timedelta
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -24,6 +22,7 @@ from neural_memory.unified_config import (
     MaintenanceConfig,
     UnifiedConfig,
 )
+from neural_memory.utils.timeutils import utcnow
 
 # ========== Helpers ==========
 

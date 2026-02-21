@@ -13,7 +13,6 @@ from neural_memory.core.review_schedule import (
     ReviewSchedule,
 )
 from neural_memory.engine.spaced_repetition import SpacedRepetitionEngine
-from neural_memory.utils.timeutils import utcnow
 
 
 class TestReviewSchedule:

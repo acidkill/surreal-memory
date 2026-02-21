@@ -405,7 +405,7 @@ class EntityExtractor:
         existing_texts = {e.text.lower() for e in existing}
 
         # Find words after location indicators (pre-compiled patterns)
-        for indicator, pattern in self._LOCATION_PATTERNS.items():
+        for pattern in self._LOCATION_PATTERNS.values():
             for match in pattern.finditer(text):
                 location = match.group(1).strip()
 

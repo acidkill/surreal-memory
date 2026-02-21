@@ -110,7 +110,11 @@ def tier_cmd(
         nmem config tier standard
         nmem config tier full
     """
-    from neural_memory.unified_config import ToolTierConfig, UnifiedConfig, _VALID_TOOL_TIERS
+    from neural_memory.unified_config import (
+        _VALID_TOOL_TIERS,
+        ToolTierConfig,
+        UnifiedConfig,
+    )
 
     config = UnifiedConfig.load()
 
