@@ -4,13 +4,11 @@ from __future__ import annotations
 
 import pathlib
 
-import pytest
 import pytest_asyncio
 
 from neural_memory.core.brain import Brain, BrainConfig
 from neural_memory.storage.sqlite_devices import DeviceRecord
 from neural_memory.storage.sqlite_store import SQLiteStorage
-
 
 # ── Fixture ───────────────────────────────────────────────────────────────────
 
@@ -51,9 +49,7 @@ class TestRegisterDevice:
         # registered_at is populated
         assert record.registered_at is not None
 
-    async def test_register_device_upsert(
-        self, storage_with_brain: SQLiteStorage
-    ) -> None:
+    async def test_register_device_upsert(self, storage_with_brain: SQLiteStorage) -> None:
         """Registering the same device_id twice updates device_name."""
         await storage_with_brain.register_device("dev-001", "old-name")
         await storage_with_brain.register_device("dev-001", "new-name")
@@ -62,16 +58,12 @@ class TestRegisterDevice:
         assert fetched is not None
         assert fetched.device_name == "new-name"
 
-    async def test_register_device_without_name(
-        self, storage_with_brain: SQLiteStorage
-    ) -> None:
+    async def test_register_device_without_name(self, storage_with_brain: SQLiteStorage) -> None:
         """register_device with no name uses empty string."""
         record = await storage_with_brain.register_device("dev-no-name")
         assert record.device_name == ""
 
-    async def test_register_device_stores_brain_id(
-        self, storage_with_brain: SQLiteStorage
-    ) -> None:
+    async def test_register_device_stores_brain_id(self, storage_with_brain: SQLiteStorage) -> None:
         """Registered DeviceRecord carries the current brain_id."""
         record = await storage_with_brain.register_device("dev-002", "desktop")
         expected_brain_id = storage_with_brain._get_brain_id()
@@ -81,16 +73,12 @@ class TestRegisterDevice:
 class TestGetDevice:
     """Test get_device retrieves or returns None."""
 
-    async def test_get_device_not_found(
-        self, storage_with_brain: SQLiteStorage
-    ) -> None:
+    async def test_get_device_not_found(self, storage_with_brain: SQLiteStorage) -> None:
         """get_device returns None when device_id is not registered."""
         result = await storage_with_brain.get_device("nonexistent-dev")
         assert result is None
 
-    async def test_get_device_returns_record(
-        self, storage_with_brain: SQLiteStorage
-    ) -> None:
+    async def test_get_device_returns_record(self, storage_with_brain: SQLiteStorage) -> None:
         """get_device returns the correct DeviceRecord after registration."""
         await storage_with_brain.register_device("dev-abc", "work-machine")
 
@@ -111,16 +99,12 @@ class TestGetDevice:
 class TestListDevices:
     """Test list_devices returns all devices sorted by registered_at."""
 
-    async def test_list_devices_empty(
-        self, storage_with_brain: SQLiteStorage
-    ) -> None:
+    async def test_list_devices_empty(self, storage_with_brain: SQLiteStorage) -> None:
         """list_devices returns empty list when no devices registered."""
         devices = await storage_with_brain.list_devices()
         assert devices == []
 
-    async def test_list_devices_two_devices(
-        self, storage_with_brain: SQLiteStorage
-    ) -> None:
+    async def test_list_devices_two_devices(self, storage_with_brain: SQLiteStorage) -> None:
         """register 2 devices, list returns 2 sorted by registered_at ASC."""
         await storage_with_brain.register_device("dev-first", "machine-a")
         await storage_with_brain.register_device("dev-second", "machine-b")
@@ -157,9 +141,7 @@ class TestListDevices:
 class TestUpdateDeviceSync:
     """Test update_device_sync updates last_sync_at and last_sync_sequence."""
 
-    async def test_update_device_sync(
-        self, storage_with_brain: SQLiteStorage
-    ) -> None:
+    async def test_update_device_sync(self, storage_with_brain: SQLiteStorage) -> None:
         """After update_device_sync, fetched record reflects new values."""
         await storage_with_brain.register_device("dev-sync", "sync-machine")
 

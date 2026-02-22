@@ -130,7 +130,9 @@ def _row_to_device(row: dict[str, Any]) -> DeviceRecord:
         device_id=str(row["device_id"]),
         brain_id=str(row["brain_id"]),
         device_name=str(row["device_name"] or ""),
-        last_sync_at=datetime.fromisoformat(str(row["last_sync_at"])) if row["last_sync_at"] else None,
+        last_sync_at=datetime.fromisoformat(str(row["last_sync_at"]))
+        if row["last_sync_at"]
+        else None,
         last_sync_sequence=int(row["last_sync_sequence"] or 0),
         registered_at=datetime.fromisoformat(str(row["registered_at"])),
     )

@@ -208,9 +208,7 @@ class ConsolidationEngine:
             ),
             ConsolidationStrategy.DEDUP: lambda: self._dedup(report, dry_run),
             ConsolidationStrategy.SEMANTIC_LINK: lambda: self._semantic_link(report, dry_run),
-            ConsolidationStrategy.COMPRESS: lambda: self._compress(
-                report, reference_time, dry_run
-            ),
+            ConsolidationStrategy.COMPRESS: lambda: self._compress(report, reference_time, dry_run),
         }
         handler = dispatch.get(strategy)
         if handler is not None:

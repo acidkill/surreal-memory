@@ -5,8 +5,6 @@ from __future__ import annotations
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
-
 from neural_memory.storage.sqlite_change_log import ChangeEntry
 from neural_memory.storage.sqlite_devices import DeviceRecord
 from neural_memory.sync.protocol import (
@@ -17,7 +15,6 @@ from neural_memory.sync.protocol import (
     SyncStatus,
 )
 from neural_memory.sync.sync_engine import SyncEngine
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -147,9 +144,7 @@ class TestPrepareSyncRequest:
     async def test_prepare_sync_request_uses_configured_strategy(self) -> None:
         """SyncEngine strategy propagates to the SyncRequest."""
         storage = _make_mock_storage()
-        engine = SyncEngine(
-            storage, device_id="dev-001", strategy=ConflictStrategy.PREFER_LOCAL
-        )
+        engine = SyncEngine(storage, device_id="dev-001", strategy=ConflictStrategy.PREFER_LOCAL)
 
         request = await engine.prepare_sync_request(brain_id="brain-test")
 
@@ -312,9 +307,7 @@ class TestHandleHubSync:
             _make_change_entry("n-1", device_id="dev-requester", seq=1),
             _make_change_entry("n-2", device_id="dev-other", seq=2),
         ]
-        storage = _make_mock_storage(
-            changes_since=hub_changes, last_sequence=5
-        )
+        storage = _make_mock_storage(changes_since=hub_changes, last_sequence=5)
         engine = SyncEngine(storage, device_id="dev-hub")
 
         request = SyncRequest(

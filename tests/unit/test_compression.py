@@ -16,7 +16,6 @@ Covers:
 
 from __future__ import annotations
 
-from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 
@@ -27,8 +26,8 @@ from neural_memory.core.brain import Brain
 from neural_memory.core.fiber import Fiber
 from neural_memory.engine.compression import (
     CompressionConfig,
-    CompressionTier,
     CompressionEngine,
+    CompressionTier,
     compress_tier1_extractive,
     compress_tier2_entity_preserving,
     compress_tier3_template,
@@ -38,7 +37,6 @@ from neural_memory.engine.compression import (
 from neural_memory.engine.consolidation import ConsolidationReport, ConsolidationStrategy
 from neural_memory.storage.sqlite_store import SQLiteStorage
 from neural_memory.utils.timeutils import utcnow
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -411,6 +409,7 @@ class TestDetermineTargetTier:
     def _engine(self, config: CompressionConfig | None = None) -> CompressionEngine:
         """Build a CompressionEngine with a stub storage (not needed for determine_target_tier)."""
         from unittest.mock import MagicMock
+
         storage = MagicMock()
         return CompressionEngine(storage, config)
 
@@ -490,10 +489,22 @@ class TestDetermineTargetTier:
         now = utcnow()
 
         assert engine.determine_target_tier(_make_fiber(days_old=0.5), now) == CompressionTier.FULL
-        assert engine.determine_target_tier(_make_fiber(days_old=3.0), now) == CompressionTier.EXTRACTIVE
-        assert engine.determine_target_tier(_make_fiber(days_old=7.0), now) == CompressionTier.ENTITY_ONLY
-        assert engine.determine_target_tier(_make_fiber(days_old=15.0), now) == CompressionTier.TEMPLATE
-        assert engine.determine_target_tier(_make_fiber(days_old=25.0), now) == CompressionTier.GRAPH_ONLY
+        assert (
+            engine.determine_target_tier(_make_fiber(days_old=3.0), now)
+            == CompressionTier.EXTRACTIVE
+        )
+        assert (
+            engine.determine_target_tier(_make_fiber(days_old=7.0), now)
+            == CompressionTier.ENTITY_ONLY
+        )
+        assert (
+            engine.determine_target_tier(_make_fiber(days_old=15.0), now)
+            == CompressionTier.TEMPLATE
+        )
+        assert (
+            engine.determine_target_tier(_make_fiber(days_old=25.0), now)
+            == CompressionTier.GRAPH_ONLY
+        )
 
     def test_already_compressed_skip_logic(self) -> None:
         """Fiber already at EXTRACTIVE (tier=1) → target tier 1 means no compression needed."""
@@ -575,7 +586,9 @@ class TestSQLiteCompressionMixin:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_delete_nonexistent_backup_returns_false(self, sqlite_storage: SQLiteStorage) -> None:
+    async def test_delete_nonexistent_backup_returns_false(
+        self, sqlite_storage: SQLiteStorage
+    ) -> None:
         deleted = await sqlite_storage.delete_compression_backup("ghost-fiber")
         assert deleted is False
 

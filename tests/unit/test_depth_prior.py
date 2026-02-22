@@ -14,14 +14,12 @@ import pytest
 import pytest_asyncio
 
 from neural_memory.core.brain import Brain
-from neural_memory.engine.depth_prior import AdaptiveDepthSelector, DepthDecision, DepthPrior
+from neural_memory.engine.depth_prior import AdaptiveDepthSelector, DepthPrior
 from neural_memory.engine.retrieval_types import DepthLevel
 from neural_memory.extraction.entities import Entity, EntityType
 from neural_memory.extraction.parser import Perspective, QueryIntent, Stimulus
-from neural_memory.extraction.temporal import TimeHint
 from neural_memory.storage.sqlite_store import SQLiteStorage
 from neural_memory.utils.timeutils import utcnow
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -30,10 +28,7 @@ from neural_memory.utils.timeutils import utcnow
 
 def _make_stimulus(entity_texts: list[str]) -> Stimulus:
     """Build a minimal Stimulus with the given entity text strings."""
-    entities = [
-        Entity(text=t, type=EntityType.UNKNOWN, start=0, end=len(t))
-        for t in entity_texts
-    ]
+    entities = [Entity(text=t, type=EntityType.UNKNOWN, start=0, end=len(t)) for t in entity_texts]
     return Stimulus(
         time_hints=[],
         keywords=[],
@@ -107,16 +102,12 @@ class TestDepthPriorUpdate:
         assert updated.total_queries == 1
 
     def test_update_success_increments_total_queries(self) -> None:
-        prior = DepthPrior(
-            entity_text="e", depth_level=DepthLevel.INSTANT, total_queries=5
-        )
+        prior = DepthPrior(entity_text="e", depth_level=DepthLevel.INSTANT, total_queries=5)
         updated = prior.update_success()
         assert updated.total_queries == 6
 
     def test_update_failure_increments_total_queries(self) -> None:
-        prior = DepthPrior(
-            entity_text="e", depth_level=DepthLevel.INSTANT, total_queries=5
-        )
+        prior = DepthPrior(entity_text="e", depth_level=DepthLevel.INSTANT, total_queries=5)
         updated = prior.update_failure()
         assert updated.total_queries == 6
 
@@ -376,7 +367,9 @@ class TestAdaptiveDepthSelectorRecordOutcome:
         stimulus = _make_stimulus(["Alice"])
 
         # confidence >= SUCCESS_THRESHOLD (0.3) + fibers_matched >= 1 → success
-        await selector.record_outcome(stimulus, DepthLevel.CONTEXT, confidence=0.8, fibers_matched=3)
+        await selector.record_outcome(
+            stimulus, DepthLevel.CONTEXT, confidence=0.8, fibers_matched=3
+        )
 
         storage.upsert_depth_prior.assert_called_once()
         upserted: DepthPrior = storage.upsert_depth_prior.call_args[0][0]
@@ -409,7 +402,9 @@ class TestAdaptiveDepthSelectorRecordOutcome:
         selector = AdaptiveDepthSelector(storage)
         stimulus = _make_stimulus(["C"])
 
-        await selector.record_outcome(stimulus, DepthLevel.CONTEXT, confidence=0.9, fibers_matched=0)
+        await selector.record_outcome(
+            stimulus, DepthLevel.CONTEXT, confidence=0.9, fibers_matched=0
+        )
 
         upserted: DepthPrior = storage.upsert_depth_prior.call_args[0][0]
         assert upserted.beta == pytest.approx(3.0)  # failure branch
@@ -422,9 +417,7 @@ class TestAdaptiveDepthSelectorRecordOutcome:
         selector = AdaptiveDepthSelector(storage)
         stimulus = _make_stimulus(["NewEntity"])
 
-        await selector.record_outcome(
-            stimulus, DepthLevel.HABIT, confidence=0.8, fibers_matched=2
-        )
+        await selector.record_outcome(stimulus, DepthLevel.HABIT, confidence=0.8, fibers_matched=2)
 
         storage.upsert_depth_prior.assert_called_once()
         upserted: DepthPrior = storage.upsert_depth_prior.call_args[0][0]
@@ -441,7 +434,9 @@ class TestAdaptiveDepthSelectorRecordOutcome:
         selector = AdaptiveDepthSelector(storage)
         stimulus = _make_stimulus([])
 
-        await selector.record_outcome(stimulus, DepthLevel.CONTEXT, confidence=0.8, fibers_matched=2)
+        await selector.record_outcome(
+            stimulus, DepthLevel.CONTEXT, confidence=0.8, fibers_matched=2
+        )
 
         storage.get_depth_priors_batch.assert_not_called()
         storage.upsert_depth_prior.assert_not_called()
@@ -454,7 +449,9 @@ class TestAdaptiveDepthSelectorRecordOutcome:
         selector = AdaptiveDepthSelector(storage)
         stimulus = _make_stimulus(["A", "B", "C"])
 
-        await selector.record_outcome(stimulus, DepthLevel.INSTANT, confidence=0.9, fibers_matched=1)
+        await selector.record_outcome(
+            stimulus, DepthLevel.INSTANT, confidence=0.9, fibers_matched=1
+        )
 
         assert storage.upsert_depth_prior.call_count == 3
 
@@ -521,7 +518,9 @@ class TestSQLiteDepthPriorStorage:
         prior = DepthPrior(entity_text="Bob", depth_level=DepthLevel.INSTANT, alpha=2.0, beta=1.0)
         await sqlite_storage.upsert_depth_prior(prior)
 
-        updated = DepthPrior(entity_text="Bob", depth_level=DepthLevel.INSTANT, alpha=5.0, beta=3.0, total_queries=4)
+        updated = DepthPrior(
+            entity_text="Bob", depth_level=DepthLevel.INSTANT, alpha=5.0, beta=3.0, total_queries=4
+        )
         await sqlite_storage.upsert_depth_prior(updated)
 
         results = await sqlite_storage.get_depth_priors("Bob")
@@ -556,7 +555,9 @@ class TestSQLiteDepthPriorStorage:
         assert result == {}
 
     @pytest.mark.asyncio
-    async def test_get_depth_priors_batch_missing_entity(self, sqlite_storage: SQLiteStorage) -> None:
+    async def test_get_depth_priors_batch_missing_entity(
+        self, sqlite_storage: SQLiteStorage
+    ) -> None:
         """Entity with no priors gets empty list in result."""
         await sqlite_storage.upsert_depth_prior(
             DepthPrior(entity_text="present", depth_level=DepthLevel.CONTEXT, total_queries=10)
@@ -641,7 +642,9 @@ class TestSQLiteDepthPriorStorage:
     async def test_all_depth_levels_round_trip(self, sqlite_storage: SQLiteStorage) -> None:
         """Every DepthLevel value can be stored and retrieved correctly."""
         for level in DepthLevel:
-            prior = DepthPrior(entity_text=f"entity_{level.name}", depth_level=level, total_queries=level.value + 1)
+            prior = DepthPrior(
+                entity_text=f"entity_{level.name}", depth_level=level, total_queries=level.value + 1
+            )
             await sqlite_storage.upsert_depth_prior(prior)
 
         for level in DepthLevel:
@@ -664,11 +667,15 @@ class TestAdaptiveDepthSelectorIntegration:
 
         # Simulate 6 successful recalls with CONTEXT depth
         for _ in range(6):
-            await selector.record_outcome(stimulus, DepthLevel.CONTEXT, confidence=0.9, fibers_matched=3)
+            await selector.record_outcome(
+                stimulus, DepthLevel.CONTEXT, confidence=0.9, fibers_matched=3
+            )
 
         # Simulate 2 failures with INSTANT depth
         for _ in range(2):
-            await selector.record_outcome(stimulus, DepthLevel.INSTANT, confidence=0.1, fibers_matched=0)
+            await selector.record_outcome(
+                stimulus, DepthLevel.INSTANT, confidence=0.1, fibers_matched=0
+            )
 
         decision = await selector.select_depth(stimulus, DepthLevel.INSTANT)
         assert decision.depth == DepthLevel.CONTEXT
@@ -683,7 +690,9 @@ class TestAdaptiveDepthSelectorIntegration:
         stimulus = _make_stimulus(["Shared"])
 
         for _ in range(6):
-            await selector_a.record_outcome(stimulus, DepthLevel.DEEP, confidence=0.8, fibers_matched=2)
+            await selector_a.record_outcome(
+                stimulus, DepthLevel.DEEP, confidence=0.8, fibers_matched=2
+            )
 
         # New selector instance, same storage
         selector_b = AdaptiveDepthSelector(sqlite_storage, epsilon=0.0)

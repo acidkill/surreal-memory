@@ -46,6 +46,7 @@ class SyncToolHandler:
 
             # Get strategy
             from neural_memory.sync.protocol import ConflictStrategy
+
             strategy_str = args.get("strategy") or self.config.sync.conflict_strategy
             try:
                 strategy = ConflictStrategy(strategy_str)
@@ -54,6 +55,7 @@ class SyncToolHandler:
 
             # Create sync engine
             from neural_memory.sync.sync_engine import SyncEngine
+
             device_id = self.config.device_id
             engine = SyncEngine(storage, device_id, strategy)
 
@@ -66,6 +68,7 @@ class SyncToolHandler:
 
             # Send to hub
             import aiohttp
+
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                     f"{hub_url.rstrip('/')}/hub/sync",
@@ -94,7 +97,13 @@ class SyncToolHandler:
                     response_data = await resp.json()
 
             # Process response
-            from neural_memory.sync.protocol import SyncChange, SyncConflict, SyncResponse, SyncStatus
+            from neural_memory.sync.protocol import (
+                SyncChange,
+                SyncConflict,
+                SyncResponse,
+                SyncStatus,
+            )
+
             remote_changes = [
                 SyncChange(
                     sequence=c["sequence"],

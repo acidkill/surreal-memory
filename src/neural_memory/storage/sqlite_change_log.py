@@ -68,7 +68,15 @@ class SQLiteChangeLogMixin:
             """INSERT INTO change_log
                (brain_id, entity_type, entity_id, operation, device_id, changed_at, payload, synced)
                VALUES (?, ?, ?, ?, ?, ?, ?, 0)""",
-            (brain_id, entity_type, entity_id, operation, device_id, now, json.dumps(payload or {})),
+            (
+                brain_id,
+                entity_type,
+                entity_id,
+                operation,
+                device_id,
+                now,
+                json.dumps(payload or {}),
+            ),
         )
         await conn.commit()
         return cursor.lastrowid or 0

@@ -47,25 +47,31 @@ class DepthPrior:
         return math.sqrt((self.alpha * self.beta) / (n * n * (n + 1)))
 
     def update_success(self) -> DepthPrior:
-        return replace(self, alpha=self.alpha + 1.0,
-                       total_queries=self.total_queries + 1,
-                       last_updated=utcnow())
+        return replace(
+            self,
+            alpha=self.alpha + 1.0,
+            total_queries=self.total_queries + 1,
+            last_updated=utcnow(),
+        )
 
     def update_failure(self) -> DepthPrior:
-        return replace(self, beta=self.beta + 1.0,
-                       total_queries=self.total_queries + 1,
-                       last_updated=utcnow())
+        return replace(
+            self, beta=self.beta + 1.0, total_queries=self.total_queries + 1, last_updated=utcnow()
+        )
 
     def decay(self, factor: float = 0.9) -> DepthPrior:
-        return replace(self,
-                       alpha=max(1.0, self.alpha * factor),
-                       beta=max(1.0, self.beta * factor),
-                       last_updated=utcnow())
+        return replace(
+            self,
+            alpha=max(1.0, self.alpha * factor),
+            beta=max(1.0, self.beta * factor),
+            last_updated=utcnow(),
+        )
 
 
 @dataclass(frozen=True)
 class DepthDecision:
     """Result of adaptive depth selection with explanation."""
+
     depth: DepthLevel
     reason: str
     method: str  # "bayesian" | "rule_based" | "exploration"
@@ -118,7 +124,7 @@ class AdaptiveDepthSelector:
         depth_scores: dict[DepthLevel, list[float]] = {d: [] for d in DepthLevel}
         total_entity_queries = 0
 
-        for entity_text, priors in priors_by_entity.items():
+        for priors in priors_by_entity.values():
             for prior in priors:
                 depth_scores[prior.depth_level].append(prior.expected_success_rate)
                 total_entity_queries += prior.total_queries
@@ -166,7 +172,7 @@ class AdaptiveDepthSelector:
                 depth=best_depth,
                 reason=f"Bayesian: {best_depth.name} has highest success rate ({best_score:.2f})",
                 method="bayesian",
-                entity_priors={e: best_score for e in entity_texts},
+                entity_priors=dict.fromkeys(entity_texts, best_score),
             )
 
         # Score too low, fall back
@@ -212,6 +218,7 @@ class AdaptiveDepthSelector:
     async def decay_stale_priors(self) -> int:
         """Apply decay to priors older than DECAY_INTERVAL_DAYS. Returns count decayed."""
         from datetime import timedelta
+
         cutoff = utcnow() - timedelta(days=self.DECAY_INTERVAL_DAYS)
         stale = await self._storage.get_stale_priors(cutoff)
 

@@ -12,7 +12,6 @@ from neural_memory.core.brain import Brain, BrainConfig
 from neural_memory.storage.sqlite_change_log import ChangeEntry
 from neural_memory.storage.sqlite_store import SQLiteStorage
 
-
 # ── Fixture ───────────────────────────────────────────────────────────────────
 
 
@@ -155,9 +154,7 @@ class TestGetUnsyncedChanges:
 class TestMarkSynced:
     """Test mark_synced marks changes and returns correct count."""
 
-    async def test_mark_synced_returns_count(
-        self, storage_with_brain: SQLiteStorage
-    ) -> None:
+    async def test_mark_synced_returns_count(self, storage_with_brain: SQLiteStorage) -> None:
         """mark_synced returns the number of rows marked."""
         await storage_with_brain.record_change("neuron", "n-1", "insert")
         seq2 = await storage_with_brain.record_change("neuron", "n-2", "insert")
@@ -165,9 +162,7 @@ class TestMarkSynced:
         count = await storage_with_brain.mark_synced(seq2)
         assert count == 2
 
-    async def test_mark_synced_only_marks_unsynced(
-        self, storage_with_brain: SQLiteStorage
-    ) -> None:
+    async def test_mark_synced_only_marks_unsynced(self, storage_with_brain: SQLiteStorage) -> None:
         """mark_synced does not count already-synced rows."""
         seq1 = await storage_with_brain.record_change("neuron", "n-1", "insert")
         seq2 = await storage_with_brain.record_change("neuron", "n-2", "insert")
@@ -236,9 +231,7 @@ class TestPruneSyncedChanges:
 class TestGetChangeLogStats:
     """Test get_change_log_stats returns accurate aggregates."""
 
-    async def test_get_change_log_stats_empty(
-        self, storage_with_brain: SQLiteStorage
-    ) -> None:
+    async def test_get_change_log_stats_empty(self, storage_with_brain: SQLiteStorage) -> None:
         """Stats on empty change log return all zeros."""
         stats = await storage_with_brain.get_change_log_stats()
         assert stats["total"] == 0
@@ -246,9 +239,7 @@ class TestGetChangeLogStats:
         assert stats["synced"] == 0
         assert stats["last_sequence"] == 0
 
-    async def test_get_change_log_stats_with_data(
-        self, storage_with_brain: SQLiteStorage
-    ) -> None:
+    async def test_get_change_log_stats_with_data(self, storage_with_brain: SQLiteStorage) -> None:
         """Insert 3 changes, mark 1 synced, verify stats totals."""
         seq1 = await storage_with_brain.record_change("neuron", "n-1", "insert")
         await storage_with_brain.record_change("neuron", "n-2", "insert")
@@ -276,9 +267,7 @@ class TestGetChangeLogStats:
 class TestChangeEntryFields:
     """Test ChangeEntry frozen dataclass immutability and field types."""
 
-    async def test_change_entry_fields_populated(
-        self, storage_with_brain: SQLiteStorage
-    ) -> None:
+    async def test_change_entry_fields_populated(self, storage_with_brain: SQLiteStorage) -> None:
         """ChangeEntry returned from storage has all expected fields."""
         await storage_with_brain.record_change(
             entity_type="fiber",

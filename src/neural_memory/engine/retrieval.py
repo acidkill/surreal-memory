@@ -126,7 +126,8 @@ class ReflexPipeline:
             from neural_memory.engine.depth_prior import AdaptiveDepthSelector
 
             self._adaptive_selector = AdaptiveDepthSelector(
-                storage, epsilon=config.adaptive_depth_epsilon,
+                storage,
+                epsilon=config.adaptive_depth_epsilon,
             )
 
     async def query(
@@ -171,7 +172,8 @@ class ReflexPipeline:
             if self._adaptive_selector is not None:
                 try:
                     _depth_decision = await self._adaptive_selector.select_depth(
-                        stimulus, rule_depth,
+                        stimulus,
+                        rule_depth,
                     )
                     depth = _depth_decision.depth
                 except NotImplementedError:

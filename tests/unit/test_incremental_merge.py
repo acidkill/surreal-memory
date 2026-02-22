@@ -9,12 +9,10 @@ import pytest
 from neural_memory.sync.incremental_merge import (
     _compute_strength,
     _merge_payloads,
-    _pick_winner,
     merge_change_lists,
     resolve_entity_conflict,
 )
-from neural_memory.sync.protocol import ConflictStrategy, SyncChange, SyncConflict
-
+from neural_memory.sync.protocol import ConflictStrategy, SyncChange
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -105,9 +103,7 @@ class TestPreferRecent:
             changed_at="2026-01-15T10:00:00",
         )
 
-        winner, conflict = resolve_entity_conflict(
-            local, remote, ConflictStrategy.PREFER_RECENT
-        )
+        winner, conflict = resolve_entity_conflict(local, remote, ConflictStrategy.PREFER_RECENT)
 
         assert winner.device_id == "dev-local"
         assert "prefer_recent" in conflict.resolution
@@ -125,9 +121,7 @@ class TestPreferRecent:
             changed_at="2026-01-15T23:59:59",
         )
 
-        winner, conflict = resolve_entity_conflict(
-            local, remote, ConflictStrategy.PREFER_RECENT
-        )
+        winner, conflict = resolve_entity_conflict(local, remote, ConflictStrategy.PREFER_RECENT)
 
         assert winner.device_id == "dev-remote"
         assert "prefer_recent" in conflict.resolution
@@ -161,9 +155,7 @@ class TestPreferLocal:
             changed_at="2026-01-15T12:00:00",  # newer
         )
 
-        winner, conflict = resolve_entity_conflict(
-            local, remote, ConflictStrategy.PREFER_LOCAL
-        )
+        winner, conflict = resolve_entity_conflict(local, remote, ConflictStrategy.PREFER_LOCAL)
 
         assert winner.device_id == "dev-local"
         assert "prefer_local" in conflict.resolution
@@ -196,9 +188,7 @@ class TestPreferRemote:
             changed_at="2026-01-01T00:00:00",  # older
         )
 
-        winner, conflict = resolve_entity_conflict(
-            local, remote, ConflictStrategy.PREFER_REMOTE
-        )
+        winner, conflict = resolve_entity_conflict(local, remote, ConflictStrategy.PREFER_REMOTE)
 
         assert winner.device_id == "dev-remote"
         assert "prefer_remote" in conflict.resolution
@@ -231,9 +221,7 @@ class TestPreferStronger:
             payload={"weight": 0.1, "salience": 0.1, "conductivity": 0.1, "activation_level": 0.1},
         )
 
-        winner, conflict = resolve_entity_conflict(
-            local, remote, ConflictStrategy.PREFER_STRONGER
-        )
+        winner, conflict = resolve_entity_conflict(local, remote, ConflictStrategy.PREFER_STRONGER)
 
         assert winner.device_id == "dev-local"
         assert "prefer_stronger" in conflict.resolution
@@ -269,9 +257,9 @@ class TestMergePayloads:
 
         merged = _merge_payloads(local, remote, "neuron")
 
-        assert merged["weight"] == 0.8          # max(0.3, 0.8)
-        assert merged["salience"] == 0.7        # max(0.7, 0.2)
-        assert merged["conductivity"] == 0.9    # max(0.5, 0.9)
+        assert merged["weight"] == 0.8  # max(0.3, 0.8)
+        assert merged["salience"] == 0.7  # max(0.7, 0.2)
+        assert merged["conductivity"] == 0.9  # max(0.5, 0.9)
         assert merged["activation_level"] == 0.6  # max(0.2, 0.6)
 
     def test_merge_payloads_sum_fields(self) -> None:
@@ -282,8 +270,8 @@ class TestMergePayloads:
         merged = _merge_payloads(local, remote, "neuron")
 
         assert merged["access_frequency"] == 12  # 5 + 7
-        assert merged["reinforced_count"] == 5   # 3 + 2
-        assert merged["frequency"] == 14          # 10 + 4
+        assert merged["reinforced_count"] == 5  # 3 + 2
+        assert merged["frequency"] == 14  # 10 + 4
 
     def test_merge_payloads_union_tags(self) -> None:
         """tags, auto_tags, agent_tags are unioned and sorted."""

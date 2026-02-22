@@ -10,7 +10,6 @@ import pytest
 
 from neural_memory.sync.device import DeviceInfo, get_device_id, get_device_info, get_device_name
 
-
 # ── Fixture ───────────────────────────────────────────────────────────────────
 
 
@@ -63,9 +62,7 @@ class TestGetDeviceId:
         # File must now contain the new ID
         assert id_file.read_text(encoding="utf-8").strip() == new_id
 
-    def test_get_device_id_handles_whitespace_only_file(
-        self, config_dir: pathlib.Path
-    ) -> None:
+    def test_get_device_id_handles_whitespace_only_file(self, config_dir: pathlib.Path) -> None:
         """Whitespace-only file is treated as empty → generates new ID."""
         config_dir.mkdir(parents=True, exist_ok=True)
         id_file = config_dir / "device_id"
@@ -113,9 +110,7 @@ class TestGetDeviceName:
 
         assert name == "unknown"
 
-    def test_get_device_name_uses_platform_node(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_get_device_name_uses_platform_node(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """get_device_name returns the value of platform.node()."""
         import platform
 
@@ -128,16 +123,12 @@ class TestGetDeviceName:
 class TestGetDeviceInfo:
     """Test get_device_info returns a fully-populated DeviceInfo."""
 
-    def test_get_device_info_returns_device_info(
-        self, config_dir: pathlib.Path
-    ) -> None:
+    def test_get_device_info_returns_device_info(self, config_dir: pathlib.Path) -> None:
         """get_device_info returns a DeviceInfo instance."""
         info = get_device_info(config_dir)
         assert isinstance(info, DeviceInfo)
 
-    def test_get_device_info_all_fields_populated(
-        self, config_dir: pathlib.Path
-    ) -> None:
+    def test_get_device_info_all_fields_populated(self, config_dir: pathlib.Path) -> None:
         """All fields on DeviceInfo are non-empty / non-None."""
         info = get_device_info(config_dir)
 
@@ -149,18 +140,14 @@ class TestGetDeviceInfo:
 
         assert isinstance(info.registered_at, datetime)
 
-    def test_get_device_info_device_id_stable(
-        self, config_dir: pathlib.Path
-    ) -> None:
+    def test_get_device_info_device_id_stable(self, config_dir: pathlib.Path) -> None:
         """Calling get_device_info twice returns the same device_id."""
         info1 = get_device_info(config_dir)
         info2 = get_device_info(config_dir)
 
         assert info1.device_id == info2.device_id
 
-    def test_get_device_info_registered_at_is_utcnow(
-        self, config_dir: pathlib.Path
-    ) -> None:
+    def test_get_device_info_registered_at_is_utcnow(self, config_dir: pathlib.Path) -> None:
         """registered_at is close to the current UTC time (within 5 seconds)."""
         from neural_memory.utils.timeutils import utcnow
 

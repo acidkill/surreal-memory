@@ -79,7 +79,9 @@ def _validate_brain_id(brain_id: str) -> None:
 def _validate_device_id(device_id: str) -> None:
     """Raise HTTPException if device_id is invalid (must be hex, max 32 chars)."""
     if not _DEVICE_ID_PATTERN.match(device_id):
-        raise HTTPException(status_code=422, detail="Invalid device_id format: must be hex characters only")
+        raise HTTPException(
+            status_code=422, detail="Invalid device_id format: must be hex characters only"
+        )
 
 
 def _validate_strategy(strategy: str) -> ConflictStrategy:

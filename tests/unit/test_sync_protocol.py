@@ -15,7 +15,6 @@ from neural_memory.sync.protocol import (
     SyncStatus,
 )
 
-
 # ── SyncChange ────────────────────────────────────────────────────────────────
 
 

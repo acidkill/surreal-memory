@@ -37,9 +37,31 @@ logger = logging.getLogger(__name__)
 # Abbreviations that should NOT be treated as sentence boundaries.
 _ABBREVIATIONS: frozenset[str] = frozenset(
     {
-        "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "vs", "etc", "e.g",
-        "i.e", "fig", "approx", "est", "jan", "feb", "mar", "apr", "jun",
-        "jul", "aug", "sep", "oct", "nov", "dec",
+        "mr",
+        "mrs",
+        "ms",
+        "dr",
+        "prof",
+        "sr",
+        "jr",
+        "vs",
+        "etc",
+        "e.g",
+        "i.e",
+        "fig",
+        "approx",
+        "est",
+        "jan",
+        "feb",
+        "mar",
+        "apr",
+        "jun",
+        "jul",
+        "aug",
+        "sep",
+        "oct",
+        "nov",
+        "dec",
     }
 )
 
@@ -206,11 +228,7 @@ def compute_entity_density(sentence: str, neuron_contents: list[str]) -> float:
         return 0.0
 
     sentence_lower = sentence.lower()
-    matches = sum(
-        1
-        for nc in neuron_contents
-        if nc and nc.lower() in sentence_lower
-    )
+    matches = sum(1 for nc in neuron_contents if nc and nc.lower() in sentence_lower)
     return min(1.0, matches / word_count)
 
 
@@ -237,8 +255,7 @@ def compress_tier1_extractive(
         return content, 0
 
     scored: list[tuple[float, int, str]] = [
-        (compute_entity_density(s, neuron_contents), idx, s)
-        for idx, s in enumerate(sentences)
+        (compute_entity_density(s, neuron_contents), idx, s) for idx, s in enumerate(sentences)
     ]
 
     # Always preserve the first sentence if configured.
@@ -296,9 +313,7 @@ def compress_tier2_entity_preserving(
 
     for idx, sentence in enumerate(sentences):
         density = compute_entity_density(sentence, neuron_contents)
-        keep = density > config.tier2_min_density or (
-            first_idx is not None and idx == first_idx
-        )
+        keep = density > config.tier2_min_density or (first_idx is not None and idx == first_idx)
         if keep:
             kept_sentences.append(sentence)
             if density > 0:
@@ -536,8 +551,11 @@ class CompressionEngine:
                         fiber.id,
                         exc_info=True,
                     )
-        elif target_tier in (CompressionTier.TEMPLATE, CompressionTier.ENTITY_ONLY,
-                              CompressionTier.EXTRACTIVE):
+        elif target_tier in (
+            CompressionTier.TEMPLATE,
+            CompressionTier.ENTITY_ONLY,
+            CompressionTier.EXTRACTIVE,
+        ):
             # For tier 1-3, we store the compressed content in the fiber's
             # anchor neuron and truncate non-anchor neurons.
             anchor_id = fiber.anchor_neuron_id
@@ -563,9 +581,7 @@ class CompressionEngine:
         try:
             await self._storage.update_fiber(updated_fiber)
         except Exception:
-            logger.error(
-                "Failed to update compression_tier for fiber %s", fiber.id, exc_info=True
-            )
+            logger.error("Failed to update compression_tier for fiber %s", fiber.id, exc_info=True)
 
         return CompressionResult(
             fiber_id=fiber.id,
@@ -617,9 +633,7 @@ class CompressionEngine:
         try:
             await self._storage.update_neuron(restored_neuron)
         except Exception:
-            logger.error(
-                "Failed to restore neuron content for fiber %s", fiber_id, exc_info=True
-            )
+            logger.error("Failed to restore neuron content for fiber %s", fiber_id, exc_info=True)
             return False
 
         # Reset fiber compression tier to 0 (FULL).
@@ -627,9 +641,7 @@ class CompressionEngine:
         try:
             await self._storage.update_fiber(updated_fiber)
         except Exception:
-            logger.error(
-                "Failed to reset compression_tier for fiber %s", fiber_id, exc_info=True
-            )
+            logger.error("Failed to reset compression_tier for fiber %s", fiber_id, exc_info=True)
             return False
 
         # Remove the backup.
@@ -684,9 +696,7 @@ class CompressionEngine:
             try:
                 result = await self.compress_fiber(fiber, target_tier, dry_run=dry_run)
             except Exception:
-                logger.error(
-                    "Compression failed for fiber %s", fiber.id, exc_info=True
-                )
+                logger.error("Compression failed for fiber %s", fiber.id, exc_info=True)
                 report.fibers_skipped += 1
                 continue
 
