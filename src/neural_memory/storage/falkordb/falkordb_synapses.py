@@ -39,8 +39,7 @@ class FalkorDBSynapseMixin(FalkorDBBaseMixin):
         )
         if not neuron_check:
             raise ValueError(
-                f"Source neuron {synapse.source_id} or target neuron "
-                f"{synapse.target_id} not found"
+                f"Source neuron {synapse.source_id} or target neuron {synapse.target_id} not found"
             )
 
         await self._query(

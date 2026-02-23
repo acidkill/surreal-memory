@@ -32,5 +32,5 @@ async def get_brain(
         raise HTTPException(status_code=404, detail="Brain not found")
 
     # Set brain context using the actual brain ID
-    storage.set_brain(brain.id)  # type: ignore[attr-defined]
+    storage.set_brain(brain.id)
     return brain

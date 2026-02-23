@@ -6,7 +6,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from neural_memory.storage.sqlite_store import SQLiteStorage
+    from neural_memory.storage.base import NeuralStorage
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,7 @@ class DBTrainHandler:
     Validates inputs and delegates to DBTrainer.
     """
 
-    async def get_storage(self) -> SQLiteStorage:
+    async def get_storage(self) -> NeuralStorage:
         raise NotImplementedError
 
     async def _train_db(self, args: dict[str, Any]) -> dict[str, Any]:

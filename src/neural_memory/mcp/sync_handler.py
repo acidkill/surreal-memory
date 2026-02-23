@@ -6,7 +6,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from neural_memory.storage.sqlite_store import SQLiteStorage
+    from neural_memory.storage.base import NeuralStorage
     from neural_memory.unified_config import UnifiedConfig
 
 logger = logging.getLogger(__name__)
@@ -18,7 +18,7 @@ class SyncToolHandler:
     if TYPE_CHECKING:
         config: UnifiedConfig
 
-        async def get_storage(self) -> SQLiteStorage:
+        async def get_storage(self) -> NeuralStorage:
             raise NotImplementedError
 
     async def _sync(self, args: dict[str, Any]) -> dict[str, Any]:

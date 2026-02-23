@@ -10,7 +10,7 @@ from neural_memory.core.synapse import Synapse, SynapseType
 from neural_memory.mcp.constants import MAX_CONTENT_LENGTH
 
 if TYPE_CHECKING:
-    from neural_memory.storage.sqlite_store import SQLiteStorage
+    from neural_memory.storage.base import NeuralStorage
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,7 @@ _MAX_TAG_LENGTH = 100
 class ConflictHandler:
     """Mixin: conflict management tool handlers."""
 
-    async def get_storage(self) -> SQLiteStorage:
+    async def get_storage(self) -> NeuralStorage:
         raise NotImplementedError
 
     async def _conflicts(self, args: dict[str, Any]) -> dict[str, Any]:

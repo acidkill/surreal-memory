@@ -87,7 +87,7 @@ class OnboardingHandler:
 
         try:
             storage = await self.get_storage()
-            brain_id = storage._current_brain_id  # type: ignore[attr-defined]
+            brain_id = storage._current_brain_id or ""
             stats = await storage.get_stats(brain_id)
             if not isinstance(stats, dict):
                 self._onboarding_shown = True

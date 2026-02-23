@@ -27,9 +27,7 @@ class TestSynapseCRUD:
         self, storage: FalkorDBStorage, two_neurons: tuple[Neuron, Neuron]
     ) -> None:
         n1, n2 = two_neurons
-        synapse = Synapse.create(
-            n1.id, n2.id, SynapseType.RELATES_TO, weight=0.7
-        )
+        synapse = Synapse.create(n1.id, n2.id, SynapseType.RELATES_TO, weight=0.7)
         result_id = await storage.add_synapse(synapse)
 
         assert result_id == synapse.id
@@ -45,16 +43,12 @@ class TestSynapseCRUD:
         self, storage: FalkorDBStorage, two_neurons: tuple[Neuron, Neuron]
     ) -> None:
         n1, _ = two_neurons
-        synapse = Synapse.create(
-            n1.id, "nonexistent-id", SynapseType.RELATES_TO
-        )
+        synapse = Synapse.create(n1.id, "nonexistent-id", SynapseType.RELATES_TO)
         with pytest.raises(ValueError):
             await storage.add_synapse(synapse)
 
     @pytest.mark.asyncio
-    async def test_get_nonexistent_returns_none(
-        self, storage: FalkorDBStorage
-    ) -> None:
+    async def test_get_nonexistent_returns_none(self, storage: FalkorDBStorage) -> None:
         result = await storage.get_synapse("nonexistent-id")
         assert result is None
 
@@ -89,9 +83,7 @@ class TestSynapseCRUD:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_delete_nonexistent_returns_false(
-        self, storage: FalkorDBStorage
-    ) -> None:
+    async def test_delete_nonexistent_returns_false(self, storage: FalkorDBStorage) -> None:
         deleted = await storage.delete_synapse("nonexistent-id")
         assert deleted is False
 

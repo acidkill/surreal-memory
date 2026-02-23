@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from neural_memory.storage.sqlite_store import SQLiteStorage
+    from neural_memory.storage.base import NeuralStorage
     from neural_memory.unified_config import UnifiedConfig
 
 logger = logging.getLogger(__name__)
@@ -19,7 +19,7 @@ class NarrativeHandler:
     if TYPE_CHECKING:
         config: UnifiedConfig
 
-        async def get_storage(self) -> SQLiteStorage:
+        async def get_storage(self) -> NeuralStorage:
             raise NotImplementedError
 
     async def _narrative(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -51,7 +51,7 @@ class NarrativeHandler:
 
     async def _narrative_timeline(
         self,
-        storage: SQLiteStorage,
+        storage: NeuralStorage,
         args: dict[str, Any],
     ) -> dict[str, Any]:
         """Generate timeline narrative."""
@@ -81,7 +81,7 @@ class NarrativeHandler:
 
     async def _narrative_topic(
         self,
-        storage: SQLiteStorage,
+        storage: NeuralStorage,
         brain: Any,
         args: dict[str, Any],
     ) -> dict[str, Any]:
@@ -105,7 +105,7 @@ class NarrativeHandler:
 
     async def _narrative_causal(
         self,
-        storage: SQLiteStorage,
+        storage: NeuralStorage,
         args: dict[str, Any],
     ) -> dict[str, Any]:
         """Generate causal narrative."""

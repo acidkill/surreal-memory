@@ -15,7 +15,7 @@ from neural_memory.mcp.maintenance_handler import HealthHint, HealthPulse
 from neural_memory.utils.timeutils import utcnow
 
 if TYPE_CHECKING:
-    from neural_memory.storage.sqlite_store import SQLiteStorage
+    from neural_memory.storage.base import NeuralStorage
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ class AlertHandler:
 
         config: UnifiedConfig
 
-        async def get_storage(self) -> SQLiteStorage:
+        async def get_storage(self) -> NeuralStorage:
             raise NotImplementedError
 
     async def _alerts(self, args: dict[str, Any]) -> dict[str, Any]:

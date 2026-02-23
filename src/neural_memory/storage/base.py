@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
+    from neural_memory.core.alert import Alert
     from neural_memory.core.brain import Brain, BrainSnapshot
     from neural_memory.core.fiber import Fiber
     from neural_memory.core.memory_types import MemoryType, Priority, TypedMemory
@@ -24,6 +25,8 @@ class NeuralStorage(ABC):
     Implementations must provide all methods for storing and
     retrieving neurons, synapses, fibers, and brain metadata.
     """
+
+    _current_brain_id: str | None
 
     @property
     def current_brain_id(self) -> str | None:
@@ -516,6 +519,11 @@ class NeuralStorage(ABC):
             List of fibers
         """
         ...
+
+    # ========== Lifecycle ==========
+
+    async def close(self) -> None:  # noqa: B027
+        """Close storage connections. No-op by default."""
 
     # ========== Brain Operations ==========
 
@@ -1261,6 +1269,36 @@ class NeuralStorage(ABC):
         Returns:
             True if a row was deleted, False if device was not registered.
         """
+        raise NotImplementedError
+
+    # ========== Alert Operations ==========
+
+    def _get_brain_id(self) -> str:
+        """Return current brain ID, raising ValueError if not set."""
+        raise NotImplementedError
+
+    async def record_alert(self, alert: Alert) -> str:
+        """Insert a new alert. Returns alert ID if inserted, empty string if suppressed."""
+        raise NotImplementedError
+
+    async def get_active_alerts(self, limit: int = 50) -> list[Alert]:
+        """Get active/seen/acknowledged alerts (not resolved)."""
+        raise NotImplementedError
+
+    async def count_pending_alerts(self) -> int:
+        """Count active + seen alerts (not acknowledged or resolved)."""
+        raise NotImplementedError
+
+    async def mark_alerts_seen(self, alert_ids: list[str]) -> int:
+        """Mark alerts as seen. Returns count of updated rows."""
+        raise NotImplementedError
+
+    async def mark_alert_acknowledged(self, alert_id: str) -> bool:
+        """Mark a single alert as acknowledged. Returns True if updated."""
+        raise NotImplementedError
+
+    async def resolve_alerts_by_type(self, alert_types: list[str]) -> int:
+        """Resolve all active/seen alerts of given types. Returns count."""
         raise NotImplementedError
 
     # ========== Cleanup ==========

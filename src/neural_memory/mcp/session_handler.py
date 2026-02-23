@@ -13,7 +13,7 @@ from neural_memory.git_context import detect_git_context
 from neural_memory.utils.timeutils import utcnow
 
 if TYPE_CHECKING:
-    from neural_memory.storage.sqlite_store import SQLiteStorage
+    from neural_memory.storage.base import NeuralStorage
 
 logger = logging.getLogger(__name__)
 
@@ -24,10 +24,10 @@ _FINGERPRINT_TAG = "session_fingerprint"
 class SessionHandler:
     """Mixin: session tracking tool handlers."""
 
-    async def get_storage(self) -> SQLiteStorage:
+    async def get_storage(self) -> NeuralStorage:
         raise NotImplementedError
 
-    async def _get_active_session(self, storage: SQLiteStorage) -> dict[str, Any] | None:
+    async def _get_active_session(self, storage: NeuralStorage) -> dict[str, Any] | None:
         """Get active session metadata, or None if no active session."""
         try:
             sessions = await storage.find_typed_memories(
@@ -56,7 +56,7 @@ class SessionHandler:
 
     # ── GET ──
 
-    async def _session_get(self, storage: SQLiteStorage) -> dict[str, Any]:
+    async def _session_get(self, storage: NeuralStorage) -> dict[str, Any]:
         """Return current session state with gap detection.
 
         Compares the stored session fingerprint against the last observed
@@ -94,7 +94,7 @@ class SessionHandler:
 
     # ── SET ──
 
-    async def _session_set(self, args: dict[str, Any], storage: SQLiteStorage) -> dict[str, Any]:
+    async def _session_set(self, args: dict[str, Any], storage: NeuralStorage) -> dict[str, Any]:
         """Update session state with new metadata."""
         now = utcnow()
         existing = await self._find_current_session(storage)
@@ -153,7 +153,7 @@ class SessionHandler:
 
     # ── END ──
 
-    async def _session_end(self, storage: SQLiteStorage) -> dict[str, Any]:
+    async def _session_end(self, storage: NeuralStorage) -> dict[str, Any]:
         """End current session and save summary."""
         existing = await self._find_current_session(storage)
         if not existing or not existing.metadata.get("active", True):
@@ -241,7 +241,7 @@ class SessionHandler:
 
     async def _save_fingerprint(
         self,
-        storage: SQLiteStorage,
+        storage: NeuralStorage,
         encoder: MemoryEncoder,
         fingerprint: str,
         now: datetime,
@@ -262,7 +262,7 @@ class SessionHandler:
         )
         await storage.add_typed_memory(fp_mem)
 
-    async def _check_session_gap(self, storage: SQLiteStorage) -> bool:
+    async def _check_session_gap(self, storage: NeuralStorage) -> bool:
         """Check if there's a gap between the last ended session and the stored fingerprint.
 
         Returns True when:
@@ -316,7 +316,7 @@ class SessionHandler:
 
     # ── Other helpers ──
 
-    async def _find_current_session(self, storage: SQLiteStorage) -> TypedMemory | None:
+    async def _find_current_session(self, storage: NeuralStorage) -> TypedMemory | None:
         """Find the most recent session_state TypedMemory."""
         sessions = await storage.find_typed_memories(
             memory_type=MemoryType.CONTEXT,

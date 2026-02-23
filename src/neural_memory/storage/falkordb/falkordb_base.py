@@ -117,9 +117,7 @@ class FalkorDBBaseMixin:
 
         # Fulltext index on Neuron.content (RediSearch)
         try:
-            await graph.query(
-                "CALL db.idx.fulltext.createNodeIndex('Neuron', 'content')"
-            )
+            await graph.query("CALL db.idx.fulltext.createNodeIndex('Neuron', 'content')")
         except Exception:
             logger.debug("Fulltext index on Neuron.content may already exist", exc_info=True)
 

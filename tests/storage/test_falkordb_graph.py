@@ -111,9 +111,7 @@ class TestNeighborTraversal:
         assert len(neighbors) == 0
 
     @pytest.mark.asyncio
-    async def test_bidirectional_edge_traversal(
-        self, storage: FalkorDBStorage
-    ) -> None:
+    async def test_bidirectional_edge_traversal(self, storage: FalkorDBStorage) -> None:
         """Bidirectional edges should be traversable from both ends."""
         n1 = Neuron.create(type=NeuronType.CONCEPT, content="Bi source")
         n2 = Neuron.create(type=NeuronType.CONCEPT, content="Bi target")
@@ -121,8 +119,11 @@ class TestNeighborTraversal:
         await storage.add_neuron(n2)
 
         synapse = Synapse.create(
-            n1.id, n2.id, SynapseType.RELATES_TO,
-            weight=0.5, direction=Direction.BI,
+            n1.id,
+            n2.id,
+            SynapseType.RELATES_TO,
+            weight=0.5,
+            direction=Direction.BI,
         )
         await storage.add_synapse(synapse)
 
@@ -160,9 +161,7 @@ class TestShortestPath:
         assert len(path) >= 2  # At least 2 segments
 
     @pytest.mark.asyncio
-    async def test_no_path_returns_none(
-        self, storage: FalkorDBStorage
-    ) -> None:
+    async def test_no_path_returns_none(self, storage: FalkorDBStorage) -> None:
         n1 = Neuron.create(type=NeuronType.CONCEPT, content="Isolated A")
         n2 = Neuron.create(type=NeuronType.CONCEPT, content="Isolated B")
         await storage.add_neuron(n1)

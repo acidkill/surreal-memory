@@ -6,7 +6,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from neural_memory.storage.sqlite_store import SQLiteStorage
+    from neural_memory.storage.base import NeuralStorage
     from neural_memory.unified_config import UnifiedConfig
 
 logger = logging.getLogger(__name__)
@@ -18,7 +18,7 @@ class ReviewHandler:
     if TYPE_CHECKING:
         config: UnifiedConfig
 
-        async def get_storage(self) -> SQLiteStorage:
+        async def get_storage(self) -> NeuralStorage:
             raise NotImplementedError
 
     async def _review(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -53,7 +53,7 @@ class ReviewHandler:
 
     async def _review_queue(
         self,
-        storage: SQLiteStorage,
+        storage: NeuralStorage,
         brain: Any,
         args: dict[str, Any],
     ) -> dict[str, Any]:
@@ -67,7 +67,7 @@ class ReviewHandler:
 
     async def _review_mark(
         self,
-        storage: SQLiteStorage,
+        storage: NeuralStorage,
         brain: Any,
         args: dict[str, Any],
     ) -> dict[str, Any]:
@@ -86,7 +86,7 @@ class ReviewHandler:
 
     async def _review_schedule(
         self,
-        storage: SQLiteStorage,
+        storage: NeuralStorage,
         brain: Any,
         args: dict[str, Any],
     ) -> dict[str, Any]:
@@ -115,7 +115,7 @@ class ReviewHandler:
             "message": "Fiber scheduled for review",
         }
 
-    async def _review_stats(self, storage: SQLiteStorage) -> dict[str, Any]:
+    async def _review_stats(self, storage: NeuralStorage) -> dict[str, Any]:
         """Get review statistics."""
         result: dict[str, Any] = dict(await storage.get_review_stats())
         result["action"] = "stats"

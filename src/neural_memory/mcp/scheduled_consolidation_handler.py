@@ -106,7 +106,7 @@ class ScheduledConsolidationHandler:
 
         try:
             storage = await self.get_storage()
-            brain_id = storage._current_brain_id or ""  # type: ignore[attr-defined]
+            brain_id = storage._current_brain_id or ""
             strategies = [ConsolidationStrategy(s) for s in cfg.scheduled_consolidation_strategies]
 
             self._last_consolidation_at = utcnow()

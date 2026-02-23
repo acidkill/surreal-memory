@@ -134,9 +134,7 @@ class FalkorDBFiberMixin(FalkorDBBaseMixin):
                 conditions.append("f.salience >= $min_sal")
                 params["min_sal"] = min_salience
             if time_overlaps is not None:
-                conditions.append(
-                    "f.time_start <= $t_end AND f.time_end >= $t_start"
-                )
+                conditions.append("f.time_start <= $t_end AND f.time_end >= $t_start")
                 params["t_start"] = self._dt_to_str(time_overlaps[0])
                 params["t_end"] = self._dt_to_str(time_overlaps[1])
 

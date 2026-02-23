@@ -34,12 +34,8 @@ class FalkorDBBrainMixin(FalkorDBBaseMixin):
             self._graphs[self._REGISTRY_GRAPH] = db.select_graph(self._REGISTRY_GRAPH)
         graph = self._graphs[self._REGISTRY_GRAPH]
         try:
-            await graph.query(
-                "CREATE INDEX IF NOT EXISTS FOR (b:BrainMeta) ON (b.id)"
-            )
-            await graph.query(
-                "CREATE INDEX IF NOT EXISTS FOR (b:BrainMeta) ON (b.name)"
-            )
+            await graph.query("CREATE INDEX IF NOT EXISTS FOR (b:BrainMeta) ON (b.id)")
+            await graph.query("CREATE INDEX IF NOT EXISTS FOR (b:BrainMeta) ON (b.name)")
         except Exception:
             logger.debug("Registry index creation may have failed", exc_info=True)
             return
@@ -154,15 +150,24 @@ class FalkorDBBrainMixin(FalkorDBBaseMixin):
         )
         neurons = []
         for r in neuron_rows:
-            neurons.append({
-                "id": r[0], "type": r[1], "content": r[2],
-                "metadata": r[3], "content_hash": r[4],
-                "created_at": r[5],
-                "activation_level": r[6], "access_frequency": r[7],
-                "last_activated": r[8], "decay_rate": r[9],
-                "firing_threshold": r[10], "refractory_until": r[11],
-                "refractory_period_ms": r[12], "homeostatic_target": r[13],
-            })
+            neurons.append(
+                {
+                    "id": r[0],
+                    "type": r[1],
+                    "content": r[2],
+                    "metadata": r[3],
+                    "content_hash": r[4],
+                    "created_at": r[5],
+                    "activation_level": r[6],
+                    "access_frequency": r[7],
+                    "last_activated": r[8],
+                    "decay_rate": r[9],
+                    "firing_threshold": r[10],
+                    "refractory_until": r[11],
+                    "refractory_period_ms": r[12],
+                    "homeostatic_target": r[13],
+                }
+            )
 
         # Export all synapses
         synapse_rows = await self._query_ro(
@@ -176,12 +181,20 @@ class FalkorDBBrainMixin(FalkorDBBaseMixin):
         )
         synapses = []
         for r in synapse_rows:
-            synapses.append({
-                "id": r[0], "source_id": r[1], "target_id": r[2],
-                "type": r[3], "weight": r[4], "direction": r[5],
-                "metadata": r[6], "reinforced_count": r[7],
-                "last_activated": r[8], "created_at": r[9],
-            })
+            synapses.append(
+                {
+                    "id": r[0],
+                    "source_id": r[1],
+                    "target_id": r[2],
+                    "type": r[3],
+                    "weight": r[4],
+                    "direction": r[5],
+                    "metadata": r[6],
+                    "reinforced_count": r[7],
+                    "last_activated": r[8],
+                    "created_at": r[9],
+                }
+            )
 
         # Export all fibers
         fiber_rows = await self._query_ro(
@@ -198,15 +211,28 @@ class FalkorDBBrainMixin(FalkorDBBaseMixin):
         )
         fibers = []
         for r in fiber_rows:
-            fibers.append({
-                "id": r[0], "anchor_neuron_id": r[1], "pathway": r[2],
-                "conductivity": r[3], "last_conducted": r[4],
-                "time_start": r[5], "time_end": r[6],
-                "coherence": r[7], "salience": r[8], "frequency": r[9],
-                "summary": r[10], "auto_tags": r[11], "agent_tags": r[12],
-                "metadata": r[13], "compression_tier": r[14],
-                "created_at": r[15], "neuron_ids": r[16], "synapse_ids": r[17],
-            })
+            fibers.append(
+                {
+                    "id": r[0],
+                    "anchor_neuron_id": r[1],
+                    "pathway": r[2],
+                    "conductivity": r[3],
+                    "last_conducted": r[4],
+                    "time_start": r[5],
+                    "time_end": r[6],
+                    "coherence": r[7],
+                    "salience": r[8],
+                    "frequency": r[9],
+                    "summary": r[10],
+                    "auto_tags": r[11],
+                    "agent_tags": r[12],
+                    "metadata": r[13],
+                    "compression_tier": r[14],
+                    "created_at": r[15],
+                    "neuron_ids": r[16],
+                    "synapse_ids": r[17],
+                }
+            )
 
         return BrainSnapshot(
             brain_id=brain.id,
@@ -419,8 +445,10 @@ class FalkorDBBrainMixin(FalkorDBBaseMixin):
         )
         hot_neurons = [
             {
-                "id": r[0], "content": r[1],
-                "activation_level": r[2], "access_frequency": r[3],
+                "id": r[0],
+                "content": r[1],
+                "activation_level": r[2],
+                "access_frequency": r[3],
             }
             for r in hot_rows
         ]

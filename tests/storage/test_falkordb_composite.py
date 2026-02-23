@@ -34,9 +34,7 @@ class TestBrainOperations:
         assert found.id == brain.id
 
     @pytest.mark.asyncio
-    async def test_find_nonexistent_brain_returns_none(
-        self, storage: FalkorDBStorage
-    ) -> None:
+    async def test_find_nonexistent_brain_returns_none(self, storage: FalkorDBStorage) -> None:
         found = await storage.find_brain_by_name("does-not-exist")
         assert found is None
 
@@ -60,18 +58,14 @@ class TestStats:
     """Brain statistics."""
 
     @pytest.mark.asyncio
-    async def test_empty_stats(
-        self, storage: FalkorDBStorage, brain_id: str
-    ) -> None:
+    async def test_empty_stats(self, storage: FalkorDBStorage, brain_id: str) -> None:
         stats = await storage.get_stats(brain_id)
         assert stats["neuron_count"] == 0
         assert stats["synapse_count"] == 0
         assert stats["fiber_count"] == 0
 
     @pytest.mark.asyncio
-    async def test_stats_after_adding_data(
-        self, storage: FalkorDBStorage, brain_id: str
-    ) -> None:
+    async def test_stats_after_adding_data(self, storage: FalkorDBStorage, brain_id: str) -> None:
         n1 = Neuron.create(type=NeuronType.CONCEPT, content="Stat A")
         n2 = Neuron.create(type=NeuronType.CONCEPT, content="Stat B")
         await storage.add_neuron(n1)
@@ -93,9 +87,7 @@ class TestStats:
         assert stats["fiber_count"] == 1
 
     @pytest.mark.asyncio
-    async def test_enhanced_stats(
-        self, storage: FalkorDBStorage, brain_id: str
-    ) -> None:
+    async def test_enhanced_stats(self, storage: FalkorDBStorage, brain_id: str) -> None:
         n = Neuron.create(type=NeuronType.CONCEPT, content="Enhanced stat")
         await storage.add_neuron(n)
 
@@ -109,9 +101,7 @@ class TestClear:
     """Brain data clearing."""
 
     @pytest.mark.asyncio
-    async def test_clear_removes_all_data(
-        self, storage: FalkorDBStorage, brain_id: str
-    ) -> None:
+    async def test_clear_removes_all_data(self, storage: FalkorDBStorage, brain_id: str) -> None:
         n1 = Neuron.create(type=NeuronType.CONCEPT, content="To clear A")
         n2 = Neuron.create(type=NeuronType.CONCEPT, content="To clear B")
         await storage.add_neuron(n1)
@@ -130,9 +120,7 @@ class TestExportImport:
     """Brain export/import round-trip."""
 
     @pytest.mark.asyncio
-    async def test_export_import_roundtrip(
-        self, storage: FalkorDBStorage, brain_id: str
-    ) -> None:
+    async def test_export_import_roundtrip(self, storage: FalkorDBStorage, brain_id: str) -> None:
         # Populate brain
         n1 = Neuron.create(type=NeuronType.CONCEPT, content="Export A")
         n2 = Neuron.create(type=NeuronType.ENTITY, content="Export B")
@@ -159,9 +147,7 @@ class TestExportImport:
         # Import into new brain
         target_brain = Brain.create(name="import-target")
         await storage.save_brain(target_brain)
-        imported_id = await storage.import_brain(
-            snapshot, target_brain_id=target_brain.id
-        )
+        imported_id = await storage.import_brain(snapshot, target_brain_id=target_brain.id)
 
         # Verify imported data
         await storage.set_brain_with_indexes(imported_id)
@@ -175,9 +161,7 @@ class TestBrainContext:
     """Brain context management."""
 
     @pytest.mark.asyncio
-    async def test_set_brain_changes_context(
-        self, storage: FalkorDBStorage
-    ) -> None:
+    async def test_set_brain_changes_context(self, storage: FalkorDBStorage) -> None:
         brain1 = Brain.create(name="ctx-1")
         brain2 = Brain.create(name="ctx-2")
         await storage.save_brain(brain1)
@@ -190,9 +174,7 @@ class TestBrainContext:
         assert storage.current_brain_id == brain2.id
 
     @pytest.mark.asyncio
-    async def test_data_isolated_between_brains(
-        self, storage: FalkorDBStorage
-    ) -> None:
+    async def test_data_isolated_between_brains(self, storage: FalkorDBStorage) -> None:
         """Each brain should have its own graph."""
         brain1 = Brain.create(name="iso-1")
         brain2 = Brain.create(name="iso-2")

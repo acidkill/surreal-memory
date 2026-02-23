@@ -36,9 +36,7 @@ class FalkorDBGraphMixin(FalkorDBBaseMixin):
 
         # Outgoing: (neuron)-[s]->(neighbor)
         if direction in ("out", "both"):
-            out_rows = await self._query_neighbors_out(
-                neuron_id, synapse_types, min_weight
-            )
+            out_rows = await self._query_neighbors_out(neuron_id, synapse_types, min_weight)
             for row in out_rows:
                 neighbor = self._neighbor_row_to_neuron(row, offset=0)
                 syn = self._neighbor_row_to_synapse(
@@ -48,9 +46,7 @@ class FalkorDBGraphMixin(FalkorDBBaseMixin):
 
         # Incoming: (neighbor)-[s]->(neuron)
         if direction in ("in", "both"):
-            in_rows = await self._query_neighbors_in(
-                neuron_id, synapse_types, min_weight
-            )
+            in_rows = await self._query_neighbors_in(neuron_id, synapse_types, min_weight)
             for row in in_rows:
                 neighbor = self._neighbor_row_to_neuron(row, offset=0)
                 syn = self._neighbor_row_to_synapse(
@@ -61,9 +57,7 @@ class FalkorDBGraphMixin(FalkorDBBaseMixin):
         # Bidirectional synapses: also check reverse direction edges
         # that have direction='bi' (stored as directed but traversable both ways)
         if direction in ("out", "both"):
-            bi_rows = await self._query_neighbors_bi_reverse(
-                neuron_id, synapse_types, min_weight
-            )
+            bi_rows = await self._query_neighbors_bi_reverse(neuron_id, synapse_types, min_weight)
             seen_ids = {s.id for _, s in results}
             for row in bi_rows:
                 neighbor = self._neighbor_row_to_neuron(row, offset=0)
@@ -247,11 +241,7 @@ class FalkorDBGraphMixin(FalkorDBBaseMixin):
             target_id=target_id,
             type=SynapseType(row[offset + 1]),
             weight=row[offset + 2] if row[offset + 2] is not None else 0.5,
-            direction=(
-                Direction(row[offset + 3])
-                if row[offset + 3]
-                else Direction.UNIDIRECTIONAL
-            ),
+            direction=(Direction(row[offset + 3]) if row[offset + 3] else Direction.UNIDIRECTIONAL),
             metadata=self._deserialize_metadata(row[offset + 4]),
             reinforced_count=row[offset + 5] if row[offset + 5] is not None else 0,
             last_activated=self._str_to_dt(row[offset + 6]),
@@ -276,9 +266,7 @@ class FalkorDBGraphMixin(FalkorDBBaseMixin):
         # Fallback: treat as list (positional)
         return self._neighbor_row_to_neuron(list(props), offset=0)
 
-    def _graph_entity_to_synapse(
-        self, rel: Any, path_nodes: list[Any], rel_index: int
-    ) -> Synapse:
+    def _graph_entity_to_synapse(self, rel: Any, path_nodes: list[Any], rel_index: int) -> Synapse:
         """Convert a FalkorDB graph relationship entity to Synapse.
 
         Graph entities from relationships(path) have .properties dict access.
@@ -309,9 +297,7 @@ class FalkorDBGraphMixin(FalkorDBBaseMixin):
                 metadata=self._deserialize_metadata(props.get("metadata")),
                 reinforced_count=props.get("reinforced_count", 0),
                 last_activated=self._str_to_dt(props.get("last_activated")),
-                created_at=(
-                    self._str_to_dt(props.get("created_at")) or datetime.min
-                ),
+                created_at=(self._str_to_dt(props.get("created_at")) or datetime.min),
             )
         return Synapse(
             id="",

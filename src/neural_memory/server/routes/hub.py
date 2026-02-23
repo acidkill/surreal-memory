@@ -115,7 +115,7 @@ async def register_device(
     _validate_device_id(body.device_id)
 
     try:
-        storage.set_brain(body.brain_id)  # type: ignore[attr-defined]
+        storage.set_brain(body.brain_id)
         device = await storage.register_device(body.device_id, body.device_name)
     except Exception:
         logger.error(
@@ -176,7 +176,7 @@ async def hub_sync(
     )
 
     try:
-        storage.set_brain(body.brain_id)  # type: ignore[attr-defined]
+        storage.set_brain(body.brain_id)
         sync_engine = SyncEngine(storage, device_id="hub", strategy=conflict_strategy)
         response: SyncResponse = await sync_engine.handle_hub_sync(sync_request)
     except Exception:
@@ -231,7 +231,7 @@ async def hub_status(
     _validate_brain_id(brain_id)
 
     try:
-        storage.set_brain(brain_id)  # type: ignore[attr-defined]
+        storage.set_brain(brain_id)
         stats = await storage.get_change_log_stats()
         devices_list = await storage.list_devices()
     except Exception:
@@ -258,7 +258,7 @@ async def list_devices(
     _validate_brain_id(brain_id)
 
     try:
-        storage.set_brain(brain_id)  # type: ignore[attr-defined]
+        storage.set_brain(brain_id)
         devices_list = await storage.list_devices()
     except Exception:
         logger.error("Failed to list devices for brain %s", brain_id, exc_info=True)

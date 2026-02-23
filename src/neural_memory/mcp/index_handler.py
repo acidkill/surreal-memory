@@ -6,7 +6,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from neural_memory.storage.sqlite_store import SQLiteStorage
+    from neural_memory.storage.base import NeuralStorage
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 class IndexHandler:
     """Mixin: codebase indexing + external import tool handlers."""
 
-    async def get_storage(self) -> SQLiteStorage:
+    async def get_storage(self) -> NeuralStorage:
         raise NotImplementedError
 
     async def _index(self, args: dict[str, Any]) -> dict[str, Any]:

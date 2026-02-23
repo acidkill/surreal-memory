@@ -10,7 +10,7 @@ from neural_memory.mcp.auto_capture import analyze_text_for_memories
 from neural_memory.mcp.constants import MAX_CONTENT_LENGTH
 
 if TYPE_CHECKING:
-    from neural_memory.storage.sqlite_store import SQLiteStorage
+    from neural_memory.storage.base import NeuralStorage
     from neural_memory.unified_config import UnifiedConfig
 
 logger = logging.getLogger(__name__)
@@ -22,7 +22,7 @@ class AutoHandler:
     config: UnifiedConfig
     _remember: Any
 
-    async def get_storage(self) -> SQLiteStorage:
+    async def get_storage(self) -> NeuralStorage:
         raise NotImplementedError
 
     async def _auto(self, args: dict[str, Any]) -> dict[str, Any]:

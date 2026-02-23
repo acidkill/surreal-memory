@@ -31,7 +31,7 @@ from neural_memory.utils.timeutils import utcnow
 if TYPE_CHECKING:
     from neural_memory.engine.hooks import HookRegistry
     from neural_memory.mcp.maintenance_handler import HealthPulse
-    from neural_memory.storage.sqlite_store import SQLiteStorage
+    from neural_memory.storage.base import NeuralStorage
     from neural_memory.unified_config import UnifiedConfig
 
 logger = logging.getLogger(__name__)
@@ -47,7 +47,7 @@ class ToolHandler:
         config: UnifiedConfig
         hooks: HookRegistry
 
-        async def get_storage(self) -> SQLiteStorage:
+        async def get_storage(self) -> NeuralStorage:
             raise NotImplementedError
 
         def _fire_eternal_trigger(self, content: str) -> None:
@@ -62,7 +62,7 @@ class ToolHandler:
         async def _passive_capture(self, text: str) -> None:
             raise NotImplementedError
 
-        async def _get_active_session(self, storage: SQLiteStorage) -> dict[str, Any] | None:
+        async def _get_active_session(self, storage: NeuralStorage) -> dict[str, Any] | None:
             raise NotImplementedError
 
         async def _check_onboarding(self) -> dict[str, Any] | None:

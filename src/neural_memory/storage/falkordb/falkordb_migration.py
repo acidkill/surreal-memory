@@ -87,12 +87,14 @@ async def migrate_sqlite_to_falkordb(
             imported_id = await fdb_storage.import_brain(snapshot, target_brain_id=name)
             logger.info("Imported brain '%s' to FalkorDB as '%s'", name, imported_id)
 
-            stats["brains"].append({
-                "name": name,
-                "neurons": len(snapshot.neurons),
-                "synapses": len(snapshot.synapses),
-                "fibers": len(snapshot.fibers),
-            })
+            stats["brains"].append(
+                {
+                    "name": name,
+                    "neurons": len(snapshot.neurons),
+                    "synapses": len(snapshot.synapses),
+                    "fibers": len(snapshot.fibers),
+                }
+            )
 
         stats["success"] = True
         stats["total_brains"] = len(stats["brains"])

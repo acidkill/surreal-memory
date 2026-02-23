@@ -535,22 +535,19 @@ class FalkorDBConfig:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> FalkorDBConfig:
-        host = str(
-            os.environ.get("NEURAL_MEMORY_FALKORDB_HOST")
-            or data.get("host", "localhost")
-        )[:256]
+        host = str(os.environ.get("NEURAL_MEMORY_FALKORDB_HOST") or data.get("host", "localhost"))[
+            :256
+        ]
         try:
             port_raw = os.environ.get("NEURAL_MEMORY_FALKORDB_PORT") or data.get("port", 6379)
             port = max(1, min(int(port_raw), 65535))
         except (ValueError, TypeError):
             port = 6379
         username = str(
-            os.environ.get("NEURAL_MEMORY_FALKORDB_USERNAME")
-            or data.get("username", "")
+            os.environ.get("NEURAL_MEMORY_FALKORDB_USERNAME") or data.get("username", "")
         )[:128]
         password = str(
-            os.environ.get("NEURAL_MEMORY_FALKORDB_PASSWORD")
-            or data.get("password", "")
+            os.environ.get("NEURAL_MEMORY_FALKORDB_PASSWORD") or data.get("password", "")
         )[:256]
         return cls(
             host=host,
@@ -679,9 +676,7 @@ class UnifiedConfig:
             mem0_sync=Mem0SyncConfig.from_dict(data.get("mem0_sync", {})),
             device_id=raw_device_id,
             sync=SyncConfig.from_dict(sync_data),
-            storage_backend=_validate_storage_backend(
-                str(data.get("storage_backend", "sqlite"))
-            ),
+            storage_backend=_validate_storage_backend(str(data.get("storage_backend", "sqlite"))),
             falkordb=FalkorDBConfig.from_dict(data.get("falkordb", {})),
             json_output=data.get("cli", {}).get("json_output", False),
             default_depth=data.get("cli", {}).get("default_depth"),
@@ -805,12 +800,12 @@ class UnifiedConfig:
             "# Storage backend: sqlite (default) or falkordb",
             f'storage_backend = "{_sanitize_toml_str(self.storage_backend)}"',
             "",
-            "# FalkorDB settings (when storage_backend = \"falkordb\")",
+            '# FalkorDB settings (when storage_backend = "falkordb")',
             "[falkordb]",
             f'host = "{_sanitize_toml_str(self.falkordb.host)}"',
             f"port = {self.falkordb.port}",
             f'username = "{_sanitize_toml_str(self.falkordb.username)}"',
-            '# Password omitted for security — use env NEURAL_MEMORY_FALKORDB_PASSWORD',
+            "# Password omitted for security — use env NEURAL_MEMORY_FALKORDB_PASSWORD",
             'password = ""',
             "",
             "# MCP tool tier (minimal/standard/full)",

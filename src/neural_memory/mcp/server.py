@@ -56,7 +56,7 @@ from neural_memory.mcp.version_check_handler import VersionCheckHandler
 from neural_memory.unified_config import get_config, get_shared_storage
 
 if TYPE_CHECKING:
-    from neural_memory.storage.sqlite_store import SQLiteStorage
+    from neural_memory.storage.base import NeuralStorage
     from neural_memory.unified_config import UnifiedConfig
 
 logger = logging.getLogger(__name__)
@@ -124,12 +124,12 @@ class MCPServer(
 
     def __init__(self) -> None:
         self.config: UnifiedConfig = get_config()
-        self._storage: SQLiteStorage | None = None
+        self._storage: NeuralStorage | None = None
         self._eternal_ctx = None
         self.hooks: HookRegistry = HookRegistry()
 
-    async def get_storage(self) -> SQLiteStorage:
-        """Get or create shared SQLite storage instance.
+    async def get_storage(self) -> NeuralStorage:
+        """Get or create shared storage instance.
 
         Re-reads ``current_brain`` from disk on each call so that
         brain switches made by the CLI are picked up without

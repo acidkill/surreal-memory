@@ -263,14 +263,16 @@ class FalkorDBNeuronMixin(FalkorDBBaseMixin):
                 continue
             freq = row[3] if len(row) > 3 else 0
             act = row[4] if len(row) > 4 else 0.0
-            suggestions.append({
-                "neuron_id": row[0],
-                "content": row[1],
-                "type": ntype,
-                "access_frequency": freq,
-                "activation_level": act,
-                "score": (freq or 0) * 0.7 + (act or 0.0) * 0.3,
-            })
+            suggestions.append(
+                {
+                    "neuron_id": row[0],
+                    "content": row[1],
+                    "type": ntype,
+                    "access_frequency": freq,
+                    "activation_level": act,
+                    "score": (freq or 0) * 0.7 + (act or 0.0) * 0.3,
+                }
+            )
         return suggestions[:limit]
 
     async def update_neuron(self, neuron: Neuron) -> None:
@@ -354,9 +356,7 @@ class FalkorDBNeuronMixin(FalkorDBBaseMixin):
             },
         )
 
-    async def get_neuron_states_batch(
-        self, neuron_ids: list[str]
-    ) -> dict[str, NeuronState]:
+    async def get_neuron_states_batch(self, neuron_ids: list[str]) -> dict[str, NeuronState]:
         if not neuron_ids:
             return {}
         rows = await self._query_ro(

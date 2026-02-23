@@ -13,7 +13,7 @@ from neural_memory.engine.retrieval import DepthLevel, ReflexPipeline
 from neural_memory.utils.timeutils import utcnow
 
 if TYPE_CHECKING:
-    from neural_memory.storage.sqlite_store import SQLiteStorage
+    from neural_memory.storage.base import NeuralStorage
     from neural_memory.unified_config import UnifiedConfig
 
 logger = logging.getLogger(__name__)
@@ -26,7 +26,7 @@ class EternalHandler:
     config: UnifiedConfig
     _remember: Any
 
-    async def get_storage(self) -> SQLiteStorage:
+    async def get_storage(self) -> NeuralStorage:
         raise NotImplementedError
 
     async def get_eternal_context(self) -> EternalContext:

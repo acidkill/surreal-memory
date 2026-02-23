@@ -12,9 +12,7 @@ class TestNeuronCRUD:
     """Basic neuron create/read/update/delete."""
 
     @pytest.mark.asyncio
-    async def test_add_and_get_neuron(
-        self, storage: FalkorDBStorage, make_neuron
-    ) -> None:
+    async def test_add_and_get_neuron(self, storage: FalkorDBStorage, make_neuron) -> None:
         neuron = make_neuron(content="hello world")
         result_id = await storage.add_neuron(neuron)
 
@@ -26,9 +24,7 @@ class TestNeuronCRUD:
         assert retrieved.type == NeuronType.CONCEPT
 
     @pytest.mark.asyncio
-    async def test_add_duplicate_raises(
-        self, storage: FalkorDBStorage, make_neuron
-    ) -> None:
+    async def test_add_duplicate_raises(self, storage: FalkorDBStorage, make_neuron) -> None:
         neuron = make_neuron(content="unique")
         await storage.add_neuron(neuron)
 
@@ -36,9 +32,7 @@ class TestNeuronCRUD:
             await storage.add_neuron(neuron)
 
     @pytest.mark.asyncio
-    async def test_get_nonexistent_returns_none(
-        self, storage: FalkorDBStorage
-    ) -> None:
+    async def test_get_nonexistent_returns_none(self, storage: FalkorDBStorage) -> None:
         result = await storage.get_neuron("nonexistent-id")
         assert result is None
 
@@ -58,9 +52,7 @@ class TestNeuronCRUD:
             assert batch[nid].id == nid
 
     @pytest.mark.asyncio
-    async def test_update_neuron(
-        self, storage: FalkorDBStorage, make_neuron
-    ) -> None:
+    async def test_update_neuron(self, storage: FalkorDBStorage, make_neuron) -> None:
         neuron = make_neuron(content="original")
         await storage.add_neuron(neuron)
 
@@ -74,9 +66,7 @@ class TestNeuronCRUD:
         assert retrieved.content == "modified"
 
     @pytest.mark.asyncio
-    async def test_delete_neuron(
-        self, storage: FalkorDBStorage, make_neuron
-    ) -> None:
+    async def test_delete_neuron(self, storage: FalkorDBStorage, make_neuron) -> None:
         neuron = make_neuron(content="to delete")
         await storage.add_neuron(neuron)
 
@@ -87,16 +77,12 @@ class TestNeuronCRUD:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_delete_nonexistent_returns_false(
-        self, storage: FalkorDBStorage
-    ) -> None:
+    async def test_delete_nonexistent_returns_false(self, storage: FalkorDBStorage) -> None:
         deleted = await storage.delete_neuron("nonexistent-id")
         assert deleted is False
 
     @pytest.mark.asyncio
-    async def test_metadata_preserved(
-        self, storage: FalkorDBStorage, make_neuron
-    ) -> None:
+    async def test_metadata_preserved(self, storage: FalkorDBStorage, make_neuron) -> None:
         neuron = make_neuron(
             content="with meta",
             metadata={"key": "value", "nested": {"a": 1}},
@@ -124,9 +110,7 @@ class TestNeuronSearch:
         assert concepts[0].type == NeuronType.CONCEPT
 
     @pytest.mark.asyncio
-    async def test_find_by_exact_content(
-        self, storage: FalkorDBStorage, make_neuron
-    ) -> None:
+    async def test_find_by_exact_content(self, storage: FalkorDBStorage, make_neuron) -> None:
         n1 = make_neuron(content="exact match target")
         n2 = make_neuron(content="something else")
         await storage.add_neuron(n1)
@@ -137,17 +121,11 @@ class TestNeuronSearch:
         assert results[0].id == n1.id
 
     @pytest.mark.asyncio
-    async def test_find_with_limit(
-        self, storage: FalkorDBStorage, make_neuron
-    ) -> None:
+    async def test_find_with_limit(self, storage: FalkorDBStorage, make_neuron) -> None:
         for i in range(10):
-            await storage.add_neuron(
-                make_neuron(content=f"neuron {i}", type=NeuronType.ENTITY)
-            )
+            await storage.add_neuron(make_neuron(content=f"neuron {i}", type=NeuronType.ENTITY))
 
-        results = await storage.find_neurons(
-            type=NeuronType.ENTITY, limit=3
-        )
+        results = await storage.find_neurons(type=NeuronType.ENTITY, limit=3)
         assert len(results) == 3
 
     @pytest.mark.asyncio
@@ -164,9 +142,7 @@ class TestNeuronSearch:
         assert len(batch) == 2
 
     @pytest.mark.asyncio
-    async def test_suggest_neurons(
-        self, storage: FalkorDBStorage, make_neuron
-    ) -> None:
+    async def test_suggest_neurons(self, storage: FalkorDBStorage, make_neuron) -> None:
         await storage.add_neuron(make_neuron(content="Python programming"))
         await storage.add_neuron(make_neuron(content="Python testing"))
         await storage.add_neuron(make_neuron(content="Java programming"))
@@ -181,9 +157,7 @@ class TestNeuronState:
     """Neuron activation state operations."""
 
     @pytest.mark.asyncio
-    async def test_update_and_get_state(
-        self, storage: FalkorDBStorage, make_neuron
-    ) -> None:
+    async def test_update_and_get_state(self, storage: FalkorDBStorage, make_neuron) -> None:
         neuron = make_neuron(content="stateful neuron")
         await storage.add_neuron(neuron)
 
@@ -201,9 +175,7 @@ class TestNeuronState:
         assert retrieved.access_frequency == 5
 
     @pytest.mark.asyncio
-    async def test_get_nonexistent_state_returns_none(
-        self, storage: FalkorDBStorage
-    ) -> None:
+    async def test_get_nonexistent_state_returns_none(self, storage: FalkorDBStorage) -> None:
         result = await storage.get_neuron_state("nonexistent-id")
         assert result is None
 

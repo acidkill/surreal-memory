@@ -14,8 +14,7 @@ from neural_memory.storage.falkordb.falkordb_store import FalkorDBStorage
 async def fiber_data(storage: FalkorDBStorage) -> tuple[list[Neuron], Fiber]:
     """Create neurons and a fiber for testing."""
     neurons = [
-        Neuron.create(type=NeuronType.CONCEPT, content=f"Fiber neuron {i}")
-        for i in range(4)
+        Neuron.create(type=NeuronType.CONCEPT, content=f"Fiber neuron {i}") for i in range(4)
     ]
     for n in neurons:
         await storage.add_neuron(n)
@@ -23,9 +22,7 @@ async def fiber_data(storage: FalkorDBStorage) -> tuple[list[Neuron], Fiber]:
     # Create synapses along the pathway
     synapses = []
     for i in range(len(neurons) - 1):
-        s = Synapse.create(
-            neurons[i].id, neurons[i + 1].id, SynapseType.RELATES_TO
-        )
+        s = Synapse.create(neurons[i].id, neurons[i + 1].id, SynapseType.RELATES_TO)
         await storage.add_synapse(s)
         synapses.append(s)
 
@@ -90,9 +87,7 @@ class TestFiberCRUD:
             assert n.id in retrieved.neuron_ids
 
     @pytest.mark.asyncio
-    async def test_get_nonexistent_returns_none(
-        self, storage: FalkorDBStorage
-    ) -> None:
+    async def test_get_nonexistent_returns_none(self, storage: FalkorDBStorage) -> None:
         result = await storage.get_fiber("nonexistent-id")
         assert result is None
 
@@ -129,9 +124,7 @@ class TestFiberCRUD:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_delete_nonexistent_returns_false(
-        self, storage: FalkorDBStorage
-    ) -> None:
+    async def test_delete_nonexistent_returns_false(self, storage: FalkorDBStorage) -> None:
         deleted = await storage.delete_fiber("nonexistent-id")
         assert deleted is False
 
@@ -194,9 +187,7 @@ class TestFiberSearch:
         assert len(results) >= 1
 
     @pytest.mark.asyncio
-    async def test_get_fibers_ordered(
-        self, storage: FalkorDBStorage
-    ) -> None:
+    async def test_get_fibers_ordered(self, storage: FalkorDBStorage) -> None:
         """Test get_fibers with ordering."""
         # Create neurons for two fibers
         n1 = Neuron.create(type=NeuronType.CONCEPT, content="Ordered A")
@@ -218,8 +209,6 @@ class TestFiberSearch:
         await storage.add_fiber(f1)
         await storage.add_fiber(f2)
 
-        results = await storage.get_fibers(
-            limit=10, order_by="salience", descending=True
-        )
+        results = await storage.get_fibers(limit=10, order_by="salience", descending=True)
         assert len(results) == 2
         assert results[0].salience >= results[1].salience

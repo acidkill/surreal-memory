@@ -69,8 +69,7 @@ class TestSpreadingActivation:
         from neural_memory.core.synapse import Synapse, SynapseType
 
         neurons = [
-            Neuron.create(type=NeuronType.CONCEPT, content=f"Chain node {i}")
-            for i in range(4)
+            Neuron.create(type=NeuronType.CONCEPT, content=f"Chain node {i}") for i in range(4)
         ]
         for n in neurons:
             await storage.add_neuron(n)
@@ -115,15 +114,10 @@ class TestSpreadingActivation:
         hub = Neuron.create(type=NeuronType.CONCEPT, content="Hub node")
         await storage.add_neuron(hub)
 
-        spokes = [
-            Neuron.create(type=NeuronType.ENTITY, content=f"Spoke {i}")
-            for i in range(5)
-        ]
+        spokes = [Neuron.create(type=NeuronType.ENTITY, content=f"Spoke {i}") for i in range(5)]
         for sp in spokes:
             await storage.add_neuron(sp)
-            s = Synapse.create(
-                hub.id, sp.id, SynapseType.RELATES_TO, weight=0.6
-            )
+            s = Synapse.create(hub.id, sp.id, SynapseType.RELATES_TO, weight=0.6)
             await storage.add_synapse(s)
 
         neighbors = await storage.get_neighbors(hub.id, direction="out")
@@ -138,10 +132,7 @@ class TestSpreadingActivation:
         from neural_memory.core.neuron import Neuron, NeuronType
         from neural_memory.core.synapse import Synapse, SynapseType
 
-        neurons = [
-            Neuron.create(type=NeuronType.CONCEPT, content=f"Cycle {i}")
-            for i in range(3)
-        ]
+        neurons = [Neuron.create(type=NeuronType.CONCEPT, content=f"Cycle {i}") for i in range(3)]
         for n in neurons:
             await storage.add_neuron(n)
 
@@ -170,21 +161,15 @@ class TestSpreadingActivation:
         await storage.add_neuron(strong)
         await storage.add_neuron(weak)
 
-        s1 = Synapse.create(
-            center.id, strong.id, SynapseType.RELATES_TO, weight=0.95
-        )
-        s2 = Synapse.create(
-            center.id, weak.id, SynapseType.RELATES_TO, weight=0.1
-        )
+        s1 = Synapse.create(center.id, strong.id, SynapseType.RELATES_TO, weight=0.95)
+        s2 = Synapse.create(center.id, weak.id, SynapseType.RELATES_TO, weight=0.1)
         await storage.add_synapse(s1)
         await storage.add_synapse(s2)
 
         neighbors = await storage.get_neighbors(center.id, direction="out")
         assert len(neighbors) == 2
 
-        strong_only = await storage.get_neighbors(
-            center.id, direction="out", min_weight=0.5
-        )
+        strong_only = await storage.get_neighbors(center.id, direction="out", min_weight=0.5)
         assert len(strong_only) == 1
         assert strong_only[0][0].id == strong.id
 
