@@ -125,6 +125,52 @@ class ToolHandler:
                 "Remove secrets before storing.",
             }
 
+        # Determine if content should be encrypted
+        should_encrypt = args.get("encrypted", False)
+        encrypted_content: str | None = None
+        encryption_meta: dict[str, Any] = {}
+
+        try:
+            encryption_cfg = self.config.encryption
+            encryption_enabled = encryption_cfg.enabled
+        except AttributeError:
+            encryption_enabled = False
+
+        if encryption_enabled:
+            # Auto-encrypt if sensitive content was detected in original input
+            if not should_encrypt and getattr(encryption_cfg, "auto_encrypt_sensitive", True):
+                from neural_memory.safety.sensitive import (
+                    check_sensitive_content as _check_sensitive,
+                )
+
+                original_matches = _check_sensitive(args["content"], min_severity=2)
+                if original_matches:
+                    should_encrypt = True
+
+            if should_encrypt:
+                try:
+                    from pathlib import Path
+
+                    from neural_memory.safety.encryption import MemoryEncryptor
+
+                    brain_id = _require_brain_id(storage)
+                    keys_dir_str = getattr(encryption_cfg, "keys_dir", "")
+                    keys_dir = (
+                        Path(keys_dir_str) if keys_dir_str else (self.config.data_dir / "keys")
+                    )
+
+                    encryptor = MemoryEncryptor(keys_dir=keys_dir)
+                    enc_result = encryptor.encrypt(content, brain_id)
+                    encrypted_content = enc_result.ciphertext
+                    encryption_meta = {
+                        "encrypted": True,
+                        "key_id": enc_result.key_id,
+                        "algorithm": enc_result.algorithm,
+                    }
+                    logger.info("Encrypted memory content for brain %s", brain_id)
+                except Exception:
+                    logger.warning("Encryption failed, storing plaintext", exc_info=True)
+
         # Determine memory type
         if "type" in args:
             try:
@@ -185,9 +231,18 @@ class ToolHandler:
             for t in raw_tags:
                 if isinstance(t, str) and len(t) <= 100:
                     tags.add(t)
+            encode_content = encrypted_content if encrypted_content is not None else content
             result = await encoder.encode(
-                content=content, timestamp=utcnow(), tags=tags if tags else None
+                content=encode_content, timestamp=utcnow(), tags=tags if tags else None
             )
+
+            # Attach encryption metadata to fiber
+            if encryption_meta:
+                from dataclasses import replace as dc_replace
+
+                updated_meta = {**result.fiber.metadata, **encryption_meta}
+                updated_fiber = dc_replace(result.fiber, metadata=updated_meta)
+                result = dc_replace(result, fiber=updated_fiber)
 
             import os
 
@@ -264,6 +319,9 @@ class ToolHandler:
         if redacted_matches:
             response["auto_redacted"] = True
             response["auto_redacted_count"] = len(redacted_matches)
+
+        if encryption_meta:
+            response["encrypted"] = True
 
         if expiry_days is not None:
             response["expires_in_days"] = expiry_days
