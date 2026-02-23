@@ -334,6 +334,35 @@ class SafetyConfig:
 
 
 @dataclass(frozen=True)
+class EncryptionConfig:
+    """Encryption configuration for sensitive memory content.
+
+    When enabled, neuron content detected as sensitive (or explicitly flagged)
+    is encrypted using Fernet symmetric encryption with per-brain keys.
+    """
+
+    enabled: bool = True
+    auto_encrypt_sensitive: bool = True
+    keys_dir: str = ""  # empty = use {data_dir}/keys/
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "auto_encrypt_sensitive": self.auto_encrypt_sensitive,
+            "keys_dir": self.keys_dir,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> EncryptionConfig:
+        keys_dir = str(data.get("keys_dir", ""))[:256]
+        return cls(
+            enabled=bool(data.get("enabled", True)),
+            auto_encrypt_sensitive=bool(data.get("auto_encrypt_sensitive", True)),
+            keys_dir=keys_dir,
+        )
+
+
+@dataclass(frozen=True)
 class SyncConfig:
     """Multi-device sync configuration."""
 
@@ -594,6 +623,9 @@ class UnifiedConfig:
     # Safety settings
     safety: SafetyConfig = field(default_factory=SafetyConfig)
 
+    # Encryption settings
+    encryption: EncryptionConfig = field(default_factory=EncryptionConfig)
+
     # Dedup settings
     dedup: DedupSettings = field(default_factory=DedupSettings)
 
@@ -671,6 +703,7 @@ class UnifiedConfig:
             maintenance=MaintenanceConfig.from_dict(data.get("maintenance", {})),
             conflict=ConflictConfig.from_dict(data.get("conflict", {})),
             safety=SafetyConfig.from_dict(data.get("safety", {})),
+            encryption=EncryptionConfig.from_dict(data.get("encryption", {})),
             dedup=DedupSettings.from_dict(data.get("dedup", {})),
             tool_tier=ToolTierConfig.from_dict(data.get("tool_tier", {})),
             mem0_sync=Mem0SyncConfig.from_dict(data.get("mem0_sync", {})),
@@ -761,6 +794,12 @@ class UnifiedConfig:
             "# Safety settings",
             "[safety]",
             f"auto_redact_min_severity = {self.safety.auto_redact_min_severity}",
+            "",
+            "# Encryption settings",
+            "[encryption]",
+            f"enabled = {'true' if self.encryption.enabled else 'false'}",
+            f"auto_encrypt_sensitive = {'true' if self.encryption.auto_encrypt_sensitive else 'false'}",
+            f'keys_dir = "{_sanitize_toml_str(self.encryption.keys_dir)}"',
             "",
             "# Dedup settings",
             "[dedup]",
