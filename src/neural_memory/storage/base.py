@@ -519,6 +519,14 @@ class NeuralStorage(ABC):
 
     # ========== Brain Operations ==========
 
+    def set_brain(self, brain_id: str) -> None:
+        """Set the active brain context.
+
+        Args:
+            brain_id: The brain ID to activate
+        """
+        raise NotImplementedError
+
     @abstractmethod
     async def save_brain(self, brain: Brain) -> None:
         """

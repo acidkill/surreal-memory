@@ -16,3 +16,10 @@ __all__ = [
     "SharedStorageError",
     "create_storage",
 ]
+
+# Lazy import FalkorDB to avoid requiring falkordb package for SQLite users
+def __getattr__(name: str):  # type: ignore[no-untyped-def]
+    if name == "FalkorDBStorage":
+        from neural_memory.storage.falkordb.falkordb_store import FalkorDBStorage
+        return FalkorDBStorage
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

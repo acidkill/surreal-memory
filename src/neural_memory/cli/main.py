@@ -67,6 +67,7 @@ from neural_memory.cli.commands import (  # noqa: E402
     info,
     listing,
     memory,
+    migrate,
     shortcuts,
     tools,
     train,
@@ -81,6 +82,7 @@ shortcuts.register(app)
 codebase.register(app)
 train.register(app)
 update.register(app)
+migrate.register(app)
 
 
 def main() -> None:

@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from neural_memory.storage.sqlite_store import SQLiteStorage
+    from neural_memory.storage.base import NeuralStorage
 
 logger = logging.getLogger(__name__)
 
@@ -505,6 +505,61 @@ def _sanitize_sync_id(value: str) -> str:
     return cleaned
 
 
+_VALID_STORAGE_BACKENDS = {"sqlite", "falkordb"}
+
+
+def _validate_storage_backend(value: str) -> str:
+    """Validate and return storage backend, defaulting to sqlite."""
+    if value in _VALID_STORAGE_BACKENDS:
+        return value
+    logger.warning("Unknown storage_backend '%s', falling back to 'sqlite'", value)
+    return "sqlite"
+
+
+@dataclass(frozen=True)
+class FalkorDBConfig:
+    """FalkorDB graph storage backend configuration."""
+
+    host: str = "localhost"
+    port: int = 6379
+    username: str = ""
+    password: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "host": self.host,
+            "port": self.port,
+            "username": self.username,
+            "password": "***" if self.password else "",
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> FalkorDBConfig:
+        host = str(
+            os.environ.get("NEURAL_MEMORY_FALKORDB_HOST")
+            or data.get("host", "localhost")
+        )[:256]
+        try:
+            port_raw = os.environ.get("NEURAL_MEMORY_FALKORDB_PORT") or data.get("port", 6379)
+            port = max(1, min(int(port_raw), 65535))
+        except (ValueError, TypeError):
+            port = 6379
+        username = str(
+            os.environ.get("NEURAL_MEMORY_FALKORDB_USERNAME")
+            or data.get("username", "")
+        )[:128]
+        password = str(
+            os.environ.get("NEURAL_MEMORY_FALKORDB_PASSWORD")
+            or data.get("password", "")
+        )[:256]
+        return cls(
+            host=host,
+            port=port,
+            username=username,
+            password=password,
+        )
+
+
 @dataclass
 class UnifiedConfig:
     """Unified configuration for NeuralMemory.
@@ -556,6 +611,12 @@ class UnifiedConfig:
 
     # Multi-device sync settings
     sync: SyncConfig = field(default_factory=SyncConfig)
+
+    # Storage backend: "sqlite" (default) or "falkordb"
+    storage_backend: str = "sqlite"
+
+    # FalkorDB config (used when storage_backend == "falkordb")
+    falkordb: FalkorDBConfig = field(default_factory=FalkorDBConfig)
 
     # CLI preferences
     json_output: bool = False
@@ -618,6 +679,10 @@ class UnifiedConfig:
             mem0_sync=Mem0SyncConfig.from_dict(data.get("mem0_sync", {})),
             device_id=raw_device_id,
             sync=SyncConfig.from_dict(sync_data),
+            storage_backend=_validate_storage_backend(
+                str(data.get("storage_backend", "sqlite"))
+            ),
+            falkordb=FalkorDBConfig.from_dict(data.get("falkordb", {})),
             json_output=data.get("cli", {}).get("json_output", False),
             default_depth=data.get("cli", {}).get("default_depth"),
             default_max_tokens=data.get("cli", {}).get("default_max_tokens", 500),
@@ -737,6 +802,17 @@ class UnifiedConfig:
             f"sync_interval_seconds = {self.sync.sync_interval_seconds}",
             f'conflict_strategy = "{self.sync.conflict_strategy}"',
             "",
+            "# Storage backend: sqlite (default) or falkordb",
+            f'storage_backend = "{_sanitize_toml_str(self.storage_backend)}"',
+            "",
+            "# FalkorDB settings (when storage_backend = \"falkordb\")",
+            "[falkordb]",
+            f'host = "{_sanitize_toml_str(self.falkordb.host)}"',
+            f"port = {self.falkordb.port}",
+            f'username = "{_sanitize_toml_str(self.falkordb.username)}"',
+            '# Password omitted for security — use env NEURAL_MEMORY_FALKORDB_PASSWORD',
+            'password = ""',
+            "",
             "# MCP tool tier (minimal/standard/full)",
             "[tool_tier]",
             f'tier = "{self.tool_tier.tier}"',
@@ -815,7 +891,7 @@ class UnifiedConfig:
 _config: UnifiedConfig | None = None
 
 # Cached storage instances keyed by db_path string
-_storage_cache: dict[str, SQLiteStorage] = {}
+_storage_cache: dict[str, NeuralStorage] = {}
 
 
 def get_config(reload: bool = False) -> UnifiedConfig:
@@ -949,22 +1025,21 @@ def _migrate_legacy_db(config: UnifiedConfig, brain_name: str | None) -> None:
         )
 
 
-async def get_shared_storage(brain_name: str | None = None) -> SQLiteStorage:
-    """Get SQLite storage for shared brain access.
+async def get_shared_storage(brain_name: str | None = None) -> NeuralStorage:
+    """Get storage for shared brain access.
 
     This is the main entry point for getting storage that works
     across CLI, MCP, and other tools. Storage instances are cached
-    per database path to avoid connection leaks.
+    to avoid connection leaks.
+
+    Respects config.storage_backend: "sqlite" (default) or "falkordb".
 
     Args:
         brain_name: Brain name, or use config's current_brain if None
 
     Returns:
-        SQLiteStorage instance, initialized and ready to use
+        NeuralStorage instance, initialized and ready to use
     """
-    from neural_memory.core.brain import Brain
-    from neural_memory.storage.sqlite_store import SQLiteStorage
-
     config = get_config()
 
     # When no explicit brain is requested, re-read current_brain from
@@ -978,6 +1053,25 @@ async def get_shared_storage(brain_name: str | None = None) -> SQLiteStorage:
             logger.info("Brain changed on disk: %s → %s", config.current_brain, disk_brain)
             config.current_brain = disk_brain
 
+    name = brain_name or config.current_brain
+
+    # FalkorDB backend
+    if config.storage_backend == "falkordb":
+        return await _get_falkordb_storage(config, name)
+
+    # Default: SQLite backend
+    return await _get_sqlite_storage(config, name, brain_name)
+
+
+async def _get_sqlite_storage(
+    config: UnifiedConfig,
+    name: str,
+    brain_name: str | None,
+) -> NeuralStorage:
+    """Create or return cached SQLiteStorage."""
+    from neural_memory.core.brain import Brain
+    from neural_memory.storage.sqlite_store import SQLiteStorage
+
     # Auto-migrate flat-layout DB → brains/ layout (one-time, non-blocking)
     _migrate_legacy_db(config, brain_name)
 
@@ -987,8 +1081,7 @@ async def get_shared_storage(brain_name: str | None = None) -> SQLiteStorage:
     # Return cached storage if available and still open
     if cache_key in _storage_cache:
         cached = _storage_cache[cache_key]
-        if cached._conn is not None:
-            name = brain_name or config.current_brain
+        if getattr(cached, "_conn", None) is not None:
             cached.set_brain(name)
             return cached
 
@@ -1004,7 +1097,6 @@ async def get_shared_storage(brain_name: str | None = None) -> SQLiteStorage:
         raise
 
     # Create brain if it doesn't exist
-    name = brain_name or config.current_brain
     brain = await storage.get_brain(name)
 
     if brain is None:
@@ -1023,4 +1115,59 @@ async def get_shared_storage(brain_name: str | None = None) -> SQLiteStorage:
 
     storage.set_brain(brain.id)
     _storage_cache[cache_key] = storage
+    return storage
+
+
+# Cached FalkorDB storage (single connection, multi-graph)
+_falkordb_storage: NeuralStorage | None = None
+
+
+async def _get_falkordb_storage(config: UnifiedConfig, name: str) -> NeuralStorage:
+    """Create or return cached FalkorDBStorage."""
+    global _falkordb_storage
+
+    from neural_memory.core.brain import Brain
+    from neural_memory.storage.falkordb.falkordb_store import FalkorDBStorage
+
+    if _falkordb_storage is not None:
+        # Verify connection is still alive with a PING
+        db = getattr(_falkordb_storage, "_db", None)
+        if db is not None:
+            try:
+                await db.connection.ping()
+                _falkordb_storage.set_brain(name)
+                return _falkordb_storage
+            except Exception:
+                logger.warning("FalkorDB connection lost, reconnecting")
+        _falkordb_storage = None
+
+    fdb_config = config.falkordb
+    storage = FalkorDBStorage(
+        host=fdb_config.host,
+        port=fdb_config.port,
+        username=fdb_config.username or None,
+        password=fdb_config.password or None,
+    )
+    await storage.initialize()
+
+    # Ensure brain exists and set context
+    await storage.set_brain_with_indexes(name)
+    brain = await storage.get_brain(name)
+
+    if brain is None:
+        from neural_memory.core.brain import BrainConfig
+
+        brain_config = BrainConfig(
+            decay_rate=config.brain.decay_rate,
+            reinforcement_delta=config.brain.reinforcement_delta,
+            activation_threshold=config.brain.activation_threshold,
+            max_spread_hops=config.brain.max_spread_hops,
+            max_context_tokens=config.brain.max_context_tokens,
+            freshness_weight=config.brain.freshness_weight,
+        )
+        brain = Brain.create(name=name, config=brain_config, brain_id=name)
+        await storage.save_brain(brain)
+
+    storage.set_brain(brain.id)
+    _falkordb_storage = storage
     return storage

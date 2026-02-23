@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "neural-memory"
-version = "2.8.0"
+version = "2.8.1"
 description = "Reflex-based memory system for AI agents - retrieval through activation, not search"
 readme = "README.md"
 license = "MIT"
@@ -52,6 +52,9 @@ server = [
 neo4j = [
     "neo4j>=5.0",
 ]
+falkordb = [
+    "falkordb>=1.0.0,<2.0",
+]
 nlp-en = [
     "spacy>=3.6",
 ]
@@ -87,7 +90,7 @@ integration = [
     "neural-memory[chromadb,mem0]",
 ]
 all = [
-    "neural-memory[server,neo4j,nlp,integration]",
+    "neural-memory[server,neo4j,falkordb,nlp,integration]",
 ]
 dev = [
     "pytest>=7.0",
@@ -184,6 +187,7 @@ ignore = [
 "src/neural_memory/utils/simhash.py" = ["S324"]  # MD5 for fingerprint, not crypto
 "src/neural_memory/storage/sqlite_*.py" = ["S608"] # SQL with hardcoded column names
 "src/neural_memory/cli/**" = ["T201", "S603", "S607", "S310"]  # CLI: print, subprocess, url open
+"src/neural_memory/storage/falkordb/**" = ["DTZ901"]  # naive UTC datetimes by design
 "src/neural_memory/safety/sensitive.py" = ["S105"] # pattern names, not actual secrets
 "src/neural_memory/engine/db_introspector.py" = ["S608"]  # identifier-validated SQL
 "src/neural_memory/git_context.py" = ["S603", "S607"]     # git subprocess calls

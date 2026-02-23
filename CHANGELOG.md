@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.8.1] - 2026-02-23
+
+### Added
+
+- **FalkorDB Graph Storage Backend** — Optional graph-native storage replacing SQLite for high-performance traversal
+  - `FalkorDBStorage` composite class implementing full `NeuralStorage` ABC via 5 specialized mixins
+  - `FalkorDBBaseMixin` — connection pooling, query helpers (`_query`, `_query_ro`), index management
+  - `FalkorDBNeuronMixin` — neuron CRUD with graph node operations
+  - `FalkorDBSynapseMixin` — synapse CRUD with typed graph edges
+  - `FalkorDBFiberMixin` — fiber CRUD with `CONTAINS` relationships, batch operations
+  - `FalkorDBGraphMixin` — native Cypher spreading activation (1-4 hop BFS via variable-length paths)
+  - `FalkorDBBrainMixin` — brain registry graph, import/export, graph-level clear
+  - Brain-per-graph isolation (`brain_{id}`) for native multi-tenancy
+  - Read-only query routing via `ro_query` for registry reads and fiber lookups
+  - Per-neuron limit enforcement in `find_fibers_batch` via UNWIND+collect/slice Cypher pattern
+  - Connection health verification via Redis PING with automatic reconnect
+  - `docker-compose.falkordb.yml` — standalone FalkorDB service configuration
+  - Migration CLI: `nmem migrate falkordb` to move SQLite brain data to FalkorDB
+  - 69 tests across 6 test files (auto-skip when FalkorDB unavailable)
+  - SQLite remains default — FalkorDB is opt-in via `[storage]` TOML config
+
+### Fixed
+
+- **mypy: `set_brain` missing from ABC** — Added `set_brain(brain_id)` to `NeuralStorage` base class, resolving 2 mypy errors in `unified_config.py`
+- **Registry reads used write queries** — Added `_registry_query_ro()` for read-only brain registry operations (`get_brain`, `find_brain_by_name`)
+- **`find_fibers_batch` ignored `limit_per_neuron`** — Rewrote with UNWIND+collect/slice Cypher for proper per-neuron limiting
+- **FalkorDB health check was superficial** — `_get_falkordb_storage()` now performs actual Redis PING instead of just `_db is not None` check
+- **`export_brain` leaked `brain_id` in error** — Sanitized to generic "Brain not found" message
+- **Import sorting (I001)** — Fixed `falkordb.asyncio` before `redis.asyncio` in `falkordb_store.py`
+- **Unused import (F401)** — Removed stale `SQLiteStorage` import from `unified_config.py`
+- **Quoted annotation (UP037)** — Unquoted `_storage_cache` and `_falkordb_storage` type annotations
+- **Silent error logging** — Upgraded index creation and connection close errors from debug to warning level
+
 ## [2.8.0] - 2026-02-22
 
 ### Added

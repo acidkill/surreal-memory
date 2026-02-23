@@ -20,21 +20,27 @@ services:
       start_period: 5s
     restart: unless-stopped
 
-  # Optional: Neo4j for production use
-  neo4j:
-    image: neo4j:5-community
+  # Optional: FalkorDB for graph-native storage
+  # Activate with: docker compose --profile graph up -d
+  falkordb:
+    image: falkordb/falkordb:latest
     ports:
-      - "7474:7474"  # HTTP
-      - "7687:7687"  # Bolt
-    environment:
-      - NEO4J_AUTH=neo4j/password123
-      - NEO4J_PLUGINS=["apoc"]
+      - "6380:6379"
     volumes:
-      - neo4j_data:/data
-      - neo4j_logs:/logs
+      - falkordb_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6379", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
     profiles:
-      - production
+      - graph
+    restart: unless-stopped
 
 volumes:
-  neo4j_data:
-  neo4j_logs:
+  falkordb_data:

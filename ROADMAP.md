@@ -5,7 +5,7 @@
 > ZERO LLM dependency — pure algorithmic, regex, graph-based.
 
 **Current state**: v1.7.0 shipped. Proactive brain intelligence (related memories, expired/stale hints). 18 MCP tools, 1696 tests.
-**Next milestone**: v1.8.0 — Ecosystem Expansion (Marketplace, Neo4j, multi-language).
+**Next milestone**: v1.8.0 — Ecosystem Expansion (Marketplace, FalkorDB ✅, multi-language).
 
 ---
 
@@ -1573,14 +1573,18 @@ Labs are the **content pipeline** for marketplace. Marketplace is the shelf — 
 Labs (produce) ──→ Brains (train) ──→ Marketplace (distribute) ──→ Users (consume)
 ```
 
-### 8.3 Neo4j Storage Backend
+### 8.3 FalkorDB Graph Storage Backend ✅
 
-For users with large-scale graph requirements:
-- `Neo4jStorage` implementing `BaseStorage` ABC
-- Native graph queries (Cypher) for complex traversals
-- Horizontal scaling for enterprise use
-- Optional — SQLite remains default
-- Dashboard graph tab auto-detects Neo4j and uses native traversal
+Native graph database backend for high-performance spreading activation:
+- `FalkorDBStorage` implementing full `NeuralStorage` ABC (9 mixin files)
+- Cypher-based graph queries via FalkorDB (Redis-compatible protocol)
+- Multi-brain isolation via separate `brain_{id}` graphs
+- Lazy imports — `falkordb` package only required when backend is selected
+- Factory integration: `NEURAL_MEMORY_STORAGE=falkordb` in config/env
+- Migration CLI: `nmem migrate falkordb` to move SQLite brain to FalkorDB
+- Docker Compose: `docker-compose.falkordb.yml` for quick setup
+- 69 tests across 6 test files (skip when FalkorDB unavailable)
+- SQLite remains default — FalkorDB is opt-in
 
 ### 8.4 Multi-Language Expansion
 
@@ -1635,13 +1639,13 @@ v1.1.0 ✅ (Community Foundations)
               └──→ v1.5.0 ✅ (Conflict Detection + Quality Hardening)
                         └──→ v1.6.0 ✅ (DB-to-Brain Schema Training)
                                   └──→ v1.7.0 ✅ (Proactive Brain Intelligence)
-                                            └──→ v1.8.0 (Ecosystem — Marketplace, Neo4j, i18n)
+                                            └──→ v1.8.0 (Ecosystem — Marketplace, FalkorDB ✅, i18n)
                                                       └──→ v2.0.0 (Platform — protocol, federation, real-time)
 ```
 
 **Critical path**: v1.1.0 ✅ → v1.2.0 ✅ → v1.3.0 ✅ → v1.4.0 ✅ → v1.5.0 ✅ → v1.6.0 ✅ → v1.7.0 ✅ → v1.8.0
 
-**Next**: v1.8.0 — Ecosystem Expansion (Marketplace, Neo4j, multi-language)
+**Next**: v1.8.0 — Ecosystem Expansion (Marketplace, FalkorDB ✅, multi-language)
 
 ---
 
@@ -1700,4 +1704,4 @@ All post-v1.0 milestones through v1.7.0 complete. Next: v1.8.0 Ecosystem Expansi
 ---
 
 *See [VISION.md](VISION.md) for the north star guiding all decisions.*
-*Last updated: 2026-02-11 (v1.7.0 shipped: Proactive brain intelligence — related memories, expired/stale hints. 18 MCP tools, 1696 tests.)*
+*Last updated: 2026-02-22 (FalkorDB graph storage backend implemented: 9 mixin files, 69 tests, migration CLI, Docker Compose.)*

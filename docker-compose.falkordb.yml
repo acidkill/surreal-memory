@@ -1,0 +1,59 @@
+version: '3.8'
+
+# FalkorDB storage backend for NeuralMemory.
+#
+# Usage:
+#   docker compose -f docker-compose.falkordb.yml up -d
+#
+# Run FalkorDB tests:
+#   FALKORDB_TEST_HOST=localhost FALKORDB_TEST_PORT=6380 \
+#     python -m pytest tests/storage/ tests/integration/test_falkordb_spreading.py -v
+#
+# Migrate existing SQLite brain to FalkorDB:
+#   nmem migrate falkordb --falkordb-port 6380
+
+services:
+  falkordb:
+    image: falkordb/falkordb:latest
+    ports:
+      - "6380:6379"
+    volumes:
+      - falkordb_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6379", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  neural-memory:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      # 0.0.0.0 required inside Docker for port mapping to work
+      - NEURAL_MEMORY_HOST=0.0.0.0  # noqa: docker-internal-only
+      - NEURAL_MEMORY_PORT=8000
+      - NEURAL_MEMORY_STORAGE=falkordb
+      - NEURAL_MEMORY_FALKORDB_HOST=falkordb
+      - NEURAL_MEMORY_FALKORDB_PORT=6379
+    depends_on:
+      falkordb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  falkordb_data:
