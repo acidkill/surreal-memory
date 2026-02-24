@@ -49,6 +49,7 @@ class TestEncryptionConfig:
 
     def test_frozen(self) -> None:
         import pytest
+
         from neural_memory.unified_config import EncryptionConfig
 
         cfg = EncryptionConfig()

@@ -6,6 +6,10 @@ This module provides tools for:
 - Privacy protection
 """
 
+from neural_memory.safety.encryption import (
+    EncryptionResult,
+    MemoryEncryptor,
+)
 from neural_memory.safety.freshness import (
     FreshnessLevel,
     evaluate_freshness,
@@ -17,10 +21,6 @@ from neural_memory.safety.sensitive import (
     check_sensitive_content,
     filter_sensitive_content,
     get_default_patterns,
-)
-from neural_memory.safety.encryption import (
-    EncryptionResult,
-    MemoryEncryptor,
 )
 
 __all__ = [

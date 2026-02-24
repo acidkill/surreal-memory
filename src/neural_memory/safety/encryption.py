@@ -138,7 +138,8 @@ class MemoryEncryptor:
             return self._FALLBACK
 
         try:
-            return cipher.decrypt(ciphertext.encode("ascii")).decode("utf-8")
+            plaintext: str = cipher.decrypt(ciphertext.encode("ascii")).decode("utf-8")
+            return plaintext
         except Exception:
             logger.warning("Decryption failed for brain %s", brain_id)
             return self._FALLBACK

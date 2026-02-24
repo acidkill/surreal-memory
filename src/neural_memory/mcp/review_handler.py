@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING, Any
+
 from neural_memory.mcp.tool_handlers import _require_brain_id
 
 if TYPE_CHECKING:
