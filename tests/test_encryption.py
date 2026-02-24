@@ -8,7 +8,15 @@ from pathlib import Path
 
 import pytest
 
+try:
+    import cryptography  # noqa: F401
 
+    _HAS_CRYPTOGRAPHY = True
+except ImportError:
+    _HAS_CRYPTOGRAPHY = False
+
+
+@pytest.mark.skipif(not _HAS_CRYPTOGRAPHY, reason="cryptography not installed")
 class TestMemoryEncryptor:
     """Unit tests for MemoryEncryptor."""
 
