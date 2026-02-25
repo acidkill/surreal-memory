@@ -298,8 +298,33 @@ _TOOL_CALL_TIMEOUT = 30.0  # seconds
 _MAX_MESSAGE_SIZE = 10 * 1024 * 1024  # 10 MB
 
 
+def _lazy_init() -> None:
+    """Run first-time setup if NeuralMemory has never been initialized.
+
+    Safe to call on every MCP start — no-ops if config already exists.
+    Only touches config/brain/hooks; never writes to stdout (reserved for JSON-RPC).
+    """
+    from neural_memory.cli.setup import setup_brain, setup_config, setup_hooks_claude
+    from neural_memory.unified_config import get_neuralmemory_dir
+
+    data_dir = get_neuralmemory_dir()
+    config_path = data_dir / "config.toml"
+    if config_path.exists():
+        return  # Already initialized — fast path, no work done
+
+    try:
+        setup_config(data_dir)
+        setup_brain(data_dir)
+        hook_status = setup_hooks_claude()
+        logger.info("NeuralMemory: first-time auto-init complete (hook: %s)", hook_status)
+    except Exception:
+        logger.debug("NeuralMemory: auto-init failed (non-critical)", exc_info=True)
+
+
 async def run_mcp_server() -> None:
     """Run the MCP server over stdio."""
+    _lazy_init()
+
     server = create_mcp_server()
 
     # Start background Mem0 auto-sync if configured

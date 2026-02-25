@@ -58,6 +58,19 @@ ONBOARDING_STEPS: tuple[OnboardingHint, ...] = (
         example_tool="nmem_index",
         example_args={"action": "scan", "path": "./src"},
     ),
+    OnboardingHint(
+        step=5,
+        title="Enable automatic conversation capture",
+        description=(
+            "Run 'nmem init' once to install the PreCompact hook in Claude Code. "
+            "This hook reads your conversation transcript before context compaction "
+            "and auto-saves decisions, facts, and insights — so nothing is lost when "
+            "the context window is compressed. Without this, memories are only saved "
+            "when nmem_remember or nmem_auto is called explicitly."
+        ),
+        example_tool="nmem_auto",
+        example_args={"action": "status"},
+    ),
 )
 
 

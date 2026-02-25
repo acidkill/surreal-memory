@@ -23,6 +23,24 @@ def _version_callback(value: bool) -> None:
         raise typer.Exit()
 
 
+def _warn_if_not_initialized(ctx: typer.Context) -> None:
+    """Print a one-line hint if NeuralMemory has never been initialized.
+
+    Skipped for the 'init' command itself to avoid noise during setup.
+    """
+    if ctx.invoked_subcommand == "init":
+        return
+    from neural_memory.unified_config import get_neuralmemory_dir
+
+    config_path = get_neuralmemory_dir() / "config.toml"
+    if not config_path.exists():
+        typer.secho(
+            "Tip: NeuralMemory not set up yet. Run 'nmem init' to get started.",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+
+
 @app.callback(invoke_without_command=True)
 def _app_callback(
     ctx: typer.Context,
@@ -40,6 +58,8 @@ def _app_callback(
     """Global callback: runs before every command."""
     if ctx.invoked_subcommand is None:
         return
+
+    _warn_if_not_initialized(ctx)
 
     from neural_memory.cli.update_check import run_update_check_background
 

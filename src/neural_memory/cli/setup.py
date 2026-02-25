@@ -142,6 +142,68 @@ def setup_mcp_cursor() -> str:
         return "failed"
 
 
+def _find_pre_compact_command() -> str:
+    """Find the best shell command to invoke the pre_compact hook.
+
+    Priority:
+    1. nmem-hook-pre-compact  — dedicated pip entry point (cleanest, cross-platform)
+    2. nmem flush             — works if nmem CLI is on PATH
+    3. python -m ...          — always-available fallback
+    """
+    if shutil.which("nmem-hook-pre-compact"):
+        return "nmem-hook-pre-compact"
+    if shutil.which("nmem"):
+        return "nmem flush"
+    return f"{sys.executable} -m neural_memory.hooks.pre_compact"
+
+
+def setup_hooks_claude() -> str:
+    """Auto-configure PreCompact hook in Claude Code (~/.claude/settings.json).
+
+    Injects a PreCompact hook entry that flushes conversation memories before
+    context compaction. Safe to call on existing configs — skips if already present.
+
+    Returns status string: "added", "exists", "failed", or "not_found".
+    """
+    claude_dir = Path.home() / ".claude"
+    if not claude_dir.exists():
+        return "not_found"
+
+    settings_path = claude_dir / "settings.json"
+    cmd_str = _find_pre_compact_command()
+
+    existing: dict[str, Any] = {}
+    if settings_path.exists():
+        try:
+            raw = settings_path.read_text(encoding="utf-8").strip()
+            if raw:
+                existing = json.loads(raw)
+        except (json.JSONDecodeError, OSError):
+            existing = {}
+
+    # Check if our hook is already present
+    pre_compact_entries: list[dict[str, Any]] = existing.get("hooks", {}).get("PreCompact", [])
+    for entry in pre_compact_entries:
+        for hook in entry.get("hooks", []):
+            if "neural_memory" in hook.get("command", "") or "nmem" in hook.get("command", ""):
+                return "exists"
+
+    # Inject new PreCompact entry
+    new_entry: dict[str, Any] = {"hooks": [{"type": "command", "command": cmd_str, "timeout": 30}]}
+    hooks_section: dict[str, Any] = existing.setdefault("hooks", {})
+    pre_compact_list: list[dict[str, Any]] = hooks_section.setdefault("PreCompact", [])
+    pre_compact_list.append(new_entry)
+
+    try:
+        settings_path.write_text(
+            json.dumps(existing, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        return "added"
+    except OSError:
+        return "failed"
+
+
 def _discover_bundled_skills() -> dict[str, Path]:
     """Find all bundled skills (dirs containing SKILL.md).
 
