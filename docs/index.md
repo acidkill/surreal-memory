@@ -36,11 +36,13 @@ nmem recall "auth bug fix"
 | Aspect | RAG / Vector Search | NeuralMemory |
 |--------|---------------------|--------------|
 | **Model** | Search Engine | Human Brain |
+| **LLM/Embedding** | Required (embedding API calls) | **None** — pure algorithmic graph traversal |
 | **Query** | "Find similar text" | "Recall through association" |
 | **Structure** | Flat chunks + embeddings | Neural graph + synapses |
 | **Relationships** | None (just similarity) | Explicit: `CAUSED_BY`, `LEADS_TO` |
 | **Temporal** | Timestamp filter | Time as first-class neurons |
 | **Multi-hop** | Multiple queries needed | Natural graph traversal |
+| **API Cost** | ~$0.02/1K queries | **$0.00** — fully offline |
 
 !!! example "Example: Causal Query"
     **Query:** "Why did Tuesday's outage happen?"
@@ -236,5 +238,21 @@ nmem serve
     Integrate with Claude, Cursor, and other tools
 
     [:octicons-arrow-right-24: Integration](guides/integration.md)
+
+-   :material-frequently-asked-questions:{ .lg .middle } **FAQ**
+
+    ---
+
+    Common questions, architecture, and honest limitations
+
+    [:octicons-arrow-right-24: FAQ](FAQ.md)
+
+-   :material-chart-bar:{ .lg .middle } **Benchmarks**
+
+    ---
+
+    Reproducible performance measurements
+
+    [:octicons-arrow-right-24: Benchmarks](benchmarks.md)
 
 </div>

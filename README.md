@@ -17,12 +17,14 @@ NeuralMemory stores experiences as interconnected neurons and recalls them throu
 | Aspect | RAG / Vector Search | NeuralMemory |
 |--------|---------------------|--------------|
 | **Model** | Search engine | Human brain |
+| **LLM/Embedding** | Required (embedding API calls) | **None** — pure algorithmic graph traversal |
 | **Query** | "Find similar text" | "Recall through association" |
 | **Structure** | Flat chunks + embeddings | Neural graph + synapses |
 | **Relationships** | None (just similarity) | Explicit: `CAUSED_BY`, `LEADS_TO`, `DISCUSSED` |
 | **Temporal** | Timestamp filter | Time as first-class neurons |
 | **Multi-hop** | Multiple queries needed | Natural graph traversal |
 | **Lifecycle** | Static | Decay, reinforcement, consolidation |
+| **API Cost** | ~$0.02/1K queries | **$0.00** — fully offline |
 
 **Example: "Why did Tuesday's outage happen?"**
 

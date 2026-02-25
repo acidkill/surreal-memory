@@ -279,3 +279,151 @@ After restarting Claude Code, just ask naturally:
 > "What did we decide about the volume spike feature?"
 
 The agent will automatically call the `recall` tool to search your brain.
+
+## Technical & Architecture
+
+### Q: Does NeuralMemory use LLMs or embeddings?
+
+**No.** NeuralMemory does **not** call any LLM or embedding API for encoding or retrieval. This is a common misconception.
+
+| Operation | How it works |
+|-----------|-------------|
+| **Encoding** | Rule-based decomposition: keyword extraction, regex patterns, entity detection, relation extraction |
+| **Retrieval** | Spreading activation on a neural graph — signal propagates through weighted synapses |
+| **Ranking** | Multi-factor scoring: activation level, freshness, frequency, conductivity, memory stage |
+
+This means:
+
+- **Zero API cost** — no OpenAI/Anthropic calls for memory operations
+- **Zero hallucination risk** at the retrieval layer — what you stored is what you get back
+- **Fully offline** — works without internet after install
+- **Deterministic** — same query on same brain = same results (no model randomness)
+
+The only AI involvement is the *agent itself* (Claude, GPT, etc.) deciding when to call NeuralMemory tools. The memory system is pure algorithmic graph traversal.
+
+### Q: What are the performance benchmarks?
+
+NeuralMemory includes reproducible benchmarks. Key results (median, 10 runs each):
+
+**Activation Engine** (synthetic graphs):
+
+| Graph Size | Hybrid Latency | Speedup vs Classic |
+|-----------|---------------|-------------------|
+| 100 neurons | 0.34ms | 4.6x faster |
+| 1,000 neurons | 0.40ms | 5.5x faster |
+| 5,000 neurons | 0.45ms | 5.1x faster |
+
+**Full Pipeline** (15 memories, 5 queries):
+
+| Query | Latency | Confidence |
+|-------|---------|-----------|
+| "What did Alice suggest?" | 1.6ms | 1.0 |
+| "Why did we choose PostgreSQL?" | 0.9ms | 1.0 |
+
+Sub-millisecond retrieval even at 5,000 neurons. See [full benchmarks](benchmarks.md) for methodology.
+
+To regenerate on your hardware:
+
+```bash
+python benchmarks/run_benchmarks.py
+```
+
+### Q: How does consolidation work? When should I run it?
+
+Consolidation maintains brain health through three strategies:
+
+| Strategy | What it does | When to use |
+|----------|-------------|-------------|
+| `mature` | Advances episodic memories to semantic stage | Weekly — promotes stable patterns |
+| `merge` | Combines overlapping fibers, prunes weak synapses | When brain grows large (1000+ fibers) |
+| `full` | All strategies + topic summarization | Monthly deep cleanup |
+
+```bash
+# Recommended schedule
+nmem consolidate --strategy mature     # Weekly
+nmem consolidate --strategy full       # Monthly
+
+# Check what would be affected first
+nmem brain health
+```
+
+**Important**: Consolidation never deletes memories outright. It:
+
+- **Prunes weak synapses** (connections with very low weight) — the neurons remain
+- **Merges overlapping fibers** — combines near-duplicate memory traces
+- **Summarizes topic clusters** — creates summary neurons linking related memories
+
+If you're unsure, run `nmem brain health` first to see diagnostics and recommendations.
+
+### Q: How does multi-device sync handle conflicts?
+
+NeuralMemory uses a **local-first** architecture with hub-and-spoke sync:
+
+```
+Device A (SQLite) ──┐
+                    ├──→ Hub Server ──→ Device B (SQLite)
+Device C (SQLite) ──┘
+```
+
+**Conflict resolution strategies:**
+
+| Strategy | Behavior |
+|----------|---------|
+| `prefer_recent` | Most recently modified memory wins (default) |
+| `prefer_local` | Local device always wins |
+| `prefer_remote` | Hub version always wins |
+| `prefer_stronger` | Memory with higher activation/confidence wins |
+
+**Offline support**: Full. Each device has a complete SQLite brain. Sync is incremental — only changed fibers/neurons are transmitted. Changes queue locally and sync when connectivity resumes.
+
+**Concurrent writes**: Each device tracks a vector clock. When two devices modify the same neuron, the configured strategy resolves the conflict automatically. No manual merge required.
+
+```bash
+# Configure sync
+nmem sync config set --hub-url https://your-hub:8000 --strategy prefer_recent
+
+# Manual sync
+nmem sync push    # Send local changes
+nmem sync pull    # Get remote changes
+nmem sync full    # Bidirectional
+```
+
+### Q: Is NeuralMemory production-ready?
+
+NeuralMemory is designed for **AI agent memory** — not as a general-purpose database. Here's an honest assessment:
+
+| Aspect | Status |
+|--------|--------|
+| **Test suite** | 584+ tests, 70%+ coverage enforced by CI |
+| **Security** | Input validation, ReDoS protection, activation queue caps, sensitive content detection |
+| **Stability** | 51+ releases, used daily by the maintainers in production AI workflows |
+| **Scalability** | Tested up to 5,000 neurons with sub-ms latency; designed for agent-scale data, not big data |
+| **Third-party audit** | Not yet — contributions welcome |
+| **SLA** | None — this is open-source MIT software |
+| **Contributors** | Small team — bus factor risk mitigated by clean architecture + MIT license |
+
+**Good fit for:**
+
+- AI coding assistants (Claude Code, Cursor, Windsurf)
+- Personal knowledge management
+- Small team agent workflows
+- Research and experimentation
+
+**Not designed for:**
+
+- Enterprise databases with SLA requirements
+- High-throughput write-heavy workloads (100K+ writes/sec)
+- Multi-tenant SaaS platforms
+- Replacing production search infrastructure
+
+### Q: How does NeuralMemory handle concurrent access from multiple agents?
+
+SQLite with WAL (Write-Ahead Logging) mode enables:
+
+- **Multiple concurrent readers** — agents can query simultaneously
+- **Single writer at a time** — writes are serialized by SQLite's locking
+- **No corruption risk** — WAL mode prevents reader-writer conflicts
+
+For multi-agent write scenarios, NeuralMemory uses a **deferred write queue** — non-critical writes (Hebbian weight updates, conductivity changes) are batched and flushed after the response, reducing lock contention.
+
+If you need true multi-writer concurrency across processes, use the [FastAPI server](../api/server.md) as a central write coordinator.
