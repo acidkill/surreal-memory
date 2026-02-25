@@ -11,6 +11,27 @@ This guide walks you through basic NeuralMemory usage in 5 minutes.
 /plugin install neural-memory@neural-memory-marketplace
 ```
 
+### OpenClaw (Plugin)
+
+```bash
+pip install neural-memory
+npm install -g @neuralmemory/openclaw-plugin
+```
+
+Then in `~/.openclaw/openclaw.json`:
+
+```json
+{
+  "plugins": {
+    "slots": {
+      "memory": "neuralmemory"
+    }
+  }
+}
+```
+
+Restart the gateway. The plugin auto-registers 6 tools (`nmem_remember`, `nmem_recall`, `nmem_context`, `nmem_todo`, `nmem_stats`, `nmem_health`) and injects memory context before each agent run. See the [full setup guide](../guides/openclaw-plugin.md).
+
 ### Cursor / Windsurf / Other MCP Clients
 
 ```bash
@@ -18,6 +39,10 @@ pip install neural-memory
 ```
 
 Then add `nmem-mcp` to your editor's MCP config. No `nmem init` needed — the MCP server auto-initializes on first use.
+
+### VS Code Extension
+
+Install from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=neuralmem.neuralmemory) for a visual interface — sidebar memory tree, interactive graph explorer, CodeLens on functions, and keyboard shortcuts for encode/recall.
 
 ### Optional: Explicit Init
 
@@ -155,6 +180,7 @@ nmem list --type todo
 
 ## Next Steps
 
-- [CLI Reference](cli.md) - All commands and options
-- [Memory Types](../concepts/memory-types.md) - Understanding different memory types
-- [Integration Guide](../guides/integration.md) - Integrate with Claude, Cursor, etc.
+- [CLI Reference](cli.md) — All commands and options
+- [Memory Types](../concepts/memory-types.md) — Understanding different memory types
+- [Integration Guide](../guides/integration.md) — Integrate with Claude Code, Cursor, and other editors
+- [OpenClaw Plugin Guide](../guides/openclaw-plugin.md) — Full setup for OpenClaw agents

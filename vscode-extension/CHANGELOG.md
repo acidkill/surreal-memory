@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1] - 2026-02-25
+
+### Changed
+
+- Synced with NeuralMemory v2.10.2
+- Updated marketplace listing and README
+
 ## [0.4.0] - 2026-02-08
 
 ### Added

@@ -5,6 +5,7 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![VS Code](https://img.shields.io/visual-studio-marketplace/v/neuralmem.neuralmemory?label=VS%20Code)](https://marketplace.visualstudio.com/items?itemName=neuralmem.neuralmemory)
+[![OpenClaw Plugin](https://img.shields.io/npm/v/@neuralmemory/openclaw-plugin?label=OpenClaw)](https://www.npmjs.com/package/@neuralmemory/openclaw-plugin)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 
 **Reflex-based memory system for AI agents** — retrieval through activation, not search.
@@ -53,6 +54,21 @@ pip install neural-memory[all]      # All features
 ```
 
 That's it. MCP server, skills, commands, and agent are all configured automatically via `uvx`.
+
+### OpenClaw (Plugin)
+
+```bash
+pip install neural-memory
+npm install -g @neuralmemory/openclaw-plugin
+```
+
+Then set the memory slot in `~/.openclaw/openclaw.json`:
+
+```json
+{ "plugins": { "slots": { "memory": "neuralmemory" } } }
+```
+
+Restart the gateway. See the [full setup guide](docs/guides/openclaw-plugin.md).
 
 ### Cursor / Windsurf / Other MCP Clients
 
@@ -330,9 +346,9 @@ ruff format src/ tests/
 
 ## Support
 
-If you find NeuralMemory useful, consider buying me a coffee:
+If you find NeuralMemory useful, consider supporting development:
 
-[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-ffdd00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/vietnamit)
+**Solana:** `5XVY6dZDeyuZJy6Co9KeLDxY5RZ6EwCpjsUVkacMz7HF`
 
 ## Contributing
 
