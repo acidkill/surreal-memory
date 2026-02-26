@@ -110,24 +110,56 @@ def graph(
         int,
         typer.Option("--depth", "-d", help="Traversal depth (1-3)"),
     ] = 2,
+    export: Annotated[
+        str | None,
+        typer.Option("--export", "-e", help="Export format: svg"),
+    ] = None,
+    output: Annotated[
+        str | None,
+        typer.Option("--output", "-o", help="Output file path (used with --export)"),
+    ] = None,
 ) -> None:
     """Visualize neural connections as a tree graph.
 
     Shows memories and their relationships (caused_by, leads_to, etc.)
 
     Examples:
-        nmem graph                     # Show recent memories
-        nmem graph "database"          # Graph around query
-        nmem graph "auth" --depth 3    # Deeper traversal
+        nmem graph                           # Show recent memories
+        nmem graph "database"                # Graph around query
+        nmem graph "auth" --depth 3          # Deeper traversal
+        nmem graph --export svg              # Export to SVG file
+        nmem graph "auth" -e svg -o out.svg  # Export with custom path
     """
-    from neural_memory.cli.tui import render_graph
+    if export and export.lower() not in ("svg",):
+        typer.secho(
+            f"Error: unsupported export format '{export}'. Supported: svg",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(1)
 
-    async def _graph() -> None:
-        config = get_config()
-        storage = await get_storage(config)
-        await render_graph(storage, query=query, depth=depth)
+    if export:
+        from neural_memory.cli.graph_export import export_graph_svg
 
-    run_async(_graph())
+        async def _export() -> None:
+            config = get_config()
+            storage = await get_storage(config)
+            try:
+                path = await export_graph_svg(storage, query=query, depth=depth, output_path=output)
+                typer.secho(f"Graph exported to: {path}", fg=typer.colors.GREEN)
+            finally:
+                await storage.close()
+
+        run_async(_export())
+    else:
+        from neural_memory.cli.tui import render_graph
+
+        async def _graph() -> None:
+            config = get_config()
+            storage = await get_storage(config)
+            await render_graph(storage, query=query, depth=depth)
+
+        run_async(_graph())
 
 
 def init(

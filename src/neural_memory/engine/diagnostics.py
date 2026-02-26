@@ -82,19 +82,34 @@ class PenaltyFactor:
 
 # Component weights and improvement actions (must match purity formula)
 _COMPONENT_WEIGHTS: dict[str, tuple[float, str]] = {
-    "connectivity": (0.25, "Store more detailed memories to build richer connections."),
-    "diversity": (0.20, "Store memories with causal, temporal, and emotional context."),
-    "freshness": (0.15, "Store new memories or recall existing ones to keep brain active."),
+    "connectivity": (
+        0.25,
+        "Store memories with context (causes, effects, relationships) to build connections.",
+    ),
+    "diversity": (
+        0.20,
+        "Use varied language: 'X caused Y', 'after A then B', 'X is related to Y'.",
+    ),
+    "freshness": (
+        0.15,
+        "Recall or store memories regularly — brain needs activity within the last 7 days.",
+    ),
     "consolidation_ratio": (
         0.15,
-        "Run: nmem consolidate --strategy mature (advances episodic memories to semantic stage)",
+        "Run: nmem consolidate --strategy mature — memories advance through repeated use.",
     ),
     "orphan_rate": (
         0.10,
-        "Run: nmem consolidate --strategy prune (removes orphaned neurons and weak synapses)",
+        "Run: nmem consolidate --strategy prune — removes isolated neurons with no links.",
     ),
-    "activation_efficiency": (0.10, "Use recall more often to activate stored neurons."),
-    "recall_confidence": (0.05, "Reinforce memories by recalling them to strengthen synapses."),
+    "activation_efficiency": (
+        0.10,
+        "Recall stored memories by topic to activate them: nmem_recall 'your topic'.",
+    ),
+    "recall_confidence": (
+        0.05,
+        "Recall memories multiple times to strengthen synapse weights.",
+    ),
 }
 
 
@@ -443,10 +458,15 @@ class DiagnosticsEngine:
                     message="No fibers accessed or created in the last 7 days.",
                 )
             )
-            recommendations.append("Brain is stale - store new memories to keep it active.")
+            recommendations.append(
+                f"Brain has {fiber_count} memories but none accessed recently. "
+                "Try: nmem_recall with a topic you're currently working on "
+                "to reactivate relevant memories."
+            )
 
         # Low connectivity
         if raw_connectivity < 2.0 and neuron_count > 0:
+            gap = max(0, int(3.0 * neuron_count) - synapse_count)
             warnings.append(
                 DiagnosticWarning(
                     severity=WarningSeverity.WARNING,
@@ -454,13 +474,23 @@ class DiagnosticsEngine:
                     message=f"Low connectivity: {raw_connectivity:.1f} synapses/neuron (target: 3-8).",
                 )
             )
-            recommendations.append("Store more detailed memories to build richer connections.")
+            recommendations.append(
+                f"Low connectivity ({raw_connectivity:.1f} synapses/neuron, target: 3+). "
+                f"~{gap} more connections needed. Store memories with context like "
+                "'X because Y' or 'after doing A, I learned B' to build richer links."
+            )
 
         # Low diversity
         by_type = synapse_stats.get("by_type", {})
         types_used = len(by_type)
         expected = DiagnosticsEngine._EXPECTED_SYNAPSE_TYPES
         if types_used < 3 and synapse_count > 0:
+            used_names = sorted(by_type.keys()) if by_type else []
+            missing_hint = ""
+            common_types = {"caused_by", "leads_to", "related_to", "co_occurs"}
+            missing = common_types - set(used_names)
+            if missing:
+                missing_hint = f" Missing types: {', '.join(sorted(missing))}."
             warnings.append(
                 DiagnosticWarning(
                     severity=WarningSeverity.WARNING,
@@ -470,11 +500,13 @@ class DiagnosticsEngine:
                 )
             )
             recommendations.append(
-                "Store memories with causal, temporal, and emotional context for richer synapses."
+                f"Only {types_used}/{expected} synapse types used ({', '.join(used_names) or 'none'}).{missing_hint} "
+                "Store memories describing causes, sequences, and relationships."
             )
 
         # High orphan rate
         if orphan_rate > 0.20:
+            orphan_count = int(orphan_rate * neuron_count) if neuron_count > 0 else 0
             warnings.append(
                 DiagnosticWarning(
                     severity=WarningSeverity.WARNING,
@@ -483,7 +515,9 @@ class DiagnosticsEngine:
                 )
             )
             recommendations.append(
-                "Run: nmem consolidate --strategy prune (removes orphaned neurons and weak synapses)"
+                f"{orphan_count} neurons ({orphan_rate:.0%}) have no connections. "
+                "Run: nmem consolidate --strategy prune to remove orphans, "
+                "or recall related topics to build connections."
             )
 
         # No consolidation
@@ -496,7 +530,9 @@ class DiagnosticsEngine:
                 )
             )
             recommendations.append(
-                "Run: nmem consolidate --strategy mature (advances episodic memories to semantic stage)"
+                f"All {fiber_count} memories are still episodic (not consolidated). "
+                "Run: nmem consolidate --strategy mature to advance them. "
+                "Memories need repeated recalls over days to mature naturally."
             )
 
         # Tag drift detection

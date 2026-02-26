@@ -127,7 +127,47 @@ class ConsolidationReport:
                     f"    {len(detail.original_fiber_ids)} fibers -> {detail.merged_fiber_id[:8]}... "
                     f"({detail.neuron_count} neurons, {detail.reason})"
                 )
+
+        # Add eligibility hints when nothing happened
+        hints = self._eligibility_hints()
+        if hints:
+            lines.append("")
+            lines.append("  Why nothing changed:")
+            for hint in hints:
+                lines.append(f"    - {hint}")
+
         return "\n".join(lines)
+
+    def _eligibility_hints(self) -> list[str]:
+        """Explain why consolidation produced no changes."""
+        hints: list[str] = []
+        total_changes = (
+            self.synapses_pruned
+            + self.neurons_pruned
+            + self.fibers_merged
+            + self.fibers_removed
+            + self.summaries_created
+            + self.synapses_inferred
+            + self.synapses_enriched
+            + self.dream_synapses_created
+            + self.habits_learned
+            + self.duplicates_found
+            + self.semantic_synapses_created
+            + self.fibers_compressed
+            + self.stages_advanced
+        )
+        if total_changes > 0:
+            return hints
+
+        hints.append("Prune: synapses must be inactive for 7+ days with weight below 0.05")
+        hints.append("Merge: fibers need >50% neuron overlap (Jaccard) and <=50 neurons each")
+        hints.append("Summarize: need 3+ fibers sharing >40% tag overlap to form a cluster")
+        hints.append("Mature: memories advance stages over time through repeated recall")
+        hints.append("Habits: need 3+ occurrences of the same action sequence within 30 days")
+        hints.append(
+            "Tip: store more memories and recall them over several days, then consolidate again"
+        )
+        return hints
 
 
 class ConsolidationEngine:

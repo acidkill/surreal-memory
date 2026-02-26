@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Annotated
 
 import typer
@@ -52,7 +53,8 @@ def habits_list(
             else:
                 if not habits:
                     typer.echo(
-                        "No learned habits yet. Use NeuralMemory tools to build action history."
+                        "No learned habits yet. Use NeuralMemory tools to build action history.\n"
+                        "Run `nmem habits status` to see progress toward pattern detection."
                     )
                     return
 
@@ -167,3 +169,137 @@ def habits_clear(
             await storage.close()
 
     run_async(_clear())
+
+
+@habits_app.command("status")
+def habits_status(
+    json_output: Annotated[bool, typer.Option("--json", "-j", help="Output as JSON")] = False,
+) -> None:
+    """Show progress toward habit detection.
+
+    Displays emerging action patterns that haven't yet reached the
+    frequency threshold to become learned habits. Helps you understand
+    how close your workflows are to being recognized.
+
+    Examples:
+        nmem habits status
+        nmem habits status --json
+    """
+
+    async def _status() -> None:
+        from neural_memory.engine.sequence_mining import mine_sequential_pairs
+        from neural_memory.utils.timeutils import utcnow
+
+        config = get_config()
+        storage = await get_storage(config)
+        try:
+            brain = await storage.get_brain(storage._current_brain_id or "")
+            if not brain:
+                typer.secho("No brain configured.", fg=typer.colors.RED, err=True)
+                raise typer.Exit(1)
+
+            brain_config = brain.config
+            min_freq = brain_config.habit_min_frequency
+            window = brain_config.sequential_window_seconds
+            now = utcnow()
+
+            # Get recent action events (same window as learn_habits)
+            since = now - timedelta(days=30)
+            events = await storage.get_action_sequences(since=since)
+
+            if len(events) < 2:
+                if json_output:
+                    output_result(
+                        {
+                            "action_events": len(events),
+                            "threshold": min_freq,
+                            "emerging_patterns": [],
+                            "message": "Not enough action events yet. Keep using NeuralMemory tools.",
+                        },
+                        True,
+                    )
+                else:
+                    typer.echo(f"Action events (last 30 days): {len(events)}")
+                    typer.echo(f"Minimum for habit detection: {min_freq} occurrences")
+                    typer.echo()
+                    typer.echo("Not enough action events yet. Keep using NeuralMemory tools.")
+                return
+
+            # Mine pairs (same logic as learn_habits)
+            pairs = mine_sequential_pairs(events, window)
+
+            # Count sessions
+            session_ids = {e.session_id for e in events if e.session_id}
+            total_sessions = max(len(session_ids), 1)
+
+            # Get existing habits to exclude
+            fibers = await storage.get_fibers(limit=1000)
+            existing_habits = {
+                tuple(f.metadata.get("_workflow_actions", []))
+                for f in fibers
+                if f.metadata.get("_habit_pattern")
+            }
+
+            # Separate into learned vs emerging
+            emerging: list[dict[str, str | int | float]] = []
+            for pair in pairs:
+                steps = (pair.action_a, pair.action_b)
+                if steps in existing_habits:
+                    continue
+                progress = min(pair.count / min_freq, 1.0)
+                emerging.append(
+                    {
+                        "pattern": f"{pair.action_a} -> {pair.action_b}",
+                        "count": pair.count,
+                        "threshold": min_freq,
+                        "progress": round(progress, 2),
+                        "remaining": max(0, min_freq - pair.count),
+                    }
+                )
+
+            # Sort by progress descending
+            emerging.sort(key=lambda e: float(e["progress"]), reverse=True)
+            # Cap at 10 for readability
+            emerging = emerging[:10]
+
+            if json_output:
+                output_result(
+                    {
+                        "action_events": len(events),
+                        "sessions": total_sessions,
+                        "threshold": min_freq,
+                        "existing_habits": len(existing_habits),
+                        "emerging_patterns": emerging,
+                    },
+                    True,
+                )
+            else:
+                typer.echo(f"Action events (last 30 days): {len(events)}")
+                typer.echo(f"Sessions: {total_sessions}")
+                typer.echo(f"Learned habits: {len(existing_habits)}")
+                typer.echo(f"Threshold for habit detection: {min_freq} occurrences")
+                typer.echo()
+
+                if not emerging:
+                    typer.echo("No emerging patterns detected yet.")
+                    typer.echo("Keep using recall, remember, and other tools to build patterns.")
+                    return
+
+                typer.echo("Emerging patterns:")
+                for e in emerging:
+                    bar_filled = round(float(e["progress"]) * 10)
+                    bar = "#" * bar_filled + "-" * (10 - bar_filled)
+                    status = "READY" if e["remaining"] == 0 else f"{e['remaining']} more needed"
+                    typer.echo(
+                        f"  {e['pattern']!s:<30} [{bar}] {e['count']}/{e['threshold']} ({status})"
+                    )
+
+                ready_count = sum(1 for e in emerging if e["remaining"] == 0)
+                if ready_count > 0:
+                    typer.echo(
+                        f"\n{ready_count} pattern(s) ready — run `nmem consolidate --strategy learn_habits` to materialize."
+                    )
+        finally:
+            await storage.close()
+
+    run_async(_status())
