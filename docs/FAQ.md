@@ -426,4 +426,4 @@ SQLite with WAL (Write-Ahead Logging) mode enables:
 
 For multi-agent write scenarios, NeuralMemory uses a **deferred write queue** — non-critical writes (Hebbian weight updates, conductivity changes) are batched and flushed after the response, reducing lock contention.
 
-If you need true multi-writer concurrency across processes, use the [FastAPI server](../api/server.md) as a central write coordinator.
+If you need true multi-writer concurrency across processes, use the [FastAPI server](api/server.md) as a central write coordinator.
