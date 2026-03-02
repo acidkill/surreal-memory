@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from dataclasses import replace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -13,12 +12,9 @@ from neural_memory.integration.telegram import (
     TelegramClient,
     TelegramConfig,
     TelegramError,
-    TelegramStatus,
     get_bot_token,
-    get_telegram_config,
     get_telegram_status,
 )
-
 
 # ── Config tests ──────────────────────────────────────────────
 

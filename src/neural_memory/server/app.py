@@ -9,7 +9,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from neural_memory import __version__
@@ -215,7 +215,7 @@ def create_app(
     # React SPA dist directory
     spa_dist = STATIC_DIR / "dist"
 
-    def _serve_spa() -> FileResponse:
+    def _serve_spa() -> Response:
         """Serve React SPA index.html, falling back to legacy if not built."""
         spa_index = spa_dist / "index.html"
         if spa_index.exists():
@@ -226,20 +226,20 @@ def create_app(
             return FileResponse(legacy)
         from fastapi.responses import JSONResponse
 
-        return JSONResponse(  # type: ignore[return-value]
+        return JSONResponse(
             {"error": "Dashboard not built. Run: cd dashboard && npm run build"},
             status_code=404,
         )
 
     # Primary UI endpoint — React SPA
     @app.get("/ui", tags=["dashboard"])
-    async def ui() -> FileResponse:
+    async def ui() -> Response:
         """Serve the NeuralMemory dashboard."""
         return _serve_spa()
 
     # /dashboard alias (same SPA)
     @app.get("/dashboard", tags=["dashboard"])
-    async def dashboard() -> FileResponse:
+    async def dashboard() -> Response:
         """Serve the NeuralMemory React dashboard."""
         return _serve_spa()
 
@@ -256,7 +256,7 @@ def create_app(
 
     # SPA catch-all for client-side routing (must be after API routes)
     @app.get("/dashboard/{path:path}", tags=["dashboard"])
-    async def dashboard_spa_catchall(path: str) -> FileResponse:
+    async def dashboard_spa_catchall(path: str) -> Response:
         """Catch-all for React SPA client-side routing."""
         return _serve_spa()
 
