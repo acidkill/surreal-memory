@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.22.0] - 2026-03-03
+
+### Fixed
+
+- **#12 Version Mismatch** — Detect editable installs in update hint, show version in `nmem_stats`
+- **#14 Dedup on Remember** — Enable SimHash dedup (Tier 1) by default, surface `dedup_hint` in remember response, skip content < 20 chars
+- **#11 SEMANTIC Stage Blocked** — Rehearse maturation records on retrieval so memories can reach SEMANTIC stage (requires 3+ distinct reinforcement days)
+- **#15 Low Activation Efficiency** — Fix Hebbian learning None activation floor (0.1 instead of None → delta > 0), add dormant neuron reactivation during consolidation
+
+### Added
+
+- **#10 Semantic Linking** — `SemanticLinkingStep` cross-links entity/concept neurons to existing similar neurons (reduces orphan rate)
+- **#13 Neuron Diversity** — `ExtractActionNeuronsStep` + `ExtractIntentNeuronsStep` extract ACTION/INTENT neurons from verb/goal phrases (improves type diversity from 4-5 to 6-7 of 8 types)
+- **Dormant Reactivation** — Consolidation ENRICH tier bumps up to 20 dormant neurons (access_frequency=0) with +0.05 activation
+
+### Tests
+
+- 55 new tests across 6 test files: version check (12), dedup default (9), maturation rehearsal (5), semantic linking (6), action/intent extraction (15), activation efficiency (8)
+- Total: 3127 passing
+
 ## [2.21.0] - 2026-03-03
 
 ### Added
