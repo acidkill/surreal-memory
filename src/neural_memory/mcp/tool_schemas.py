@@ -102,6 +102,12 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "type": "boolean",
                     "description": "Force encrypt this memory's neuron content (default: false). When true, content is encrypted with the brain's Fernet key regardless of sensitive content detection.",
                 },
+                "event_at": {
+                    "type": "string",
+                    "description": "ISO datetime of when the event originally occurred "
+                    "(e.g. '2026-03-02T08:00:00'). Defaults to current time if not provided. "
+                    "Useful for batch-importing past events with correct timestamps.",
+                },
             },
             "required": ["content"],
         },

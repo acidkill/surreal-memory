@@ -242,9 +242,21 @@ class ToolHandler:
             for t in raw_tags:
                 if isinstance(t, str) and len(t) <= 100:
                     tags.add(t)
+            # Parse event_at for original event timestamp
+            event_timestamp = utcnow()
+            raw_event_at = args.get("event_at")
+            if raw_event_at:
+                try:
+                    event_timestamp = datetime.fromisoformat(raw_event_at)
+                    # Strip timezone for naive UTC storage
+                    if event_timestamp.tzinfo is not None:
+                        event_timestamp = event_timestamp.replace(tzinfo=None)
+                except (ValueError, TypeError):
+                    return {"error": f"Invalid event_at format: {raw_event_at}. Use ISO format (e.g. '2026-03-02T08:00:00')."}
+
             encode_content = encrypted_content if encrypted_content is not None else content
             result = await encoder.encode(
-                content=encode_content, timestamp=utcnow(), tags=tags if tags else None
+                content=encode_content, timestamp=event_timestamp, tags=tags if tags else None
             )
 
             # Attach encryption metadata to fiber
@@ -978,11 +990,24 @@ class ToolHandler:
                 }
             )
 
+        # Estimate timeframe based on points needed
+        if points_needed <= 0:
+            timeframe = "Already achieved"
+        elif points_needed <= 5:
+            timeframe = "~1 week with daily use"
+        elif points_needed <= 15:
+            timeframe = "~2 weeks with regular use"
+        elif points_needed <= 30:
+            timeframe = "~1 month with consistent use"
+        else:
+            timeframe = "~2 months with dedicated effort"
+
         roadmap: dict[str, Any] = {
             "current_grade": current_grade,
             "current_score": report.purity_score,
             "next_grade": next_grade,
             "points_needed": round(points_needed, 1),
+            "timeframe": timeframe,
             "steps": steps,
         }
 
@@ -992,12 +1017,12 @@ class ToolHandler:
             )
         elif points_needed <= sum(p.estimated_gain for p in report.top_penalties):
             roadmap["message"] = (
-                f"Reaching grade {next_grade} is achievable by addressing "
-                f"the top {min(len(steps), 3)} penalties below."
+                f"Grade {current_grade} → {next_grade} is achievable in {timeframe} "
+                f"by addressing the top {min(len(steps), 3)} actions below."
             )
         else:
             roadmap["message"] = (
-                f"Grade {next_grade} requires {points_needed:.1f} more points. "
+                f"Grade {next_grade} requires {points_needed:.1f} more points ({timeframe}). "
                 "Focus on the highest-impact actions and give the brain time to mature."
             )
 

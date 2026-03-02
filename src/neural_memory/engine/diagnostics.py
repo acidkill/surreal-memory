@@ -113,11 +113,79 @@ _COMPONENT_WEIGHTS: dict[str, tuple[float, str]] = {
 }
 
 
+def _build_dynamic_action(
+    component: str,
+    static_action: str,
+    metrics: dict[str, Any] | None,
+) -> str:
+    """Build a concrete action string with actual metrics.
+
+    Falls back to static action if metrics are unavailable.
+    """
+    if not metrics:
+        return static_action
+
+    neuron_count = metrics.get("neuron_count", 0)
+    synapse_count = metrics.get("synapse_count", 0)
+    fiber_count = metrics.get("fiber_count", 0)
+    freshness = metrics.get("freshness", 0.0)
+    orphan_rate = metrics.get("orphan_rate", 0.0)
+    activation_efficiency = metrics.get("activation_efficiency", 0.0)
+    recall_confidence = metrics.get("recall_confidence", 0.0)
+    consolidation_ratio = metrics.get("consolidation_ratio", 0.0)
+    types_used = metrics.get("types_used", 0)
+
+    if component == "connectivity" and neuron_count > 0:
+        ratio = synapse_count / max(neuron_count, 1)
+        gap = max(0, int(3.0 * neuron_count) - synapse_count)
+        return (
+            f"Store memories with context to build ~{gap} more connections "
+            f"(current: {ratio:.1f} synapses/neuron, target: 3.0+)."
+        )
+    elif component == "diversity":
+        return (
+            f"Use varied memory types — only {types_used} of 8 expected synapse types used. "
+            "Try: 'X caused Y', 'after A then B', 'X is related to Y'."
+        )
+    elif component == "freshness":
+        fresh_count = int(freshness * max(fiber_count, 1))
+        target_per_week = max(5, fiber_count // 10)
+        return (
+            f"Recall or store {target_per_week}+ memories this week "
+            f"(current: {fresh_count} active in last 7 days)."
+        )
+    elif component == "consolidation_ratio":
+        episodic_pct = int((1.0 - consolidation_ratio) * 100)
+        return (
+            f"Run `nmem consolidate` — {episodic_pct}% of fibers still episodic "
+            "(target: 50%+ semantic). Memories mature through repeated recalls."
+        )
+    elif component == "orphan_rate" and neuron_count > 0:
+        orphan_count = int(orphan_rate * neuron_count)
+        return (
+            f"Recall topics near {orphan_count} orphan neurons to create connections, "
+            "or run `nmem consolidate --strategy prune` to clean up."
+        )
+    elif component == "activation_efficiency":
+        never_accessed_pct = int((1.0 - activation_efficiency) * 100)
+        return (
+            f"Recall memories by topic — {never_accessed_pct}% of neurons never accessed. "
+            "Try: `nmem_recall 'topic'` for 5+ different topics."
+        )
+    elif component == "recall_confidence":
+        return (
+            f"Recall existing memories to reinforce connections "
+            f"(avg synapse weight: {recall_confidence:.2f}, target: 0.50+)."
+        )
+    return static_action
+
+
 def _rank_penalty_factors(
     scores: dict[str, float],
     *,
     top_n: int = 3,
     target: float = 0.8,
+    metrics: dict[str, Any] | None = None,
 ) -> tuple[PenaltyFactor, ...]:
     """Rank health components by their penalty contribution.
 
@@ -128,17 +196,19 @@ def _rank_penalty_factors(
         scores: Mapping of component name to current score (0.0-1.0).
         top_n: Number of top factors to return.
         target: Target score for estimated gain calculation.
+        metrics: Optional dict with actual counts for dynamic action strings.
 
     Returns:
         Top penalty factors sorted by penalty_points descending.
     """
     factors: list[PenaltyFactor] = []
-    for component, (weight, action) in _COMPONENT_WEIGHTS.items():
+    for component, (weight, static_action) in _COMPONENT_WEIGHTS.items():
         score = scores.get(component, 0.0)
         # orphan_rate is inverted in purity formula: (1.0 - orphan_rate) * weight
         effective_score = (1.0 - score) if component == "orphan_rate" else score
         penalty = (1.0 - effective_score) * weight * 100
         gain = max(0.0, (min(target, 1.0) - effective_score) * weight * 100)
+        action = _build_dynamic_action(component, static_action, metrics)
         factors.append(
             PenaltyFactor(
                 component=component,
@@ -296,7 +366,7 @@ class DiagnosticsEngine:
             contradicts_count=contradicts_count,
         )
 
-        # Rank penalty factors
+        # Rank penalty factors with actual metrics for dynamic action strings
         component_scores = {
             "connectivity": connectivity,
             "diversity": diversity,
@@ -306,7 +376,19 @@ class DiagnosticsEngine:
             "activation_efficiency": activation_efficiency,
             "recall_confidence": recall_confidence,
         }
-        top_penalties = _rank_penalty_factors(component_scores)
+        by_type = synapse_stats.get("by_type", {})
+        penalty_metrics = {
+            "neuron_count": neuron_count,
+            "synapse_count": synapse_count,
+            "fiber_count": fiber_count,
+            "freshness": freshness,
+            "orphan_rate": orphan_rate,
+            "activation_efficiency": activation_efficiency,
+            "recall_confidence": recall_confidence,
+            "consolidation_ratio": consolidation_ratio,
+            "types_used": len(by_type),
+        }
+        top_penalties = _rank_penalty_factors(component_scores, metrics=penalty_metrics)
 
         return BrainHealthReport(
             purity_score=round(purity, 1),

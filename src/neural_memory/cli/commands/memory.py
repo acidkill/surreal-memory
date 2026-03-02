@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import TYPE_CHECKING, Annotated, Any
 
 if TYPE_CHECKING:
@@ -93,6 +94,7 @@ async def _encode_and_store(
     mem_priority: Priority,
     expiry_days: int | None,
     project_id: str | None,
+    event_timestamp: datetime | None = None,
 ) -> dict[str, Any]:
     """Encode content into neural graph and store typed memory metadata."""
     encoder = MemoryEncoder(storage, brain_config)
@@ -100,7 +102,7 @@ async def _encode_and_store(
 
     result = await encoder.encode(
         content=content,
-        timestamp=utcnow(),
+        timestamp=event_timestamp or utcnow(),
         tags=tags,
     )
 
@@ -159,6 +161,14 @@ def remember(
     redact: Annotated[
         bool, typer.Option("--redact", "-r", help="Auto-redact sensitive content before storing")
     ] = False,
+    timestamp: Annotated[
+        str | None,
+        typer.Option(
+            "--timestamp",
+            "--at",
+            help="ISO datetime of original event (e.g. '2026-03-02T08:00:00'). Defaults to now.",
+        ),
+    ] = None,
     json_output: Annotated[bool, typer.Option("--json", "-j", help="Output as JSON")] = False,
 ) -> None:
     """Store a new memory (type auto-detected if not specified).
@@ -168,11 +178,27 @@ def remember(
         nmem remember "We decided to use PostgreSQL" --type decision
         nmem remember "Need to refactor auth module" --type todo --priority 7
         nmem remember "API_KEY=xxx" --redact
+        nmem remember "Meeting at 8am" --timestamp "2026-03-02T08:00:00"
     """
     store_content, sensitive_matches = _validate_content(content, force=force, redact=redact)
     mem_type = _resolve_memory_type(memory_type, store_content)
     expiry_days = expires if expires is not None else DEFAULT_EXPIRY_DAYS.get(mem_type)
     mem_priority = Priority.from_int(priority) if priority is not None else Priority.NORMAL
+
+    # Parse --timestamp for original event time
+    event_timestamp: datetime | None = None
+    if timestamp:
+        try:
+            event_timestamp = datetime.fromisoformat(timestamp)
+            if event_timestamp.tzinfo is not None:
+                event_timestamp = event_timestamp.replace(tzinfo=None)
+        except (ValueError, TypeError):
+            typer.secho(
+                f"Invalid timestamp format: {timestamp}. Use ISO format (e.g. '2026-03-02T08:00:00').",
+                fg=typer.colors.RED,
+                err=True,
+            )
+            raise typer.Exit(1)
 
     async def _remember() -> dict[str, Any]:
         config = get_config()
@@ -202,6 +228,7 @@ def remember(
             mem_priority=mem_priority,
             expiry_days=expiry_days,
             project_id=project_id,
+            event_timestamp=event_timestamp,
         )
 
         response = {

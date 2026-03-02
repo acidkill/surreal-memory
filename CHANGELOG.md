@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.18.0] - 2026-03-02
+
+### Added
+
+- **Export Markdown** — `nmem brain export --format markdown -o brain.md`
+  - Human-readable brain export grouped by memory type (facts, decisions, insights, etc.)
+  - Tag index with occurrence counts
+  - Statistics table with neuron/synapse/fiber breakdowns
+  - Pinned memory indicators and sensitive content exclusion support
+  - New module: `cli/markdown_export.py` (~180 LOC)
+
+- **Original Timestamp** — `event_at` parameter on `nmem_remember`
+  - MCP: `nmem_remember(content="Meeting at 8am", event_at="2026-03-02T08:00:00")`
+  - CLI: `nmem remember "Meeting" --timestamp "2026-03-02T08:00:00"`
+  - Time neurons and fiber `time_start/time_end` use the original event time
+  - Supports ISO format with optional timezone (auto-stripped for UTC storage)
+
+### Changed
+
+- **Health Roadmap Enhancement** — Concrete metrics in improvement actions
+  - Actions now include specific numbers: "Store memories to build ~250 more connections (current: 0.5 synapses/neuron, target: 3.0+)"
+  - Added `timeframe` field to roadmap: "~2 weeks with regular use"
+  - Dynamic action strings computed from actual brain metrics (neuron counts, orphan rate, etc.)
+  - Grade transition messages include estimated timeframe
+
+### Tests
+
+- 31 new tests: `test_markdown_export.py` (11), `test_health_roadmap.py` (13), `test_event_timestamp.py` (7)
+
 ## [2.17.0] - 2026-03-02
 
 ### Added

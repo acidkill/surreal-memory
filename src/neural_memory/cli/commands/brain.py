@@ -132,12 +132,17 @@ def brain_export(
         bool,
         typer.Option("--exclude-sensitive", "-s", help="Exclude memories with sensitive content"),
     ] = False,
+    fmt: Annotated[
+        str,
+        typer.Option("--format", "-f", help="Export format: json or markdown"),
+    ] = "json",
 ) -> None:
-    """Export brain to JSON file.
+    """Export brain to JSON or markdown file.
 
     Examples:
         nmem brain export
         nmem brain export -o backup.json
+        nmem brain export --format markdown -o brain.md
         nmem brain export --exclude-sensitive -o safe.json
     """
 
@@ -206,24 +211,36 @@ def brain_export(
             "metadata": snapshot.metadata,
         }
 
+        # Format output
+        if fmt == "markdown":
+            from neural_memory.cli.markdown_export import snapshot_to_markdown
+
+            output_text = snapshot_to_markdown(
+                export_data,
+                brain_name=brain_name,
+                excluded_count=excluded_count,
+            )
+        else:
+            output_text = json.dumps(export_data, indent=2, default=str)
+
         if output:
             from pathlib import Path
 
             output_path = Path(output).resolve()
             try:
                 with open(output_path, "w", encoding="utf-8") as f:
-                    json.dump(export_data, f, indent=2, default=str)
+                    f.write(output_text)
             except OSError as exc:
                 typer.secho(f"Failed to write export file: {exc}", fg=typer.colors.RED, err=True)
                 raise typer.Exit(1) from exc
-            typer.secho(f"Exported to: {output_path}", fg=typer.colors.GREEN)
+            typer.secho(f"Exported ({fmt}) to: {output_path}", fg=typer.colors.GREEN)
             if excluded_count > 0:
                 typer.secho(
                     f"Excluded {excluded_count} neurons with sensitive content",
                     fg=typer.colors.YELLOW,
                 )
         else:
-            typer.echo(json.dumps(export_data, indent=2, default=str))
+            typer.echo(output_text)
 
     run_async(_export())
 
