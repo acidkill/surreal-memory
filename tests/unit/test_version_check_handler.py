@@ -205,7 +205,8 @@ class TestGetUpdateHint:
         )
         assert handler.get_update_hint() is None
 
-    def test_update_available_returns_hint(self) -> None:
+    @patch("neural_memory.mcp.version_check_handler._is_editable_install", return_value=False)
+    def test_update_available_returns_hint(self, _mock_editable: MagicMock) -> None:
         handler = _make_handler()
         handler._version_info = VersionInfo(
             current="2.4.0",

@@ -20,10 +20,13 @@ from neural_memory.engine.pipeline_steps import (
     CreateSynapsesStep,
     DedupCheckStep,
     EmotionStep,
+    ExtractActionNeuronsStep,
     ExtractConceptNeuronsStep,
     ExtractEntityNeuronsStep,
+    ExtractIntentNeuronsStep,
     ExtractTimeNeuronsStep,
     RelationExtractionStep,
+    SemanticLinkingStep,
     TemporalLinkingStep,
 )
 from neural_memory.extraction.entities import EntityExtractor
@@ -91,6 +94,8 @@ def build_default_pipeline(
             ExtractTimeNeuronsStep(temporal_extractor=temporal_extractor),
             ExtractEntityNeuronsStep(entity_extractor=entity_extractor),
             ExtractConceptNeuronsStep(),
+            ExtractActionNeuronsStep(),
+            ExtractIntentNeuronsStep(),
             AutoTagStep(tag_normalizer=tag_normalizer),
             DedupCheckStep(dedup_pipeline=dedup_pipeline),
             CreateAnchorStep(),
@@ -101,6 +106,7 @@ def build_default_pipeline(
             ConfirmatoryBoostStep(),
             ConflictDetectionStep(),
             TemporalLinkingStep(),
+            SemanticLinkingStep(),
             BuildFiberStep(),
         ]
     )

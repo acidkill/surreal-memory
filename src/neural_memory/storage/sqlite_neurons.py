@@ -218,7 +218,9 @@ class SQLiteNeuronMixin:
 
             if content_contains is not None:
                 # Escape LIKE wildcards in user input
-                escaped = content_contains.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                escaped = (
+                    content_contains.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                )
                 query += " AND content LIKE ? ESCAPE '\\'"
                 params.append(f"%{escaped}%")
 

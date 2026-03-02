@@ -25,7 +25,7 @@ class DedupConfig:
         max_candidates: Max candidates to fetch from storage for comparison.
     """
 
-    enabled: bool = False
+    enabled: bool = True
     simhash_threshold: int = 10
     embedding_threshold: float = 0.85
     embedding_ambiguous_low: float = 0.75
@@ -89,7 +89,7 @@ class DedupConfig:
     def from_dict(cls, data: dict[str, Any]) -> DedupConfig:
         try:
             return cls(
-                enabled=bool(data.get("enabled", False)),
+                enabled=bool(data.get("enabled", True)),
                 simhash_threshold=int(data.get("simhash_threshold", 10)),
                 embedding_threshold=float(data.get("embedding_threshold", 0.85)),
                 embedding_ambiguous_low=float(data.get("embedding_ambiguous_low", 0.75)),

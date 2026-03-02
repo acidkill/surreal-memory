@@ -402,7 +402,11 @@ def check_sufficiency(
 
     # Gate 7: focused_result
     _top_act_threshold_focused = 0.5 * profile.min_top_activation_factor
-    if m.neuron_count <= 5 and m.top_activation >= _top_act_threshold_focused and m.focus_ratio >= 0.6:
+    if (
+        m.neuron_count <= 5
+        and m.top_activation >= _top_act_threshold_focused
+        and m.focus_ratio >= 0.6
+    ):
         result = SufficiencyResult(
             sufficient=True,
             confidence=conf,

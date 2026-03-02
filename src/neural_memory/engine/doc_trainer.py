@@ -600,7 +600,9 @@ class DocTrainer:
 
             provider = _create_provider(self._config, task_type="RETRIEVAL_DOCUMENT")
         except (ImportError, ValueError):
-            logger.debug("Embedding provider unavailable — skipping embedding storage", exc_info=True)
+            logger.debug(
+                "Embedding provider unavailable — skipping embedding storage", exc_info=True
+            )
             return 0
 
         # Collect anchor neuron IDs and their content

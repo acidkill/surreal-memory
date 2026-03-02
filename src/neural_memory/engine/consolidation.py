@@ -95,6 +95,7 @@ class ConsolidationReport:
     semantic_synapses_created: int = 0
     fibers_compressed: int = 0
     tokens_saved: int = 0
+    neurons_reactivated: int = 0
     merge_details: list[MergeDetail] = field(default_factory=list)
     dry_run: bool = False
 
@@ -922,6 +923,43 @@ class ConsolidationEngine:
                 report.synapses_enriched += 1
             except ValueError:
                 logger.debug("Enriched synapse already exists, skipping")
+
+        # Reactivate dormant neurons (access_frequency=0) to prevent permanent dormancy
+        await self._reactivate_dormant(report, dry_run)
+
+    async def _reactivate_dormant(
+        self,
+        report: ConsolidationReport,
+        dry_run: bool,
+    ) -> None:
+        """Bump dormant neurons with minimal activation to simulate memory replay."""
+        from dataclasses import replace as dc_replace
+
+        try:
+            all_states = await self._storage.get_all_neuron_states()
+        except Exception:
+            return
+
+        dormant = [s for s in all_states if s.access_frequency == 0]
+        if not dormant:
+            return
+
+        # Sample up to 20 dormant neurons
+        sample = dormant[:20]
+        if dry_run:
+            report.neurons_reactivated = len(sample)
+            return
+
+        now = utcnow()
+        for state in sample:
+            reactivated = dc_replace(
+                state,
+                activation_level=min(state.activation_level + 0.05, 1.0),
+                access_frequency=1,
+                last_activated=now,
+            )
+            await self._storage.update_neuron_state(reactivated)
+            report.neurons_reactivated += 1
 
     async def _dream(
         self,

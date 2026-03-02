@@ -60,6 +60,8 @@ class PipelineContext:
     time_neurons: list[Neuron] = field(default_factory=list)
     entity_neurons: list[Neuron] = field(default_factory=list)
     concept_neurons: list[Neuron] = field(default_factory=list)
+    action_neurons: list[Neuron] = field(default_factory=list)
+    intent_neurons: list[Neuron] = field(default_factory=list)
     auto_tags: set[str] = field(default_factory=set)
     agent_tags: set[str] = field(default_factory=set)
     merged_tags: set[str] = field(default_factory=set)

@@ -135,10 +135,22 @@ class VersionCheckHandler:
         """Return update hint dict if a newer version is available.
 
         Returns None if no update is available or check hasn't run yet.
+        For editable installs, returns an info-only hint (not an upgrade prompt).
         Suitable for injection into tool response dicts.
         """
         if self._version_info is None or not self._version_info.update_available:
             return None
+
+        if _is_editable_install():
+            return {
+                "message": (
+                    f"Running editable install (v{self._version_info.current}). "
+                    f"PyPI latest: v{self._version_info.latest}."
+                ),
+                "current_version": self._version_info.current,
+                "latest_version": self._version_info.latest,
+                "editable": True,
+            }
 
         return {
             "message": (
@@ -155,6 +167,35 @@ class VersionCheckHandler:
         if self._version_check_task is not None and not self._version_check_task.done():
             self._version_check_task.cancel()
             logger.debug("Version check task cancelled")
+
+
+def _is_editable_install() -> bool:
+    """Detect if neural-memory is installed in editable/development mode."""
+    try:
+        from importlib.metadata import distribution
+
+        dist = distribution("neural-memory")
+        direct_url = dist.read_text("direct_url.json")
+        if direct_url and '"editable"' in direct_url:
+            return True
+    except Exception:
+        pass
+
+    try:
+        from pathlib import Path
+
+        import neural_memory
+
+        pkg_dir = Path(neural_memory.__file__).resolve().parent
+        for parent in [pkg_dir, *list(pkg_dir.parents)]:
+            if (parent / "pyproject.toml").exists() and (parent / ".git").exists():
+                return True
+            if parent == parent.parent:
+                break
+    except Exception:
+        pass
+
+    return False
 
 
 async def _fetch_latest_version() -> str | None:

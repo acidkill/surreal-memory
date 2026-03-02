@@ -8,9 +8,9 @@ from neural_memory.engine.dedup.config import DedupConfig
 
 
 class TestDedupConfig:
-    def test_defaults_disabled(self) -> None:
+    def test_defaults_enabled(self) -> None:
         cfg = DedupConfig()
-        assert cfg.enabled is False
+        assert cfg.enabled is True
         assert cfg.simhash_threshold == 10
         assert cfg.embedding_threshold == 0.85
         assert cfg.embedding_ambiguous_low == 0.75
@@ -48,7 +48,7 @@ class TestDedupConfig:
 
     def test_from_dict_defaults(self) -> None:
         cfg = DedupConfig.from_dict({})
-        assert cfg.enabled is False
+        assert cfg.enabled is True
         assert cfg.simhash_threshold == 10
 
     def test_frozen(self) -> None:

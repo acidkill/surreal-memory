@@ -6,6 +6,7 @@ and reinforcement for frequently accessed memories.
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass, field
 from dataclasses import replace as dc_replace
@@ -14,6 +15,8 @@ from typing import TYPE_CHECKING
 
 from neural_memory.core.synapse import Synapse, SynapseType
 from neural_memory.utils.timeutils import utcnow
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from neural_memory.storage.base import NeuralStorage
@@ -323,6 +326,23 @@ class ReinforcementManager:
                 )
                 await storage.update_neuron_state(reinforced_state)
                 reinforced += 1
+
+        # Rehearse maturation records for fibers connected to reinforced neurons.
+        # This is required for EPISODIC → SEMANTIC transition (needs 3+ distinct days).
+        if neuron_ids:
+            try:
+                fibers = await storage.find_fibers_batch(neuron_ids[:10], limit_per_neuron=3)
+                seen_fiber_ids: set[str] = set()
+                for fiber in fibers[:10]:
+                    if fiber.id in seen_fiber_ids:
+                        continue
+                    seen_fiber_ids.add(fiber.id)
+                    record = await storage.get_maturation(fiber.id)
+                    if record is not None:
+                        updated = record.rehearse(now)
+                        await storage.save_maturation(updated)
+            except Exception:
+                logger.debug("Maturation rehearsal skipped during reinforce", exc_info=True)
 
         if synapse_ids:
             # Batch fetch synapses via neuron-based lookup

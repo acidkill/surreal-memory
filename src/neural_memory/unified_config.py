@@ -119,8 +119,7 @@ class EmbeddingSettings:
     def __post_init__(self) -> None:
         if self.provider not in self._VALID_PROVIDERS:
             raise ValueError(
-                f"Invalid embedding provider: {self.provider!r}. "
-                f"Valid: {self._VALID_PROVIDERS}"
+                f"Invalid embedding provider: {self.provider!r}. Valid: {self._VALID_PROVIDERS}"
             )
 
     def to_dict(self) -> dict[str, Any]:

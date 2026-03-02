@@ -738,7 +738,7 @@ class ReflexPipeline:
         initial_weight = self._config.hebbian_initial_weight
 
         # Collect all neuron pairs that need synapse lookup
-        pairs_to_check: list[tuple[str, str, float | None, float | None]] = []
+        pairs_to_check: list[tuple[str, str, float, float]] = []
 
         for co in co_activations:
             if co.binding_strength < threshold:
@@ -752,14 +752,10 @@ class ReflexPipeline:
                 for j in range(i + 1, len(neuron_ids)):
                     a, b = neuron_ids[i], neuron_ids[j]
                     pre_act = (
-                        activations[a].activation_level
-                        if activations and a in activations
-                        else None
+                        activations[a].activation_level if activations and a in activations else 0.1
                     )
                     post_act = (
-                        activations[b].activation_level
-                        if activations and b in activations
-                        else None
+                        activations[b].activation_level if activations and b in activations else 0.1
                     )
                     pairs_to_check.append((a, b, pre_act, post_act))
 
@@ -980,9 +976,7 @@ class ReflexPipeline:
 
         # Probe: check if any neurons have embeddings before scanning widely
         probe = await self._storage.find_neurons(limit=20)
-        has_embeddings = any(
-            n.metadata.get("_embedding") for n in probe
-        )
+        has_embeddings = any(n.metadata.get("_embedding") for n in probe)
         if not has_embeddings:
             return []
 

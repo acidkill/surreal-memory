@@ -29,8 +29,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass
 from dataclasses import replace as dc_replace
+from functools import lru_cache
 from typing import TYPE_CHECKING, Any
 
 from neural_memory.core.fiber import Fiber
@@ -256,6 +258,99 @@ class ExtractConceptNeuronsStep:
         return ctx
 
 
+# ── Step 3b: Extract Action Neurons ──
+
+
+@lru_cache(maxsize=1)
+def _action_pattern() -> re.Pattern[str]:
+    verbs = (
+        r"(?:decided|implemented|fixed|deployed|created|built|added|removed|"
+        r"refactored|migrated|updated|configured|resolved|shipped|completed|"
+        r"released|installed|debugged|wrote|merged|tested)"
+    )
+    return re.compile(
+        rf"\b{verbs}\s+(.{{3,60}}?)(?:[.,;!?\n]|$)",
+        re.IGNORECASE,
+    )
+
+
+class ExtractActionNeuronsStep:
+    """Extract ACTION neurons from verb phrases in content."""
+
+    MAX_ACTIONS: int = 5
+
+    @property
+    def name(self) -> str:
+        return "extract_action_neurons"
+
+    async def execute(
+        self,
+        ctx: PipelineContext,
+        storage: NeuralStorage,
+        config: BrainConfig,
+    ) -> PipelineContext:
+        matches = _action_pattern().findall(ctx.content)
+        seen: set[str] = set()
+
+        for match in matches[: self.MAX_ACTIONS]:
+            action_text = match.strip()
+            if len(action_text) < 3 or action_text.lower() in seen:
+                continue
+            seen.add(action_text.lower())
+            neuron = Neuron.create(type=NeuronType.ACTION, content=action_text)
+            await storage.add_neuron(neuron)
+            ctx.action_neurons.append(neuron)
+            ctx.neurons_created.append(neuron)
+
+        return ctx
+
+
+# ── Step 3c: Extract Intent Neurons ──
+
+
+@lru_cache(maxsize=1)
+def _intent_pattern() -> re.Pattern[str]:
+    prefixes = (
+        r"(?:want to|need to|plan to|going to|trying to|"
+        r"goal:\s*|objective:\s*|aim to|intend to|should)"
+    )
+    return re.compile(
+        rf"\b{prefixes}\s+(.{{2,60}}?)(?:[.,;!?\n]|$)",
+        re.IGNORECASE,
+    )
+
+
+class ExtractIntentNeuronsStep:
+    """Extract INTENT neurons from goal/intention phrases."""
+
+    MAX_INTENTS: int = 3
+
+    @property
+    def name(self) -> str:
+        return "extract_intent_neurons"
+
+    async def execute(
+        self,
+        ctx: PipelineContext,
+        storage: NeuralStorage,
+        config: BrainConfig,
+    ) -> PipelineContext:
+        matches = _intent_pattern().findall(ctx.content)
+        seen: set[str] = set()
+
+        for match in matches[: self.MAX_INTENTS]:
+            intent_text = match.strip()
+            if len(intent_text) < 2 or intent_text.lower() in seen:
+                continue
+            seen.add(intent_text.lower())
+            neuron = Neuron.create(type=NeuronType.INTENT, content=intent_text)
+            await storage.add_neuron(neuron)
+            ctx.intent_neurons.append(neuron)
+            ctx.neurons_created.append(neuron)
+
+        return ctx
+
+
 # ── Step 4: Auto-Tag + Metadata ──
 
 
@@ -323,6 +418,10 @@ class DedupCheckStep:
         config: BrainConfig,
     ) -> PipelineContext:
         if self.dedup_pipeline is None:
+            return ctx
+
+        # Skip dedup for very short content (high false-positive risk)
+        if len(ctx.content.strip()) < 20:
             return ctx
 
         from neural_memory.engine.dedup.pipeline import DedupResult
@@ -471,6 +570,28 @@ class CreateSynapsesStep:
                     target_id=concept_neuron.id,
                     type=SynapseType.RELATED_TO,
                     weight=concept_weight,
+                )
+            )
+
+        # Anchor → action neurons
+        for action_neuron in ctx.action_neurons:
+            synapses_to_add.append(
+                Synapse.create(
+                    source_id=anchor.id,
+                    target_id=action_neuron.id,
+                    type=SynapseType.INVOLVES,
+                    weight=0.6,
+                )
+            )
+
+        # Anchor → intent neurons
+        for intent_neuron in ctx.intent_neurons:
+            synapses_to_add.append(
+                Synapse.create(
+                    source_id=anchor.id,
+                    target_id=intent_neuron.id,
+                    type=SynapseType.INVOLVES,
+                    weight=0.7,
                 )
             )
 
@@ -820,6 +941,87 @@ class TemporalLinkingStep:
                 ctx.neurons_linked.append(fiber.anchor_neuron_id)
             except ValueError:
                 logger.debug("Synapse already exists, skipping")
+
+        return ctx
+
+
+# ── Step 13b: Semantic Linking ──
+
+
+class SemanticLinkingStep:
+    """Link entity/concept neurons to existing similar neurons.
+
+    Reduces orphan rate by cross-linking new neurons to previously stored
+    neurons with matching content. Only creates RELATED_TO synapses.
+    """
+
+    MAX_NEURONS_PER_ENCODE: int = 10
+    MAX_LINKS_PER_NEURON: int = 3
+
+    @property
+    def name(self) -> str:
+        return "semantic_linking"
+
+    async def execute(
+        self,
+        ctx: PipelineContext,
+        storage: NeuralStorage,
+        config: BrainConfig,
+    ) -> PipelineContext:
+        # Collect entity and concept neurons from this encode
+        linkable = [
+            n
+            for n in ctx.entity_neurons
+            + ctx.concept_neurons
+            + ctx.action_neurons
+            + ctx.intent_neurons
+            if n.content and len(n.content) >= 3
+        ]
+        if not linkable:
+            return ctx
+
+        new_ids = {
+            n.id
+            for n in ctx.entity_neurons
+            + ctx.concept_neurons
+            + ctx.time_neurons
+            + ctx.action_neurons
+            + ctx.intent_neurons
+        }
+        if ctx.anchor_neuron is not None:
+            new_ids.add(ctx.anchor_neuron.id)
+
+        for neuron in linkable[: self.MAX_NEURONS_PER_ENCODE]:
+            try:
+                existing = await storage.find_neurons(
+                    type=neuron.type,
+                    content_exact=neuron.content,
+                    limit=self.MAX_LINKS_PER_NEURON + 1,
+                )
+            except Exception:
+                logger.debug("Semantic linking lookup failed for %s", neuron.id)
+                continue
+
+            links_created = 0
+            for target in existing:
+                if target.id == neuron.id or target.id in new_ids:
+                    continue
+                if links_created >= self.MAX_LINKS_PER_NEURON:
+                    break
+
+                synapse = Synapse.create(
+                    source_id=neuron.id,
+                    target_id=target.id,
+                    type=SynapseType.RELATED_TO,
+                    weight=0.4,
+                    metadata={"semantic_link": True},
+                )
+                try:
+                    await storage.add_synapse(synapse)
+                    ctx.neurons_linked.append(target.id)
+                    links_created += 1
+                except ValueError:
+                    logger.debug("Synapse already exists, skipping")
 
         return ctx
 

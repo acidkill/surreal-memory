@@ -14,6 +14,7 @@ import logging
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from neural_memory import __version__
 from neural_memory.core.memory_types import (
     MemoryType,
     Priority,
@@ -129,6 +130,7 @@ class ToolHandler:
             # Language mismatch detected — build hint
             try:
                 import sentence_transformers as _st  # noqa: F401
+
                 return (
                     f"Your query is in {'Vietnamese' if query_lang == 'vi' else 'English'} "
                     f"but most memories are in {'Vietnamese' if majority_lang == 'vi' else 'English'}. "
@@ -432,6 +434,19 @@ class ToolHandler:
         if expiry_days is not None:
             response["expires_in_days"] = expiry_days
 
+        # Surface dedup hint when duplicate anchor was reused
+        dedup_alias_of = result.fiber.metadata.get("_dedup_alias_of")
+        if dedup_alias_of is None and result.neurons_created:
+            for neuron in result.neurons_created:
+                dedup_alias_of = neuron.metadata.get("_dedup_alias_of")
+                if dedup_alias_of:
+                    break
+        if dedup_alias_of:
+            response["dedup_hint"] = {
+                "similar_existing": dedup_alias_of,
+                "message": "Similar memory already exists. Created alias link.",
+            }
+
         try:
             conflicts_detected = int(result.conflicts_detected)
         except (TypeError, ValueError, AttributeError):
@@ -714,7 +729,9 @@ class ToolHandler:
 
         # Cross-language hint: suggest embedding when recall misses due to language mismatch
         cross_lang_hint = await self._check_cross_language_hint(
-            query, result, brain.config,
+            query,
+            result,
+            brain.config,
         )
         if cross_lang_hint:
             response["cross_language_hint"] = cross_lang_hint
@@ -740,9 +757,7 @@ class ToolHandler:
         import re
 
         _brain_pattern = re.compile(r"^[a-zA-Z0-9_\-\.]+$")
-        brain_names = [
-            n for n in brain_names[:5] if isinstance(n, str) and _brain_pattern.match(n)
-        ]
+        brain_names = [n for n in brain_names[:5] if isinstance(n, str) and _brain_pattern.match(n)]
         if not brain_names:
             return {"error": "No valid brain names provided"}
         depth = args.get("depth", 1)
@@ -902,6 +917,7 @@ class ToolHandler:
             logger.debug("Conflict count failed (non-critical)", exc_info=True)
 
         response = {
+            "version": __version__,
             "brain": brain.name,
             "neuron_count": stats["neuron_count"],
             "synapse_count": stats["synapse_count"],
