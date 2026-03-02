@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
-_VALID_PROVIDERS = ("sentence_transformer", "openai", "")
+_VALID_PROVIDERS = ("sentence_transformer", "openai", "gemini", "")
 
 
 @dataclass(frozen=True)

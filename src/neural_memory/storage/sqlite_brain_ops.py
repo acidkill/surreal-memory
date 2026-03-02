@@ -70,6 +70,10 @@ class SQLiteBrainMixin:
                         "consolidation_prune_threshold": brain.config.consolidation_prune_threshold,
                         "prune_min_inactive_days": brain.config.prune_min_inactive_days,
                         "merge_overlap_threshold": brain.config.merge_overlap_threshold,
+                        "embedding_enabled": brain.config.embedding_enabled,
+                        "embedding_provider": brain.config.embedding_provider,
+                        "embedding_model": brain.config.embedding_model,
+                        "embedding_similarity_threshold": brain.config.embedding_similarity_threshold,
                     }
                 ),
                 brain.owner_id,

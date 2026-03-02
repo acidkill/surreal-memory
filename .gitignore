@@ -173,3 +173,5 @@ src/neural_memory/server/static/dist/
 en_core_web_sm/
 en_core_web_md/
 en_core_web_lg/
+# Gemini CLI settings (contains user-specific config)
+.gemini/

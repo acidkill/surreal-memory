@@ -118,6 +118,8 @@ class TestEmbeddingFallback:
         config.hebbian_threshold = 0.5
         config.hebbian_delta = 0.1
         config.hebbian_initial_weight = 0.3
+        config.embedding_enabled = False
+        config.embedding_similarity_threshold = 0.7
         return config
 
     def test_pipeline_accepts_embedding_provider(self, mock_storage, mock_config):

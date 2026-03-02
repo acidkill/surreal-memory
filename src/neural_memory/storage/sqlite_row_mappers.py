@@ -217,6 +217,10 @@ def row_to_brain(row: aiosqlite.Row) -> Brain:
         weight_normalization_budget=config_data.get("weight_normalization_budget", 5.0),
         novelty_boost_max=config_data.get("novelty_boost_max", 3.0),
         novelty_decay_rate=config_data.get("novelty_decay_rate", 0.06),
+        embedding_enabled=config_data.get("embedding_enabled", False),
+        embedding_provider=config_data.get("embedding_provider", "sentence_transformer"),
+        embedding_model=config_data.get("embedding_model", "all-MiniLM-L6-v2"),
+        embedding_similarity_threshold=config_data.get("embedding_similarity_threshold", 0.7),
     )
 
     return Brain(
