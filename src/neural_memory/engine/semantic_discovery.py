@@ -54,8 +54,12 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
-def _create_provider(config: BrainConfig) -> Any:
+def _create_provider(config: BrainConfig, task_type: str = "RETRIEVAL_QUERY") -> Any:
     """Create an embedding provider from BrainConfig.
+
+    Args:
+        config: Brain configuration with embedding_provider and embedding_model.
+        task_type: Task type hint for providers that support it (e.g. Gemini).
 
     Raises ImportError if the required package is not installed.
     """
@@ -72,6 +76,10 @@ def _create_provider(config: BrainConfig) -> Any:
         from neural_memory.engine.embedding.openai_embedding import OpenAIEmbedding
 
         return OpenAIEmbedding(model=model_name)
+    elif provider_name == "gemini":
+        from neural_memory.engine.embedding.gemini_embedding import GeminiEmbedding
+
+        return GeminiEmbedding(model=model_name, task_type=task_type)
     else:
         raise ValueError(f"Unknown embedding provider: {provider_name}")
 
@@ -102,7 +110,7 @@ async def discover_semantic_synapses(
 
     # Try to create embedding provider
     try:
-        provider = _create_provider(config)
+        provider = _create_provider(config, task_type="RETRIEVAL_DOCUMENT")
     except (ImportError, Exception):
         logger.debug("Embedding provider unavailable — skipping semantic discovery")
         return SemanticDiscoveryResult()

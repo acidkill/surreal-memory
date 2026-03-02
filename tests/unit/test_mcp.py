@@ -145,7 +145,7 @@ class TestMCPServer:
         assert "prefix" in schema["properties"]
         assert "limit" in schema["properties"]
         assert "type_filter" in schema["properties"]
-        assert schema["required"] == ["prefix"]
+        assert schema["required"] == []
 
     def test_session_tool_schema(self, server: MCPServer) -> None:
         """Test nmem_session tool schema."""
@@ -514,11 +514,16 @@ class TestMCPToolCalls:
 
     @pytest.mark.asyncio
     async def test_suggest_empty_prefix(self, server: MCPServer) -> None:
-        """Test nmem_suggest with empty prefix returns empty."""
-        result = await server.call_tool("nmem_suggest", {"prefix": ""})
+        """Test nmem_suggest with empty prefix returns idle neurons (reinforcement mode)."""
+        mock_storage = AsyncMock()
+        mock_storage.get_all_neuron_states = AsyncMock(return_value=[])
+
+        with patch.object(server, "get_storage", return_value=mock_storage):
+            result = await server.call_tool("nmem_suggest", {"prefix": ""})
 
         assert result["suggestions"] == []
         assert result["count"] == 0
+        assert result["mode"] == "idle_reinforcement"
 
     @pytest.mark.asyncio
     async def test_suggest_with_type_filter(self, server: MCPServer) -> None:

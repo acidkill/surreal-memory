@@ -21,7 +21,7 @@ import shutil
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 if TYPE_CHECKING:
     from neural_memory.storage.base import NeuralStorage
@@ -102,6 +102,42 @@ class AutoConfig:
             capture_insights=data.get("capture_insights", True),
             capture_preferences=data.get("capture_preferences", True),
             min_confidence=data.get("min_confidence", 0.7),
+        )
+
+
+@dataclass(frozen=True)
+class EmbeddingSettings:
+    """Settings for embedding-based cross-language recall."""
+
+    enabled: bool = False
+    provider: str = "sentence_transformer"
+    model: str = "all-MiniLM-L6-v2"
+    similarity_threshold: float = 0.7
+
+    _VALID_PROVIDERS: ClassVar[tuple[str, ...]] = ("sentence_transformer", "openai", "gemini", "")
+
+    def __post_init__(self) -> None:
+        if self.provider not in self._VALID_PROVIDERS:
+            raise ValueError(
+                f"Invalid embedding provider: {self.provider!r}. "
+                f"Valid: {self._VALID_PROVIDERS}"
+            )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "provider": self.provider,
+            "model": self.model,
+            "similarity_threshold": self.similarity_threshold,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> EmbeddingSettings:
+        return cls(
+            enabled=bool(data.get("enabled", False)),
+            provider=str(data.get("provider", "sentence_transformer")),
+            model=str(data.get("model", "all-MiniLM-L6-v2")),
+            similarity_threshold=float(data.get("similarity_threshold", 0.7)),
         )
 
 
@@ -720,6 +756,9 @@ class UnifiedConfig:
     # Brain settings
     brain: BrainSettings = field(default_factory=BrainSettings)
 
+    # Embedding settings (cross-language recall)
+    embedding: EmbeddingSettings = field(default_factory=EmbeddingSettings)
+
     # Auto-capture settings for MCP
     auto: AutoConfig = field(default_factory=AutoConfig)
 
@@ -820,6 +859,7 @@ class UnifiedConfig:
                 or data.get("current_brain", get_default_brain())
             ),
             brain=BrainSettings.from_dict(data.get("brain", {})),
+            embedding=EmbeddingSettings.from_dict(data.get("embedding", {})),
             auto=AutoConfig.from_dict(data.get("auto", {})),
             eternal=EternalConfig.from_dict(data.get("eternal", {})),
             maintenance=MaintenanceConfig.from_dict(data.get("maintenance", {})),
@@ -868,6 +908,13 @@ class UnifiedConfig:
             f"max_spread_hops = {self.brain.max_spread_hops}",
             f"max_context_tokens = {self.brain.max_context_tokens}",
             f"freshness_weight = {self.brain.freshness_weight}",
+            "",
+            "# Embedding settings (cross-language recall via Gemini/OpenAI)",
+            "[embedding]",
+            f"enabled = {'true' if self.embedding.enabled else 'false'}",
+            f'provider = "{self.embedding.provider}"',
+            f'model = "{self.embedding.model}"',
+            f"similarity_threshold = {self.embedding.similarity_threshold}",
             "",
             "# Auto-capture settings for MCP server",
             "[auto]",
@@ -1307,6 +1354,10 @@ async def _get_sqlite_storage(
                 max_spread_hops=config.brain.max_spread_hops,
                 max_context_tokens=config.brain.max_context_tokens,
                 freshness_weight=config.brain.freshness_weight,
+                embedding_enabled=config.embedding.enabled,
+                embedding_provider=config.embedding.provider,
+                embedding_model=config.embedding.model,
+                embedding_similarity_threshold=config.embedding.similarity_threshold,
             )
             brain = Brain.create(name=name, config=brain_config, brain_id=name)
             await storage.save_brain(brain)

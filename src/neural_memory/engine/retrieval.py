@@ -114,7 +114,18 @@ class ReflexPipeline:
         self._config = config
         self._parser = parser or QueryParser()
         self._use_reflex = use_reflex
-        self._embedding_provider = embedding_provider
+
+        # Auto-create embedding provider if enabled but not passed
+        if embedding_provider is None and config.embedding_enabled:
+            try:
+                from neural_memory.engine.semantic_discovery import _create_provider
+
+                self._embedding_provider: EmbeddingProvider | None = _create_provider(config)
+            except Exception:
+                logger.debug("Could not auto-create embedding provider", exc_info=True)
+                self._embedding_provider = None
+        else:
+            self._embedding_provider = embedding_provider
         self._activator = SpreadingActivation(storage, config)
         self._reflex_activator = ReflexActivation(storage, config)
         self._reinforcer = ReinforcementManager(
@@ -246,7 +257,22 @@ class ReflexPipeline:
         activations, disputed_ids = await self._deprioritize_disputed(activations)
 
         # 4.8 Sufficiency check: early exit if signal is too weak
-        from neural_memory.engine.sufficiency import check_sufficiency
+        from neural_memory.engine.sufficiency import GateCalibration, check_sufficiency
+
+        # Fetch EMA calibration stats (non-critical; falls back gracefully)
+        _gate_calibration: dict[str, GateCalibration] | None = None
+        try:
+            _raw_cal = await self._storage.get_gate_ema_stats()  # type: ignore[attr-defined]
+            _gate_calibration = {
+                gate: GateCalibration(
+                    accuracy=stats["accuracy"],
+                    avg_confidence=stats["avg_confidence"],
+                    sample_count=int(stats["sample_count"]),
+                )
+                for gate, stats in _raw_cal.items()
+            }
+        except (AttributeError, Exception):
+            logger.debug("Gate calibration fetch failed (non-critical)", exc_info=True)
 
         _sufficiency = check_sufficiency(
             activations=activations,
@@ -254,6 +280,8 @@ class ReflexPipeline:
             intersections=intersections if not self._use_reflex else [],
             stab_converged=_stab_report.converged,
             stab_neurons_removed=_stab_report.neurons_removed,
+            query_intent=stimulus.intent.value,
+            calibration=_gate_calibration,
         )
 
         if not _sufficiency.sufficient:
@@ -950,8 +978,17 @@ class ReflexPipeline:
             logger.debug("Embedding query failed (non-critical)", exc_info=True)
             return []
 
-        # Get all anchor neurons (with embeddings) - limit search scope
-        candidates = await self._storage.find_neurons(limit=500)
+        # Probe: check if any neurons have embeddings before scanning widely
+        probe = await self._storage.find_neurons(limit=20)
+        has_embeddings = any(
+            n.metadata.get("_embedding") for n in probe
+        )
+        if not has_embeddings:
+            return []
+
+        # Wide scan for neurons with stored embeddings (doc neurons
+        # may be older than organic memories). Storage caps at 1000.
+        candidates = await self._storage.find_neurons(limit=1000)
 
         # Collect candidates with embeddings, compute similarity in parallel
         embed_pairs: list[tuple[str, list[float]]] = []
@@ -971,7 +1008,8 @@ class ReflexPipeline:
                 return (nid, 0.0)
 
         results = await asyncio.gather(*[_compute_sim(nid, emb) for nid, emb in embed_pairs])
-        scored = [(nid, sim) for nid, sim in results if sim >= 0.7]
+        threshold = self._config.embedding_similarity_threshold
+        scored = [(nid, sim) for nid, sim in results if sim >= threshold]
 
         # Sort by similarity descending, return top-K IDs
         scored.sort(key=lambda x: x[1], reverse=True)
@@ -1037,8 +1075,8 @@ class ReflexPipeline:
             if keyword_anchors:
                 anchor_sets.append(keyword_anchors)
 
-        # 4. EMBEDDING FALLBACK - when no substring anchors found
-        if not anchor_sets and self._embedding_provider is not None:
+        # 4. EMBEDDING ANCHORS - parallel source (always, not just fallback)
+        if self._embedding_provider is not None:
             embedding_anchors = await self._find_embedding_anchors(stimulus.raw_query)
             if embedding_anchors:
                 anchor_sets.append(embedding_anchors)

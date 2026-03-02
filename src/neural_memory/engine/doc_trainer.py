@@ -403,6 +403,12 @@ class DocTrainer:
         if tc.consolidate and chunks_encoded > 0:
             enrichment_synapses = await self._run_enrichment()
 
+        # Store embeddings for anchor neurons (enables cross-language recall)
+        if self._config.embedding_enabled and chunk_anchors:
+            stored = await self._store_chunk_embeddings(chunk_anchors)
+            if stored > 0:
+                logger.info("Stored embeddings for %d anchor neurons", stored)
+
         return TrainingResult(
             files_processed=files_processed,
             chunks_encoded=chunks_encoded,
@@ -576,6 +582,57 @@ class DocTrainer:
                     synapse_count += 1
 
         return synapse_count
+
+    async def _store_chunk_embeddings(
+        self,
+        chunk_anchors: list[tuple[tuple[str, ...], str]],
+    ) -> int:
+        """Batch-embed anchor neuron content and store in metadata['_embedding'].
+
+        This enables cross-language recall: the embedding captures semantic
+        meaning regardless of source language, so a Vietnamese query can match
+        English documentation via cosine similarity.
+
+        Returns the number of neurons updated with embeddings.
+        """
+        try:
+            from neural_memory.engine.semantic_discovery import _create_provider
+
+            provider = _create_provider(self._config, task_type="RETRIEVAL_DOCUMENT")
+        except (ImportError, ValueError):
+            logger.debug("Embedding provider unavailable — skipping embedding storage", exc_info=True)
+            return 0
+
+        # Collect anchor neuron IDs and their content
+        anchor_ids = [anchor_id for _, anchor_id in chunk_anchors]
+        neurons = []
+        for nid in anchor_ids:
+            neuron = await self._storage.get_neuron(nid)
+            if neuron and neuron.content.strip():
+                neurons.append(neuron)
+
+        if not neurons:
+            return 0
+
+        # Batch embed
+        texts = [n.content for n in neurons]
+        try:
+            embeddings = await provider.embed_batch(texts)
+        except Exception:
+            logger.warning("Batch embedding failed during training", exc_info=True)
+            return 0
+
+        # Store embeddings in neuron metadata
+        stored = 0
+        for neuron, embedding in zip(neurons, embeddings, strict=True):
+            updated = neuron.with_metadata(_embedding=embedding)
+            try:
+                await self._storage.update_neuron(updated)
+                stored += 1
+            except Exception:
+                logger.debug("Failed to store embedding for neuron %s", neuron.id)
+
+        return stored
 
     async def _run_enrichment(self) -> int:
         """Run ENRICH consolidation to create cross-cluster links."""

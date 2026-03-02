@@ -67,6 +67,11 @@ class TestEmbeddingConfig:
         assert config.provider == "openai"
         assert config.model == "text-embedding-3-small"
 
+    def test_gemini_provider_valid(self) -> None:
+        """Should accept 'gemini' as a valid provider."""
+        config = EmbeddingConfig(provider="gemini", model="gemini-embedding-001")
+        assert config.provider == "gemini"
+
 
 # ── Provider protocol tests ──────────────────────────────────────
 
@@ -452,6 +457,190 @@ class TestOpenAIEmbedding:
                 await provider.embed("test")
 
 
+# ── GeminiEmbedding tests ────────────────────────────────────────
+
+
+class TestGeminiEmbedding:
+    """Test GeminiEmbedding with mocked google-genai."""
+
+    def test_requires_api_key(self) -> None:
+        """Should raise ValueError when no API key provided."""
+        import os
+        import unittest.mock
+
+        from neural_memory.engine.embedding.gemini_embedding import GeminiEmbedding
+
+        # Clear environment so GEMINI_API_KEY and GOOGLE_API_KEY are not set
+        env_without_key = {
+            k: v
+            for k, v in os.environ.items()
+            if k not in ("GEMINI_API_KEY", "GOOGLE_API_KEY")
+        }
+        with unittest.mock.patch.dict(os.environ, env_without_key, clear=True):
+            with pytest.raises(ValueError, match="API key"):
+                GeminiEmbedding()
+
+    def test_accepts_explicit_api_key(self) -> None:
+        """Should accept an explicit API key parameter."""
+        from neural_memory.engine.embedding.gemini_embedding import GeminiEmbedding
+
+        provider = GeminiEmbedding(api_key="test-key-123")
+        assert provider._api_key == "test-key-123"
+
+    def test_accepts_gemini_env_key(self) -> None:
+        """Should pick up GEMINI_API_KEY from environment."""
+        import os
+        import unittest.mock
+
+        from neural_memory.engine.embedding.gemini_embedding import GeminiEmbedding
+
+        env = {k: v for k, v in os.environ.items() if k not in ("GEMINI_API_KEY", "GOOGLE_API_KEY")}
+        env["GEMINI_API_KEY"] = "env-gemini-key"
+        with unittest.mock.patch.dict(os.environ, env, clear=True):
+            provider = GeminiEmbedding()
+            assert provider._api_key == "env-gemini-key"
+
+    def test_accepts_google_env_key(self) -> None:
+        """Should fall back to GOOGLE_API_KEY from environment."""
+        import os
+        import unittest.mock
+
+        from neural_memory.engine.embedding.gemini_embedding import GeminiEmbedding
+
+        env = {k: v for k, v in os.environ.items() if k not in ("GEMINI_API_KEY", "GOOGLE_API_KEY")}
+        env["GOOGLE_API_KEY"] = "env-google-key"
+        with unittest.mock.patch.dict(os.environ, env, clear=True):
+            provider = GeminiEmbedding()
+            assert provider._api_key == "env-google-key"
+
+    def test_dimension_default_model(self) -> None:
+        """Should return 3072 for default model gemini-embedding-001."""
+        from neural_memory.engine.embedding.gemini_embedding import GeminiEmbedding
+
+        provider = GeminiEmbedding(api_key="test-key")
+        assert provider.dimension == 3072
+
+    def test_dimension_text_embedding_004(self) -> None:
+        """Should return 768 for text-embedding-004."""
+        from neural_memory.engine.embedding.gemini_embedding import GeminiEmbedding
+
+        provider = GeminiEmbedding(api_key="test-key", model="text-embedding-004")
+        assert provider.dimension == 768
+
+    def test_dimension_unknown_model_defaults_to_3072(self) -> None:
+        """Should fallback to 3072 for unknown models."""
+        from neural_memory.engine.embedding.gemini_embedding import GeminiEmbedding
+
+        provider = GeminiEmbedding(api_key="test-key", model="some-future-model")
+        assert provider.dimension == 3072
+
+    def test_task_type_default(self) -> None:
+        """Should default to RETRIEVAL_QUERY task type."""
+        from neural_memory.engine.embedding.gemini_embedding import GeminiEmbedding
+
+        provider = GeminiEmbedding(api_key="test-key")
+        assert provider._task_type == "RETRIEVAL_QUERY"
+
+    def test_task_type_custom(self) -> None:
+        """Should accept custom task type."""
+        from neural_memory.engine.embedding.gemini_embedding import GeminiEmbedding
+
+        provider = GeminiEmbedding(api_key="test-key", task_type="RETRIEVAL_DOCUMENT")
+        assert provider._task_type == "RETRIEVAL_DOCUMENT"
+
+    @pytest.mark.asyncio
+    async def test_embed_batch_empty(self) -> None:
+        """embed_batch with empty list should return empty list."""
+        from neural_memory.engine.embedding.gemini_embedding import GeminiEmbedding
+
+        provider = GeminiEmbedding(api_key="test-key")
+        result = await provider.embed_batch([])
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_embed_with_mock_client(self) -> None:
+        """Should call the Gemini client and return embedding."""
+        import unittest.mock
+
+        from neural_memory.engine.embedding.gemini_embedding import GeminiEmbedding
+
+        provider = GeminiEmbedding(api_key="test-key")
+
+        # Mock embedding result
+        mock_embedding = unittest.mock.MagicMock()
+        mock_embedding.values = [0.1, 0.2, 0.3]
+
+        mock_response = unittest.mock.MagicMock()
+        mock_response.embeddings = [mock_embedding]
+
+        mock_aio_models = unittest.mock.AsyncMock()
+        mock_aio_models.embed_content = unittest.mock.AsyncMock(return_value=mock_response)
+
+        mock_aio = unittest.mock.MagicMock()
+        mock_aio.models = mock_aio_models
+
+        mock_client = unittest.mock.MagicMock()
+        mock_client.aio = mock_aio
+
+        provider._client = mock_client
+
+        result = await provider.embed("hello")
+        assert result == [0.1, 0.2, 0.3]
+        mock_aio_models.embed_content.assert_called_once_with(
+            model="gemini-embedding-001",
+            contents="hello",
+            config={"task_type": "RETRIEVAL_QUERY"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_embed_batch_with_mock_client(self) -> None:
+        """Should call the Gemini client with batch input."""
+        import unittest.mock
+
+        from neural_memory.engine.embedding.gemini_embedding import GeminiEmbedding
+
+        provider = GeminiEmbedding(api_key="test-key")
+
+        mock_emb_0 = unittest.mock.MagicMock()
+        mock_emb_0.values = [0.1, 0.2]
+
+        mock_emb_1 = unittest.mock.MagicMock()
+        mock_emb_1.values = [0.3, 0.4]
+
+        mock_response = unittest.mock.MagicMock()
+        mock_response.embeddings = [mock_emb_0, mock_emb_1]
+
+        mock_aio_models = unittest.mock.AsyncMock()
+        mock_aio_models.embed_content = unittest.mock.AsyncMock(return_value=mock_response)
+
+        mock_aio = unittest.mock.MagicMock()
+        mock_aio.models = mock_aio_models
+
+        mock_client = unittest.mock.MagicMock()
+        mock_client.aio = mock_aio
+
+        provider._client = mock_client
+
+        result = await provider.embed_batch(["hello", "world"])
+        assert len(result) == 2
+        assert result[0] == [0.1, 0.2]
+        assert result[1] == [0.3, 0.4]
+
+    @pytest.mark.asyncio
+    async def test_lazy_import_error(self) -> None:
+        """Should raise ImportError with helpful message when google-genai not installed."""
+        import unittest.mock
+
+        from neural_memory.engine.embedding.gemini_embedding import GeminiEmbedding
+
+        provider = GeminiEmbedding(api_key="test-key")
+        provider._client = None  # Force re-import
+
+        with unittest.mock.patch.dict("sys.modules", {"google": None, "google.genai": None}):
+            with pytest.raises(ImportError, match="google-genai"):
+                await provider.embed("test")
+
+
 # ── Embedding provider edge cases ───────────────────────────────
 
 
@@ -499,3 +688,69 @@ class TestEmbeddingProviderEdgeCases:
         v2 = [0.0, 0.0, 0.0, 1.0]
         sim = await provider.similarity(v1, v2)
         assert sim == pytest.approx(0.0, abs=1e-6)
+
+
+# ── EmbeddingSettings validation tests ───────────────────────────
+
+
+class TestEmbeddingSettings:
+    """Test EmbeddingSettings from unified_config."""
+
+    def test_defaults(self) -> None:
+        """EmbeddingSettings should have sensible defaults."""
+        from neural_memory.unified_config import EmbeddingSettings
+
+        settings = EmbeddingSettings()
+        assert settings.enabled is False
+        assert settings.provider == "sentence_transformer"
+        assert settings.model == "all-MiniLM-L6-v2"
+        assert settings.similarity_threshold == 0.7
+
+    def test_frozen(self) -> None:
+        """EmbeddingSettings should be immutable."""
+        from dataclasses import FrozenInstanceError
+
+        from neural_memory.unified_config import EmbeddingSettings
+
+        settings = EmbeddingSettings()
+        with pytest.raises(FrozenInstanceError):
+            settings.enabled = True  # type: ignore[misc]
+
+    def test_valid_providers(self) -> None:
+        """Should accept all valid provider names."""
+        from neural_memory.unified_config import EmbeddingSettings
+
+        for provider in ("sentence_transformer", "openai", "gemini", ""):
+            s = EmbeddingSettings(provider=provider)
+            assert s.provider == provider
+
+    def test_invalid_provider_raises(self) -> None:
+        """Should reject invalid provider names."""
+        from neural_memory.unified_config import EmbeddingSettings
+
+        with pytest.raises(ValueError, match="Invalid embedding provider"):
+            EmbeddingSettings(provider="gremlin")
+
+    def test_from_dict_round_trip(self) -> None:
+        """from_dict/to_dict should round-trip correctly."""
+        from neural_memory.unified_config import EmbeddingSettings
+
+        original = EmbeddingSettings(
+            enabled=True,
+            provider="gemini",
+            model="gemini-embedding-001",
+            similarity_threshold=0.8,
+        )
+        data = original.to_dict()
+        restored = EmbeddingSettings.from_dict(data)
+        assert restored.enabled == original.enabled
+        assert restored.provider == original.provider
+        assert restored.model == original.model
+        assert restored.similarity_threshold == original.similarity_threshold
+
+    def test_from_dict_invalid_provider_raises(self) -> None:
+        """from_dict with invalid provider should raise."""
+        from neural_memory.unified_config import EmbeddingSettings
+
+        with pytest.raises(ValueError, match="Invalid embedding provider"):
+            EmbeddingSettings.from_dict({"provider": "bad_provider"})

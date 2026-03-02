@@ -97,6 +97,9 @@ embeddings = [
 embeddings-openai = [
     "openai>=1.0",
 ]
+embeddings-gemini = [
+    "google-genai>=1.0",
+]
 integration = [
     "neural-memory[chromadb,mem0]",
 ]
@@ -237,6 +240,7 @@ module = [
     "bs4.*",
     "markdownify.*",
     "openpyxl.*",
+    "google.genai.*",
 ]
 ignore_missing_imports = true
 
