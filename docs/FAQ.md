@@ -320,6 +320,25 @@ They complement each other. RAG answers "what does the document say?", NeuralMem
 
 For **large document corpus search** (100+ files, legal compliance, exact text retrieval), RAG with a proper vector database (Chroma, Pinecone, Weaviate) will outperform NeuralMemory significantly. NeuralMemory's strength is *associative recall* and *relationship tracing*, not *semantic text search*.
 
+### Q: Is NeuralMemory basically a Knowledge Graph database?
+
+**Close, but no.** They share graph structure, but serve fundamentally different purposes:
+
+| Aspect | Knowledge Graph DB (Neo4j, FalkorDB) | NeuralMemory |
+|--------|--------------------------------------|-------------|
+| **Purpose** | Static knowledge map — store entities & relationships | Living agent memory — learn from experience |
+| **Schema** | Explicit: entities, relationships defined upfront | Emergent: neurons form connections organically |
+| **Query** | Cypher/GQL — precise graph queries | Spreading activation — signal propagates like a reflex |
+| **Lifecycle** | Data persists unchanged until explicitly modified | Memories decay, strengthen with use (Hebbian learning), consolidate during "sleep" |
+| **Scale target** | Millions of nodes, enterprise workloads | Agent-scale (thousands of neurons), sub-ms latency |
+| **Behavior** | Database — stores what you tell it | Brain — forgets what you don't use, strengthens what you repeat |
+
+**In short:**
+- Knowledge Graph = **encyclopedia** (static facts, explicit relationships)
+- NeuralMemory = **biological memory** (learns, forgets, associates, consolidates)
+
+NeuralMemory *can use* a knowledge graph DB as its backend (FalkorDB opt-in is shipped), but the memory system itself adds biological behaviors on top: decay, Hebbian learning, sleep consolidation, spreading activation, and memory stages (episodic → semantic).
+
 ---
 
 ## Technical & Architecture
