@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.20.0] - 2026-03-03
+
+### Added
+
+- **Gemini Embedding Provider** — Cross-language recall via Google Gemini embeddings (PR #9 by @xthanhn91)
+  - `GeminiEmbedding` provider: `gemini-embedding-001` (3072D), `text-embedding-004` (768D)
+  - Parallel anchor sources: embedding + FTS5 run concurrently (not fallback-only)
+  - Config pipeline: `config.toml[embedding]` → `EmbeddingSettings` → `BrainConfig` → SQLite
+  - Doc training embeds anchor neurons for cross-language retrieval
+  - E2E validated: 100/100 Vietnamese queries on English KB (avg confidence 0.98)
+  - Optional dependency: `pip install 'neural-memory[embeddings-gemini]'`
+
+- **Sufficiency Enhancements** — Smarter retrieval gating
+  - EMA calibration: per-gate accuracy tracking, auto-downgrade unreliable gates
+  - Per-query-type thresholds: strict (factual), lenient (exploratory), default profiles
+  - Diminishing returns gate: early-exit when multi-pass retrieval plateaus
+
+### Fixed
+
+- **Comprehensive Audit** — 7 CRITICAL, 17 HIGH, 18 MEDIUM fixes
+  - Security: auth guard on consolidation routes, CORS wildcard removal, path traversal fix
+  - Performance: `@lru_cache` regex, cached QueryRouter/MemoryEncryptor, `asyncio.gather` embeddings
+  - Infrastructure: `.dockerignore`, `.env.example`, bounded exports, async cursor managers
+- **PR #9 Review Fixes** — 3 HIGH, 6 MEDIUM, 3 LOW
+  - Bare except → specific exceptions in doc_trainer
+  - `EmbeddingSettings` frozen + validated (rejects invalid providers)
+  - Probe-first early exit in embedding anchor scan (performance)
+  - Correct task_type for semantic discovery consolidation
+  - Hardcoded paths → env vars in E2E scripts
+
+### Tests
+
+- 33 new sufficiency tests (EMA calibration, query profiles, diminishing returns)
+- 6 new EmbeddingSettings validation tests
+- 13 new Gemini embedding provider tests
+- Full suite: 3054 passed, 0 failed
+
 ## [2.19.0] - 2026-03-02
 
 ### Added
