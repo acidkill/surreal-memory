@@ -431,6 +431,7 @@ class NeuralStorage(ABC):
         time_overlaps: tuple[datetime, datetime] | None = None,
         tags: set[str] | None = None,
         min_salience: float | None = None,
+        metadata_key: str | None = None,
         limit: int = 100,
     ) -> list[Fiber]:
         """
@@ -441,6 +442,7 @@ class NeuralStorage(ABC):
             time_overlaps: Filter by time range overlap
             tags: Filter by having all these tags
             min_salience: Filter by minimum salience
+            metadata_key: Filter by metadata containing this key (non-null value)
             limit: Maximum results
 
         Returns:

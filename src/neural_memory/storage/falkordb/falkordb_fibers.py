@@ -106,6 +106,7 @@ class FalkorDBFiberMixin(FalkorDBBaseMixin):
         time_overlaps: tuple[datetime, datetime] | None = None,
         tags: set[str] | None = None,
         min_salience: float | None = None,
+        metadata_key: str | None = None,
         limit: int = 100,
     ) -> list[Fiber]:
         limit = min(limit, 1000)
@@ -160,6 +161,10 @@ class FalkorDBFiberMixin(FalkorDBBaseMixin):
         # Post-filter tags (FalkorDB stores as CSV, complex matching in Cypher)
         if tags:
             fibers = [f for f in fibers if tags <= f.tags]
+
+        # Post-filter metadata key (FalkorDB metadata stored as JSON string)
+        if metadata_key is not None:
+            fibers = [f for f in fibers if f.metadata.get(metadata_key) is not None]
 
         return fibers[:limit]
 

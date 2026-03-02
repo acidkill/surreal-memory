@@ -95,6 +95,7 @@ class SQLiteFiberMixin:
         time_overlaps: tuple[datetime, datetime] | None = None,
         tags: set[str] | None = None,
         min_salience: float | None = None,
+        metadata_key: str | None = None,
         limit: int = 100,
     ) -> list[Fiber]:
         limit = min(limit, 1000)
@@ -118,6 +119,10 @@ class SQLiteFiberMixin:
         if min_salience is not None:
             query += " AND salience >= ?"
             params.append(min_salience)
+
+        if metadata_key is not None:
+            query += " AND json_extract(metadata, ?) IS NOT NULL"
+            params.append(f"$.{metadata_key}")
 
         query += " ORDER BY salience DESC LIMIT ?"
         params.append(limit)

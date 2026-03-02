@@ -73,6 +73,7 @@ class SharedFiberBrainMixin:
         time_overlaps: tuple[datetime, datetime] | None = None,
         tags: set[str] | None = None,
         min_salience: float | None = None,
+        metadata_key: str | None = None,
         limit: int = 100,
     ) -> list[Fiber]:
         """Find fibers matching criteria."""
@@ -86,6 +87,8 @@ class SharedFiberBrainMixin:
             params["tags"] = ",".join(tags)
         if min_salience is not None:
             params["min_salience"] = min_salience
+        if metadata_key is not None:
+            params["metadata_key"] = metadata_key
 
         result = await self._request("GET", "/memory/fibers", params=params)
         return [dict_to_fiber(f) for f in result.get("fibers", [])]

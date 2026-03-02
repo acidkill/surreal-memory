@@ -42,6 +42,7 @@ class InMemoryCollectionsMixin:
         time_overlaps: tuple[datetime, datetime] | None = None,
         tags: set[str] | None = None,
         min_salience: float | None = None,
+        metadata_key: str | None = None,
         limit: int = 100,
     ) -> list[Fiber]:
         limit = min(limit, 1000)
@@ -58,6 +59,8 @@ class InMemoryCollectionsMixin:
             if tags is not None and not tags.issubset(fiber.tags):
                 continue
             if min_salience is not None and fiber.salience < min_salience:
+                continue
+            if metadata_key is not None and metadata_key not in fiber.metadata:
                 continue
 
             results.append(fiber)

@@ -1208,9 +1208,7 @@ class ToolHandler:
             }
 
         elif action == "list":
-            # TODO: filter by metadata in query instead of fetching all fibers
-            fibers = await storage.get_fibers(limit=1000)
-            habits = [f for f in fibers if f.metadata.get("_habit_pattern")]
+            habits = await storage.find_fibers(metadata_key="_habit_pattern", limit=1000)
             return {
                 "habits": [
                     {
@@ -1226,8 +1224,7 @@ class ToolHandler:
             }
 
         elif action == "clear":
-            fibers = await storage.get_fibers(limit=1000)
-            habits = [f for f in fibers if f.metadata.get("_habit_pattern")]
+            habits = await storage.find_fibers(metadata_key="_habit_pattern", limit=1000)
             if habits:
                 await asyncio.gather(*[storage.delete_fiber(h.id) for h in habits])
             cleared = len(habits)
