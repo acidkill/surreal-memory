@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.21.0] - 2026-03-03
+
+### Added
+
+- **Cross-Language Recall Hint** — Smart detection when recall misses due to language mismatch
+  - Detects query language vs brain majority language (Vietnamese ↔ English)
+  - Shows actionable `cross_language_hint` in recall response when embedding is not enabled
+  - Suggests `pip install` if sentence-transformers not installed, config-only if already installed
+  - `detect_language()` extracted as reusable module-level function with Vietnamese-unique char detection
+
+- **Embedding Setup Guide** — Comprehensive docs for all embedding providers
+  - New `docs/guides/embedding-setup.md` with provider comparison, config examples, troubleshooting
+  - Free multilingual model recommendations: `paraphrase-multilingual-MiniLM-L12-v2` (50+ languages, 384D, ~440MB)
+  - Provider comparison table: sentence_transformer (free/local) vs Gemini vs OpenAI
+
+- **Embedding Documentation & Onboarding**
+  - README: updated "None — pure algorithmic" → "Optional", added embedding quick-start section
+  - `.env.example`: added `GEMINI_API_KEY`, `OPENAI_API_KEY` vars
+  - Onboarding step 6: suggests cross-language recall setup for new users
+
+### Improved
+
+- **Vietnamese Language Detection** — More accurate short-text detection
+  - Added `_VI_UNIQUE_CHARS` set (chars exclusive to Vietnamese, not shared with French/Spanish)
+  - Short text like "lỗi xác thực" now correctly detected as Vietnamese
+
+### Tests
+
+- 18 new tests in `test_cross_language_hint.py` (8 detect_language + 10 hint logic)
+- All 3090+ tests pass
+
 ## [2.20.0] - 2026-03-03
 
 ### Added

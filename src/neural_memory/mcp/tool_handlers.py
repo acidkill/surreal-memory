@@ -78,6 +78,79 @@ class ToolHandler:
         def get_update_hint(self) -> dict[str, Any] | None:
             raise NotImplementedError
 
+    # ──────────────────── Helpers ────────────────────
+
+    async def _check_cross_language_hint(
+        self,
+        query: str,
+        result: Any,
+        config: Any,
+    ) -> str | None:
+        """Return a hint if recall likely missed due to cross-language mismatch.
+
+        Conditions (all must be true):
+        1. Recall returned 0 fibers or very low confidence
+        2. Embedding is NOT enabled
+        3. Query language differs from brain majority language
+        """
+        # Only hint when results are poor
+        if result.fibers_matched and result.confidence >= 0.3:
+            return None
+
+        # No hint needed if embedding is already enabled
+        if getattr(config, "embedding_enabled", False):
+            return None
+
+        from neural_memory.extraction.parser import detect_language
+
+        query_lang = detect_language(query)
+
+        # Sample recent neurons to detect brain majority language
+        try:
+            storage = await self.get_storage()
+            sample_neurons = await storage.find_neurons(limit=20)
+            if len(sample_neurons) < 3:
+                return None  # Too few memories to determine majority
+
+            lang_counts: dict[str, int] = {}
+            for neuron in sample_neurons:
+                if neuron.content.strip():
+                    lang = detect_language(neuron.content)
+                    lang_counts[lang] = lang_counts.get(lang, 0) + 1
+
+            if not lang_counts:
+                return None
+
+            majority_lang = max(lang_counts, key=lambda k: lang_counts[k])
+
+            if query_lang == majority_lang:
+                return None  # Same language — not a cross-language issue
+
+            # Language mismatch detected — build hint
+            try:
+                import sentence_transformers as _st  # noqa: F401
+                return (
+                    f"Your query is in {'Vietnamese' if query_lang == 'vi' else 'English'} "
+                    f"but most memories are in {'Vietnamese' if majority_lang == 'vi' else 'English'}. "
+                    "Enable cross-language recall: add [embedding] section to "
+                    "~/.neuralmemory/config.toml with enabled=true, "
+                    "provider='sentence_transformer', "
+                    "model='paraphrase-multilingual-MiniLM-L12-v2'."
+                )
+            except ImportError:
+                return (
+                    f"Your query is in {'Vietnamese' if query_lang == 'vi' else 'English'} "
+                    f"but most memories are in {'Vietnamese' if majority_lang == 'vi' else 'English'}. "
+                    "Enable cross-language recall: "
+                    "pip install neural-memory[embeddings], then add [embedding] section to "
+                    "~/.neuralmemory/config.toml with enabled=true, "
+                    "provider='sentence_transformer', "
+                    "model='paraphrase-multilingual-MiniLM-L12-v2'."
+                )
+        except Exception:
+            logger.debug("Cross-language hint check failed (non-critical)", exc_info=True)
+            return None
+
     # ──────────────────── Core tool handlers ────────────────────
 
     async def _remember(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -638,6 +711,13 @@ class ToolHandler:
         onboarding = await self._check_onboarding()
         if onboarding:
             response["onboarding"] = onboarding
+
+        # Cross-language hint: suggest embedding when recall misses due to language mismatch
+        cross_lang_hint = await self._check_cross_language_hint(
+            query, result, brain.config,
+        )
+        if cross_lang_hint:
+            response["cross_language_hint"] = cross_lang_hint
 
         # Surface pending alerts count
         alert_info = await self._surface_pending_alerts()  # type: ignore[attr-defined]

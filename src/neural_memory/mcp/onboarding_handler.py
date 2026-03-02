@@ -71,6 +71,21 @@ ONBOARDING_STEPS: tuple[OnboardingHint, ...] = (
         example_tool="nmem_auto",
         example_args={"action": "status"},
     ),
+    OnboardingHint(
+        step=6,
+        title="Optional: Enable cross-language recall",
+        description=(
+            "Install embeddings to recall memories across languages "
+            "(e.g., search in Vietnamese, find English memories). "
+            "Run: pip install neural-memory[embeddings]. "
+            "Then add [embedding] section to ~/.neuralmemory/config.toml with "
+            "enabled=true, provider='sentence_transformer', "
+            "model='paraphrase-multilingual-MiniLM-L12-v2'. "
+            "This is optional — core recall works without embeddings."
+        ),
+        example_tool="nmem_remember",
+        example_args={"content": "Embeddings enabled for cross-language recall", "type": "fact"},
+    ),
 )
 
 

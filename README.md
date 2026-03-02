@@ -19,14 +19,14 @@ NeuralMemory stores experiences as interconnected neurons and recalls them throu
 | Aspect | RAG / Vector Search | NeuralMemory |
 |--------|---------------------|--------------|
 | **Model** | Search engine | Human brain |
-| **LLM/Embedding** | Required (embedding API calls) | **None** — pure algorithmic graph traversal |
+| **LLM/Embedding** | Required (embedding API calls) | **Optional** — core recall is pure algorithmic graph traversal |
 | **Query** | "Find similar text" | "Recall through association" |
 | **Structure** | Flat chunks + embeddings | Neural graph + synapses |
 | **Relationships** | None (just similarity) | Explicit: `CAUSED_BY`, `LEADS_TO`, `RESOLVED_BY`, etc. |
 | **Temporal** | Timestamp filter | Time as first-class neurons |
 | **Multi-hop** | Multiple queries needed | Natural graph traversal |
 | **Lifecycle** | Static | Decay, reinforcement, consolidation |
-| **API Cost** | ~$0.02/1K queries | **$0.00** — fully offline |
+| **API Cost** | ~$0.02/1K queries | **$0.00** — fully offline (optional embeddings available) |
 
 **Example: "Why did Tuesday's outage happen?"**
 
@@ -43,11 +43,26 @@ pip install neural-memory
 
 With optional features:
 ```bash
-pip install neural-memory[server]   # FastAPI server + dashboard
-pip install neural-memory[extract]  # PDF/DOCX/PPTX/HTML/XLSX extraction
-pip install neural-memory[nlp-vi]   # Vietnamese NLP
-pip install neural-memory[all]      # All features
+pip install neural-memory[server]       # FastAPI server + dashboard
+pip install neural-memory[extract]      # PDF/DOCX/PPTX/HTML/XLSX extraction
+pip install neural-memory[nlp-vi]       # Vietnamese NLP
+pip install neural-memory[embeddings]   # Local embedding (cross-language recall)
+pip install neural-memory[all]          # All features
 ```
+
+### Optional: Embedding for Cross-Language Recall
+
+Core recall works without embeddings. Enable embeddings to recall memories across languages (e.g., search in Vietnamese, find English memories):
+
+```toml
+# ~/.neuralmemory/config.toml
+[embedding]
+enabled = true
+provider = "sentence_transformer"                      # Free, runs locally
+model = "paraphrase-multilingual-MiniLM-L12-v2"        # 50+ languages
+```
+
+Three providers available: **sentence_transformer** (free/local), **gemini** (Google API), **openai** (OpenAI API). See the [Embedding Setup Guide](docs/guides/embedding-setup.md) for details.
 
 ## Quick Setup
 

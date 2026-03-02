@@ -81,6 +81,41 @@ class Stimulus:
         return len(self.time_hints) + len(self.entities) + len(self.keywords)
 
 
+# Vietnamese-specific diacritical characters (frozen set for fast lookup)
+_VI_CHARS = frozenset("àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ")
+
+# Characters unique to Vietnamese (not shared with French/Spanish/Portuguese)
+_VI_UNIQUE_CHARS = frozenset("ăắằẳẵặơờớởỡợưừứửữựđảẩẫậểễệỉĩỏổỗộủũỷỹỵ")
+
+# Common Vietnamese function words
+_VI_WORDS = frozenset({"của", "và", "là", "có", "được", "cho", "với", "này", "trong", "để", "các"})
+
+
+def detect_language(text: str) -> str:
+    """Detect whether text is Vietnamese or English.
+
+    Returns "vi" if text contains Vietnamese diacritics or common Vietnamese words,
+    otherwise returns "en".
+    """
+    text_lower = text.lower()
+    vi_count = sum(1 for c in text_lower if c in _VI_CHARS)
+
+    # Long text: 5% threshold for all Vietnamese diacritics
+    if len(text) >= 20 and vi_count > len(text) * 0.05:
+        return "vi"
+
+    # Short text: any uniquely-Vietnamese character is strong signal
+    if any(c in _VI_UNIQUE_CHARS for c in text_lower):
+        return "vi"
+
+    # Check for Vietnamese words
+    words = set(text_lower.split())
+    if words & _VI_WORDS:
+        return "vi"
+
+    return "en"
+
+
 class QueryParser:
     """
     Parser for decomposing queries into activation signals.
@@ -278,24 +313,8 @@ class QueryParser:
         )
 
     def _detect_language(self, text: str) -> str:
-        """Simple language detection."""
-        # Vietnamese-specific characters
-        vi_chars = set("àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ")
-
-        text_lower = text.lower()
-        vi_count = sum(1 for c in text_lower if c in vi_chars)
-
-        # If significant Vietnamese characters, it's Vietnamese
-        if len(text) >= 20 and vi_count > len(text) * 0.05:
-            return "vi"
-
-        # Check for Vietnamese words
-        vi_words = {"của", "và", "là", "có", "được", "cho", "với", "này", "trong", "để", "các"}
-        words = set(text_lower.split())
-        if words & vi_words:
-            return "vi"
-
-        return "en"
+        """Simple language detection (delegates to module-level function)."""
+        return detect_language(text)
 
     # Specificity weights: more specific intents score higher per match
     # to avoid generic intents (ASK_WHAT) shadowing specific ones (ASK_PATTERN).
