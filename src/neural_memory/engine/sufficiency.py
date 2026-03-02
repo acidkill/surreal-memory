@@ -6,6 +6,11 @@ dependency — pure math on activation statistics.
 
 Gates are conservative: false-INSUFFICIENT (killing good results) is far
 worse than false-SUFFICIENT (wasting compute on reconstruction).
+
+Advanced features:
+- Per-query-type threshold profiles (strict / lenient / default)
+- EMA calibration adjustment (auto-tune based on historical accuracy)
+- Diminishing returns gate (future-proofing for multi-pass retrieval)
 """
 
 from __future__ import annotations
@@ -47,6 +52,77 @@ class SufficiencyResult:
     gate: str
     reason: str
     metrics: SufficiencyMetrics
+
+
+@dataclass(frozen=True)
+class GateCalibration:
+    """EMA-derived calibration stats for a single gate.
+
+    Used to optionally adjust gate decisions based on historical accuracy.
+    """
+
+    accuracy: float
+    avg_confidence: float
+    sample_count: int
+
+
+@dataclass(frozen=True)
+class QueryTypeProfile:
+    """Threshold adjustments per query intent category.
+
+    Multipliers are applied to base gate thresholds so that:
+    - strict queries (factual) demand stronger signal
+    - lenient queries (exploratory) allow weaker signal through
+    - default queries use standard thresholds (all multipliers = 1.0)
+    """
+
+    min_top_activation_factor: float
+    entropy_tolerance: float
+    min_intersection_count: int
+
+
+# ---------------------------------------------------------------------------
+# Query intent → profile mapping
+# ---------------------------------------------------------------------------
+
+_QUERY_PROFILES: dict[str, QueryTypeProfile] = {
+    "strict": QueryTypeProfile(
+        min_top_activation_factor=1.2,
+        entropy_tolerance=0.8,
+        min_intersection_count=2,
+    ),
+    "lenient": QueryTypeProfile(
+        min_top_activation_factor=0.7,
+        entropy_tolerance=1.5,
+        min_intersection_count=1,
+    ),
+    "default": QueryTypeProfile(
+        min_top_activation_factor=1.0,
+        entropy_tolerance=1.0,
+        min_intersection_count=2,
+    ),
+}
+
+_INTENT_TO_PROFILE: dict[str, str] = {
+    "ask_what": "strict",
+    "ask_where": "strict",
+    "ask_when": "strict",
+    "ask_who": "strict",
+    "confirm": "strict",
+    "ask_pattern": "lenient",
+    "compare": "lenient",
+    "ask_why": "lenient",
+    "ask_how": "lenient",
+    "ask_feeling": "default",
+    "recall": "default",
+    "unknown": "default",
+}
+
+
+def _get_profile(query_intent: str) -> QueryTypeProfile:
+    """Resolve a query intent string to a QueryTypeProfile."""
+    profile_name = _INTENT_TO_PROFILE.get(query_intent, "default")
+    return _QUERY_PROFILES[profile_name]
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +253,9 @@ def check_sufficiency(
     intersections: list[str],
     stab_converged: bool,
     stab_neurons_removed: int,
+    query_intent: str = "",
+    calibration: dict[str, GateCalibration] | None = None,
+    prev_metrics: SufficiencyMetrics | None = None,
 ) -> SufficiencyResult:
     """Evaluate whether retrieval has sufficient signal for reconstruction.
 
@@ -189,6 +268,14 @@ def check_sufficiency(
         intersections: Neurons reached from multiple anchor groups.
         stab_converged: Whether stabilization converged.
         stab_neurons_removed: Neurons killed by noise floor.
+        query_intent: Intent string from QueryParser (e.g. "ask_what").
+            Used to select strict/lenient/default threshold profile.
+        calibration: Optional per-gate EMA stats (from get_gate_ema_stats).
+            When provided, gates for SUFFICIENT decisions with low historical
+            avg_confidence will be downgraded to INSUFFICIENT.
+        prev_metrics: Optional metrics from a previous retrieval pass.
+            When provided, the diminishing_returns gate fires if metrics
+            have not changed meaningfully (future-proofing for multi-pass).
 
     Returns:
         SufficiencyResult with gate decision, confidence, and metrics.
@@ -201,6 +288,8 @@ def check_sufficiency(
         stab_neurons_removed,
     )
     conf = _compute_confidence(m, len(anchor_sets))
+
+    profile = _get_profile(query_intent)
 
     # Gate 1: no_anchors
     if m.anchor_count == 0:
@@ -236,11 +325,14 @@ def check_sufficiency(
         )
 
     # Gate 4: ambiguous_spread
+    # Apply profile entropy_tolerance and min_top_activation_factor
+    _entropy_threshold = 3.0 * profile.entropy_tolerance
+    _top_act_threshold_ambiguous = 0.3 * profile.min_top_activation_factor
     if (
-        m.activation_entropy >= 3.0
+        m.activation_entropy >= _entropy_threshold
         and m.focus_ratio < 0.2
         and m.neuron_count >= 15
-        and m.top_activation < 0.3
+        and m.top_activation < _top_act_threshold_ambiguous
     ):
         return SufficiencyResult(
             sufficient=False,
@@ -253,9 +345,31 @@ def check_sufficiency(
             metrics=m,
         )
 
+    # Gate 4.5: diminishing_returns
+    # When a previous pass produced nearly identical metrics, more passes won't help.
+    if prev_metrics is not None:
+        _act_delta = abs(m.top_activation - prev_metrics.top_activation)
+        _neuron_delta = abs(m.neuron_count - prev_metrics.neuron_count)
+        _focus_delta = abs(m.focus_ratio - prev_metrics.focus_ratio)
+        if _act_delta < 0.05 and _neuron_delta <= 1 and _focus_delta < 0.05:
+            # Take what we have — additional passes won't improve signal
+            _dr_conf = max(0.0, min(1.0, conf * 0.85))
+            return SufficiencyResult(
+                sufficient=True,
+                confidence=_dr_conf,
+                gate="diminishing_returns",
+                reason=(
+                    f"Diminishing returns: activation delta={_act_delta:.3f}, "
+                    f"neuron delta={_neuron_delta}, focus delta={_focus_delta:.3f}"
+                ),
+                metrics=m,
+            )
+
     # Gate 5: intersection_convergence
-    if m.intersection_count >= 2 and m.top_activation >= 0.4:
-        return SufficiencyResult(
+    _top_act_threshold_intersect = 0.4 * profile.min_top_activation_factor
+    _min_intersect = profile.min_intersection_count
+    if m.intersection_count >= _min_intersect and m.top_activation >= _top_act_threshold_intersect:
+        result = SufficiencyResult(
             sufficient=True,
             confidence=conf,
             gate="intersection_convergence",
@@ -265,10 +379,16 @@ def check_sufficiency(
             ),
             metrics=m,
         )
+        return _apply_calibration(result, calibration)
 
     # Gate 6: high_coverage_strong_hit
-    if m.coverage_ratio >= 0.5 and m.top_activation >= 0.7 and m.focus_ratio >= 0.4:
-        return SufficiencyResult(
+    _top_act_threshold_strong = 0.7 * profile.min_top_activation_factor
+    if (
+        m.coverage_ratio >= 0.5
+        and m.top_activation >= _top_act_threshold_strong
+        and m.focus_ratio >= 0.4
+    ):
+        result = SufficiencyResult(
             sufficient=True,
             confidence=conf,
             gate="high_coverage_strong_hit",
@@ -278,10 +398,12 @@ def check_sufficiency(
             ),
             metrics=m,
         )
+        return _apply_calibration(result, calibration)
 
     # Gate 7: focused_result
-    if m.neuron_count <= 5 and m.top_activation >= 0.5 and m.focus_ratio >= 0.6:
-        return SufficiencyResult(
+    _top_act_threshold_focused = 0.5 * profile.min_top_activation_factor
+    if m.neuron_count <= 5 and m.top_activation >= _top_act_threshold_focused and m.focus_ratio >= 0.6:
+        result = SufficiencyResult(
             sufficient=True,
             confidence=conf,
             gate="focused_result",
@@ -291,12 +413,54 @@ def check_sufficiency(
             ),
             metrics=m,
         )
+        return _apply_calibration(result, calibration)
 
     # Gate 8: default_pass
-    return SufficiencyResult(
+    result = SufficiencyResult(
         sufficient=True,
         confidence=conf,
         gate="default_pass",
         reason=f"Default pass: {m.neuron_count} neurons, conf={conf:.2f}",
         metrics=m,
     )
+    return _apply_calibration(result, calibration)
+
+
+# ---------------------------------------------------------------------------
+# Calibration adjustment
+# ---------------------------------------------------------------------------
+
+
+def _apply_calibration(
+    result: SufficiencyResult,
+    calibration: dict[str, GateCalibration] | None,
+) -> SufficiencyResult:
+    """Optionally downgrade a SUFFICIENT result based on historical calibration.
+
+    Conservative: only downgrades when there is clear evidence of systematic
+    over-prediction (avg_confidence < 0.15 with >= 10 samples).
+
+    Does not upgrade INSUFFICIENT results (preserves conservative bias).
+    """
+    if calibration is None or not result.sufficient:
+        return result
+
+    gate_cal = calibration.get(result.gate)
+    if gate_cal is None:
+        return result
+
+    # Downgrade: gate historically predicts sufficient but actual results are weak
+    if gate_cal.avg_confidence < 0.15 and gate_cal.sample_count >= 10:
+        return SufficiencyResult(
+            sufficient=False,
+            confidence=max(0.0, min(result.confidence, gate_cal.avg_confidence)),
+            gate=result.gate,
+            reason=(
+                f"{result.reason} [calibration downgrade: "
+                f"avg_conf={gate_cal.avg_confidence:.2f}, "
+                f"n={gate_cal.sample_count}]"
+            ),
+            metrics=result.metrics,
+        )
+
+    return result

@@ -246,7 +246,22 @@ class ReflexPipeline:
         activations, disputed_ids = await self._deprioritize_disputed(activations)
 
         # 4.8 Sufficiency check: early exit if signal is too weak
-        from neural_memory.engine.sufficiency import check_sufficiency
+        from neural_memory.engine.sufficiency import GateCalibration, check_sufficiency
+
+        # Fetch EMA calibration stats (non-critical; falls back gracefully)
+        _gate_calibration: dict[str, GateCalibration] | None = None
+        try:
+            _raw_cal = await self._storage.get_gate_ema_stats()  # type: ignore[attr-defined]
+            _gate_calibration = {
+                gate: GateCalibration(
+                    accuracy=stats["accuracy"],
+                    avg_confidence=stats["avg_confidence"],
+                    sample_count=int(stats["sample_count"]),
+                )
+                for gate, stats in _raw_cal.items()
+            }
+        except (AttributeError, Exception):
+            logger.debug("Gate calibration fetch failed (non-critical)", exc_info=True)
 
         _sufficiency = check_sufficiency(
             activations=activations,
@@ -254,6 +269,8 @@ class ReflexPipeline:
             intersections=intersections if not self._use_reflex else [],
             stab_converged=_stab_report.converged,
             stab_neurons_removed=_stab_report.neurons_removed,
+            query_intent=stimulus.intent.value,
+            calibration=_gate_calibration,
         )
 
         if not _sufficiency.sufficient:

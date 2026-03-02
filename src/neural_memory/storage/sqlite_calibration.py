@@ -131,3 +131,75 @@ class SQLiteCalibrationMixin:
         )
         await conn.commit()
         return cursor.rowcount
+
+    async def get_gate_ema_stats(
+        self,
+        window: int = 50,
+    ) -> dict[str, dict[str, float]]:
+        """Compute EMA accuracy stats per gate over recent records.
+
+        Returns a dict keyed by gate name, each containing:
+        - accuracy: EMA of correct predictions (predicted_sufficient matches
+          actual_confidence >= 0.3 as true positive threshold)
+        - avg_confidence: EMA of actual_confidence for that gate
+        - sample_count: number of records used
+
+        EMA decays older records toward the tail (most recent data weighted
+        highest). Alpha = 2 / (window + 1) per standard EMA convention.
+        """
+        conn = self._ensure_read_conn()
+        brain_id = self._get_brain_id()
+        capped_window = min(window, 500)
+
+        cursor = await conn.execute(
+            """SELECT gate, predicted_sufficient, actual_confidence
+               FROM retrieval_calibration
+               WHERE brain_id = ?
+               ORDER BY created_at DESC
+               LIMIT ?""",
+            (brain_id, capped_window * 20),  # fetch more to group by gate
+        )
+        rows = await cursor.fetchall()
+
+        # Group rows by gate (rows are DESC order — most recent first)
+        gate_rows: dict[str, list[tuple[int, float]]] = {}
+        for gate, predicted, actual_conf in rows:
+            if gate not in gate_rows:
+                gate_rows[gate] = []
+            gate_rows[gate].append((predicted, actual_conf))
+
+        result: dict[str, dict[str, float]] = {}
+        alpha = 2.0 / (capped_window + 1)
+
+        for gate, gate_data in gate_rows.items():
+            # Take at most capped_window records per gate (most recent first)
+            gate_data = gate_data[:capped_window]
+            sample_count = len(gate_data)
+
+            if sample_count == 0:
+                continue
+
+            # Compute EMA on reversed list (oldest first for forward EMA)
+            oldest_to_newest = list(reversed(gate_data))
+
+            def _is_correct(predicted: int, actual_conf: float) -> float:
+                """Return 1.0 if prediction matches actual outcome, else 0.0."""
+                actual_sufficient = actual_conf >= 0.3
+                return float(int(bool(predicted)) == int(actual_sufficient))
+
+            first_predicted, first_conf = oldest_to_newest[0]
+            ema_accuracy = _is_correct(first_predicted, first_conf)
+            ema_confidence = first_conf
+
+            for predicted, actual_conf in oldest_to_newest[1:]:
+                correct = _is_correct(predicted, actual_conf)
+                ema_accuracy = alpha * correct + (1.0 - alpha) * ema_accuracy
+                ema_confidence = alpha * actual_conf + (1.0 - alpha) * ema_confidence
+
+            result[gate] = {
+                "accuracy": round(max(0.0, min(1.0, ema_accuracy)), 4),
+                "avg_confidence": round(max(0.0, min(1.0, ema_confidence)), 4),
+                "sample_count": float(sample_count),
+            }
+
+        return result
