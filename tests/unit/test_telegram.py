@@ -18,6 +18,7 @@ from neural_memory.integration.telegram import (
 
 # ── Config tests ──────────────────────────────────────────────
 
+
 class TestTelegramConfig:
     def test_default_config(self) -> None:
         cfg = TelegramConfig()
@@ -74,6 +75,7 @@ class TestTelegramConfig:
 
 # ── Token tests ──────────────────────────────────────────────
 
+
 class TestGetBotToken:
     def test_token_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("NMEM_TELEGRAM_BOT_TOKEN", "test-token-123")
@@ -86,6 +88,7 @@ class TestGetBotToken:
 
 # ── Client tests ──────────────────────────────────────────────
 
+
 class TestTelegramClient:
     @pytest.fixture
     def client(self) -> TelegramClient:
@@ -94,10 +97,12 @@ class TestTelegramClient:
     @pytest.mark.asyncio
     async def test_get_me_success(self, client: TelegramClient) -> None:
         mock_resp = AsyncMock()
-        mock_resp.json = AsyncMock(return_value={
-            "ok": True,
-            "result": {"id": 123, "first_name": "TestBot", "username": "testbot"},
-        })
+        mock_resp.json = AsyncMock(
+            return_value={
+                "ok": True,
+                "result": {"id": 123, "first_name": "TestBot", "username": "testbot"},
+            }
+        )
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
         mock_resp.__aexit__ = AsyncMock(return_value=False)
 
@@ -114,10 +119,12 @@ class TestTelegramClient:
     @pytest.mark.asyncio
     async def test_api_error_raises(self, client: TelegramClient) -> None:
         mock_resp = AsyncMock()
-        mock_resp.json = AsyncMock(return_value={
-            "ok": False,
-            "description": "Unauthorized",
-        })
+        mock_resp.json = AsyncMock(
+            return_value={
+                "ok": False,
+                "description": "Unauthorized",
+            }
+        )
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
         mock_resp.__aexit__ = AsyncMock(return_value=False)
 
@@ -133,10 +140,12 @@ class TestTelegramClient:
     @pytest.mark.asyncio
     async def test_send_message(self, client: TelegramClient) -> None:
         mock_resp = AsyncMock()
-        mock_resp.json = AsyncMock(return_value={
-            "ok": True,
-            "result": {"message_id": 1},
-        })
+        mock_resp.json = AsyncMock(
+            return_value={
+                "ok": True,
+                "result": {"message_id": 1},
+            }
+        )
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
         mock_resp.__aexit__ = AsyncMock(return_value=False)
 
@@ -156,10 +165,12 @@ class TestTelegramClient:
 
         call_count = 0
         mock_resp = AsyncMock()
-        mock_resp.json = AsyncMock(return_value={
-            "ok": True,
-            "result": {"message_id": 1},
-        })
+        mock_resp.json = AsyncMock(
+            return_value={
+                "ok": True,
+                "result": {"message_id": 1},
+            }
+        )
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
         mock_resp.__aexit__ = AsyncMock(return_value=False)
 
@@ -181,6 +192,7 @@ class TestTelegramClient:
 
 # ── Status tests ──────────────────────────────────────────────
 
+
 class TestTelegramStatus:
     @pytest.mark.asyncio
     async def test_status_not_configured(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -200,10 +212,12 @@ class TestTelegramStatus:
         )
 
         mock_resp = AsyncMock()
-        mock_resp.json = AsyncMock(return_value={
-            "ok": True,
-            "result": {"first_name": "TestBot", "username": "testbot"},
-        })
+        mock_resp.json = AsyncMock(
+            return_value={
+                "ok": True,
+                "result": {"first_name": "TestBot", "username": "testbot"},
+            }
+        )
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
         mock_resp.__aexit__ = AsyncMock(return_value=False)
 
@@ -213,7 +227,9 @@ class TestTelegramStatus:
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
         with (
-            patch("neural_memory.integration.telegram.get_telegram_config", return_value=mock_config),
+            patch(
+                "neural_memory.integration.telegram.get_telegram_config", return_value=mock_config
+            ),
             patch("aiohttp.ClientSession", return_value=mock_session),
         ):
             status = await get_telegram_status()
@@ -225,6 +241,7 @@ class TestTelegramStatus:
 
 
 # ── MCP handler tests ──────────────────────────────────────────
+
 
 class TestTelegramHandler:
     @pytest.mark.asyncio

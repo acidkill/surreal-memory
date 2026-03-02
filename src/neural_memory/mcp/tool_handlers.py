@@ -252,7 +252,9 @@ class ToolHandler:
                     if event_timestamp.tzinfo is not None:
                         event_timestamp = event_timestamp.replace(tzinfo=None)
                 except (ValueError, TypeError):
-                    return {"error": f"Invalid event_at format: {raw_event_at}. Use ISO format (e.g. '2026-03-02T08:00:00')."}
+                    return {
+                        "error": f"Invalid event_at format: {raw_event_at}. Use ISO format (e.g. '2026-03-02T08:00:00')."
+                    }
 
             encode_content = encrypted_content if encrypted_content is not None else content
             result = await encoder.encode(

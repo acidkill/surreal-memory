@@ -85,23 +85,29 @@ class TelegramClient:
         """Send a text message to a chat. Auto-splits messages > 4096 chars."""
         max_len = 4096
         if len(text) <= max_len:
-            return await self._call("sendMessage", {
-                "chat_id": chat_id,
-                "text": text,
-                "parse_mode": "HTML",
-                "disable_web_page_preview": True,
-            })
+            return await self._call(
+                "sendMessage",
+                {
+                    "chat_id": chat_id,
+                    "text": text,
+                    "parse_mode": "HTML",
+                    "disable_web_page_preview": True,
+                },
+            )
 
         # Split into chunks
         last_result: dict[str, Any] = {}
         for i in range(0, len(text), max_len):
-            chunk = text[i:i + max_len]
-            last_result = await self._call("sendMessage", {
-                "chat_id": chat_id,
-                "text": chunk,
-                "parse_mode": "HTML",
-                "disable_web_page_preview": True,
-            })
+            chunk = text[i : i + max_len]
+            last_result = await self._call(
+                "sendMessage",
+                {
+                    "chat_id": chat_id,
+                    "text": chunk,
+                    "parse_mode": "HTML",
+                    "disable_web_page_preview": True,
+                },
+            )
         return last_result
 
     async def send_document(

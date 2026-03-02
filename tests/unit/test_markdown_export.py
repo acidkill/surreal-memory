@@ -39,7 +39,14 @@ class TestSnapshotToMarkdown:
         snapshot = _make_snapshot(
             neurons=[{"id": "n1", "type": "concept", "content": "test"}],
             synapses=[{"id": "s1", "source_id": "n1", "target_id": "n2", "type": "related_to"}],
-            fibers=[{"id": "f1", "neuron_ids": ["n1"], "anchor_neuron_id": "n1", "created_at": "2026-03-02"}],
+            fibers=[
+                {
+                    "id": "f1",
+                    "neuron_ids": ["n1"],
+                    "anchor_neuron_id": "n1",
+                    "created_at": "2026-03-02",
+                }
+            ],
         )
         result = snapshot_to_markdown(snapshot)
         assert "Neurons: 1" in result
@@ -53,8 +60,18 @@ class TestSnapshotToMarkdown:
                 {"id": "n2", "type": "concept", "content": "Auth bug fix"},
             ],
             fibers=[
-                {"id": "f1", "neuron_ids": ["n1"], "anchor_neuron_id": "n1", "created_at": "2026-03-01"},
-                {"id": "f2", "neuron_ids": ["n2"], "anchor_neuron_id": "n2", "created_at": "2026-03-02"},
+                {
+                    "id": "f1",
+                    "neuron_ids": ["n1"],
+                    "anchor_neuron_id": "n1",
+                    "created_at": "2026-03-01",
+                },
+                {
+                    "id": "f2",
+                    "neuron_ids": ["n2"],
+                    "anchor_neuron_id": "n2",
+                    "created_at": "2026-03-02",
+                },
             ],
             typed_memories=[
                 {"fiber_id": "f1", "memory_type": "decision"},
@@ -71,7 +88,12 @@ class TestSnapshotToMarkdown:
         snapshot = _make_snapshot(
             neurons=[{"id": "n1", "type": "concept", "content": "Orphan memory"}],
             fibers=[
-                {"id": "f1", "neuron_ids": ["n1"], "anchor_neuron_id": "n1", "created_at": "2026-03-01"},
+                {
+                    "id": "f1",
+                    "neuron_ids": ["n1"],
+                    "anchor_neuron_id": "n1",
+                    "created_at": "2026-03-01",
+                },
             ],
             typed_memories=[],  # No typed memories
         )
@@ -116,7 +138,12 @@ class TestSnapshotToMarkdown:
                 {"id": "s1", "source_id": "n1", "target_id": "n2", "type": "related_to"},
             ],
             fibers=[
-                {"id": "f1", "neuron_ids": ["n1", "n2"], "anchor_neuron_id": "n1", "created_at": "2026-03-01"},
+                {
+                    "id": "f1",
+                    "neuron_ids": ["n1", "n2"],
+                    "anchor_neuron_id": "n1",
+                    "created_at": "2026-03-01",
+                },
             ],
         )
         result = snapshot_to_markdown(snapshot)
@@ -134,7 +161,13 @@ class TestSnapshotToMarkdown:
         snapshot = _make_snapshot(
             neurons=[{"id": "n1", "type": "concept", "content": "kb"}],
             fibers=[
-                {"id": "f1", "neuron_ids": ["n1"], "anchor_neuron_id": "n1", "created_at": "2026-03-01", "pinned": True},
+                {
+                    "id": "f1",
+                    "neuron_ids": ["n1"],
+                    "anchor_neuron_id": "n1",
+                    "created_at": "2026-03-01",
+                    "pinned": True,
+                },
             ],
         )
         result = snapshot_to_markdown(snapshot)

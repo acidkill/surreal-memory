@@ -67,8 +67,16 @@ def snapshot_to_markdown(
 
     # Order: fact, decision, preference, insight, instruction, workflow, reference, error, todo, context, then rest
     type_order = [
-        "fact", "decision", "preference", "insight", "instruction",
-        "workflow", "reference", "error", "todo", "context",
+        "fact",
+        "decision",
+        "preference",
+        "insight",
+        "instruction",
+        "workflow",
+        "reference",
+        "error",
+        "todo",
+        "context",
     ]
     type_labels = {
         "fact": "Facts",
