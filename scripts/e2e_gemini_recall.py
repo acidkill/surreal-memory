@@ -19,10 +19,9 @@ logger = logging.getLogger("e2e_gemini")
 for name in ["neural_memory.engine", "neural_memory.storage", "neural_memory.safety"]:
     logging.getLogger(name).setLevel(logging.WARNING)
 
-PDF_PATH = (
-    "/Users/bunny/Library/CloudStorage/OneDrive-Personal/"
-    "S701 Workshop Co Ltd/S701-Workshop/Motorcycle Manual/"
-    "KTM-Husqvarna/21_3214297_en_OM.pdf"
+PDF_PATH = os.environ.get(
+    "NMEM_TEST_PDF_PATH",
+    "test_document.pdf",  # Default: expects a PDF in current directory
 )
 
 QUERIES = [

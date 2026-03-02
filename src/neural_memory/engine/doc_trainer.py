@@ -127,7 +127,6 @@ class DocTrainer:
     def __init__(self, storage: NeuralStorage, config: BrainConfig) -> None:
         self._storage = storage
         self._config = config
-        self._brain_config = config
         self._encoder = MemoryEncoder(storage, config)
 
     async def train_directory(
@@ -405,7 +404,7 @@ class DocTrainer:
             enrichment_synapses = await self._run_enrichment()
 
         # Store embeddings for anchor neurons (enables cross-language recall)
-        if self._brain_config.embedding_enabled and chunk_anchors:
+        if self._config.embedding_enabled and chunk_anchors:
             stored = await self._store_chunk_embeddings(chunk_anchors)
             if stored > 0:
                 logger.info("Stored embeddings for %d anchor neurons", stored)
@@ -599,9 +598,9 @@ class DocTrainer:
         try:
             from neural_memory.engine.semantic_discovery import _create_provider
 
-            provider = _create_provider(self._brain_config, task_type="RETRIEVAL_DOCUMENT")
-        except Exception:
-            logger.debug("Embedding provider unavailable — skipping embedding storage")
+            provider = _create_provider(self._config, task_type="RETRIEVAL_DOCUMENT")
+        except (ImportError, ValueError):
+            logger.debug("Embedding provider unavailable — skipping embedding storage", exc_info=True)
             return 0
 
         # Collect anchor neuron IDs and their content

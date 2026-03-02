@@ -19,8 +19,11 @@ for name in ["neural_memory.engine", "neural_memory.storage", "neural_memory.saf
     logging.getLogger(name).setLevel(logging.WARNING)
 
 # Reuse existing trained brain from round 1
-EXISTING_DB = "/var/folders/l_/97h__v4n3p39qyz6qqw74kbm0000gn/T/nmem_e2e_r7rtdx5k/test_brain.db"
-BRAIN_ID = "huskyAI"
+EXISTING_DB = os.environ.get(
+    "NMEM_TEST_DB_PATH",
+    "test_brain.db",  # Default: expects DB in current directory
+)
+BRAIN_ID = os.environ.get("NMEM_TEST_BRAIN_ID", "huskyAI")
 
 # 100 Vietnamese queries covering motorcycle manual topics
 VI_QUERIES: list[tuple[str, str]] = [

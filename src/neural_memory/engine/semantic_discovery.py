@@ -110,7 +110,7 @@ async def discover_semantic_synapses(
 
     # Try to create embedding provider
     try:
-        provider = _create_provider(config)
+        provider = _create_provider(config, task_type="RETRIEVAL_DOCUMENT")
     except (ImportError, Exception):
         logger.debug("Embedding provider unavailable — skipping semantic discovery")
         return SemanticDiscoveryResult()

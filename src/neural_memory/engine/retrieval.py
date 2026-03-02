@@ -978,7 +978,15 @@ class ReflexPipeline:
             logger.debug("Embedding query failed (non-critical)", exc_info=True)
             return []
 
-        # Wide scan to find neurons with stored embeddings (doc neurons
+        # Probe: check if any neurons have embeddings before scanning widely
+        probe = await self._storage.find_neurons(limit=20)
+        has_embeddings = any(
+            n.metadata.get("_embedding") for n in probe
+        )
+        if not has_embeddings:
+            return []
+
+        # Wide scan for neurons with stored embeddings (doc neurons
         # may be older than organic memories). Storage caps at 1000.
         candidates = await self._storage.find_neurons(limit=1000)
 

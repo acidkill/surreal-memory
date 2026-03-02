@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any
 
 from neural_memory.engine.embedding.provider import EmbeddingProvider
+
+logger = logging.getLogger(__name__)
 
 # Known dimensions per model
 _MODEL_DIMENSIONS: dict[str, int] = {
@@ -96,4 +99,10 @@ class GeminiEmbedding(EmbeddingProvider):
     @property
     def dimension(self) -> int:
         """Dimensionality of the embedding vectors for the configured model."""
+        if self._model not in _MODEL_DIMENSIONS:
+            logger.warning(
+                "Unknown Gemini model %r — assuming 3072D. "
+                "If wrong, existing embeddings will be incompatible.",
+                self._model,
+            )
         return _MODEL_DIMENSIONS.get(self._model, 3072)

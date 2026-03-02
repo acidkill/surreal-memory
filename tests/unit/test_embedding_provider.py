@@ -688,3 +688,69 @@ class TestEmbeddingProviderEdgeCases:
         v2 = [0.0, 0.0, 0.0, 1.0]
         sim = await provider.similarity(v1, v2)
         assert sim == pytest.approx(0.0, abs=1e-6)
+
+
+# ── EmbeddingSettings validation tests ───────────────────────────
+
+
+class TestEmbeddingSettings:
+    """Test EmbeddingSettings from unified_config."""
+
+    def test_defaults(self) -> None:
+        """EmbeddingSettings should have sensible defaults."""
+        from neural_memory.unified_config import EmbeddingSettings
+
+        settings = EmbeddingSettings()
+        assert settings.enabled is False
+        assert settings.provider == "sentence_transformer"
+        assert settings.model == "all-MiniLM-L6-v2"
+        assert settings.similarity_threshold == 0.7
+
+    def test_frozen(self) -> None:
+        """EmbeddingSettings should be immutable."""
+        from dataclasses import FrozenInstanceError
+
+        from neural_memory.unified_config import EmbeddingSettings
+
+        settings = EmbeddingSettings()
+        with pytest.raises(FrozenInstanceError):
+            settings.enabled = True  # type: ignore[misc]
+
+    def test_valid_providers(self) -> None:
+        """Should accept all valid provider names."""
+        from neural_memory.unified_config import EmbeddingSettings
+
+        for provider in ("sentence_transformer", "openai", "gemini", ""):
+            s = EmbeddingSettings(provider=provider)
+            assert s.provider == provider
+
+    def test_invalid_provider_raises(self) -> None:
+        """Should reject invalid provider names."""
+        from neural_memory.unified_config import EmbeddingSettings
+
+        with pytest.raises(ValueError, match="Invalid embedding provider"):
+            EmbeddingSettings(provider="gremlin")
+
+    def test_from_dict_round_trip(self) -> None:
+        """from_dict/to_dict should round-trip correctly."""
+        from neural_memory.unified_config import EmbeddingSettings
+
+        original = EmbeddingSettings(
+            enabled=True,
+            provider="gemini",
+            model="gemini-embedding-001",
+            similarity_threshold=0.8,
+        )
+        data = original.to_dict()
+        restored = EmbeddingSettings.from_dict(data)
+        assert restored.enabled == original.enabled
+        assert restored.provider == original.provider
+        assert restored.model == original.model
+        assert restored.similarity_threshold == original.similarity_threshold
+
+    def test_from_dict_invalid_provider_raises(self) -> None:
+        """from_dict with invalid provider should raise."""
+        from neural_memory.unified_config import EmbeddingSettings
+
+        with pytest.raises(ValueError, match="Invalid embedding provider"):
+            EmbeddingSettings.from_dict({"provider": "bad_provider"})

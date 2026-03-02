@@ -21,7 +21,7 @@ import shutil
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 if TYPE_CHECKING:
     from neural_memory.storage.base import NeuralStorage
@@ -105,7 +105,7 @@ class AutoConfig:
         )
 
 
-@dataclass
+@dataclass(frozen=True)
 class EmbeddingSettings:
     """Settings for embedding-based cross-language recall."""
 
@@ -113,6 +113,15 @@ class EmbeddingSettings:
     provider: str = "sentence_transformer"
     model: str = "all-MiniLM-L6-v2"
     similarity_threshold: float = 0.7
+
+    _VALID_PROVIDERS: ClassVar[tuple[str, ...]] = ("sentence_transformer", "openai", "gemini", "")
+
+    def __post_init__(self) -> None:
+        if self.provider not in self._VALID_PROVIDERS:
+            raise ValueError(
+                f"Invalid embedding provider: {self.provider!r}. "
+                f"Valid: {self._VALID_PROVIDERS}"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return {
