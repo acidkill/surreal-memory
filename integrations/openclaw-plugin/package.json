@@ -21,9 +21,7 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"
   },
-  "peerDependencies": {
-    "zod": "^3.0.0"
-  },
+  "peerDependencies": {},
   "keywords": [
     "openclaw",
     "openclaw-plugin",

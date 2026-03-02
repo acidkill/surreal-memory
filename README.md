@@ -12,6 +12,8 @@
 
 NeuralMemory stores experiences as interconnected neurons and recalls them through spreading activation, mimicking how the human brain works. Instead of searching a database, memories surface through associative recall — activating related concepts until the relevant memory emerges.
 
+**27 MCP tools** · **11 memory types** · **24 synapse types** · **Schema v20** · **2830+ tests**
+
 ## Why Not RAG / Vector Search?
 
 | Aspect | RAG / Vector Search | NeuralMemory |
@@ -42,6 +44,7 @@ pip install neural-memory
 With optional features:
 ```bash
 pip install neural-memory[server]   # FastAPI server + dashboard
+pip install neural-memory[extract]  # PDF/DOCX/PPTX/HTML/XLSX extraction
 pip install neural-memory[nlp-vi]   # Vietnamese NLP
 pip install neural-memory[all]      # All features
 ```
@@ -165,25 +168,53 @@ asyncio.run(main())
 
 ### MCP Tools (Claude Code / Cursor)
 
-Once configured, these tools are available to your AI assistant:
+Once configured, these 27 tools are available to your AI assistant:
+
+**Core Memory:**
 
 | Tool | Description |
 |------|-------------|
-| `nmem_remember` | Store a memory (fact, decision, insight, todo, etc.) |
-| `nmem_recall` | Query with spreading activation (auto depth detection) |
-| `nmem_context` | Inject recent context at session start |
+| `nmem_remember` | Store a memory (auto-detects type: fact, decision, insight, error, etc.) |
+| `nmem_recall` | Query with spreading activation (4 depth levels: instant/context/habit/deep) |
+| `nmem_context` | Get recent memories as session context |
 | `nmem_todo` | Quick TODO with 30-day expiry |
-| `nmem_stats` | Brain statistics and freshness |
 | `nmem_auto` | Auto-capture memories from conversation text |
 | `nmem_suggest` | Autocomplete suggestions from brain neurons |
-| `nmem_session` | Track working session state and progress |
-| `nmem_index` | Index codebase for code-aware recall |
-| `nmem_import` | Import from ChromaDB, Mem0, Cognee, Graphiti, LlamaIndex |
+
+**Workflow:**
+
+| Tool | Description |
+|------|-------------|
+| `nmem_session` | Track session state: task, feature, progress |
 | `nmem_eternal` | Save project context, decisions, instructions |
-| `nmem_sync` | Multi-device sync (push/pull/full) |
-| `nmem_sync_status` | Sync status and device info |
-| `nmem_sync_config` | Configure sync settings |
 | `nmem_recap` | Load saved context at session start |
+| `nmem_stats` | Brain statistics and health metrics |
+| `nmem_habits` | Workflow habit suggestions from usage patterns |
+
+**Knowledge Base:**
+
+| Tool | Description |
+|------|-------------|
+| `nmem_train` | Train brain from docs (PDF, DOCX, PPTX, HTML, JSON, XLSX, CSV, MD) |
+| `nmem_train_db` | Train brain from database schema |
+| `nmem_index` | Index codebase for code-aware recall |
+| `nmem_pin` | Pin/unpin memories (pinned = permanent, skip decay/prune) |
+
+**Advanced:**
+
+| Tool | Description |
+|------|-------------|
+| `nmem_health` | Brain health: purity score, grade, warnings |
+| `nmem_review` | Spaced repetition reviews (Leitner box system) |
+| `nmem_conflicts` | Memory conflicts: list, resolve, or pre-check |
+| `nmem_narrative` | Generate narratives: timeline, topic, or causal chain |
+| `nmem_alerts` | Brain health alerts: list or acknowledge |
+| `nmem_version` | Brain version control: snapshot, list, rollback, diff |
+| `nmem_transplant` | Transplant memories between brains by tags/types |
+| `nmem_import` | Import from ChromaDB, Mem0, Cognee, Graphiti, LlamaIndex |
+| `nmem_sync` | Multi-device sync (push/pull/full) |
+| `nmem_sync_status` | Sync status and pending changes |
+| `nmem_sync_config` | Configure sync settings |
 
 ### VS Code Extension
 
@@ -254,6 +285,49 @@ nmem remember "Always run tests before push" --type instruction
 nmem remember "Import failed: missing column" --type error
 nmem remember "Deploy process: build → test → push" --type workflow
 nmem remember "API docs: https://..." --type reference
+```
+
+### Knowledge Base Training
+
+```bash
+# Train from documents (permanent knowledge)
+nmem_train(action="train", path="/docs/", domain_tag="project-docs")
+
+# Supported formats: PDF, DOCX, PPTX, HTML, JSON, XLSX, CSV, MD, TXT, RST
+# Trained memories are pinned — they never decay, prune, or compress
+
+# Pin/unpin specific memories
+nmem_pin(fiber_ids=["abc123"], pinned=True)
+```
+
+Install extraction dependencies:
+```bash
+pip install neural-memory[extract]
+```
+
+### Brain Health & Diagnostics
+
+```bash
+nmem_health()                       # Purity score, grade (A-F), warnings
+nmem_alerts(action="list")          # Active health alerts
+nmem_review(action="queue")         # Spaced repetition review queue
+```
+
+### Brain Versioning
+
+```bash
+nmem_version(action="create", name="v1-stable")  # Snapshot
+nmem_version(action="list")                       # List versions
+nmem_version(action="rollback", version_id="...")  # Restore
+nmem_version(action="diff", from_version="...", to_version="...")
+```
+
+### Multi-Device Sync
+
+```bash
+nmem_sync(action="full")           # Bidirectional sync
+nmem_sync_status()                 # Pending changes, devices
+nmem_sync_config(action="set", hub_url="http://hub:8080")
 ```
 
 ### External Memory Import
@@ -331,7 +405,7 @@ git clone https://github.com/nhadaututtheky/neural-memory
 cd neural-memory
 pip install -e ".[dev]"
 
-# Run tests (584 tests)
+# Run tests (2830+ tests)
 pytest tests/ -v
 
 # Lint & format

@@ -9,8 +9,8 @@ from pathlib import Path
 import pytest
 
 from neural_memory.engine.doc_extractor import (
-    ExtractionError,
     SUPPORTED_EXTENSIONS,
+    ExtractionError,
     extract_to_markdown,
     get_missing_dependencies,
 )

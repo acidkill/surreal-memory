@@ -16,8 +16,9 @@ import csv
 import io
 import json
 import logging
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -28,12 +29,22 @@ _MAX_FILE_SIZE = 50 * 1024 * 1024
 _MAX_TABLE_ROWS = 10_000
 
 # All extensions supported by the extractor
-SUPPORTED_EXTENSIONS: frozenset[str] = frozenset({
-    ".md", ".mdx", ".txt", ".rst",
-    ".pdf", ".docx", ".pptx",
-    ".html", ".htm",
-    ".json", ".xlsx", ".csv",
-})
+SUPPORTED_EXTENSIONS: frozenset[str] = frozenset(
+    {
+        ".md",
+        ".mdx",
+        ".txt",
+        ".rst",
+        ".pdf",
+        ".docx",
+        ".pptx",
+        ".html",
+        ".htm",
+        ".json",
+        ".xlsx",
+        ".csv",
+    }
+)
 
 # Extensions that need optional dependencies
 _RICH_DOC_EXTENSIONS: frozenset[str] = frozenset({".pdf", ".docx", ".pptx", ".html", ".htm"})
@@ -66,8 +77,7 @@ def extract_to_markdown(file_path: Path) -> str:
     suffix = file_path.suffix.lower()
     if suffix not in SUPPORTED_EXTENSIONS:
         raise ExtractionError(
-            f"Unsupported format: {suffix}. "
-            f"Supported: {', '.join(sorted(SUPPORTED_EXTENSIONS))}"
+            f"Unsupported format: {suffix}. Supported: {', '.join(sorted(SUPPORTED_EXTENSIONS))}"
         )
 
     # Check file size
@@ -142,8 +152,7 @@ def _extract_pdf(file_path: Path) -> str:
         import pymupdf4llm
     except ImportError:
         raise ExtractionError(
-            "PDF extraction requires pymupdf4llm. "
-            "Install with: pip install neural-memory[extract]"
+            "PDF extraction requires pymupdf4llm. Install with: pip install neural-memory[extract]"
         )
 
     try:
@@ -160,8 +169,7 @@ def _extract_docx(file_path: Path) -> str:
         from docx.enum.text import WD_ALIGN_PARAGRAPH  # noqa: F401
     except ImportError:
         raise ExtractionError(
-            "DOCX extraction requires python-docx. "
-            "Install with: pip install neural-memory[extract]"
+            "DOCX extraction requires python-docx. Install with: pip install neural-memory[extract]"
         )
 
     try:
@@ -226,8 +234,7 @@ def _extract_pptx(file_path: Path) -> str:
         from pptx import Presentation
     except ImportError:
         raise ExtractionError(
-            "PPTX extraction requires python-pptx. "
-            "Install with: pip install neural-memory[extract]"
+            "PPTX extraction requires python-pptx. Install with: pip install neural-memory[extract]"
         )
 
     try:
@@ -418,8 +425,7 @@ def _extract_xlsx(file_path: Path) -> str:
         from openpyxl import load_workbook
     except ImportError:
         raise ExtractionError(
-            "XLSX extraction requires openpyxl. "
-            "Install with: pip install neural-memory[extract]"
+            "XLSX extraction requires openpyxl. Install with: pip install neural-memory[extract]"
         )
 
     try:

@@ -144,7 +144,13 @@ class SQLiteTrainingFilesMixin:
         ) as cursor:
             row = await cursor.fetchone()
             if row is None:
-                return {"total_files": 0, "completed": 0, "in_progress": 0, "failed": 0, "total_chunks": 0}
+                return {
+                    "total_files": 0,
+                    "completed": 0,
+                    "in_progress": 0,
+                    "failed": 0,
+                    "total_chunks": 0,
+                }
             return {
                 "total_files": row[0] or 0,
                 "completed": row[1] or 0,

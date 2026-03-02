@@ -15,12 +15,22 @@ logger = logging.getLogger(__name__)
 # Validation limits
 _MAX_DOMAIN_TAG_LEN = 100
 _MAX_BRAIN_NAME_LEN = 64
-_ALLOWED_EXTENSIONS = frozenset({
-    ".md", ".mdx", ".txt", ".rst",
-    ".pdf", ".docx", ".pptx",
-    ".html", ".htm",
-    ".json", ".xlsx", ".csv",
-})
+_ALLOWED_EXTENSIONS = frozenset(
+    {
+        ".md",
+        ".mdx",
+        ".txt",
+        ".rst",
+        ".pdf",
+        ".docx",
+        ".pptx",
+        ".html",
+        ".htm",
+        ".json",
+        ".xlsx",
+        ".csv",
+    }
+)
 
 
 class TrainHandler:

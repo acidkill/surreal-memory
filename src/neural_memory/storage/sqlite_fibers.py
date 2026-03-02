@@ -266,7 +266,7 @@ class SQLiteFiberMixin:
         pin_val = 1 if pinned else 0
         placeholders = ",".join("?" for _ in fiber_ids)
         cursor = await conn.execute(
-            f"UPDATE fibers SET pinned = ? WHERE brain_id = ? AND id IN ({placeholders})",  # noqa: S608
+            f"UPDATE fibers SET pinned = ? WHERE brain_id = ? AND id IN ({placeholders})",
             [pin_val, brain_id, *fiber_ids],
         )
         await conn.commit()

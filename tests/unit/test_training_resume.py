@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from neural_memory.storage.sqlite_training_files import compute_file_hash
 
 

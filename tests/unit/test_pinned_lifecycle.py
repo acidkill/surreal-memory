@@ -96,7 +96,7 @@ class TestPinnedDecayBypass:
         await storage.add_fiber(pinned_fiber)
 
         # Apply decay
-        report = await decay_manager.apply_decay(storage)
+        await decay_manager.apply_decay(storage)
 
         # Neuron should NOT be decayed (belongs to pinned fiber)
         updated_state = await storage.get_neuron_state(neuron.id)
@@ -139,7 +139,7 @@ class TestPinnedDecayBypass:
         await storage.add_fiber(fiber)
         assert fiber.pinned is False
 
-        report = await decay_manager.apply_decay(storage)
+        await decay_manager.apply_decay(storage)
 
         # Neuron SHOULD be decayed
         updated_state = await storage.get_neuron_state(neuron.id)
@@ -242,7 +242,7 @@ class TestPinnedPruneBypass:
 
         # Run pruning
         engine = ConsolidationEngine(storage)
-        report = await engine.run(strategies=[ConsolidationStrategy.PRUNE])
+        await engine.run(strategies=[ConsolidationStrategy.PRUNE])
 
         # Synapse should NOT be pruned (connected to pinned neuron)
         remaining = await storage.get_synapse(synapse.id)

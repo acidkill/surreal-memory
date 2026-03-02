@@ -5,6 +5,101 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.17.0] - 2026-03-02
+
+### Added
+
+- **Knowledge Base Training** — Multi-format document extraction with pinned memories
+  - 12 supported formats: .md, .mdx, .txt, .rst (passthrough), .pdf, .docx, .pptx, .html/.htm (rich docs), .json, .xlsx, .csv (structured data)
+  - `doc_extractor.py` — Format-specific extractors with 50MB file size limit
+  - Optional dependencies via `neural-memory[extract]` for non-text formats (pymupdf4llm, python-docx, python-pptx, beautifulsoup4, markdownify, openpyxl)
+- **Pinned Memories** — Permanent knowledge that bypasses decay, pruning, and compression
+  - `Fiber.pinned: bool` field — pinned fibers skip all lifecycle operations
+  - 4 lifecycle bypass points: decay, pruning, compression, maturation
+  - `nmem_pin` MCP tool for manual pin/unpin
+- **Training File Dedup** — SHA-256 hash tracking prevents re-ingesting same documents
+  - `training_files` table with hash, status, progress tracking
+  - Resume support for interrupted training sessions
+- **Tool Memory System** — Tracks MCP tool usage patterns and effectiveness
+  - `MemoryType.TOOL` — New memory type (90-day expiry, 0.06 decay rate)
+  - `SynapseType.EFFECTIVE_FOR` + `USED_WITH` — Tool effectiveness and co-occurrence synapses
+  - PostToolUse hook — Fast JSONL buffer capture (<50ms, no SQLite on hot path)
+  - `engine/tool_memory.py` — Batch processing during consolidation
+  - `PROCESS_TOOL_EVENTS` consolidation strategy
+
+### Fixed (Comprehensive Audit — 4 CRITICAL, 8 HIGH, 12 MEDIUM)
+
+- **CRITICAL**: Auth guard on consolidation routes, CORS wildcard removal, path traversal fix, coverage threshold enforcement
+- **HIGH**: Reject null client IP, sanitize error messages, Windows ACL key protection, FalkorDB password warning
+- **Performance**: Module-level regex compilation with `@lru_cache`, cached QueryRouter + MemoryEncryptor (lazy singleton), `asyncio.gather` for parallel embeddings, batch neuron delete (chunked 500), SQL FILTER clause combining queries
+- **Infrastructure**: `.dockerignore`, `.env.example`, bounded export (LIMIT 50000), `asyncio.Lock` for storage cache, cursor context managers
+
+### Changed
+
+- Schema version 18 → 20 (tool_events table, pinned column on fibers, training_files table)
+- SynapseType enum: 22 → 24 types (EFFECTIVE_FOR, USED_WITH)
+- MemoryType enum: 10 → 11 types (TOOL)
+- MCP tools: 26 → 27 (added nmem_pin)
+- ROADMAP.md — Complete rewrite as forward-looking 5-phase vision
+- Agent instructions — 7 new sections covering all 28 MCP tools
+- MCP prompt — Added KB training, pin, health, review, import instructions
+
+---
+
+## [2.16.0] - 2026-02-28
+
+### Added
+
+- **Algorithmic Sufficiency Check** — Post-stabilization gate that early-exits when activation signal is too weak
+  - 8-gate evaluation (priority-ordered, first match wins): no_anchors, empty_landscape, unstable_noise, ambiguous_spread, intersection_convergence, high_coverage_strong_hit, focused_result, default_pass
+  - Unified confidence formula from 7 weighted inputs (activation, focus_ratio, coverage, intersection_ratio, proximity, stability, path_diversity)
+  - Conservative bias — false-INSUFFICIENT penalized 10× more than false-SUFFICIENT
+  - `engine/sufficiency.py` (~302 LOC), `storage/sqlite_calibration.py` (~133 LOC)
+  - Schema migration v17 → v18 (`retrieval_calibration` table)
+
+---
+
+## [2.15.1] - 2026-02-28
+
+### Fixed
+
+- **SharedStorage CRUD Endpoint Mismatch** — Client called endpoints that didn't exist on server
+  - Added 14 CRUD endpoints to `server/routes/memory.py` (neurons + synapses full lifecycle, state, neighbors, path)
+  - 6 new Pydantic models in `server/models.py`
+- **Brain Import Deduplication** — Changed `INSERT` → `INSERT OR REPLACE` in `sqlite_brain_ops.py` for idempotent imports
+
+---
+
+## [2.15.0] - 2026-02-28
+
+### Added
+
+- **Trusted Networks for Docker/Container Deployments** — Configurable non-localhost access via `NEURAL_MEMORY_TRUSTED_NETWORKS` env var (CIDR notation)
+  - `is_trusted_host()` function with safe `ipaddress` module validation
+  - Default remains localhost-only (secure by default)
+
+### Fixed
+
+- **OpenClaw Plugin Zod Peer Dependency** — Pinned `zod` to `^3.0.0`
+
+---
+
+## [2.14.0] - 2026-02-27
+
+### Added
+
+- **MCP Tool Tiers** — 3-tier system (minimal/standard/full) for controlling exposed tools
+  - `ToolTierConfig` frozen dataclass with case-insensitive tier parsing
+  - `get_tool_schemas_for_tier()` filters tools by tier level
+  - Minimal: 4 core tools, Standard: 8 tools, Full: all 27 tools
+  - Hidden tools still callable via dispatch (tier controls visibility, not access)
+- **Consolidation Eligibility Hints** — `_eligibility_hints()` explains why 0 changes happened
+- **Habits Status** — Progress bars for emerging patterns
+- **Diagnostics Improvements** — Actionable recommendations with specific numbers
+- **Graph SVG Export** — Pure Python SVG export with dark theme, zero external deps
+
+---
+
 ## [2.13.0] - 2026-02-27
 
 ### Added

@@ -580,10 +580,18 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "items": {
                         "type": "string",
                         "enum": [
-                            ".md", ".mdx", ".txt", ".rst",
-                            ".pdf", ".docx", ".pptx",
-                            ".html", ".htm",
-                            ".json", ".xlsx", ".csv",
+                            ".md",
+                            ".mdx",
+                            ".txt",
+                            ".rst",
+                            ".pdf",
+                            ".docx",
+                            ".pptx",
+                            ".html",
+                            ".htm",
+                            ".json",
+                            ".xlsx",
+                            ".csv",
                         ],
                     },
                     "description": "File extensions to include (default: ['.md']). "

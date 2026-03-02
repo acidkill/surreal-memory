@@ -1,5 +1,4 @@
 import { describe, it, expect, vi } from "vitest";
-import { z } from "zod";
 import { createTools, type ToolDefinition } from "../src/tools.js";
 import type { NeuralMemoryMcpClient } from "../src/mcp-client.js";
 
@@ -14,6 +13,26 @@ function makeMockMcp(
     ...overrides,
   } as unknown as NeuralMemoryMcpClient;
 }
+
+// ── Schema helpers ────────────────────────────────────────
+
+type SchemaObj = {
+  type: string;
+  properties?: Record<string, Record<string, unknown>>;
+  required?: readonly string[];
+  [key: string]: unknown;
+};
+
+function getSchema(tool: ToolDefinition): SchemaObj {
+  return tool.parameters as unknown as SchemaObj;
+}
+
+function getPropNames(tool: ToolDefinition): string[] {
+  const schema = getSchema(tool);
+  return Object.keys(schema.properties ?? {});
+}
+
+// ── createTools ───────────────────────────────────────────
 
 describe("createTools", () => {
   it("returns 6 tools", () => {
@@ -38,12 +57,106 @@ describe("createTools", () => {
     const tools = createTools(makeMockMcp());
     for (const tool of tools) {
       expect(typeof tool.name).toBe("string");
+      expect(tool.name.length).toBeGreaterThan(0);
       expect(typeof tool.description).toBe("string");
+      expect(tool.description.length).toBeGreaterThan(0);
       expect(tool.parameters).toBeDefined();
       expect(typeof tool.execute).toBe("function");
     }
   });
 });
+
+// ── Schema compliance (Anthropic API requirements) ────────
+
+describe("schema compliance", () => {
+  let tools: ToolDefinition[];
+
+  function findTool(name: string): ToolDefinition {
+    const tool = tools.find((t) => t.name === name);
+    if (!tool) throw new Error(`Tool ${name} not found`);
+    return tool;
+  }
+
+  tools = createTools(makeMockMcp());
+
+  it("every schema has type=object at root", () => {
+    for (const tool of tools) {
+      const schema = getSchema(tool);
+      expect(schema.type).toBe("object");
+    }
+  });
+
+  it("every schema has properties key at root (even if empty)", () => {
+    for (const tool of tools) {
+      const schema = getSchema(tool);
+      expect(schema).toHaveProperty("properties");
+      expect(typeof schema.properties).toBe("object");
+    }
+  });
+
+  it("no schema uses $ref at root", () => {
+    for (const tool of tools) {
+      const schema = getSchema(tool);
+      expect(schema).not.toHaveProperty("$ref");
+    }
+  });
+
+  it("no schema uses oneOf/allOf/anyOf at root", () => {
+    for (const tool of tools) {
+      const schema = getSchema(tool);
+      expect(schema).not.toHaveProperty("oneOf");
+      expect(schema).not.toHaveProperty("allOf");
+      expect(schema).not.toHaveProperty("anyOf");
+    }
+  });
+
+  it("every property has a type field", () => {
+    for (const tool of tools) {
+      const schema = getSchema(tool);
+      for (const [propName, propSchema] of Object.entries(
+        schema.properties ?? {},
+      )) {
+        expect(propSchema).toHaveProperty(
+          "type",
+          expect.any(String),
+        );
+      }
+    }
+  });
+
+  it("every property has a description", () => {
+    for (const tool of tools) {
+      const schema = getSchema(tool);
+      for (const [, propSchema] of Object.entries(
+        schema.properties ?? {},
+      )) {
+        expect(propSchema).toHaveProperty("description");
+        expect(typeof propSchema.description).toBe("string");
+        expect((propSchema.description as string).length).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it("required fields reference existing properties", () => {
+    for (const tool of tools) {
+      const schema = getSchema(tool);
+      const propNames = Object.keys(schema.properties ?? {});
+      for (const req of schema.required ?? []) {
+        expect(propNames).toContain(req);
+      }
+    }
+  });
+
+  it("schemas are plain JSON-serializable objects (no Zod, no class instances)", () => {
+    for (const tool of tools) {
+      const json = JSON.stringify(tool.parameters);
+      const parsed = JSON.parse(json);
+      expect(parsed).toEqual(tool.parameters);
+    }
+  });
+});
+
+// ── Individual tool schemas ───────────────────────────────
 
 describe("tool schemas", () => {
   let tools: ToolDefinition[];
@@ -54,121 +167,141 @@ describe("tool schemas", () => {
     return tool;
   }
 
-  function parse(tool: ToolDefinition, input: unknown): unknown {
-    return (tool.parameters as z.ZodTypeAny).parse(input);
-  }
-
-  function safeParse(
-    tool: ToolDefinition,
-    input: unknown,
-  ): z.SafeParseReturnType<unknown, unknown> {
-    return (tool.parameters as z.ZodTypeAny).safeParse(input);
-  }
-
   tools = createTools(makeMockMcp());
 
   describe("nmem_remember", () => {
-    it("accepts valid input", () => {
-      const tool = findTool("nmem_remember");
-      const result = parse(tool, { content: "hello world" });
-      expect(result).toEqual({ content: "hello world" });
+    it("has content as required", () => {
+      const schema = getSchema(findTool("nmem_remember"));
+      expect(schema.required).toContain("content");
     });
 
-    it("accepts full input with all optional fields", () => {
-      const tool = findTool("nmem_remember");
-      const result = parse(tool, {
-        content: "test",
-        type: "fact",
-        priority: 5,
-        tags: ["tag1", "tag2"],
-        expires_days: 30,
-      });
-      expect(result).toHaveProperty("content", "test");
-      expect(result).toHaveProperty("type", "fact");
-    });
-
-    it("rejects content over 100K chars", () => {
-      const tool = findTool("nmem_remember");
-      const result = safeParse(tool, { content: "x".repeat(100_001) });
-      expect(result.success).toBe(false);
-    });
-
-    it("rejects priority out of range", () => {
-      const tool = findTool("nmem_remember");
-      expect(safeParse(tool, { content: "x", priority: -1 }).success).toBe(
-        false,
-      );
-      expect(safeParse(tool, { content: "x", priority: 11 }).success).toBe(
-        false,
+    it("has all expected properties", () => {
+      const props = getPropNames(findTool("nmem_remember"));
+      expect(props).toEqual(
+        expect.arrayContaining([
+          "content",
+          "type",
+          "priority",
+          "tags",
+          "expires_days",
+        ]),
       );
     });
 
-    it("rejects invalid type enum", () => {
-      const tool = findTool("nmem_remember");
-      const result = safeParse(tool, { content: "x", type: "invalid" });
-      expect(result.success).toBe(false);
+    it("content is string type", () => {
+      const schema = getSchema(findTool("nmem_remember"));
+      expect(schema.properties!.content).toHaveProperty("type", "string");
+    });
+
+    it("type has valid enum values", () => {
+      const schema = getSchema(findTool("nmem_remember"));
+      const typeSchema = schema.properties!.type as Record<string, unknown>;
+      expect(typeSchema.enum).toEqual(
+        expect.arrayContaining([
+          "fact",
+          "decision",
+          "preference",
+          "error",
+          "instruction",
+        ]),
+      );
+    });
+
+    it("priority has integer type with min/max bounds", () => {
+      const schema = getSchema(findTool("nmem_remember"));
+      const prio = schema.properties!.priority as Record<string, unknown>;
+      expect(prio.type).toBe("integer");
+      expect(prio.minimum).toBe(0);
+      expect(prio.maximum).toBe(10);
+    });
+
+    it("tags is array of strings", () => {
+      const schema = getSchema(findTool("nmem_remember"));
+      const tags = schema.properties!.tags as Record<string, unknown>;
+      expect(tags.type).toBe("array");
+      expect(tags.items).toHaveProperty("type", "string");
     });
   });
 
   describe("nmem_recall", () => {
-    it("accepts valid query", () => {
-      const tool = findTool("nmem_recall");
-      const result = parse(tool, { query: "search term" });
-      expect(result).toEqual({ query: "search term" });
+    it("has query as required", () => {
+      const schema = getSchema(findTool("nmem_recall"));
+      expect(schema.required).toContain("query");
     });
 
-    it("rejects query over 10K chars", () => {
-      const tool = findTool("nmem_recall");
-      const result = safeParse(tool, { query: "x".repeat(10_001) });
-      expect(result.success).toBe(false);
+    it("has all expected properties", () => {
+      const props = getPropNames(findTool("nmem_recall"));
+      expect(props).toEqual(
+        expect.arrayContaining([
+          "query",
+          "depth",
+          "max_tokens",
+          "min_confidence",
+        ]),
+      );
     });
 
-    it("rejects depth out of range", () => {
-      const tool = findTool("nmem_recall");
-      expect(
-        safeParse(tool, { query: "x", depth: -1 }).success,
-      ).toBe(false);
-      expect(
-        safeParse(tool, { query: "x", depth: 4 }).success,
-      ).toBe(false);
+    it("depth has bounded integer range 0-3", () => {
+      const schema = getSchema(findTool("nmem_recall"));
+      const depth = schema.properties!.depth as Record<string, unknown>;
+      expect(depth.type).toBe("integer");
+      expect(depth.minimum).toBe(0);
+      expect(depth.maximum).toBe(3);
+    });
+
+    it("min_confidence is number type with range 0-1", () => {
+      const schema = getSchema(findTool("nmem_recall"));
+      const conf = schema.properties!.min_confidence as Record<string, unknown>;
+      expect(conf.type).toBe("number");
+      expect(conf.minimum).toBe(0);
+      expect(conf.maximum).toBe(1);
     });
   });
 
   describe("nmem_context", () => {
-    it("accepts empty object", () => {
-      const tool = findTool("nmem_context");
-      const result = parse(tool, {});
-      expect(result).toEqual({});
+    it("has no required fields", () => {
+      const schema = getSchema(findTool("nmem_context"));
+      expect(schema.required ?? []).toHaveLength(0);
     });
 
-    it("rejects limit over 200", () => {
-      const tool = findTool("nmem_context");
-      const result = safeParse(tool, { limit: 201 });
-      expect(result.success).toBe(false);
+    it("has limit and fresh_only properties", () => {
+      const props = getPropNames(findTool("nmem_context"));
+      expect(props).toContain("limit");
+      expect(props).toContain("fresh_only");
     });
   });
 
   describe("nmem_todo", () => {
-    it("accepts valid task", () => {
-      const tool = findTool("nmem_todo");
-      const result = parse(tool, { task: "do this" });
-      expect(result).toEqual({ task: "do this" });
+    it("has task as required", () => {
+      const schema = getSchema(findTool("nmem_todo"));
+      expect(schema.required).toContain("task");
     });
 
-    it("rejects task over 10K chars", () => {
-      const tool = findTool("nmem_todo");
-      const result = safeParse(tool, { task: "x".repeat(10_001) });
-      expect(result.success).toBe(false);
+    it("has task and priority properties", () => {
+      const props = getPropNames(findTool("nmem_todo"));
+      expect(props).toContain("task");
+      expect(props).toContain("priority");
     });
   });
 
   describe("nmem_stats / nmem_health", () => {
-    it("accepts empty object", () => {
-      expect(parse(findTool("nmem_stats"), {})).toEqual({});
-      expect(parse(findTool("nmem_health"), {})).toEqual({});
+    it("have empty properties (no params)", () => {
+      const statsSchema = getSchema(findTool("nmem_stats"));
+      const healthSchema = getSchema(findTool("nmem_health"));
+      expect(Object.keys(statsSchema.properties ?? {})).toHaveLength(0);
+      expect(Object.keys(healthSchema.properties ?? {})).toHaveLength(0);
+    });
+
+    it("still have properties key present (Anthropic API requirement)", () => {
+      const statsSchema = getSchema(findTool("nmem_stats"));
+      const healthSchema = getSchema(findTool("nmem_health"));
+      expect(statsSchema).toHaveProperty("properties");
+      expect(healthSchema).toHaveProperty("properties");
     });
   });
 });
+
+// ── Tool execution ────────────────────────────────────────
 
 describe("tool execution", () => {
   it("returns error when service not connected", async () => {
@@ -181,7 +314,15 @@ describe("tool execution", () => {
     });
   });
 
-  it("catches callTool exceptions → structured error", async () => {
+  it("does not call MCP when disconnected", async () => {
+    const callTool = vi.fn().mockResolvedValue("{}");
+    const mcp = makeMockMcp({ connected: false, callTool });
+    const tools = createTools(mcp);
+    await tools[0].execute({ content: "test" });
+    expect(callTool).not.toHaveBeenCalled();
+  });
+
+  it("catches callTool exceptions and returns structured error", async () => {
     const mcp = makeMockMcp({
       callTool: vi.fn().mockRejectedValue(new Error("connection lost")),
     });
@@ -204,7 +345,7 @@ describe("tool execution", () => {
     expect(result).toEqual({ answer: "hello", confidence: 0.9 });
   });
 
-  it("handles non-JSON response → {text: raw}", async () => {
+  it("handles non-JSON response as {text: raw}", async () => {
     const mcp = makeMockMcp({
       callTool: vi.fn().mockResolvedValue("plain text response"),
     });
@@ -223,5 +364,35 @@ describe("tool execution", () => {
       content: "remember this",
       priority: 5,
     });
+  });
+
+  it("each tool routes to correct MCP tool name", async () => {
+    const callTool = vi.fn().mockResolvedValue("{}");
+    const mcp = makeMockMcp({ callTool });
+    const tools = createTools(mcp);
+
+    const expectedNames = [
+      "nmem_remember",
+      "nmem_recall",
+      "nmem_context",
+      "nmem_todo",
+      "nmem_stats",
+      "nmem_health",
+    ];
+
+    for (let i = 0; i < tools.length; i++) {
+      callTool.mockClear();
+      await tools[i].execute({});
+      expect(callTool).toHaveBeenCalledWith(expectedNames[i], {});
+    }
+  });
+
+  it("handles empty string response as {text: ''}", async () => {
+    const mcp = makeMockMcp({
+      callTool: vi.fn().mockResolvedValue(""),
+    });
+    const tools = createTools(mcp);
+    const result = await tools[0].execute({ content: "test" });
+    expect(result).toEqual({ text: "" });
   });
 });
