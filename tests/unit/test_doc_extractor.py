@@ -123,10 +123,18 @@ class TestEdgeCases:
     def test_supported_extensions_complete(self) -> None:
         """All expected extensions are in SUPPORTED_EXTENSIONS."""
         expected = {
-            ".md", ".mdx", ".txt", ".rst",
-            ".pdf", ".docx", ".pptx",
-            ".html", ".htm",
-            ".json", ".xlsx", ".csv",
+            ".md",
+            ".mdx",
+            ".txt",
+            ".rst",
+            ".pdf",
+            ".docx",
+            ".pptx",
+            ".html",
+            ".htm",
+            ".json",
+            ".xlsx",
+            ".csv",
         }
         assert expected == SUPPORTED_EXTENSIONS
 

@@ -127,12 +127,20 @@ class TestTrainingFilesStorage:
 
         # Add some records
         await storage.upsert_training_file(
-            file_hash="h1", file_path="a.md", file_size=100,
-            chunks_total=5, chunks_completed=5, status="completed",
+            file_hash="h1",
+            file_path="a.md",
+            file_size=100,
+            chunks_total=5,
+            chunks_completed=5,
+            status="completed",
         )
         await storage.upsert_training_file(
-            file_hash="h2", file_path="b.md", file_size=200,
-            chunks_total=3, chunks_completed=1, status="in_progress",
+            file_hash="h2",
+            file_path="b.md",
+            file_size=200,
+            chunks_total=3,
+            chunks_completed=1,
+            status="in_progress",
         )
 
         stats = await storage.get_training_stats()
