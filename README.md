@@ -81,17 +81,19 @@ Restart the gateway. See the [full setup guide](docs/guides/openclaw-plugin.md).
 pip install neural-memory
 ```
 
-Then add to your editor's MCP config:
+Then add to your editor's MCP config (Cursor: `.cursor/mcp.json`, Windsurf: `~/.codeium/windsurf/mcp_config.json`):
 
 ```json
 {
-  "neural-memory": {
-    "command": "nmem-mcp"
+  "mcpServers": {
+    "neural-memory": {
+      "command": "nmem-mcp"
+    }
   }
 }
 ```
 
-No `nmem init` needed — the MCP server auto-initializes on first use.
+The editor spawns `nmem-mcp` automatically via stdio — no manual server start needed. No `nmem init` needed — auto-initializes on first use.
 
 ## Usage
 
