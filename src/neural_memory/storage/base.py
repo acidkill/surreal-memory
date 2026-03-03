@@ -379,6 +379,7 @@ class NeuralStorage(ABC):
         source_id: str,
         target_id: str,
         max_hops: int = 4,
+        bidirectional: bool = False,
     ) -> list[tuple[Neuron, Synapse]] | None:
         """
         Find shortest path between two neurons.
@@ -387,6 +388,7 @@ class NeuralStorage(ABC):
             source_id: Starting neuron ID
             target_id: Target neuron ID
             max_hops: Maximum path length
+            bidirectional: Traverse both incoming and outgoing edges
 
         Returns:
             List of (neuron, synapse) pairs representing path, or None if no path

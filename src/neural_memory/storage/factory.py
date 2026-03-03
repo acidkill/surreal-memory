@@ -244,8 +244,10 @@ class HybridStorage:
     async def get_neighbors(self, neuron_id: str, **kwargs: Any) -> Any:
         return await self._local.get_neighbors(neuron_id, **kwargs)
 
-    async def get_path(self, source_id: str, target_id: str, max_hops: int = 4) -> Any:
-        return await self._local.get_path(source_id, target_id, max_hops)
+    async def get_path(
+        self, source_id: str, target_id: str, max_hops: int = 4, bidirectional: bool = False
+    ) -> Any:
+        return await self._local.get_path(source_id, target_id, max_hops, bidirectional=bidirectional)
 
     async def add_fiber(self, fiber: Any) -> str:
         result = await self._local.add_fiber(fiber)

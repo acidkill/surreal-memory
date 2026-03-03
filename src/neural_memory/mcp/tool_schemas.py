@@ -851,4 +851,28 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "name": "nmem_explain",
+        "description": "Find and explain the shortest path between two entities in the neural graph. Returns a step-by-step explanation with synapse types, weights, and supporting memory evidence.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "from_entity": {
+                    "type": "string",
+                    "description": "Source entity name to start from (e.g. 'React', 'authentication')",
+                },
+                "to_entity": {
+                    "type": "string",
+                    "description": "Target entity name to reach (e.g. 'performance', 'JWT')",
+                },
+                "max_hops": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 10,
+                    "description": "Maximum path length (default: 6)",
+                },
+            },
+            "required": ["from_entity", "to_entity"],
+        },
+    },
 ]

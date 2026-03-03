@@ -302,8 +302,17 @@ class SQLiteSynapseMixin:
         source_id: str,
         target_id: str,
         max_hops: int = 4,
+        bidirectional: bool = False,
     ) -> list[tuple[Neuron, Synapse]] | None:
-        """Find shortest path using BFS."""
+        """Find shortest path using BFS.
+
+        Args:
+            source_id: Starting neuron ID.
+            target_id: Destination neuron ID.
+            max_hops: Maximum path length.
+            bidirectional: If True, traverse both outgoing and incoming
+                synapse edges (treats the graph as undirected).
+        """
         conn = self._ensure_read_conn()
         brain_id = self._get_brain_id()
 
@@ -318,19 +327,36 @@ class SQLiteSynapseMixin:
         visited = {source_id}
         queue: deque[tuple[str, list[tuple[str, str]]]] = deque([(source_id, [])])
 
+        # Build SQL once — outgoing only or outgoing + incoming
+        if bidirectional:
+            edge_sql = """
+                SELECT id, target_id AS next_id FROM synapses
+                WHERE source_id = ? AND brain_id = ?
+                UNION ALL
+                SELECT id, source_id AS next_id FROM synapses
+                WHERE target_id = ? AND brain_id = ?
+            """
+        else:
+            edge_sql = """
+                SELECT id, target_id AS next_id FROM synapses
+                WHERE source_id = ? AND brain_id = ?
+            """
+
         while queue:
             current_id, path = queue.popleft()
 
             if len(path) > max_hops:
                 continue
 
-            async with conn.execute(
-                """SELECT id, target_id FROM synapses
-                   WHERE source_id = ? AND brain_id = ?""",
-                (current_id, brain_id),
-            ) as cursor:
+            params: tuple[str, ...]
+            if bidirectional:
+                params = (current_id, brain_id, current_id, brain_id)
+            else:
+                params = (current_id, brain_id)
+
+            async with conn.execute(edge_sql, params) as cursor:
                 async for row in cursor:
-                    next_id = row["target_id"]
+                    next_id = row["next_id"]
                     synapse_id = row["id"]
 
                     if next_id == target_id:

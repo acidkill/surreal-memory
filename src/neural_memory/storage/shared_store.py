@@ -376,9 +376,10 @@ class SharedStorage(SharedFiberBrainMixin, NeuralStorage):
         source_id: str,
         target_id: str,
         max_hops: int = 4,
+        bidirectional: bool = False,
     ) -> list[tuple[Neuron, Synapse]] | None:
         """Find shortest path between neurons."""
-        params = {"target_id": target_id, "max_hops": max_hops}
+        params = {"target_id": target_id, "max_hops": max_hops, "bidirectional": bidirectional}
         try:
             result = await self._request(
                 "GET",

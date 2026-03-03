@@ -172,6 +172,7 @@ class FalkorDBGraphMixin(FalkorDBBaseMixin):
         source_id: str,
         target_id: str,
         max_hops: int = 4,
+        bidirectional: bool = False,
     ) -> list[tuple[Neuron, Synapse]] | None:
         """Find shortest path between two neurons.
 

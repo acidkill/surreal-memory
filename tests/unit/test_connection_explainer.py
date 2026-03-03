@@ -1,0 +1,243 @@
+"""Tests for nmem_explain — connection explainer feature."""
+
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from neural_memory.core.neuron import Neuron, NeuronType
+from neural_memory.core.synapse import Synapse, SynapseType
+from neural_memory.engine.connection_explainer import explain_connection
+from neural_memory.mcp.server import MCPServer, handle_message
+from neural_memory.unified_config import ToolTierConfig
+
+
+def _make_neuron(neuron_id: str, content: str, type: NeuronType = NeuronType.CONCEPT) -> Neuron:
+    return Neuron.create(neuron_id=neuron_id, content=content, type=type)
+
+
+def _make_synapse(
+    synapse_id: str,
+    source_id: str,
+    target_id: str,
+    type: SynapseType = SynapseType.RELATED_TO,
+    weight: float = 0.8,
+) -> Synapse:
+    return Synapse.create(
+        synapse_id=synapse_id, source_id=source_id, target_id=target_id, type=type, weight=weight
+    )
+
+
+def _make_fiber(id: str, neuron_ids: set[str], summary: str = "") -> MagicMock:
+    fiber = MagicMock()
+    fiber.id = id
+    fiber.neuron_ids = neuron_ids
+    fiber.summary = summary
+    return fiber
+
+
+class TestExplainConnection:
+    """Tests for the explain_connection engine function."""
+
+    @pytest.mark.asyncio
+    async def test_path_found(self) -> None:
+        """When a path exists between entities, should return explanation."""
+        n_a = _make_neuron("n1", "React")
+        n_b = _make_neuron("n2", "virtual DOM")
+        n_c = _make_neuron("n3", "performance")
+        s_ab = _make_synapse("s1", "n1", "n2", SynapseType.RELATED_TO)
+        s_bc = _make_synapse("s2", "n2", "n3", SynapseType.LEADS_TO)
+
+        storage = AsyncMock()
+        storage.find_neurons = AsyncMock(
+            side_effect=lambda content_contains=None, limit=5: (
+                [n_a] if "React" in (content_contains or "") else [n_c]
+            )
+        )
+        storage.get_path = AsyncMock(return_value=[(n_b, s_ab), (n_c, s_bc)])
+        storage.find_fibers_batch = AsyncMock(return_value=[])
+
+        result = await explain_connection(storage, "React", "performance")
+
+        assert result.found is True
+        assert result.total_hops == 2
+        assert len(result.steps) == 2
+        assert result.steps[0].content == "virtual DOM"
+        assert result.steps[1].content == "performance"
+        assert "React" in result.markdown
+        assert "performance" in result.markdown
+
+    @pytest.mark.asyncio
+    async def test_no_path_found(self) -> None:
+        """When no path exists, should return found=False."""
+        n_a = _make_neuron("n1", "React")
+        n_b = _make_neuron("n2", "cooking")
+
+        storage = AsyncMock()
+        storage.find_neurons = AsyncMock(
+            side_effect=lambda content_contains=None, limit=5: (
+                [n_a] if "React" in (content_contains or "") else [n_b]
+            )
+        )
+        storage.get_path = AsyncMock(return_value=None)
+
+        result = await explain_connection(storage, "React", "cooking")
+
+        assert result.found is False
+        assert "no path found" in result.markdown.lower()
+
+    @pytest.mark.asyncio
+    async def test_entity_not_found(self) -> None:
+        """When entity has no matching neurons, should return found=False."""
+        storage = AsyncMock()
+        storage.find_neurons = AsyncMock(return_value=[])
+
+        result = await explain_connection(storage, "nonexistent", "also_nonexistent")
+
+        assert result.found is False
+        assert "entity not found" in result.markdown.lower()
+
+    @pytest.mark.asyncio
+    async def test_max_hops_capped(self) -> None:
+        """max_hops should be capped at 10."""
+        storage = AsyncMock()
+        storage.find_neurons = AsyncMock(return_value=[])
+
+        # Even with max_hops=100, should not exceed 10
+        result = await explain_connection(storage, "A", "B", max_hops=100)
+        assert result.found is False
+
+    @pytest.mark.asyncio
+    async def test_fiber_evidence_hydrated(self) -> None:
+        """Fiber summaries should appear as evidence in steps."""
+        n_a = _make_neuron("n1", "authentication")
+        n_b = _make_neuron("n2", "JWT")
+        s_ab = _make_synapse("s1", "n1", "n2", SynapseType.INVOLVES)
+
+        fiber = _make_fiber("f1", {"n1", "n2"}, summary="JWT tokens used for auth")
+
+        storage = AsyncMock()
+        storage.find_neurons = AsyncMock(
+            side_effect=lambda content_contains=None, limit=5: (
+                [n_a] if "auth" in (content_contains or "") else [n_b]
+            )
+        )
+        storage.get_path = AsyncMock(return_value=[(n_b, s_ab)])
+        storage.find_fibers_batch = AsyncMock(return_value=[fiber])
+
+        result = await explain_connection(storage, "authentication", "JWT")
+
+        assert result.found is True
+        assert len(result.steps) == 1
+        assert "JWT tokens used for auth" in result.steps[0].evidence
+
+    @pytest.mark.asyncio
+    async def test_bidirectional_flag_passed(self) -> None:
+        """get_path should be called with bidirectional=True."""
+        n_a = _make_neuron("n1", "A")
+        n_b = _make_neuron("n2", "B")
+
+        storage = AsyncMock()
+        storage.find_neurons = AsyncMock(
+            side_effect=lambda content_contains=None, limit=5: (
+                [n_a] if content_contains == "A" else [n_b]
+            )
+        )
+        storage.get_path = AsyncMock(return_value=None)
+
+        await explain_connection(storage, "A", "B")
+
+        storage.get_path.assert_called_with("n1", "n2", max_hops=6, bidirectional=True)
+
+    @pytest.mark.asyncio
+    async def test_same_neuron_skipped(self) -> None:
+        """When source and target resolve to same neuron, should try other candidates."""
+        n_same = _make_neuron("n1", "React performance")
+
+        storage = AsyncMock()
+        storage.find_neurons = AsyncMock(return_value=[n_same])
+        storage.get_path = AsyncMock(return_value=None)
+
+        result = await explain_connection(storage, "React", "performance")
+
+        # get_path should never be called since src.id == tgt.id
+        storage.get_path.assert_not_called()
+        assert result.found is False
+
+
+class TestConnectionMCPHandler:
+    """Tests for nmem_explain MCP tool integration."""
+
+    @pytest.fixture
+    def server(self) -> MCPServer:
+        with patch("neural_memory.mcp.server.get_config") as mock_get_config:
+            mock_get_config.return_value = MagicMock(
+                current_brain="test-brain",
+                get_brain_db_path=MagicMock(return_value="/tmp/test-brain.db"),
+                tool_tier=ToolTierConfig(tier="full"),
+            )
+            return MCPServer()
+
+    @pytest.mark.asyncio
+    async def test_explain_missing_args(self, server: MCPServer) -> None:
+        """Should return error when required args missing."""
+        result = await server._explain({"from_entity": "React"})
+        assert "error" in result
+
+        result = await server._explain({"to_entity": "performance"})
+        assert "error" in result
+
+        result = await server._explain({})
+        assert "error" in result
+
+    @pytest.mark.asyncio
+    async def test_explain_tool_in_schemas(self) -> None:
+        """nmem_explain should be in tool schemas."""
+        from neural_memory.mcp.tool_schemas import get_tool_schemas
+
+        schemas = get_tool_schemas()
+        names = [s["name"] for s in schemas]
+        assert "nmem_explain" in names
+
+    @pytest.mark.asyncio
+    async def test_explain_tool_dispatch(self, server: MCPServer) -> None:
+        """nmem_explain should be in dispatch dict."""
+        mock_storage = AsyncMock()
+        mock_storage.find_neurons = AsyncMock(return_value=[])
+        mock_brain = MagicMock()
+        mock_brain.id = "test-brain-id"
+        mock_storage.get_brain = AsyncMock(return_value=mock_brain)
+
+        with patch.object(server, "get_storage", return_value=mock_storage):
+            result = await server.call_tool(
+                "nmem_explain",
+                {"from_entity": "React", "to_entity": "performance"},
+            )
+
+        assert "found" in result or "error" in result
+
+    @pytest.mark.asyncio
+    async def test_explain_via_handle_message(self, server: MCPServer) -> None:
+        """nmem_explain should work through JSON-RPC handle_message."""
+        mock_storage = AsyncMock()
+        mock_storage.find_neurons = AsyncMock(return_value=[])
+        mock_brain = MagicMock()
+        mock_brain.id = "test-brain-id"
+        mock_storage.get_brain = AsyncMock(return_value=mock_brain)
+
+        with patch.object(server, "get_storage", return_value=mock_storage):
+            message = {
+                "jsonrpc": "2.0",
+                "id": 99,
+                "method": "tools/call",
+                "params": {
+                    "name": "nmem_explain",
+                    "arguments": {"from_entity": "A", "to_entity": "B"},
+                },
+            }
+            response = await handle_message(server, message)
+
+        assert response["jsonrpc"] == "2.0"
+        assert response["id"] == 99
+        assert "result" in response

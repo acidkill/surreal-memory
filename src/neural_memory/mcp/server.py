@@ -31,6 +31,7 @@ from neural_memory.engine.hooks import HookRegistry
 from neural_memory.mcp.alert_handler import AlertHandler
 from neural_memory.mcp.auto_handler import AutoHandler
 from neural_memory.mcp.conflict_handler import ConflictHandler
+from neural_memory.mcp.connection_handler import ConnectionHandler
 from neural_memory.mcp.db_train_handler import DBTrainHandler
 from neural_memory.mcp.eternal_handler import EternalHandler
 from neural_memory.mcp.expiry_cleanup_handler import ExpiryCleanupHandler
@@ -86,6 +87,7 @@ class MCPServer(
     AlertHandler,
     ReviewHandler,
     NarrativeHandler,
+    ConnectionHandler,
     Mem0SyncHandler,
     OnboardingHandler,
     ExpiryCleanupHandler,
@@ -111,6 +113,7 @@ class MCPServer(
         AlertHandler        — _alerts, persistent alert lifecycle
         ReviewHandler       — _review, spaced repetition queue/mark/schedule/stats
         NarrativeHandler    — _narrative, timeline/topic/causal narratives
+        ConnectionHandler   — _explain, shortest-path connection explanation
         Mem0SyncHandler     — maybe_start_mem0_sync, background auto-sync
         OnboardingHandler   — _check_onboarding, fresh-brain guidance
         ExpiryCleanupHandler — _maybe_run_expiry_cleanup, auto-delete expired
@@ -199,6 +202,7 @@ class MCPServer(
             "nmem_sync_status": self._sync_status,
             "nmem_sync_config": self._sync_config,
             "nmem_telegram_backup": self._telegram_backup,
+            "nmem_explain": self._explain,
         }
         handler = dispatch.get(name)
         if handler:

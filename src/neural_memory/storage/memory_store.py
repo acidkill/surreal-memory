@@ -353,6 +353,7 @@ class InMemoryStorage(
         source_id: str,
         target_id: str,
         max_hops: int = 4,
+        bidirectional: bool = False,
     ) -> list[tuple[Neuron, Synapse]] | None:
         brain_id = self._get_brain_id()
 
