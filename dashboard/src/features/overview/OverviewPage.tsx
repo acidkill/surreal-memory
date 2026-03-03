@@ -1,8 +1,12 @@
-import { useStats, useBrains } from "@/api/hooks/useDashboard"
+import { useState } from "react"
+import { useStats, useBrains, useSwitchBrain, useDeleteBrain } from "@/api/hooks/useDashboard"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
-import { Brain, Zap, Link2, Layers } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { ConfirmDialog } from "@/components/ui/confirm-dialog"
+import { Brain, Zap, Link2, Layers, Trash2 } from "lucide-react"
+import { toast } from "sonner"
 
 function KpiCard({
   label,
@@ -39,6 +43,30 @@ function KpiCard({
 export default function OverviewPage() {
   const { data: stats, isLoading: statsLoading } = useStats()
   const { data: brains, isLoading: brainsLoading } = useBrains()
+  const switchBrain = useSwitchBrain()
+  const deleteBrain = useDeleteBrain()
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null)
+
+  const handleSwitchBrain = (brainName: string) => {
+    switchBrain.mutate(brainName, {
+      onSuccess: () => toast.success(`Switched to brain: ${brainName}`),
+      onError: () => toast.error(`Failed to switch brain`),
+    })
+  }
+
+  const handleDeleteBrain = () => {
+    if (!deleteTarget) return
+    deleteBrain.mutate(deleteTarget.id, {
+      onSuccess: () => {
+        toast.success(`Deleted brain: ${deleteTarget.name}`)
+        setDeleteTarget(null)
+      },
+      onError: () => {
+        toast.error(`Failed to delete brain`)
+        setDeleteTarget(null)
+      },
+    })
+  }
 
   return (
     <div className="space-y-6 p-6">
@@ -95,13 +123,26 @@ export default function OverviewPage() {
                     <th className="pb-2 font-medium">Fibers</th>
                     <th className="pb-2 font-medium">Grade</th>
                     <th className="pb-2 font-medium">Status</th>
+                    <th className="pb-2 font-medium">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {brains.map((brain) => (
                     <tr
                       key={brain.id}
-                      className="border-b border-border/50 last:border-0"
+                      className={`border-b border-border/50 last:border-0 transition-colors ${
+                        !brain.is_active
+                          ? "cursor-pointer hover:bg-accent/50"
+                          : ""
+                      }`}
+                      onClick={() => {
+                        if (!brain.is_active) handleSwitchBrain(brain.name)
+                      }}
+                      title={
+                        brain.is_active
+                          ? "Current active brain"
+                          : `Click to switch to ${brain.name}`
+                      }
                     >
                       <td className="py-3 font-mono font-medium">
                         {brain.name}
@@ -135,6 +176,22 @@ export default function OverviewPage() {
                           <span className="text-muted-foreground">-</span>
                         )}
                       </td>
+                      <td className="py-3">
+                        {!brain.is_active && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="size-8 text-muted-foreground hover:text-destructive"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setDeleteTarget({ id: brain.id, name: brain.name })
+                            }}
+                            aria-label={`Delete brain ${brain.name}`}
+                          >
+                            <Trash2 className="size-4" />
+                          </Button>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -145,6 +202,17 @@ export default function OverviewPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* Delete confirmation dialog */}
+      <ConfirmDialog
+        open={!!deleteTarget}
+        title="Delete Brain"
+        description={`Delete brain "${deleteTarget?.name}"? This will remove all neurons, synapses, and fibers permanently. This cannot be undone.`}
+        confirmLabel="Delete"
+        variant="destructive"
+        onConfirm={handleDeleteBrain}
+        onCancel={() => setDeleteTarget(null)}
+      />
     </div>
   )
 }

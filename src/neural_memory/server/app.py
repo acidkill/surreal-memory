@@ -221,14 +221,10 @@ def create_app(
     spa_dist = STATIC_DIR / "dist"
 
     def _serve_spa() -> Response:
-        """Serve React SPA index.html, falling back to legacy if not built."""
+        """Serve React SPA index.html."""
         spa_index = spa_dist / "index.html"
         if spa_index.exists():
             return FileResponse(spa_index)
-        # Fallback to legacy dashboard if React build not found
-        legacy = STATIC_DIR / "dashboard.html"
-        if legacy.exists():
-            return FileResponse(legacy)
         from fastapi.responses import JSONResponse
 
         return JSONResponse(
@@ -247,17 +243,6 @@ def create_app(
     async def dashboard() -> Response:
         """Serve the NeuralMemory React dashboard."""
         return _serve_spa()
-
-    # Legacy endpoints (backward compat)
-    @app.get("/dashboard-legacy", tags=["dashboard"])
-    async def dashboard_legacy() -> FileResponse:
-        """Serve the legacy Alpine.js dashboard."""
-        return FileResponse(STATIC_DIR / "dashboard.html")
-
-    @app.get("/ui-legacy", tags=["dashboard"])
-    async def ui_legacy() -> FileResponse:
-        """Serve the legacy vis.js graph UI."""
-        return FileResponse(STATIC_DIR / "index.html")
 
     # SPA catch-all for client-side routing (must be after API routes)
     @app.get("/dashboard/{path:path}", tags=["dashboard"])

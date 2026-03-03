@@ -19,6 +19,8 @@
     "cmdk": "^1.1.1",
     "framer-motion": "^12.34.3",
     "graphology": "^0.26.0",
+    "graphology-layout-forceatlas2": "^0.10.1",
+    "graphology-types": "^0.24.8",
     "lucide-react": "^0.576.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",

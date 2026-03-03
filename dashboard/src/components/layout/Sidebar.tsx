@@ -5,7 +5,7 @@ import {
   Network,
   Clock,
   TrendingUp,
-  GitBranch,
+  Share2,
   Settings,
   Brain,
 } from "lucide-react"
@@ -18,7 +18,7 @@ const navItems = [
   { to: "/graph", icon: Network, label: "Graph" },
   { to: "/timeline", icon: Clock, label: "Timeline" },
   { to: "/evolution", icon: TrendingUp, label: "Evolution" },
-  { to: "/diagrams", icon: GitBranch, label: "Diagrams" },
+  { to: "/diagrams", icon: Share2, label: "Mindmap" },
   { to: "/settings", icon: Settings, label: "Settings" },
 ] as const
 

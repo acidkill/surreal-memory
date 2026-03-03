@@ -123,6 +123,18 @@ export function useGraph(limit = 500) {
   })
 }
 
+// Delete brain
+export function useDeleteBrain() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (brainId: string) =>
+      api.delete<{ status: string; brain_id: string }>(`/brain/${brainId}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries()
+    },
+  })
+}
+
 // Brain files
 export function useBrainFiles() {
   return useQuery({
