@@ -254,10 +254,6 @@ def create_app(
     if spa_dist.exists():
         app.mount("/assets", StaticFiles(directory=str(spa_dist / "assets")), name="spa-assets")
 
-    # Mount legacy static files
-    if STATIC_DIR.exists():
-        app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
-
     return app
 
 
