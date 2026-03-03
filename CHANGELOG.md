@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.24.1] - 2026-03-03
+
+### Fixed
+
+- **IntegrityError in consolidation** — `save_maturation` FK constraint failed when orphaned maturation records referenced deleted fibers
+  - Added `cleanup_orphaned_maturations()` to purge stale records before stage advancement
+  - Defensive try/except for any remaining FK errors during `_mature()`
+
+### Tests
+
+- 2 new tests for orphaned maturation handling
+- Total: 3145 passing
+
 ## [2.24.0] - 2026-03-03
 
 ### Fixed
