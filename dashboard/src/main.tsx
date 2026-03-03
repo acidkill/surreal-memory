@@ -19,7 +19,7 @@ const queryClient = new QueryClient({
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
+      <BrowserRouter basename={window.location.pathname.startsWith("/dashboard") ? "/dashboard" : "/ui"}>
         <App />
         <Toaster
           position="bottom-right"

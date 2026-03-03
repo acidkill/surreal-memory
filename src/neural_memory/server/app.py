@@ -9,7 +9,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from neural_memory import __version__
@@ -138,17 +138,10 @@ def create_app(
         return HealthResponse(status="healthy", version=__version__)
 
     # Root endpoint
-    @app.get("/", tags=["health"])
-    async def root() -> dict[str, str]:
-        """Root endpoint with API info."""
-        return {
-            "name": title,
-            "description": description,
-            "version": __version__,
-            "docs": "/docs",
-            "health": "/health",
-            "ui": "/ui",
-        }
+    @app.get("/", tags=["dashboard"])
+    async def root() -> RedirectResponse:
+        """Redirect root to dashboard."""
+        return RedirectResponse(url="/ui", status_code=302)
 
     # Graph visualization API (supports limit/offset for progressive loading)
     from neural_memory.server.dependencies import require_local_request
@@ -238,16 +231,22 @@ def create_app(
         """Serve the NeuralMemory dashboard."""
         return _serve_spa()
 
+    # SPA catch-all for /ui client-side routing
+    @app.get("/ui/{path:path}", tags=["dashboard"])
+    async def ui_spa_catchall(path: str) -> Response:
+        """Catch-all for React SPA client-side routing under /ui."""
+        return _serve_spa()
+
     # /dashboard alias (same SPA)
     @app.get("/dashboard", tags=["dashboard"])
     async def dashboard() -> Response:
         """Serve the NeuralMemory React dashboard."""
         return _serve_spa()
 
-    # SPA catch-all for client-side routing (must be after API routes)
+    # SPA catch-all for /dashboard client-side routing
     @app.get("/dashboard/{path:path}", tags=["dashboard"])
     async def dashboard_spa_catchall(path: str) -> Response:
-        """Catch-all for React SPA client-side routing."""
+        """Catch-all for React SPA client-side routing under /dashboard."""
         return _serve_spa()
 
     # Mount SPA static assets (JS/CSS bundles)

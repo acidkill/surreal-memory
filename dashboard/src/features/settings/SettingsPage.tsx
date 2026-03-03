@@ -4,6 +4,31 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { toast } from "sonner"
+import { ExternalLink, Bug, MessageSquare, Github } from "lucide-react"
+
+const FEEDBACK_CHANNELS = [
+  {
+    icon: Bug,
+    label: "Report a Bug",
+    description: "Found something broken? Open an issue with steps to reproduce.",
+    url: "https://github.com/nhadaututtheky/neural-memory/issues/new?template=bug_report.md",
+    color: "#ef4444",
+  },
+  {
+    icon: MessageSquare,
+    label: "Feature Request",
+    description: "Have an idea to improve NeuralMemory? We'd love to hear it.",
+    url: "https://github.com/nhadaututtheky/neural-memory/issues/new?template=feature_request.md",
+    color: "#6366f1",
+  },
+  {
+    icon: Github,
+    label: "GitHub Discussions",
+    description: "Questions, tips, and community support.",
+    url: "https://github.com/nhadaututtheky/neural-memory/discussions",
+    color: "#a8a29e",
+  },
+] as const
 
 export default function SettingsPage() {
   const { data: stats } = useStats()
@@ -189,6 +214,36 @@ export default function SettingsPage() {
                 </p>
               </div>
             )}
+          </CardContent>
+        </Card>
+
+        {/* Feedback & Bug Report */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Feedback & Bug Report</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {FEEDBACK_CHANNELS.map(({ icon: Icon, label, description, url, color }) => (
+              <a
+                key={label}
+                href={url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-start gap-3 rounded-lg border border-border/50 p-3 transition-colors hover:bg-accent cursor-pointer"
+              >
+                <div
+                  className="flex size-8 shrink-0 items-center justify-center rounded-lg"
+                  style={{ backgroundColor: `${color}15` }}
+                >
+                  <Icon className="size-4" style={{ color }} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium">{label}</p>
+                  <p className="text-xs text-muted-foreground">{description}</p>
+                </div>
+                <ExternalLink className="size-3.5 shrink-0 text-muted-foreground mt-0.5" />
+              </a>
+            ))}
           </CardContent>
         </Card>
       </div>

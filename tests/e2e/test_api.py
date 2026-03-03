@@ -30,15 +30,12 @@ class TestHealthEndpoints:
         assert data["status"] == "healthy"
         assert "version" in data
 
-    def test_root_endpoint(self, client: TestClient) -> None:
-        """Test root endpoint returns API info."""
-        response = client.get("/")
+    def test_root_endpoint_redirects_to_ui(self, client: TestClient) -> None:
+        """Test root endpoint redirects to dashboard UI."""
+        response = client.get("/", follow_redirects=False)
 
-        assert response.status_code == 200
-        data = response.json()
-        assert "name" in data
-        assert "version" in data
-        assert "docs" in data
+        assert response.status_code == 302
+        assert response.headers["location"] == "/ui"
 
 
 class TestBrainEndpoints:
