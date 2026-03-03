@@ -954,7 +954,7 @@ class TestMCPProtocol:
                 "params": {"name": "nmem_remember", "arguments": "some plain text"},
             }
 
-            response = await handle_message(server, message)
+            await handle_message(server, message)
 
         # Should wrap plain string in {"content": "..."} and not crash
         mock_call.assert_called_once()
