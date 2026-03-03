@@ -254,7 +254,15 @@ async def handle_message(server: MCPServer, message: dict[str, Any]) -> dict[str
 
     elif method == "tools/call":
         tool_name = params.get("name", "")
-        tool_args = _sanitize_surrogates(params.get("arguments", {}))
+        raw_args = params.get("arguments", {})
+        # Some MCP clients (e.g. OpenClaw) pass arguments as a JSON string
+        # instead of a parsed dict. Parse it gracefully.
+        if isinstance(raw_args, str):
+            try:
+                raw_args = json.loads(raw_args)
+            except (json.JSONDecodeError, TypeError):
+                raw_args = {"content": raw_args}
+        tool_args = _sanitize_surrogates(raw_args)
 
         try:
             result = await asyncio.wait_for(

@@ -919,6 +919,49 @@ class TestMCPProtocol:
         assert "failed unexpectedly" in response["error"]["message"]
 
     @pytest.mark.asyncio
+    async def test_tools_call_string_arguments(self, server: MCPServer) -> None:
+        """Test MCP tools/call when arguments are passed as a JSON string (OpenClaw compat)."""
+        mock_storage = AsyncMock()
+        mock_storage.get_fibers = AsyncMock(return_value=[])
+
+        with patch.object(server, "get_storage", return_value=mock_storage):
+            message = {
+                "jsonrpc": "2.0",
+                "id": 5,
+                "method": "tools/call",
+                "params": {"name": "nmem_context", "arguments": '{"limit": 5}'},
+            }
+
+            response = await handle_message(server, message)
+
+        assert response["jsonrpc"] == "2.0"
+        assert response["id"] == 5
+        assert "result" in response
+        assert "content" in response["result"]
+
+    @pytest.mark.asyncio
+    async def test_tools_call_plain_string_arguments(self, server: MCPServer) -> None:
+        """Test MCP tools/call when arguments are a plain non-JSON string."""
+        mock_storage = AsyncMock()
+        mock_storage.add_fiber = AsyncMock(return_value={"status": "ok"})
+
+        with patch.object(server, "call_tool", new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = {"status": "ok"}
+            message = {
+                "jsonrpc": "2.0",
+                "id": 6,
+                "method": "tools/call",
+                "params": {"name": "nmem_remember", "arguments": "some plain text"},
+            }
+
+            response = await handle_message(server, message)
+
+        # Should wrap plain string in {"content": "..."} and not crash
+        mock_call.assert_called_once()
+        call_args = mock_call.call_args[0]
+        assert call_args[1] == {"content": "some plain text"}
+
+    @pytest.mark.asyncio
     async def test_notifications_initialized(self, server: MCPServer) -> None:
         """Test MCP notifications/initialized message (no response expected)."""
         message = {
