@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.24.0] - 2026-03-03
+
+### Fixed
+
+- **[CRITICAL] SQL Injection Prevention** — `get_synapses_for_neurons` direction param validated against whitelist instead of raw f-string
+- **[HIGH] BFS max_hops off-by-one** — Nodes at depth=max_hops no longer uselessly enqueued then discarded
+- **[HIGH] Bidirectional path search** — `memory_store.get_path()` now respects `bidirectional=True` via `to_undirected()`
+- **[HIGH] JSON-RPC parse errors** — Returns proper `{"code": -32700}` error instead of silently dropping malformed messages
+- **[HIGH] Encryption failure policy** — Returns error instead of silently storing plaintext when encryption fails
+- **[HIGH] `disable_auto_save` placement** — Moved inside `try` block in tool_handlers and conflict_handler so `finally` always re-enables
+- **[HIGH] Cross-brain depth validation** — Added int coercion + 0-3 clamping for depth parameter
+- **[HIGH] Factory sync exception handling** — Narrowed bare `except Exception` to specific exception types
+- **[HIGH] SSN pattern false positives** — Excluded invalid prefixes (000, 666, 900-999); raised base64/hex minimums to 64 chars
+- **[MEDIUM] MCP notification handling** — Unknown notifications return None instead of error responses
+- **[MEDIUM] Brain ID error propagation** — New `_get_brain_or_error()` helper prevents uncaught ValueError in 6 handlers
+- **[MEDIUM] Connection handler I/O** — Removed unused brain fetch in `_explain`
+- **[MEDIUM] Evidence fetch optimization** — Removed wasted source neuron from evidence query
+- **[MEDIUM] Narrative date validation** — Added `end_date < start_date` guard
+- **[MEDIUM] CORS port handling** — Enumerate common dev ports instead of invalid `:*` wildcard
+- **[MEDIUM] Embedding config** — Graceful fallback instead of crash on invalid provider
+- **[LOW] Type coercion** — max_hops/max_fibers/max_depth safely coerced to int
+- **[LOW] Immutability** — Dict mutations replaced with spread patterns in review_handler and encoder
+- **[LOW] Schema cleanup** — Removed empty `"required": []` from nmem_suggest
+
+### Tests
+
+- Fixed and added 5 tests (max_hops_capped, avg_weight, default_hops, tier assertions, embedding fallback)
+- Total: 3143 passing
+
 ## [2.23.0] - 2026-03-03
 
 ### Added
