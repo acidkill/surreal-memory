@@ -130,14 +130,47 @@ def _check_and_notify() -> None:
         logger.debug("Update check failed", exc_info=True)
 
 
+def _is_editable_install() -> bool:
+    """Detect if neural-memory is installed in editable/development mode."""
+    try:
+        from importlib.metadata import distribution
+
+        dist = distribution("neural-memory")
+        direct_url = dist.read_text("direct_url.json")
+        if direct_url and '"editable"' in direct_url:
+            return True
+    except Exception:
+        pass
+
+    try:
+        import neural_memory
+
+        pkg_dir = Path(neural_memory.__file__).resolve().parent
+        for parent in [pkg_dir, *list(pkg_dir.parents)]:
+            if (parent / "pyproject.toml").exists() and (parent / ".git").exists():
+                return True
+            if parent == parent.parent:
+                break
+    except Exception:
+        pass
+
+    return False
+
+
 def _print_update_notice(current: str, latest: str) -> None:
     """Print a styled update notice to stderr (doesn't pollute stdout)."""
     import sys
 
-    notice = (
-        f"\n  Update available: neural-memory {current} → {latest}\n"
-        f"  Run: pip install -U neural-memory\n"
-    )
+    if _is_editable_install():
+        notice = (
+            f"\n  Dev install (v{current}). PyPI latest: v{latest}.\n"
+            f"  Skipping update prompt for editable install.\n"
+        )
+    else:
+        notice = (
+            f"\n  Update available: neural-memory {current} → {latest}\n"
+            f"  Run: pip install -U neural-memory\n"
+        )
     # Use stderr so it doesn't break piped output (e.g. nmem recall ... | jq)
     print(notice, file=sys.stderr, flush=True)
 
