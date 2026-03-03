@@ -6,15 +6,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from neural_memory.core.neuron import NeuronState
 from neural_memory.engine.consolidation import ConsolidationReport
 from neural_memory.utils.timeutils import utcnow
-
 
 # ── Hebbian Floor Tests ──
 
