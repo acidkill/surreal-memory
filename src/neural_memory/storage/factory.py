@@ -247,7 +247,9 @@ class HybridStorage:
     async def get_path(
         self, source_id: str, target_id: str, max_hops: int = 4, bidirectional: bool = False
     ) -> Any:
-        return await self._local.get_path(source_id, target_id, max_hops, bidirectional=bidirectional)
+        return await self._local.get_path(
+            source_id, target_id, max_hops, bidirectional=bidirectional
+        )
 
     async def add_fiber(self, fiber: Any) -> str:
         result = await self._local.add_fiber(fiber)
