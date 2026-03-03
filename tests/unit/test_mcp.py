@@ -2126,12 +2126,16 @@ class TestMCPRecallExtended:
 
         With auto-redact (Phase F), severity-3 API keys are auto-redacted
         rather than blocking. The memory is stored with [REDACTED] content.
+        Encryption must be explicitly disabled to test redaction path only.
         """
         server = self._make_server()
         mock_storage = AsyncMock()
         mock_brain = MagicMock(id="test-brain", config=MagicMock())
         mock_storage.get_brain = AsyncMock(return_value=mock_brain)
         mock_storage._current_brain_id = "test-brain"
+
+        # Ensure encryption is disabled so auto-redact path completes without encryption attempt
+        server.config.encryption = MagicMock(enabled=False)
 
         with patch.object(server, "get_storage", return_value=mock_storage):
             result = await server.call_tool(
