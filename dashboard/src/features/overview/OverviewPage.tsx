@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button"
 import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 import { Brain, Zap, Link2, Layers, Trash2 } from "lucide-react"
 import { toast } from "sonner"
+import { useTranslation } from "react-i18next"
 
 function KpiCard({
   label,
@@ -46,11 +47,12 @@ export default function OverviewPage() {
   const switchBrain = useSwitchBrain()
   const deleteBrain = useDeleteBrain()
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null)
+  const { t } = useTranslation()
 
   const handleSwitchBrain = (brainName: string) => {
     switchBrain.mutate(brainName, {
-      onSuccess: () => toast.success(`Switched to brain: ${brainName}`),
-      onError: () => toast.error(`Failed to switch brain`),
+      onSuccess: () => toast.success(t("overview.switchedTo", { name: brainName })),
+      onError: () => toast.error(t("overview.switchFailed")),
     })
   }
 
@@ -58,11 +60,11 @@ export default function OverviewPage() {
     if (!deleteTarget) return
     deleteBrain.mutate(deleteTarget.id, {
       onSuccess: () => {
-        toast.success(`Deleted brain: ${deleteTarget.name}`)
+        toast.success(t("overview.deleted", { name: deleteTarget.name }))
         setDeleteTarget(null)
       },
       onError: () => {
-        toast.error(`Failed to delete brain`)
+        toast.error(t("overview.deleteFailed"))
         setDeleteTarget(null)
       },
     })
@@ -70,30 +72,30 @@ export default function OverviewPage() {
 
   return (
     <div className="space-y-6 p-6">
-      <h1 className="font-display text-2xl font-bold">Overview</h1>
+      <h1 className="font-display text-2xl font-bold">{t("overview.title")}</h1>
 
       {/* KPI Cards */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <KpiCard
-          label="Neurons"
+          label={t("overview.neurons")}
           value={stats?.total_neurons ?? 0}
           icon={Brain}
           loading={statsLoading}
         />
         <KpiCard
-          label="Synapses"
+          label={t("overview.synapses")}
           value={stats?.total_synapses ?? 0}
           icon={Link2}
           loading={statsLoading}
         />
         <KpiCard
-          label="Fibers"
+          label={t("overview.fibers")}
           value={stats?.total_fibers ?? 0}
           icon={Layers}
           loading={statsLoading}
         />
         <KpiCard
-          label="Brains"
+          label={t("overview.brains")}
           value={stats?.total_brains ?? 0}
           icon={Zap}
           loading={statsLoading}
@@ -103,7 +105,7 @@ export default function OverviewPage() {
       {/* Brain List */}
       <Card>
         <CardHeader>
-          <CardTitle>Brains</CardTitle>
+          <CardTitle>{t("overview.brainList")}</CardTitle>
         </CardHeader>
         <CardContent>
           {brainsLoading ? (
@@ -117,13 +119,13 @@ export default function OverviewPage() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-border text-left text-muted-foreground">
-                    <th className="pb-2 font-medium">Name</th>
-                    <th className="pb-2 font-medium">Neurons</th>
-                    <th className="pb-2 font-medium">Synapses</th>
-                    <th className="pb-2 font-medium">Fibers</th>
-                    <th className="pb-2 font-medium">Grade</th>
-                    <th className="pb-2 font-medium">Status</th>
-                    <th className="pb-2 font-medium">Actions</th>
+                    <th className="pb-2 font-medium">{t("overview.name")}</th>
+                    <th className="pb-2 font-medium">{t("overview.neurons")}</th>
+                    <th className="pb-2 font-medium">{t("overview.synapses")}</th>
+                    <th className="pb-2 font-medium">{t("overview.fibers")}</th>
+                    <th className="pb-2 font-medium">{t("overview.grade")}</th>
+                    <th className="pb-2 font-medium">{t("overview.status")}</th>
+                    <th className="pb-2 font-medium">{t("overview.actions")}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -140,8 +142,8 @@ export default function OverviewPage() {
                       }}
                       title={
                         brain.is_active
-                          ? "Current active brain"
-                          : `Click to switch to ${brain.name}`
+                          ? t("overview.currentBrain")
+                          : t("overview.switchTo", { name: brain.name })
                       }
                     >
                       <td className="py-3 font-mono font-medium">
@@ -171,7 +173,7 @@ export default function OverviewPage() {
                       </td>
                       <td className="py-3">
                         {brain.is_active ? (
-                          <Badge variant="default">Active</Badge>
+                          <Badge variant="default">{t("common.active")}</Badge>
                         ) : (
                           <span className="text-muted-foreground">-</span>
                         )}
@@ -186,7 +188,7 @@ export default function OverviewPage() {
                               e.stopPropagation()
                               setDeleteTarget({ id: brain.id, name: brain.name })
                             }}
-                            aria-label={`Delete brain ${brain.name}`}
+                            aria-label={t("overview.deleteBrain", { name: brain.name })}
                           >
                             <Trash2 className="size-4" />
                           </Button>
@@ -198,7 +200,7 @@ export default function OverviewPage() {
               </table>
             </div>
           ) : (
-            <p className="text-sm text-muted-foreground">No brains found.</p>
+            <p className="text-sm text-muted-foreground">{t("overview.noBrains")}</p>
           )}
         </CardContent>
       </Card>
@@ -206,9 +208,9 @@ export default function OverviewPage() {
       {/* Delete confirmation dialog */}
       <ConfirmDialog
         open={!!deleteTarget}
-        title="Delete Brain"
-        description={`Delete brain "${deleteTarget?.name}"? This will remove all neurons, synapses, and fibers permanently. This cannot be undone.`}
-        confirmLabel="Delete"
+        title={t("overview.deleteBrainTitle")}
+        description={t("overview.deleteBrainDesc", { name: deleteTarget?.name })}
+        confirmLabel={t("common.delete")}
         variant="destructive"
         onConfirm={handleDeleteBrain}
         onCancel={() => setDeleteTarget(null)}

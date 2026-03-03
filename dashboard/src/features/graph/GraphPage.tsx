@@ -5,17 +5,19 @@ import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Button } from "@/components/ui/button"
 import { NetworkGraph } from "./NetworkGraph"
+import { useTranslation } from "react-i18next"
 
 const LIMIT_OPTIONS = [100, 250, 500, 1000] as const
 
-const LEGEND = [
-  { type: "concept", color: "#6366f1" },
-  { type: "entity", color: "#06b6d4" },
-  { type: "time", color: "#f59e0b" },
-  { type: "action", color: "#059669" },
-  { type: "state", color: "#8b5cf6" },
-  { type: "other", color: "#a8a29e" },
-] as const
+const LEGEND_KEYS = ["concept", "entity", "time", "action", "state", "other"] as const
+const LEGEND_COLORS: Record<string, string> = {
+  concept: "#6366f1",
+  entity: "#06b6d4",
+  time: "#f59e0b",
+  action: "#059669",
+  state: "#8b5cf6",
+  other: "#a8a29e",
+}
 
 interface SelectedNode {
   id: string
@@ -27,6 +29,7 @@ export default function GraphPage() {
   const [limit, setLimit] = useState<number>(250)
   const { data: graph, isLoading } = useGraph(limit)
   const [selectedNode, setSelectedNode] = useState<SelectedNode | null>(null)
+  const { t } = useTranslation()
 
   const handleNodeClick = useCallback((id: string, content: string, type: string) => {
     setSelectedNode({ id, content, type })
@@ -36,9 +39,9 @@ export default function GraphPage() {
     <div className="flex h-[calc(100vh-3.5rem)] flex-col gap-4 p-4">
       {/* Header row */}
       <div className="flex items-center justify-between shrink-0">
-        <h1 className="font-display text-2xl font-bold">Neural Graph</h1>
+        <h1 className="font-display text-2xl font-bold">{t("graph.title")}</h1>
         <div className="flex items-center gap-2">
-          <span className="text-sm text-muted-foreground">Nodes:</span>
+          <span className="text-sm text-muted-foreground">{t("graph.nodes")}</span>
           {LIMIT_OPTIONS.map((opt) => (
             <Button
               key={opt}
@@ -56,23 +59,27 @@ export default function GraphPage() {
       <Card className="flex-1 flex flex-col min-h-0">
         <CardHeader className="py-3 px-4 shrink-0 flex flex-row items-center justify-between">
           <CardTitle className="text-sm flex items-center gap-2">
-            Network Visualization
+            {t("graph.networkVisualization")}
             {graph && (
               <span className="font-normal text-muted-foreground">
-                {graph.neurons.length.toLocaleString()} nodes,{" "}
-                {graph.synapses.length.toLocaleString()} edges
+                {t("graph.nodesCount", {
+                  nodes: graph.neurons.length.toLocaleString(),
+                  edges: graph.synapses.length.toLocaleString(),
+                })}
               </span>
             )}
           </CardTitle>
           {/* Inline legend */}
           <div className="flex items-center gap-3">
-            {LEGEND.map(({ type, color }) => (
-              <div key={type} className="flex items-center gap-1">
+            {LEGEND_KEYS.map((key) => (
+              <div key={key} className="flex items-center gap-1">
                 <div
                   className="size-2 rounded-full"
-                  style={{ backgroundColor: color }}
+                  style={{ backgroundColor: LEGEND_COLORS[key] }}
                 />
-                <span className="text-[10px] capitalize text-muted-foreground">{type}</span>
+                <span className="text-[10px] capitalize text-muted-foreground">
+                  {t(`graph.${key}`)}
+                </span>
               </div>
             ))}
           </div>
@@ -89,7 +96,7 @@ export default function GraphPage() {
           ) : (
             <div className="flex h-full items-center justify-center rounded-lg border border-border bg-muted/30">
               <p className="text-sm text-muted-foreground">
-                No neurons found in this brain.
+                {t("graph.noNeurons")}
               </p>
             </div>
           )}

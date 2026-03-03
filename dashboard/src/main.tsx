@@ -4,6 +4,7 @@ import { BrowserRouter } from "react-router-dom"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { Toaster } from "sonner"
 import App from "./App"
+import "./i18n"
 import "./index.css"
 
 const queryClient = new QueryClient({

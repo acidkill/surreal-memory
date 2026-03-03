@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
 import { FiberMindmap } from "./FiberMindmap"
+import { useTranslation } from "react-i18next"
 
 interface SelectedNeuron {
   id: string
@@ -17,16 +18,17 @@ export default function DiagramsPage() {
   const { data: diagram, isLoading: diagramLoading } =
     useFiberDiagram(selectedFiber)
   const [selectedNeuron, setSelectedNeuron] = useState<SelectedNeuron | null>(null)
+  const { t } = useTranslation()
 
   return (
     <div className="flex h-[calc(100vh-3.5rem)] flex-col gap-4 p-4">
-      <h1 className="font-display text-2xl font-bold shrink-0">Mindmap</h1>
+      <h1 className="font-display text-2xl font-bold shrink-0">{t("diagrams.title")}</h1>
 
       <div className="flex flex-1 gap-4 min-h-0">
         {/* Fiber selector — narrow sidebar */}
         <Card className="w-56 shrink-0 flex flex-col">
           <CardHeader className="py-3 px-4">
-            <CardTitle className="text-sm">Fibers</CardTitle>
+            <CardTitle className="text-sm">{t("diagrams.fibers")}</CardTitle>
           </CardHeader>
           <CardContent className="flex-1 overflow-y-auto px-2 pb-2">
             {fibersLoading ? (
@@ -52,13 +54,13 @@ export default function DiagramsPage() {
                   >
                     <p className="font-medium truncate">{fiber.summary}</p>
                     <p className="text-[10px] text-muted-foreground">
-                      {fiber.neuron_count} neurons
+                      {fiber.neuron_count} {t("common.neurons")}
                     </p>
                   </button>
                 ))}
               </div>
             ) : (
-              <p className="text-xs text-muted-foreground">No fibers found.</p>
+              <p className="text-xs text-muted-foreground">{t("diagrams.noFibers")}</p>
             )}
           </CardContent>
         </Card>
@@ -69,16 +71,16 @@ export default function DiagramsPage() {
             <CardHeader className="py-3 px-4 shrink-0 flex flex-row items-center justify-between">
               <CardTitle className="text-sm">
                 {diagram
-                  ? `Fiber: ${diagram.fiber_id.slice(0, 16)}...`
-                  : "Select a Fiber"}
+                  ? t("diagrams.fiberLabel", { id: diagram.fiber_id.slice(0, 16) })
+                  : t("diagrams.selectFiber")}
               </CardTitle>
               {diagram && (
                 <div className="flex gap-4 text-xs text-muted-foreground">
                   <span>
-                    Neurons: <strong className="font-mono text-foreground">{diagram.neurons.length}</strong>
+                    {t("diagrams.neuronsCount")} <strong className="font-mono text-foreground">{diagram.neurons.length}</strong>
                   </span>
                   <span>
-                    Connections: <strong className="font-mono text-foreground">{diagram.synapses.length}</strong>
+                    {t("diagrams.connectionsCount")} <strong className="font-mono text-foreground">{diagram.synapses.length}</strong>
                   </span>
                 </div>
               )}
@@ -86,7 +88,7 @@ export default function DiagramsPage() {
             <CardContent className="flex-1 p-2 min-h-0">
               {!selectedFiber ? (
                 <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-                  Select a fiber to view its mindmap
+                  {t("diagrams.selectFiberPrompt")}
                 </div>
               ) : diagramLoading ? (
                 <Skeleton className="h-full w-full" />

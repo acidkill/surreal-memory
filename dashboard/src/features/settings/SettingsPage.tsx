@@ -5,29 +5,15 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { toast } from "sonner"
 import { ExternalLink, Bug, MessageSquare, Github } from "lucide-react"
+import { useTranslation } from "react-i18next"
 
-const FEEDBACK_CHANNELS = [
-  {
-    icon: Bug,
-    label: "Report a Bug",
-    description: "Found something broken? Open an issue with steps to reproduce.",
-    url: "https://github.com/nhadaututtheky/neural-memory/issues/new?template=bug_report.md",
-    color: "#ef4444",
-  },
-  {
-    icon: MessageSquare,
-    label: "Feature Request",
-    description: "Have an idea to improve NeuralMemory? We'd love to hear it.",
-    url: "https://github.com/nhadaututtheky/neural-memory/issues/new?template=feature_request.md",
-    color: "#6366f1",
-  },
-  {
-    icon: Github,
-    label: "GitHub Discussions",
-    description: "Questions, tips, and community support.",
-    url: "https://github.com/nhadaututtheky/neural-memory/discussions",
-    color: "#a8a29e",
-  },
+const FEEDBACK_ICONS = [Bug, MessageSquare, Github] as const
+const FEEDBACK_COLORS = ["#ef4444", "#6366f1", "#a8a29e"] as const
+const FEEDBACK_KEYS = ["reportBug", "featureRequest", "discussions"] as const
+const FEEDBACK_URLS = [
+  "https://github.com/nhadaututtheky/neural-memory/issues/new?template=bug_report.md",
+  "https://github.com/nhadaututtheky/neural-memory/issues/new?template=feature_request.md",
+  "https://github.com/nhadaututtheky/neural-memory/discussions",
 ] as const
 
 export default function SettingsPage() {
@@ -37,6 +23,7 @@ export default function SettingsPage() {
   const { data: telegram, isLoading: telegramLoading } = useTelegramStatus()
   const testMutation = useTelegramTest()
   const backupMutation = useTelegramBackup()
+  const { t } = useTranslation()
 
   const formatBytes = (bytes: number) => {
     if (bytes === 0) return "0 B"
@@ -50,13 +37,13 @@ export default function SettingsPage() {
     testMutation.mutate(undefined, {
       onSuccess: (data) => {
         if (data.status === "success") {
-          toast.success("Test message sent successfully")
+          toast.success(t("settings.testSuccess"))
         } else {
-          toast.error("Some messages failed to send")
+          toast.error(t("settings.testPartial"))
         }
       },
       onError: () => {
-        toast.error("Failed to send test message")
+        toast.error(t("settings.testFailed"))
       },
     })
   }
@@ -66,39 +53,43 @@ export default function SettingsPage() {
       onSuccess: (data) => {
         if (data.sent_to > 0) {
           toast.success(
-            `Backup sent! ${data.brain} (${data.size_mb}MB) to ${data.sent_to} chat(s)`
+            t("settings.backupSuccess", {
+              brain: data.brain,
+              size: data.size_mb,
+              count: data.sent_to,
+            })
           )
         } else {
-          toast.error("Backup failed to send")
+          toast.error(t("settings.backupSendFailed"))
         }
       },
       onError: () => {
-        toast.error("Backup failed")
+        toast.error(t("settings.backupFailed"))
       },
     })
   }
 
   return (
     <div className="space-y-6 p-6">
-      <h1 className="font-display text-2xl font-bold">Settings</h1>
+      <h1 className="font-display text-2xl font-bold">{t("settings.title")}</h1>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         {/* General */}
         <Card>
           <CardHeader>
-            <CardTitle>General</CardTitle>
+            <CardTitle>{t("settings.general")}</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3 text-sm">
             <div className="flex justify-between">
-              <span className="text-muted-foreground">Version</span>
+              <span className="text-muted-foreground">{t("settings.version")}</span>
               <span className="font-mono">{healthCheck?.version ?? "-"}</span>
             </div>
             <div className="flex justify-between">
-              <span className="text-muted-foreground">Active Brain</span>
+              <span className="text-muted-foreground">{t("settings.activeBrain")}</span>
               <span className="font-mono">{stats?.active_brain ?? "-"}</span>
             </div>
             <div className="flex justify-between">
-              <span className="text-muted-foreground">Total Brains</span>
+              <span className="text-muted-foreground">{t("settings.totalBrains")}</span>
               <span className="font-mono">{stats?.total_brains ?? "-"}</span>
             </div>
           </CardContent>
@@ -107,19 +98,19 @@ export default function SettingsPage() {
         {/* Brain Files */}
         <Card>
           <CardHeader>
-            <CardTitle>Brain Files</CardTitle>
+            <CardTitle>{t("settings.brainFiles")}</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3 text-sm">
             {brainFiles ? (
               <>
                 <div className="flex justify-between">
-                  <span className="text-muted-foreground">Brains Directory</span>
+                  <span className="text-muted-foreground">{t("settings.brainsDirectory")}</span>
                   <span className="font-mono text-xs max-w-[200px] truncate" title={brainFiles.brains_dir}>
                     {brainFiles.brains_dir}
                   </span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-muted-foreground">Total Disk Usage</span>
+                  <span className="text-muted-foreground">{t("settings.totalDiskUsage")}</span>
                   <span className="font-mono">{formatBytes(brainFiles.total_size_bytes)}</span>
                 </div>
                 {brainFiles.brains.length > 0 && (
@@ -136,7 +127,7 @@ export default function SettingsPage() {
                 )}
               </>
             ) : (
-              <p className="text-muted-foreground">Loading...</p>
+              <p className="text-muted-foreground">{t("common.loading")}</p>
             )}
           </CardContent>
         </Card>
@@ -144,15 +135,15 @@ export default function SettingsPage() {
         {/* Telegram Backup */}
         <Card>
           <CardHeader>
-            <CardTitle>Telegram Backup</CardTitle>
+            <CardTitle>{t("settings.telegramBackup")}</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4 text-sm">
             {telegramLoading ? (
-              <p className="text-muted-foreground">Loading...</p>
+              <p className="text-muted-foreground">{t("common.loading")}</p>
             ) : telegram?.configured ? (
               <>
                 <div className="flex items-center gap-2">
-                  <Badge variant="success">Connected</Badge>
+                  <Badge variant="success">{t("settings.connected")}</Badge>
                   {telegram.bot_name && (
                     <span className="text-muted-foreground">
                       {telegram.bot_name}
@@ -164,18 +155,18 @@ export default function SettingsPage() {
                 </div>
 
                 <div className="flex justify-between">
-                  <span className="text-muted-foreground">Chat IDs</span>
+                  <span className="text-muted-foreground">{t("settings.chatIds")}</span>
                   <span className="font-mono text-xs">
                     {telegram.chat_ids.length > 0
                       ? telegram.chat_ids.join(", ")
-                      : "(none)"}
+                      : t("common.none")}
                   </span>
                 </div>
 
                 <div className="flex justify-between">
-                  <span className="text-muted-foreground">Auto-backup on consolidation</span>
+                  <span className="text-muted-foreground">{t("settings.autoBackup")}</span>
                   <span className="font-mono">
-                    {telegram.backup_on_consolidation ? "Yes" : "No"}
+                    {telegram.backup_on_consolidation ? t("common.yes") : t("common.no")}
                   </span>
                 </div>
 
@@ -187,7 +178,7 @@ export default function SettingsPage() {
                     disabled={testMutation.isPending}
                     className="cursor-pointer"
                   >
-                    {testMutation.isPending ? "Sending..." : "Send Test"}
+                    {testMutation.isPending ? t("settings.sending") : t("settings.sendTest")}
                   </Button>
                   <Button
                     size="sm"
@@ -195,23 +186,22 @@ export default function SettingsPage() {
                     disabled={backupMutation.isPending}
                     className="cursor-pointer"
                   >
-                    {backupMutation.isPending ? "Backing up..." : "Backup Now"}
+                    {backupMutation.isPending ? t("settings.backingUp") : t("settings.backupNow")}
                   </Button>
                 </div>
               </>
             ) : (
               <div className="space-y-2">
                 <div className="flex items-center gap-2">
-                  <Badge variant="warning">Not Configured</Badge>
+                  <Badge variant="warning">{t("settings.notConfigured")}</Badge>
                 </div>
                 {telegram?.error && (
                   <p className="text-xs text-destructive">{telegram.error}</p>
                 )}
-                <p className="text-xs text-muted-foreground">
-                  Set <code className="font-mono rounded bg-muted px-1">NMEM_TELEGRAM_BOT_TOKEN</code> env
-                  var and add <code className="font-mono rounded bg-muted px-1">[telegram] chat_ids</code> to
-                  config.toml.
-                </p>
+                <p
+                  className="text-xs text-muted-foreground"
+                  dangerouslySetInnerHTML={{ __html: t("settings.telegramSetup") }}
+                />
               </div>
             )}
           </CardContent>
@@ -220,30 +210,36 @@ export default function SettingsPage() {
         {/* Feedback & Bug Report */}
         <Card>
           <CardHeader>
-            <CardTitle>Feedback & Bug Report</CardTitle>
+            <CardTitle>{t("settings.feedbackTitle")}</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
-            {FEEDBACK_CHANNELS.map(({ icon: Icon, label, description, url, color }) => (
-              <a
-                key={label}
-                href={url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-start gap-3 rounded-lg border border-border/50 p-3 transition-colors hover:bg-accent cursor-pointer"
-              >
-                <div
-                  className="flex size-8 shrink-0 items-center justify-center rounded-lg"
-                  style={{ backgroundColor: `${color}15` }}
+            {FEEDBACK_KEYS.map((key, idx) => {
+              const Icon = FEEDBACK_ICONS[idx]
+              const color = FEEDBACK_COLORS[idx]
+              const url = FEEDBACK_URLS[idx]
+
+              return (
+                <a
+                  key={key}
+                  href={url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-start gap-3 rounded-lg border border-border/50 p-3 transition-colors hover:bg-accent cursor-pointer"
                 >
-                  <Icon className="size-4" style={{ color }} />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium">{label}</p>
-                  <p className="text-xs text-muted-foreground">{description}</p>
-                </div>
-                <ExternalLink className="size-3.5 shrink-0 text-muted-foreground mt-0.5" />
-              </a>
-            ))}
+                  <div
+                    className="flex size-8 shrink-0 items-center justify-center rounded-lg"
+                    style={{ backgroundColor: `${color}15` }}
+                  >
+                    <Icon className="size-4" style={{ color }} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium">{t(`settings.${key}`)}</p>
+                    <p className="text-xs text-muted-foreground">{t(`settings.${key}Desc`)}</p>
+                  </div>
+                  <ExternalLink className="size-3.5 shrink-0 text-muted-foreground mt-0.5" />
+                </a>
+              )
+            })}
           </CardContent>
         </Card>
       </div>

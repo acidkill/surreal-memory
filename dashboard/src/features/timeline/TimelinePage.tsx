@@ -2,21 +2,23 @@ import { useTimeline } from "@/api/hooks/useDashboard"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
+import { useTranslation } from "react-i18next"
 
 export default function TimelinePage() {
   const { data: timeline, isLoading } = useTimeline(100, 0)
+  const { t } = useTranslation()
 
   return (
     <div className="space-y-6 p-6">
-      <h1 className="font-display text-2xl font-bold">Timeline</h1>
+      <h1 className="font-display text-2xl font-bold">{t("timeline.title")}</h1>
 
       <Card>
         <CardHeader>
           <CardTitle>
-            Memory Timeline
+            {t("timeline.memoryTimeline")}
             {timeline && (
               <span className="ml-2 text-sm font-normal text-muted-foreground">
-                {timeline.total.toLocaleString()} entries
+                {t("timeline.entries", { total: timeline.total.toLocaleString() })}
               </span>
             )}
           </CardTitle>
@@ -50,7 +52,7 @@ export default function TimelinePage() {
               ))}
             </div>
           ) : (
-            <p className="text-sm text-muted-foreground">No timeline entries.</p>
+            <p className="text-sm text-muted-foreground">{t("timeline.noEntries")}</p>
           )}
         </CardContent>
       </Card>

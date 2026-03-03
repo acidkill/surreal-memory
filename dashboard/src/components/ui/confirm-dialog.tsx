@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react"
 import { Button } from "./button"
+import { useTranslation } from "react-i18next"
 
 interface ConfirmDialogProps {
   open: boolean
@@ -16,13 +17,14 @@ export function ConfirmDialog({
   open,
   title,
   description,
-  confirmLabel = "Confirm",
-  cancelLabel = "Cancel",
+  confirmLabel,
+  cancelLabel,
   variant = "default",
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
   const dialogRef = useRef<HTMLDialogElement>(null)
+  const { t } = useTranslation()
 
   useEffect(() => {
     const dialog = dialogRef.current
@@ -49,14 +51,14 @@ export function ConfirmDialog({
         <p className="mt-2 text-sm text-muted-foreground">{description}</p>
         <div className="mt-6 flex justify-end gap-3">
           <Button variant="outline" size="sm" onClick={onCancel}>
-            {cancelLabel}
+            {cancelLabel ?? t("common.cancel")}
           </Button>
           <Button
             variant={variant === "destructive" ? "destructive" : "default"}
             size="sm"
             onClick={onConfirm}
           >
-            {confirmLabel}
+            {confirmLabel ?? t("common.confirm")}
           </Button>
         </div>
       </div>

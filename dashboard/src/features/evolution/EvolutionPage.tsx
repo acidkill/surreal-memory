@@ -10,6 +10,7 @@ import {
   ResponsiveContainer,
   Cell,
 } from "recharts"
+import { useTranslation } from "react-i18next"
 
 const STAGE_COLORS: Record<string, string> = {
   short_term: "var(--color-chart-4)",
@@ -38,25 +39,26 @@ function ProgressBar({ label, value }: { label: string; value: number }) {
 
 export default function EvolutionPage() {
   const { data: evo, isLoading } = useEvolution()
+  const { t } = useTranslation()
 
   const stageData = evo?.stage_distribution
     ? [
-        { stage: "Short Term", count: evo.stage_distribution.short_term },
-        { stage: "Working", count: evo.stage_distribution.working },
-        { stage: "Episodic", count: evo.stage_distribution.episodic },
-        { stage: "Semantic", count: evo.stage_distribution.semantic },
+        { stage: t("evolution.shortTerm"), count: evo.stage_distribution.short_term, key: "short_term" },
+        { stage: t("evolution.working"), count: evo.stage_distribution.working, key: "working" },
+        { stage: t("evolution.episodic"), count: evo.stage_distribution.episodic, key: "episodic" },
+        { stage: t("evolution.semantic"), count: evo.stage_distribution.semantic, key: "semantic" },
       ]
     : []
 
   return (
     <div className="space-y-6 p-6">
-      <h1 className="font-display text-2xl font-bold">Evolution</h1>
+      <h1 className="font-display text-2xl font-bold">{t("evolution.title")}</h1>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         {/* Metrics */}
         <Card>
           <CardHeader>
-            <CardTitle>Brain Metrics</CardTitle>
+            <CardTitle>{t("evolution.brainMetrics")}</CardTitle>
           </CardHeader>
           <CardContent>
             {isLoading ? (
@@ -67,18 +69,18 @@ export default function EvolutionPage() {
               </div>
             ) : evo ? (
               <div className="space-y-4">
-                <ProgressBar label="Maturity" value={evo.maturity_level} />
-                <ProgressBar label="Plasticity" value={evo.plasticity} />
-                <ProgressBar label="Semantic Ratio" value={evo.semantic_ratio} />
+                <ProgressBar label={t("evolution.maturity")} value={evo.maturity_level} />
+                <ProgressBar label={t("evolution.plasticity")} value={evo.plasticity} />
+                <ProgressBar label={t("evolution.semanticRatio")} value={evo.semantic_ratio} />
                 <div className="mt-4 grid grid-cols-2 gap-4 text-sm">
                   <div>
-                    <p className="text-muted-foreground">Total Fibers</p>
+                    <p className="text-muted-foreground">{t("evolution.totalFibers")}</p>
                     <p className="font-mono text-lg font-bold">
                       {evo.total_fibers.toLocaleString()}
                     </p>
                   </div>
                   <div>
-                    <p className="text-muted-foreground">Total Neurons</p>
+                    <p className="text-muted-foreground">{t("evolution.totalNeurons")}</p>
                     <p className="font-mono text-lg font-bold">
                       {evo.total_neurons.toLocaleString()}
                     </p>
@@ -92,7 +94,7 @@ export default function EvolutionPage() {
         {/* Stage Distribution */}
         <Card>
           <CardHeader>
-            <CardTitle>Stage Distribution</CardTitle>
+            <CardTitle>{t("evolution.stageDistribution")}</CardTitle>
           </CardHeader>
           <CardContent>
             {isLoading ? (
@@ -119,7 +121,7 @@ export default function EvolutionPage() {
                     {stageData.map((entry) => (
                       <Cell
                         key={entry.stage}
-                        fill={STAGE_COLORS[entry.stage] ?? "var(--color-chart-1)"}
+                        fill={STAGE_COLORS[entry.key] ?? "var(--color-chart-1)"}
                       />
                     ))}
                   </Bar>

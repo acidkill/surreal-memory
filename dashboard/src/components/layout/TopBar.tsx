@@ -1,8 +1,9 @@
-import { PanelLeftClose, PanelLeft, Sun, Moon, Monitor } from "lucide-react"
+import { PanelLeftClose, PanelLeft, Sun, Moon, Monitor, Globe } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useLayoutStore } from "@/stores/useLayoutStore"
 import { useStats, useHealthCheck } from "@/api/hooks/useDashboard"
 import { Badge } from "@/components/ui/badge"
+import { useTranslation } from "react-i18next"
 
 const themeIcons = {
   light: Sun,
@@ -10,18 +11,25 @@ const themeIcons = {
   system: Monitor,
 } as const
 
-const themeLabels = {
-  light: "Light mode",
-  dark: "Dark mode",
-  system: "System theme",
+const themeKeys = {
+  light: "common.lightMode",
+  dark: "common.darkMode",
+  system: "common.systemTheme",
 } as const
 
 export function TopBar() {
   const { sidebarOpen, toggleSidebar, theme, cycleTheme } = useLayoutStore()
   const { data: stats } = useStats()
   const { data: healthCheck } = useHealthCheck()
+  const { t, i18n } = useTranslation()
 
   const ThemeIcon = themeIcons[theme]
+  const currentLang = i18n.language?.startsWith("vi") ? "vi" : "en"
+
+  const toggleLanguage = () => {
+    const next = currentLang === "vi" ? "en" : "vi"
+    i18n.changeLanguage(next)
+  }
 
   return (
     <header className="sticky top-0 z-20 flex h-14 items-center gap-4 border-b border-border bg-background/80 px-4 backdrop-blur-sm">
@@ -30,7 +38,7 @@ export function TopBar() {
         variant="ghost"
         size="icon"
         onClick={toggleSidebar}
-        aria-label={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
+        aria-label={sidebarOpen ? t("common.collapseSidebar") : t("common.expandSidebar")}
       >
         {sidebarOpen ? (
           <PanelLeftClose className="size-5" />
@@ -42,7 +50,7 @@ export function TopBar() {
       {/* Active brain indicator */}
       {stats?.active_brain && (
         <div className="flex items-center gap-2">
-          <span className="text-sm text-muted-foreground">Brain:</span>
+          <span className="text-sm text-muted-foreground">{t("common.brain")}:</span>
           <Badge variant="secondary" className="font-mono text-xs">
             {stats.active_brain}
           </Badge>
@@ -52,13 +60,25 @@ export function TopBar() {
       {/* Spacer */}
       <div className="flex-1" />
 
+      {/* Language toggle */}
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={toggleLanguage}
+        className="gap-1.5 px-2 text-xs font-medium"
+        aria-label="Switch language"
+      >
+        <Globe className="size-3.5" />
+        {currentLang === "vi" ? "VI" : "EN"}
+      </Button>
+
       {/* Theme toggle */}
       <Button
         variant="ghost"
         size="icon"
         onClick={cycleTheme}
-        aria-label={themeLabels[theme]}
-        title={themeLabels[theme]}
+        aria-label={t(themeKeys[theme])}
+        title={t(themeKeys[theme])}
       >
         <ThemeIcon className="size-4" />
       </Button>
