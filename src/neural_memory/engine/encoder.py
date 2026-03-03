@@ -220,8 +220,8 @@ class MemoryEncoder:
 
         ctx = await self._pipeline.run(ctx, self._storage, self._config)
 
-        # Extract fiber from context (set by BuildFiberStep)
-        fiber = ctx.effective_metadata.pop("_pipeline_fiber", None)
+        # Extract fiber from context (set by BuildFiberStep) — use .get() to avoid mutation
+        fiber = ctx.effective_metadata.get("_pipeline_fiber")
         if fiber is None:
             msg = "Pipeline did not produce a fiber (missing BuildFiberStep?)"
             raise RuntimeError(msg)

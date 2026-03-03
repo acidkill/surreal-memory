@@ -146,7 +146,7 @@ class TestMCPServer:
         assert "prefix" in schema["properties"]
         assert "limit" in schema["properties"]
         assert "type_filter" in schema["properties"]
-        assert schema["required"] == []
+        assert "required" not in schema
 
     def test_session_tool_schema(self, server: MCPServer) -> None:
         """Test nmem_session tool schema."""

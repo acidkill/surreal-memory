@@ -295,10 +295,12 @@ async def handle_message(server: MCPServer, message: dict[str, Any]) -> dict[str
                 "error": {"code": -32000, "message": f"Tool '{tool_name}' failed unexpectedly"},
             }
 
-    elif method == "notifications/initialized":
+    elif method == "notifications/initialized" or (method and method.startswith("notifications/")):
         return None  # type: ignore[return-value]
 
     else:
+        if msg_id is None:
+            return None  # type: ignore[return-value]
         return {
             "jsonrpc": "2.0",
             "id": msg_id,
@@ -384,6 +386,12 @@ async def run_mcp_server() -> None:
                     print(json.dumps(response), flush=True)
 
             except json.JSONDecodeError:
+                error_resp = {
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {"code": -32700, "message": "Parse error"},
+                }
+                print(json.dumps(error_resp), flush=True)
                 continue
             except EOFError:
                 break

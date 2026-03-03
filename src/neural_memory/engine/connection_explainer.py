@@ -99,8 +99,8 @@ async def explain_connection(
             markdown=_no_path_markdown(from_entity, to_entity, "no path found"),
         )
 
-    # 3. Hydrate fiber evidence for each neuron in the path
-    all_neuron_ids = [best_source.id] + [n.id for n, _ in best_path]
+    # 3. Hydrate fiber evidence for path step neurons only (not source)
+    all_neuron_ids = [n.id for n, _ in best_path]
     fibers_by_neuron = await _get_evidence(storage, all_neuron_ids)
 
     # 4. Build steps

@@ -362,8 +362,9 @@ class InMemoryStorage(
         if target_id not in self._neurons[brain_id]:
             return None
 
+        graph = self._graph.to_undirected() if bidirectional else self._graph
         try:
-            path_nodes = nx.shortest_path(self._graph, source_id, target_id, weight=None)
+            path_nodes = nx.shortest_path(graph, source_id, target_id, weight=None)
         except (nx.NetworkXNoPath, nx.NodeNotFound):
             return None
 
@@ -380,6 +381,8 @@ class InMemoryStorage(
                 return None
 
             edge_data = self._graph.get_edge_data(from_id, to_id)
+            if not edge_data and bidirectional:
+                edge_data = self._graph.get_edge_data(to_id, from_id)
             if not edge_data:
                 return None
 

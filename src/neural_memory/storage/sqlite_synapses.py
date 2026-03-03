@@ -176,7 +176,10 @@ class SQLiteSynapseMixin:
         conn = self._ensure_read_conn()
         brain_id = self._get_brain_id()
 
-        col = "source_id" if direction == "out" else "target_id"
+        direction_col = {"out": "source_id", "in": "target_id"}
+        if direction not in direction_col:
+            raise ValueError(f"Invalid direction: {direction!r}. Must be 'out' or 'in'.")
+        col = direction_col[direction]
         placeholders = ",".join("?" for _ in neuron_ids)
         query = f"SELECT * FROM synapses WHERE brain_id = ? AND {col} IN ({placeholders})"
         params: list[Any] = [brain_id, *neuron_ids]
@@ -345,7 +348,7 @@ class SQLiteSynapseMixin:
         while queue:
             current_id, path = queue.popleft()
 
-            if len(path) > max_hops:
+            if len(path) >= max_hops:
                 continue
 
             params: tuple[str, ...]

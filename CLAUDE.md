@@ -45,7 +45,7 @@ src/neural_memory/
 
 ## Testing Rules
 
-- Minimum coverage: **70%** (enforced by CI).
+- Minimum coverage: **67%** (enforced by CI via `fail_under = 67` in pyproject.toml).
 - Test immutability: verify that functions don't mutate their inputs.
 - Use `pytest-asyncio` with `asyncio_mode = "auto"`.
 
@@ -90,6 +90,28 @@ Before tagging a release, verify these scenarios manually or via integration tes
 3. **Brain switch round-trip**: switch brain via CLI → confirm MCP reads the new brain → switch back → confirm again.
 4. **Config file conflicts**: both `config.json` and `config.toml` exist → confirm `config.toml` wins.
 5. **Recall after upgrade**: store a memory, upgrade, recall it — confirm it's still there with correct brain context.
+
+## API Pitfalls
+
+| API | Gotcha |
+|-----|--------|
+| `Neuron.create()` | Uses `type=` not `neuron_type=` |
+| `Synapse.create()` | Uses `type=` not `synapse_type=` |
+| `find_neurons()` | Uses `content_exact=` param. NO `brain_id` param |
+| `get_synapses()` | NOT `find_synapses()`. Uses `source_id=`, `target_id=`, `type=` |
+| `add_neuron()`, `add_synapse()` | NO `brain_id` param — uses `set_brain` context |
+| `tool_events` FK | Test fixture must insert brain with ALL required columns |
+
+## Version Bump Checklist
+
+ALL files must be updated when bumping version:
+
+1. `pyproject.toml` → `version = "x.y.z"`
+2. `src/neural_memory/__init__.py` → `__version__ = "x.y.z"`
+3. `.claude-plugin/plugin.json` → `"version": "x.y.z"`
+4. `.claude-plugin/marketplace.json` → `"version": "x.y.z"` (TWO occurrences)
+5. `tests/unit/test_health_fixes.py` → `assert neural_memory.__version__ == "x.y.z"`
+6. `tests/unit/test_markdown_export.py` → `"version": "x.y.z"` in fixture
 
 ## Commit Messages
 

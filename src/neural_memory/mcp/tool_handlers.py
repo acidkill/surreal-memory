@@ -45,6 +45,20 @@ def _require_brain_id(storage: NeuralStorage) -> str:
     return brain_id
 
 
+async def _get_brain_or_error(
+    storage: NeuralStorage,
+) -> tuple[Any, dict[str, Any] | None]:
+    """Get brain object or return (None, error_dict)."""
+    try:
+        brain_id = _require_brain_id(storage)
+    except ValueError:
+        return None, {"error": "No brain configured"}
+    brain = await storage.get_brain(brain_id)
+    if not brain:
+        return None, {"error": "No brain configured"}
+    return brain, None
+
+
 class ToolHandler:
     """Mixin providing all MCP tool handler implementations.
 
@@ -158,9 +172,9 @@ class ToolHandler:
     async def _remember(self, args: dict[str, Any]) -> dict[str, Any]:
         """Store a memory in the neural graph."""
         storage = await self.get_storage()
-        brain = await storage.get_brain(_require_brain_id(storage))
-        if not brain:
-            return {"error": "No brain configured"}
+        brain, err = await _get_brain_or_error(storage)
+        if err:
+            return err
 
         content = args.get("content")
         if not content or not isinstance(content, str):
@@ -256,7 +270,8 @@ class ToolHandler:
                     }
                     logger.info("Encrypted memory content for brain %s", brain_id)
                 except Exception:
-                    logger.warning("Encryption failed, storing plaintext", exc_info=True)
+                    logger.error("Encryption failed, refusing to store plaintext", exc_info=True)
+                    return {"error": "Encryption failed — memory not stored. Check encryption key."}
 
         # Determine memory type
         if "type" in args:
@@ -308,9 +323,8 @@ class ToolHandler:
 
         await self.hooks.emit(HookEvent.PRE_REMEMBER, {"content": content, "type": mem_type.value})
 
-        storage.disable_auto_save()
-
         try:
+            storage.disable_auto_save()
             raw_tags = args.get("tags", [])
             if len(raw_tags) > 50:
                 return {"error": f"Too many tags ({len(raw_tags)}). Max: 50."}
@@ -760,8 +774,12 @@ class ToolHandler:
         brain_names = [n for n in brain_names[:5] if isinstance(n, str) and _brain_pattern.match(n)]
         if not brain_names:
             return {"error": "No valid brain names provided"}
-        depth = args.get("depth", 1)
-        max_tokens = min(args.get("max_tokens", 500), 10_000)
+        try:
+            depth = int(args.get("depth", 1))
+            depth = max(0, min(depth, 3))
+        except (TypeError, ValueError):
+            depth = 1
+        max_tokens = min(int(args.get("max_tokens", 500)), 10_000)
 
         try:
             result = await cross_brain_recall(
@@ -898,9 +916,9 @@ class ToolHandler:
     async def _stats(self, args: dict[str, Any]) -> dict[str, Any]:
         """Get brain statistics."""
         storage = await self.get_storage()
-        brain = await storage.get_brain(_require_brain_id(storage))
-        if not brain:
-            return {"error": "No brain configured"}
+        brain, err = await _get_brain_or_error(storage)
+        if err:
+            return err
 
         stats = await storage.get_enhanced_stats(brain.id)
 
@@ -1033,8 +1051,8 @@ class ToolHandler:
     async def _health(self, args: dict[str, Any]) -> dict[str, Any]:
         """Run brain health diagnostics."""
         storage = await self.get_storage()
-        brain = await storage.get_brain(_require_brain_id(storage))
-        if not brain:
+        brain, err = await _get_brain_or_error(storage)
+        if err:
             return {"error": "No brain configured"}
 
         from neural_memory.engine.diagnostics import DiagnosticsEngine
@@ -1149,9 +1167,9 @@ class ToolHandler:
     async def _evolution(self, args: dict[str, Any]) -> dict[str, Any]:
         """Measure brain evolution dynamics."""
         storage = await self.get_storage()
-        brain = await storage.get_brain(_require_brain_id(storage))
-        if not brain:
-            return {"error": "No brain configured"}
+        brain, err = await _get_brain_or_error(storage)
+        if err:
+            return err
 
         from neural_memory.engine.brain_evolution import EvolutionEngine
 
@@ -1298,9 +1316,9 @@ class ToolHandler:
     async def _habits(self, args: dict[str, Any]) -> dict[str, Any]:
         """Manage learned workflow habits."""
         storage = await self.get_storage()
-        brain = await storage.get_brain(_require_brain_id(storage))
-        if not brain:
-            return {"error": "No brain configured"}
+        brain, err = await _get_brain_or_error(storage)
+        if err:
+            return err
 
         action = args.get("action", "list")
 
@@ -1355,9 +1373,9 @@ class ToolHandler:
     async def _version(self, args: dict[str, Any]) -> dict[str, Any]:
         """Brain version control operations."""
         storage = await self.get_storage()
-        brain = await storage.get_brain(_require_brain_id(storage))
-        if not brain:
-            return {"error": "No brain configured"}
+        brain, err = await _get_brain_or_error(storage)
+        if err:
+            return err
 
         from neural_memory.engine.brain_versioning import VersioningEngine
 

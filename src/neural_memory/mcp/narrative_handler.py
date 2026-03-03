@@ -70,7 +70,13 @@ class NarrativeHandler:
         except ValueError:
             return {"error": "Invalid date format. Use ISO format (e.g., 2026-02-01)"}
 
-        max_fibers = min(args.get("max_fibers", 20), 50)
+        if end_date < start_date:
+            return {"error": "end_date must be after start_date"}
+
+        try:
+            max_fibers = min(int(args.get("max_fibers", 20)), 50)
+        except (TypeError, ValueError):
+            max_fibers = 20
         narrative = await generate_timeline_narrative(
             storage, start_date, end_date, max_fibers=max_fibers
         )
@@ -94,7 +100,10 @@ class NarrativeHandler:
         if not topic:
             return {"error": "topic is required for topic action"}
 
-        max_fibers = min(args.get("max_fibers", 20), 50)
+        try:
+            max_fibers = min(int(args.get("max_fibers", 20)), 50)
+        except (TypeError, ValueError):
+            max_fibers = 20
         narrative = await generate_topic_narrative(
             storage, brain.config, topic, max_fibers=max_fibers
         )
@@ -117,7 +126,10 @@ class NarrativeHandler:
         if not topic:
             return {"error": "topic is required for causal action"}
 
-        max_depth = min(args.get("max_depth", 5), 10)
+        try:
+            max_depth = min(int(args.get("max_depth", 5)), 10)
+        except (TypeError, ValueError):
+            max_depth = 5
         narrative = await generate_causal_narrative(storage, topic, max_depth=max_depth)
         return {
             "action": "causal",

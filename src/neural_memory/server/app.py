@@ -74,17 +74,20 @@ def create_app(
         config = get_config()
         cors_origins = list(config.cors_origins)
 
-        # If trusted networks are configured, add their origins to CORS
-        # (never auto-upgrade to wildcard — CORS is a separate security layer)
+        # If trusted networks are configured, add common localhost origins to CORS
+        # Note: CORS does not support port wildcards — enumerate common dev ports
+        common_ports = (3000, 3001, 5173, 5174, 8000, 8080, 8888)
         if config.trusted_networks:
             for net_str in config.trusted_networks:
                 try:
                     import ipaddress
 
                     net = ipaddress.ip_network(net_str, strict=False)
-                    origin = f"http://{net.network_address}:*"
-                    if origin not in cors_origins:
-                        cors_origins.append(origin)
+                    addr = str(net.network_address)
+                    for port in common_ports:
+                        origin = f"http://{addr}:{port}"
+                        if origin not in cors_origins:
+                            cors_origins.append(origin)
                 except ValueError:
                     pass
 

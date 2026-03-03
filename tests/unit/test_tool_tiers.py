@@ -116,6 +116,10 @@ class TestToolTiers:
         all_names = {t["name"] for t in get_tool_schemas()}
         assert TOOL_TIERS["standard"] < all_names
 
+    def test_explain_not_in_standard_or_minimal(self) -> None:
+        assert "nmem_explain" not in TOOL_TIERS["standard"]
+        assert "nmem_explain" not in TOOL_TIERS["minimal"]
+
     def test_all_schemas_have_required_fields(self) -> None:
         for tool in get_tool_schemas():
             assert "name" in tool

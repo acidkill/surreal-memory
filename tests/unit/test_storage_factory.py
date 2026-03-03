@@ -374,7 +374,7 @@ class TestHybridStorage:
 
         local_snapshot = MagicMock()
         local.export_brain = AsyncMock(return_value=local_snapshot)
-        remote.export_brain = AsyncMock(side_effect=Exception("Not found"))
+        remote.export_brain = AsyncMock(side_effect=ValueError("Not found"))
 
         result = await storage.sync()  # type: ignore[union-attr]
 

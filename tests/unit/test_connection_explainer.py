@@ -101,12 +101,21 @@ class TestExplainConnection:
     @pytest.mark.asyncio
     async def test_max_hops_capped(self) -> None:
         """max_hops should be capped at 10."""
-        storage = AsyncMock()
-        storage.find_neurons = AsyncMock(return_value=[])
+        n_a = _make_neuron("n1", "A")
+        n_b = _make_neuron("n2", "B")
 
-        # Even with max_hops=100, should not exceed 10
-        result = await explain_connection(storage, "A", "B", max_hops=100)
-        assert result.found is False
+        storage = AsyncMock()
+        storage.find_neurons = AsyncMock(
+            side_effect=lambda content_contains=None, limit=5: (
+                [n_a] if content_contains == "A" else [n_b]
+            )
+        )
+        storage.get_path = AsyncMock(return_value=None)
+
+        await explain_connection(storage, "A", "B", max_hops=100)
+
+        # Should be capped at 10, not 100
+        storage.get_path.assert_called_with("n1", "n2", max_hops=10, bidirectional=True)
 
     @pytest.mark.asyncio
     async def test_fiber_evidence_hydrated(self) -> None:
@@ -164,6 +173,47 @@ class TestExplainConnection:
         # get_path should never be called since src.id == tgt.id
         storage.get_path.assert_not_called()
         assert result.found is False
+
+    @pytest.mark.asyncio
+    async def test_default_max_hops(self) -> None:
+        """Default max_hops should be 6."""
+        n_a = _make_neuron("n1", "A")
+        n_b = _make_neuron("n2", "B")
+
+        storage = AsyncMock()
+        storage.find_neurons = AsyncMock(
+            side_effect=lambda content_contains=None, limit=5: (
+                [n_a] if content_contains == "A" else [n_b]
+            )
+        )
+        storage.get_path = AsyncMock(return_value=None)
+
+        await explain_connection(storage, "A", "B")
+
+        storage.get_path.assert_called_with("n1", "n2", max_hops=6, bidirectional=True)
+
+    @pytest.mark.asyncio
+    async def test_avg_weight_calculation(self) -> None:
+        """avg_weight should be correctly computed from step weights."""
+        n_a = _make_neuron("n1", "React")
+        n_b = _make_neuron("n2", "virtual DOM")
+        n_c = _make_neuron("n3", "performance")
+        s_ab = _make_synapse("s1", "n1", "n2", SynapseType.RELATED_TO, weight=0.6)
+        s_bc = _make_synapse("s2", "n2", "n3", SynapseType.LEADS_TO, weight=0.8)
+
+        storage = AsyncMock()
+        storage.find_neurons = AsyncMock(
+            side_effect=lambda content_contains=None, limit=5: (
+                [n_a] if "React" in (content_contains or "") else [n_c]
+            )
+        )
+        storage.get_path = AsyncMock(return_value=[(n_b, s_ab), (n_c, s_bc)])
+        storage.find_fibers_batch = AsyncMock(return_value=[])
+
+        result = await explain_connection(storage, "React", "performance")
+
+        assert result.found is True
+        assert result.avg_weight == round((0.6 + 0.8) / 2, 3)
 
 
 class TestConnectionMCPHandler:

@@ -38,11 +38,15 @@ class ConnectionHandler:
             return {"error": "from_entity and to_entity are required"}
 
         storage = await self.get_storage()
-        brain = await storage.get_brain(_require_brain_id(storage))
-        if not brain:
+        try:
+            _require_brain_id(storage)
+        except ValueError:
             return {"error": "No brain configured"}
 
-        max_hops = min(args.get("max_hops", 6), 10)
+        try:
+            max_hops = min(int(args.get("max_hops", 6)), 10)
+        except (TypeError, ValueError):
+            max_hops = 6
 
         try:
             result = await explain_connection(storage, from_entity, to_entity, max_hops=max_hops)

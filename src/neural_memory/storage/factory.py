@@ -340,9 +340,10 @@ class HybridStorage:
         # Get remote snapshot
         try:
             remote_snapshot = await self._remote.export_brain(self._brain_id)
-        except Exception:
+        except (ConnectionError, OSError, TimeoutError, ValueError, KeyError) as exc:
             logger.warning(
-                "Remote brain not found or unreachable, pushing local version", exc_info=True
+                "Remote brain not found or unreachable (%s), pushing local version",
+                type(exc).__name__,
             )
             await self._remote.import_brain(local_snapshot, self._brain_id)
             return {"pushed": True, "pulled": False, "merge_report": None}

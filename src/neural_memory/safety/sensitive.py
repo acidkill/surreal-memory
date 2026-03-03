@@ -149,26 +149,26 @@ def get_default_patterns() -> tuple[SensitivePattern, ...]:
             description="Credit card number",
             severity=3,
         ),
-        # Social Security Number pattern
+        # Social Security Number pattern (exclude invalid prefixes: 000, 666, 900-999)
         SensitivePattern(
             name="SSN",
-            pattern=r"\b\d{3}-\d{2}-\d{4}\b",
+            pattern=r"\b(?!000|666|9\d{2})\d{3}-(?!00)\d{2}-(?!0000)\d{4}\b",
             type=SensitiveType.SSN,
             description="Social Security Number format",
             severity=3,
         ),
-        # Long random strings (potential secrets)
+        # Long random strings (potential secrets) — min 64 chars to reduce false positives
         SensitivePattern(
             name="Long Base64 String",
-            pattern=r"\b[A-Za-z0-9+/]{40,512}={0,2}\b",
+            pattern=r"\b[A-Za-z0-9+/]{64,512}={0,2}\b",
             type=SensitiveType.GENERIC_SECRET,
             description="Long base64-encoded string (potential secret)",
             severity=1,
         ),
-        # Hex strings (potential keys)
+        # Hex strings (potential keys) — min 64 chars to skip UUIDs/SHA-256
         SensitivePattern(
             name="Long Hex String",
-            pattern=r"\b[a-fA-F0-9]{32,512}\b",
+            pattern=r"\b[a-fA-F0-9]{64,512}\b",
             type=SensitiveType.GENERIC_SECRET,
             description="Long hexadecimal string (potential key)",
             severity=1,

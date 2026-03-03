@@ -722,12 +722,13 @@ class TestEmbeddingSettings:
             s = EmbeddingSettings(provider=provider)
             assert s.provider == provider
 
-    def test_invalid_provider_raises(self) -> None:
-        """Should reject invalid provider names."""
+    def test_invalid_provider_falls_back(self) -> None:
+        """Should fall back to disabled on invalid provider names."""
         from neural_memory.unified_config import EmbeddingSettings
 
-        with pytest.raises(ValueError, match="Invalid embedding provider"):
-            EmbeddingSettings(provider="gremlin")
+        s = EmbeddingSettings(provider="gremlin")
+        assert s.provider == ""
+        assert s.enabled is False
 
     def test_from_dict_round_trip(self) -> None:
         """from_dict/to_dict should round-trip correctly."""
@@ -746,9 +747,10 @@ class TestEmbeddingSettings:
         assert restored.model == original.model
         assert restored.similarity_threshold == original.similarity_threshold
 
-    def test_from_dict_invalid_provider_raises(self) -> None:
-        """from_dict with invalid provider should raise."""
+    def test_from_dict_invalid_provider_falls_back(self) -> None:
+        """from_dict with invalid provider should fall back to disabled."""
         from neural_memory.unified_config import EmbeddingSettings
 
-        with pytest.raises(ValueError, match="Invalid embedding provider"):
-            EmbeddingSettings.from_dict({"provider": "bad_provider"})
+        s = EmbeddingSettings.from_dict({"provider": "bad_provider"})
+        assert s.provider == ""
+        assert s.enabled is False

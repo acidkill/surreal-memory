@@ -119,9 +119,9 @@ class ConflictHandler:
 
         try:
             storage = await self.get_storage()
-            storage.disable_auto_save()
 
             try:
+                storage.disable_auto_save()
                 # Fetch the disputed neuron
                 neuron = await storage.get_neuron(neuron_id)
                 if neuron is None:

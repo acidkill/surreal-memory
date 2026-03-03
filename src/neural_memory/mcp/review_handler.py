@@ -83,8 +83,7 @@ class ReviewHandler:
         success = args.get("success", True)
         engine = SpacedRepetitionEngine(storage, brain.config)
         result = await engine.process_review(fiber_id, success=success)
-        result["action"] = "mark"
-        return result
+        return {**result, "action": "mark"}
 
     async def _review_schedule(
         self,
@@ -120,5 +119,4 @@ class ReviewHandler:
     async def _review_stats(self, storage: NeuralStorage) -> dict[str, Any]:
         """Get review statistics."""
         result: dict[str, Any] = dict(await storage.get_review_stats())
-        result["action"] = "stats"
-        return result
+        return {**result, "action": "stats"}

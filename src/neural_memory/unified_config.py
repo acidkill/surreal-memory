@@ -118,9 +118,15 @@ class EmbeddingSettings:
 
     def __post_init__(self) -> None:
         if self.provider not in self._VALID_PROVIDERS:
-            raise ValueError(
-                f"Invalid embedding provider: {self.provider!r}. Valid: {self._VALID_PROVIDERS}"
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "Invalid embedding provider %r, falling back to disabled. Valid: %s",
+                self.provider,
+                self._VALID_PROVIDERS,
             )
+            object.__setattr__(self, "provider", "")
+            object.__setattr__(self, "enabled", False)
 
     def to_dict(self) -> dict[str, Any]:
         return {
