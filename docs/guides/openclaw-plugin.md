@@ -108,6 +108,10 @@ The plugin:
 
 Optional config under `plugins.entries.neuralmemory.config` in `openclaw.json`:
 
+> **Important:** The entry name **must** be `neuralmemory` (no hyphen) — this
+> matches the plugin ID. Using any other name (e.g. `neural-memory`, `telegram`)
+> will cause an "Invalid value" error.
+
 ```json
 {
   "plugins": {
@@ -141,6 +145,10 @@ Optional config under `plugins.entries.neuralmemory.config` in `openclaw.json`:
 | `maxContextTokens` | `500` | Maximum tokens for auto-context injection |
 | `timeout` | `30000` | MCP request timeout in milliseconds |
 
+> **Only these keys are allowed in `config`.** The schema uses
+> `additionalProperties: false` — any extra key (e.g. `"enabled"`, `"url"`)
+> will trigger an "Invalid value" error from OpenClaw.
+
 ## Available Tools
 
 Once configured, the agent has access to these tools:
@@ -162,6 +170,7 @@ exclusively and **not** use `memory_search` or `memory_get` from the disabled
 
 | Error | Cause | Fix |
 |-------|-------|-----|
+| `Invalid value` in plugin config | Unknown key or wrong entry name | Only use documented config keys. Entry name must be `neuralmemory` (no hyphen) |
 | `no MCP Client` | Using SKILL.md with `mcp:` block | Skills don't support MCP. Use the Plugin approach (this guide) |
 | `ENOENT: python not found` | Wrong Python path | Set `pythonPath` in plugin config to your Python binary |
 | `MCP process exited with code 1` | `neural-memory` not installed | Run `pip install neural-memory` |
@@ -171,6 +180,50 @@ exclusively and **not** use `memory_search` or `memory_get` from the disabled
 | Plugin not found | Not installed globally | Run `npm install -g @neuralmemory/openclaw-plugin` |
 
 ## Common Mistakes
+
+### Adding unknown keys to config
+
+```json
+// WRONG — "enabled" is not a valid config key → Invalid value
+{
+  "plugins": {
+    "enabled": true,
+    "slots": { "memory": "neuralmemory" },
+    "entries": {
+      "neuralmemory": {
+        "config": { "enabled": true }
+      }
+    }
+  }
+}
+
+// CORRECT — only use documented keys
+{
+  "plugins": {
+    "slots": { "memory": "neuralmemory" },
+    "entries": {
+      "neuralmemory": {
+        "config": { "pythonPath": "python", "brain": "default" }
+      }
+    }
+  }
+}
+```
+
+The plugin schema is strict (`additionalProperties: false`). Only these config
+keys are accepted: `pythonPath`, `brain`, `autoContext`, `autoCapture`,
+`contextDepth`, `maxContextTokens`, `timeout`.
+
+### Using wrong entry name
+
+```json
+// WRONG — entry name must be "neuralmemory" (the plugin ID)
+{ "plugins": { "entries": { "neural-memory": { "config": {} } } } }
+{ "plugins": { "entries": { "telegram": { "enabled": true } } } }
+
+// CORRECT
+{ "plugins": { "entries": { "neuralmemory": { "config": {} } } } }
+```
 
 ### Using `"memory": "none"`
 
