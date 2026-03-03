@@ -814,6 +814,16 @@ class NeuralStorage(ABC):
         """
         return []
 
+    async def cleanup_orphaned_maturations(self) -> int:
+        """Delete maturation records whose fiber no longer exists.
+
+        Default no-op — backends that support maturation should override.
+
+        Returns:
+            Number of orphaned records removed.
+        """
+        return 0
+
     # ========== Co-Activation Operations ==========
 
     async def record_co_activation(

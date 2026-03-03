@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -140,3 +141,60 @@ class TestMaturationRehearsalOnReinforce:
         # Neuron was still reinforced despite maturation failure
         assert result == 1
         storage.update_neuron_state.assert_called_once()
+
+
+class TestMatureOrphanedRecords:
+    """Tests for orphaned maturation record handling in consolidation."""
+
+    @pytest.mark.asyncio
+    async def test_mature_skips_orphaned_fk_error(self) -> None:
+        """_mature should skip records that trigger FK constraint errors."""
+        from neural_memory.engine.consolidation import ConsolidationEngine, ConsolidationReport
+
+        storage = AsyncMock()
+        storage.current_brain_id = "test-brain"
+        storage.cleanup_orphaned_maturations.return_value = 0
+
+        record = MaturationRecord(
+            fiber_id="orphan-fiber",
+            brain_id="test-brain",
+            stage=MemoryStage.SHORT_TERM,
+            stage_entered_at=utcnow() - timedelta(hours=1),
+        )
+        storage.find_maturations.return_value = [record]
+        storage.save_maturation.side_effect = sqlite3.IntegrityError(
+            "FOREIGN KEY constraint failed"
+        )
+        storage.get_fibers.return_value = []
+
+        config = AsyncMock()
+        config.summarize_min_cluster_size = 5
+        config.summarize_tag_overlap_threshold = 0.5
+
+        engine = ConsolidationEngine(storage, config)
+        report = ConsolidationReport(started_at=utcnow())
+
+        # Should not raise — orphaned FK errors are caught
+        await engine._mature(report, utcnow(), dry_run=False)
+
+    @pytest.mark.asyncio
+    async def test_mature_calls_cleanup_first(self) -> None:
+        """_mature should clean up orphaned records before processing."""
+        from neural_memory.engine.consolidation import ConsolidationEngine, ConsolidationReport
+
+        storage = AsyncMock()
+        storage.current_brain_id = "test-brain"
+        storage.cleanup_orphaned_maturations.return_value = 3
+        storage.find_maturations.return_value = []
+        storage.get_fibers.return_value = []
+
+        config = AsyncMock()
+        config.summarize_min_cluster_size = 5
+        config.summarize_tag_overlap_threshold = 0.5
+
+        engine = ConsolidationEngine(storage, config)
+        report = ConsolidationReport(started_at=utcnow())
+
+        await engine._mature(report, utcnow(), dry_run=False)
+
+        storage.cleanup_orphaned_maturations.assert_called_once()

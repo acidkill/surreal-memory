@@ -118,3 +118,21 @@ class SQLiteMaturationMixin:
             )
 
         return records
+
+    async def cleanup_orphaned_maturations(self) -> int:
+        """Delete maturation records whose fiber no longer exists.
+
+        Returns the number of orphaned records removed.
+        """
+        conn = self._ensure_conn()
+        brain_id = self._get_brain_id()
+
+        cursor = await conn.execute(
+            """DELETE FROM memory_maturations
+               WHERE brain_id = ? AND fiber_id NOT IN (
+                   SELECT id FROM fibers WHERE brain_id = ?
+               )""",
+            (brain_id, brain_id),
+        )
+        await conn.commit()
+        return cursor.rowcount

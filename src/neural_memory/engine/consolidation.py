@@ -718,10 +718,19 @@ class ConsolidationEngine:
         1. Advance all maturation records through stage transitions
         2. Extract patterns from episodic memories ready for semantic promotion
         """
+        import logging
+
         from neural_memory.engine.memory_stages import (
             compute_stage_transition,
         )
         from neural_memory.engine.pattern_extraction import extract_patterns
+
+        _logger = logging.getLogger(__name__)
+
+        # Clean up orphaned maturation records (fibers deleted without CASCADE)
+        cleaned = await self._storage.cleanup_orphaned_maturations()
+        if cleaned > 0:
+            _logger.info("Cleaned up %d orphaned maturation records", cleaned)
 
         # Get all maturation records
         all_maturations = await self._storage.find_maturations()
@@ -732,7 +741,16 @@ class ConsolidationEngine:
             if advanced.stage != record.stage:
                 report.stages_advanced += 1
                 if not dry_run:
-                    await self._storage.save_maturation(advanced)
+                    try:
+                        await self._storage.save_maturation(advanced)
+                    except Exception as exc:
+                        if "FOREIGN KEY" in str(exc):
+                            _logger.warning(
+                                "Skipping orphaned maturation for fiber %s",
+                                record.fiber_id,
+                            )
+                            continue
+                        raise
 
         # Phase 2: Extract patterns from mature episodic fibers
         if dry_run:
