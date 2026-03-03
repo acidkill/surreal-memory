@@ -151,7 +151,7 @@ nmem cleanup                  # Remove expired memories
 
 # Visual tools
 nmem serve                    # Start FastAPI server
-# Then open http://localhost:8000/ui for React dashboard
+# Then open http://localhost:8000/dashboard
 
 # Telegram backup
 nmem telegram status          # Show Telegram config status
@@ -348,11 +348,20 @@ nmem_version(action="diff", from_version="...", to_version="...")
 
 ```bash
 nmem serve                         # Start server on localhost:8000
-# Open http://localhost:8000/ui    # React dashboard (7 pages)
-# Open http://localhost:8000/docs  # API docs (Swagger)
+# Open http://localhost:8000/dashboard  # React dashboard (7 pages)
+# Open http://localhost:8000/docs       # API docs (Swagger)
 ```
 
-Pages: Overview (KPIs + brain list), Health (radar chart + warnings), Graph (placeholder for Sigma.js), Timeline, Evolution, Diagrams, Settings (brain files + Telegram backup).
+Pages:
+- **Overview** — KPI cards (neurons, synapses, fibers, brains) + brain table with click-to-switch and delete
+- **Health** — Radar chart + health warnings + recommendations
+- **Graph** — Sigma.js WebGL neural graph with ForceAtlas2 layout, color-coded by type, node inspector
+- **Timeline** — Chronological memory feed with type badges
+- **Evolution** — Brain maturity, plasticity, stage distribution charts
+- **Mindmap** — ReactFlow interactive fiber mindmap (dagre tree, zoom/pan, MiniMap)
+- **Settings** — Brain files, Telegram backup config
+
+Light/Dark/System theme toggle with warm cream light mode.
 
 ### Telegram Backup
 
@@ -440,7 +449,7 @@ GET  /brain/{id}/export - Export brain
 WS   /sync/ws           - Real-time sync
 POST /hub/sync          - Multi-device incremental sync
 GET  /hub/devices/{id}  - List registered devices
-GET  /ui                - Web dashboard
+GET  /dashboard         - Web dashboard
 GET  /docs              - API documentation
 ```
 
@@ -459,7 +468,7 @@ git clone https://github.com/nhadaututtheky/neural-memory
 cd neural-memory
 pip install -e ".[dev]"
 
-# Run tests (2830+ tests)
+# Run tests (2860+ tests)
 pytest tests/ -v
 
 # Lint & format

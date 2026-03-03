@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.24.2] - 2026-03-03
+
+### Added
+
+- **Dashboard Phase 2** — Complete visual dashboard overhaul
+  - **Sigma.js graph visualization** — WebGL-rendered neural graph with ForceAtlas2 layout, node limit selector (100-1000), click-to-inspect detail panel, color-coded by neuron type
+  - **ReactFlow mindmap** — Interactive fiber mindmap with dagre left-to-right tree layout, custom nodes (root/group/leaf), MiniMap, zoom/pan, click-to-select neuron details
+  - **Theme toggle** — Light / Dark / System cycle button in TopBar, warm cream light mode (`#faf8f3`), class-based TailwindCSS 4 dark mode via `@custom-variant`
+  - **Delete brain** — Trash icon on inactive brains in Overview table with confirmation dialog
+  - **Click-to-switch brain** — Click inactive brain row to switch active brain
+- **CLI update check fix** — Editable/dev installs no longer show misleading "Update available" prompts
+
+### Removed
+
+- **Legacy dashboard UI** — Removed `dashboard.html`, `index.html`, legacy JS/CSS/locales (4,451 LOC), `/static` mount from FastAPI
+
+### Dependencies
+
+- Added `@xyflow/react`, `@dagrejs/dagre` (ReactFlow mindmap)
+- Added `graphology-layout-forceatlas2` (Sigma.js graph layout)
+
 ## [2.24.1] - 2026-03-03
 
 ### Fixed
