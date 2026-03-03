@@ -19,16 +19,16 @@ export default function DiagramsPage() {
   const [selectedNeuron, setSelectedNeuron] = useState<SelectedNeuron | null>(null)
 
   return (
-    <div className="space-y-6 p-6">
-      <h1 className="font-display text-2xl font-bold">Mindmap</h1>
+    <div className="flex h-[calc(100vh-3.5rem)] flex-col gap-4 p-4">
+      <h1 className="font-display text-2xl font-bold shrink-0">Mindmap</h1>
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
-        {/* Fiber selector */}
-        <Card className="lg:col-span-3">
-          <CardHeader>
-            <CardTitle>Fibers</CardTitle>
+      <div className="flex flex-1 gap-4 min-h-0">
+        {/* Fiber selector — narrow sidebar */}
+        <Card className="w-56 shrink-0 flex flex-col">
+          <CardHeader className="py-3 px-4">
+            <CardTitle className="text-sm">Fibers</CardTitle>
           </CardHeader>
-          <CardContent>
+          <CardContent className="flex-1 overflow-y-auto px-2 pb-2">
             {fibersLoading ? (
               <div className="space-y-2">
                 {Array.from({ length: 5 }).map((_, i) => (
@@ -36,7 +36,7 @@ export default function DiagramsPage() {
                 ))}
               </div>
             ) : fiberList?.fibers && fiberList.fibers.length > 0 ? (
-              <div className="space-y-1 max-h-[500px] overflow-y-auto">
+              <div className="space-y-0.5">
                 {fiberList.fibers.map((fiber) => (
                   <button
                     key={fiber.id}
@@ -44,102 +44,80 @@ export default function DiagramsPage() {
                       setSelectedFiber(fiber.id)
                       setSelectedNeuron(null)
                     }}
-                    className={`w-full cursor-pointer rounded-lg px-3 py-2 text-left text-sm transition-colors ${
+                    className={`w-full cursor-pointer rounded-md px-2.5 py-1.5 text-left text-xs transition-colors ${
                       selectedFiber === fiber.id
                         ? "bg-primary/10 text-primary"
                         : "hover:bg-accent"
                     }`}
                   >
                     <p className="font-medium truncate">{fiber.summary}</p>
-                    <p className="text-xs text-muted-foreground">
+                    <p className="text-[10px] text-muted-foreground">
                       {fiber.neuron_count} neurons
                     </p>
                   </button>
                 ))}
               </div>
             ) : (
-              <p className="text-sm text-muted-foreground">No fibers found.</p>
+              <p className="text-xs text-muted-foreground">No fibers found.</p>
             )}
           </CardContent>
         </Card>
 
-        {/* Mindmap view */}
-        <Card className="lg:col-span-6">
-          <CardHeader>
-            <CardTitle>
-              {diagram
-                ? `Fiber: ${diagram.fiber_id.slice(0, 12)}...`
-                : "Select a Fiber"}
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {!selectedFiber ? (
-              <div className="flex h-64 items-center justify-center text-sm text-muted-foreground">
-                Select a fiber to view its mindmap
-              </div>
-            ) : diagramLoading ? (
-              <Skeleton className="h-64 w-full" />
-            ) : diagram ? (
-              <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-4 text-sm">
-                  <div>
-                    <p className="text-muted-foreground">Neurons</p>
-                    <p className="font-mono text-lg font-bold">
-                      {diagram.neurons.length}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-muted-foreground">Connections</p>
-                    <p className="font-mono text-lg font-bold">
-                      {diagram.synapses.length}
-                    </p>
-                  </div>
+        {/* Mindmap — takes remaining space */}
+        <div className="flex-1 flex flex-col gap-4 min-w-0">
+          <Card className="flex-1 flex flex-col min-h-0">
+            <CardHeader className="py-3 px-4 shrink-0 flex flex-row items-center justify-between">
+              <CardTitle className="text-sm">
+                {diagram
+                  ? `Fiber: ${diagram.fiber_id.slice(0, 16)}...`
+                  : "Select a Fiber"}
+              </CardTitle>
+              {diagram && (
+                <div className="flex gap-4 text-xs text-muted-foreground">
+                  <span>
+                    Neurons: <strong className="font-mono text-foreground">{diagram.neurons.length}</strong>
+                  </span>
+                  <span>
+                    Connections: <strong className="font-mono text-foreground">{diagram.synapses.length}</strong>
+                  </span>
                 </div>
+              )}
+            </CardHeader>
+            <CardContent className="flex-1 p-2 min-h-0">
+              {!selectedFiber ? (
+                <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                  Select a fiber to view its mindmap
+                </div>
+              ) : diagramLoading ? (
+                <Skeleton className="h-full w-full" />
+              ) : diagram ? (
                 <FiberMindmap
                   diagram={diagram}
                   onSelectNeuron={(id, content, type) =>
                     setSelectedNeuron({ id, content, type })
                   }
                 />
-              </div>
-            ) : null}
-          </CardContent>
-        </Card>
+              ) : null}
+            </CardContent>
+          </Card>
 
-        {/* Detail panel */}
-        <Card className="lg:col-span-3">
-          <CardHeader>
-            <CardTitle className="text-base">Neuron Details</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {selectedNeuron ? (
-              <div className="space-y-3">
-                <div>
-                  <p className="text-xs text-muted-foreground">Type</p>
-                  <Badge variant="secondary" className="mt-1">
-                    {selectedNeuron.type}
-                  </Badge>
-                </div>
-                <div>
-                  <p className="text-xs text-muted-foreground">Content</p>
-                  <p className="mt-1 text-sm leading-relaxed">
-                    {selectedNeuron.content}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-xs text-muted-foreground">ID</p>
-                  <p className="mt-1 font-mono text-xs text-muted-foreground">
-                    {selectedNeuron.id.slice(0, 12)}...
-                  </p>
-                </div>
-              </div>
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                Click a neuron in the mindmap to see its details.
-              </p>
-            )}
-          </CardContent>
-        </Card>
+          {/* Neuron detail — bottom bar when selected */}
+          {selectedNeuron && (
+            <Card className="shrink-0">
+              <CardContent className="flex items-start gap-4 p-3">
+                <Badge variant="secondary" className="shrink-0 mt-0.5">
+                  {selectedNeuron.type}
+                </Badge>
+                <p className="flex-1 text-sm leading-relaxed">
+                  {selectedNeuron.content}
+                </p>
+                <p className="shrink-0 font-mono text-[10px] text-muted-foreground mt-0.5">
+                  {selectedNeuron.id.slice(0, 12)}...
+                </p>
+              </CardContent>
+            </Card>
+          )}
+        </div>
       </div>
     </div>
   )
