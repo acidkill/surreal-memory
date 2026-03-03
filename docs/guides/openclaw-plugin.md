@@ -127,7 +127,8 @@ Optional config under `plugins.entries.neuralmemory.config` in `openclaw.json`:
           "autoCapture": true,
           "contextDepth": 1,
           "maxContextTokens": 500,
-          "timeout": 30000
+          "timeout": 30000,
+          "initTimeout": 90000
         }
       }
     }
@@ -144,6 +145,7 @@ Optional config under `plugins.entries.neuralmemory.config` in `openclaw.json`:
 | `contextDepth` | `1` | Recall depth: 0=instant, 1=context, 2=habit, 3=deep |
 | `maxContextTokens` | `500` | Maximum tokens for auto-context injection |
 | `timeout` | `30000` | MCP request timeout in milliseconds |
+| `initTimeout` | `90000` | MCP initialize handshake timeout (increase if first boot is slow) |
 
 > **Only these keys are allowed in `config`.** The schema uses
 > `additionalProperties: false` — any extra key (e.g. `"enabled"`, `"url"`)

@@ -51,6 +51,7 @@ type PluginConfig = {
   contextDepth: number;
   maxContextTokens: number;
   timeout: number;
+  initTimeout: number;
 };
 
 const DEFAULT_CONFIG: Readonly<PluginConfig> = {
@@ -61,6 +62,7 @@ const DEFAULT_CONFIG: Readonly<PluginConfig> = {
   contextDepth: 1,
   maxContextTokens: 500,
   timeout: 30_000,
+  initTimeout: 90_000,
 };
 
 export const BRAIN_NAME_RE = /^[a-zA-Z0-9_\-.]{1,64}$/;
@@ -107,6 +109,13 @@ export function resolveConfig(raw?: Record<string, unknown>): PluginConfig {
       merged.timeout <= 120_000
         ? merged.timeout
         : DEFAULT_CONFIG.timeout,
+    initTimeout:
+      typeof merged.initTimeout === "number" &&
+      Number.isFinite(merged.initTimeout) &&
+      merged.initTimeout >= 10_000 &&
+      merged.initTimeout <= 300_000
+        ? merged.initTimeout
+        : DEFAULT_CONFIG.initTimeout,
   };
 }
 
@@ -128,6 +137,7 @@ const plugin: OpenClawPluginDefinition = {
       brain: cfg.brain,
       logger: api.logger,
       timeout: cfg.timeout,
+      initTimeout: cfg.initTimeout,
     });
 
     // ── Service: MCP process lifecycle ───────────────────

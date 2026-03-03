@@ -31,6 +31,7 @@ export type McpClientOptions = {
   readonly brain: string;
   readonly logger: PluginLogger;
   readonly timeout?: number;
+  readonly initTimeout?: number;
 };
 
 // ── Constants ──────────────────────────────────────────────
@@ -75,6 +76,7 @@ export class NeuralMemoryMcpClient {
   private readonly brain: string;
   private readonly logger: PluginLogger;
   private readonly timeout: number;
+  private readonly initTimeout: number;
   private _connected = false;
 
   constructor(options: McpClientOptions) {
@@ -82,6 +84,7 @@ export class NeuralMemoryMcpClient {
     this.brain = options.brain;
     this.logger = options.logger;
     this.timeout = options.timeout ?? DEFAULT_TIMEOUT;
+    this.initTimeout = options.initTimeout ?? 90_000;
   }
 
   get connected(): boolean {
@@ -140,13 +143,13 @@ export class NeuralMemoryMcpClient {
       this.logger.error(`MCP process error: ${err.message}${hint}`);
     });
 
-    // MCP initialize handshake
+    // MCP initialize handshake (uses longer timeout for cold starts)
     try {
       await this.send("initialize", {
         protocolVersion: PROTOCOL_VERSION,
         capabilities: {},
         clientInfo: { name: CLIENT_NAME, version: CLIENT_VERSION },
-      });
+      }, this.initTimeout);
     } catch (err) {
       const stderr = stderrChunks.join("\n");
       const detail = stderr
@@ -214,7 +217,7 @@ export class NeuralMemoryMcpClient {
 
   // ── JSON-RPC protocol layer ──────────────────────────────
 
-  private send(method: string, params: unknown): Promise<unknown> {
+  private send(method: string, params: unknown, timeoutOverride?: number): Promise<unknown> {
     return new Promise((resolve, reject) => {
       if (!this.proc?.stdin?.writable) {
         reject(new Error("MCP process not available"));
@@ -222,10 +225,11 @@ export class NeuralMemoryMcpClient {
       }
 
       const id = ++this.requestId;
+      const ms = timeoutOverride ?? this.timeout;
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`MCP timeout: ${method} (${this.timeout}ms)`));
-      }, this.timeout);
+        reject(new Error(`MCP timeout: ${method} (${ms}ms)`));
+      }, ms);
 
       this.pending.set(id, { resolve, reject, timer });
       this.writeMessage({ jsonrpc: "2.0", id, method, params });
