@@ -108,7 +108,7 @@ Results are written to `docs/benchmarks.md`.
 ## SQLite at Scale
 
 
-Last updated: **2026-03-03 23:20**
+Last updated: **2026-03-04 02:24**
 
 
 Real SQLiteStorage benchmarks with diverse memory types on Windows 11.
@@ -122,6 +122,7 @@ Real SQLiteStorage benchmarks with diverse memory types on Windows 11.
 | 1,000 | 26.5 | 26.52 | 22.59 | 51.33 | 66.75 | 37.7 | 0 |
 | 5,000 | 190.8 | 38.16 | 34.65 | 76.36 | 99.64 | 26.2 | 0 |
 | 10,000 | 536.1 | 53.61 | 47.9 | 102.27 | 131.85 | 18.7 | 0 |
+| 50,000 | 10954.6 | 219.09 | 191.25 | 509.01 | 656.49 | 4.6 | 0 |
 
 
 ### Database Size
@@ -132,6 +133,7 @@ Real SQLiteStorage benchmarks with diverse memory types on Windows 11.
 | 1,000 | 11.2 | 12.6 | 3,534 | 7,784 | 1,000 |
 | 5,000 | 46.55 | 48.67 | 13,734 | 34,238 | 5,000 |
 | 10,000 | 88.29 | 93.07 | 25,033 | 65,789 | 10,000 |
+| 50,000 | 411.48 | 419.0 | 108,913 | 311,777 | 50,000 |
 
 
 ### Recall Latency (Post-Consolidation)
@@ -195,6 +197,24 @@ Real SQLiteStorage benchmarks with diverse memory types on Windows 11.
 | **Average** |  | **113.78** | **135.5** | **17** |  |  |
 
 
+#### 50,000 memories
+
+
+| Query | Depth | Median (ms) | P95 (ms) | Neurons | Confidence | Found |
+| --- | --- | --- | --- | --- | --- | --- |
+| Python concurrency | INSTANT | 190.35 | 207.35 | 21 | 1.0 | yes |
+| What database did we choose? | CONTEXT | 2.36 | 3.44 | 0 | 0.0 | no |
+| connection error Redis | INSTANT | 224.34 | 252.6 | 26 | 1.0 | yes |
+| deployment workflow | CONTEXT | 207.73 | 235.62 | 23 | 1.0 | yes |
+| Why did we choose PostgreSQL? | DEEP | 172.12 | 211.13 | 10 | 1.0 | yes |
+| authentication JWT | INSTANT | 183.04 | 213.52 | 19 | 1.0 | yes |
+| What patterns were discovered? | CONTEXT | 118.83 | 147.36 | 8 | 1.0 | yes |
+| machine learning integration | DEEP | 168.41 | 174.37 | 21 | 1.0 | yes |
+| rate limiting implementation | INSTANT | 227.81 | 286.0 | 27 | 1.0 | yes |
+| TODO before release | CONTEXT | 297.5 | 331.74 | 19 | 1.0 | yes |
+| **Average** |  | **179.25** | **206.31** | **17.4** |  |  |
+
+
 ### Consolidation Performance
 
 
@@ -203,6 +223,7 @@ Real SQLiteStorage benchmarks with diverse memory types on Windows 11.
 | 1,000 | 2.4 | 0 | 0 | 0 | 3 |
 | 5,000 | 3.8 | 0 | 0 | 0 | 6 |
 | 10,000 | 7.8 | 0 | 0 | 0 | 5 |
+| 50,000 | 8.9 | 0 | 0 | 0 | 4 |
 
 
 ### Health Diagnostics
@@ -216,6 +237,8 @@ Real SQLiteStorage benchmarks with diverse memory types on Windows 11.
 | 5,000 | Post | F | 38.4 | 0.354 | 0.455 | 1.0 | 0.674 | 3 | 404.9 |
 | 10,000 | Pre | F | 35.5 | 0.364 | 0.373 | 1.0 | 0.82 | 3 | 487.0 |
 | 10,000 | Post | F | 38.4 | 0.434 | 0.437 | 1.0 | 0.821 | 3 | 488.4 |
+| 50,000 | Pre | F | 34.8 | 0.449 | 0.305 | 1.0 | 0.959 | 3 | 650.9 |
+| 50,000 | Post | F | 36.3 | 0.479 | 0.346 | 1.0 | 0.959 | 3 | 629.4 |
 
 
 ### Methodology
