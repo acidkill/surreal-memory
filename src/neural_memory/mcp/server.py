@@ -40,7 +40,7 @@ from neural_memory.mcp.maintenance_handler import MaintenanceHandler
 from neural_memory.mcp.mem0_sync_handler import Mem0SyncHandler
 from neural_memory.mcp.narrative_handler import NarrativeHandler
 from neural_memory.mcp.onboarding_handler import OnboardingHandler
-from neural_memory.mcp.prompt import get_system_prompt
+from neural_memory.mcp.prompt import get_mcp_instructions, get_system_prompt
 from neural_memory.mcp.review_handler import ReviewHandler
 from neural_memory.mcp.scheduled_consolidation_handler import ScheduledConsolidationHandler
 from neural_memory.mcp.session_handler import SessionHandler
@@ -232,6 +232,7 @@ async def handle_message(server: MCPServer, message: dict[str, Any]) -> dict[str
                 "protocolVersion": "2024-11-05",
                 "serverInfo": {"name": "neural-memory", "version": __version__},
                 "capabilities": {"tools": {}, "resources": {}},
+                "instructions": get_mcp_instructions(),
             },
         }
 
@@ -273,10 +274,18 @@ async def handle_message(server: MCPServer, message: dict[str, Any]) -> dict[str
                 server.call_tool(tool_name, tool_args),
                 timeout=_TOOL_CALL_TIMEOUT,
             )
+            result_text = json.dumps(result)
+
+            # Post-tool passive capture (fire-and-forget, never blocks response)
+            try:
+                await server._post_tool_capture(tool_name, tool_args, result_text)
+            except Exception:
+                pass
+
             return {
                 "jsonrpc": "2.0",
                 "id": msg_id,
-                "result": {"content": [{"type": "text", "text": json.dumps(result)}]},
+                "result": {"content": [{"type": "text", "text": result_text}]},
             }
         except TimeoutError:
             return {

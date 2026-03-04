@@ -315,6 +315,71 @@ async def get_timeline(
     return TimelineResponse(entries=entries[:limit], total=len(entries))
 
 
+# ── Daily Stats API ──────────────────────────────────────
+
+
+class DailyStatsEntry(BaseModel):
+    """Aggregated daily brain activity."""
+
+    date: str
+    neurons_created: int = 0
+    fibers_created: int = 0
+    synapses_created: int = 0
+    neuron_types: dict[str, int] = Field(default_factory=dict)
+
+
+@router.get(
+    "/timeline/daily-stats",
+    response_model=list[DailyStatsEntry],
+    summary="Get daily activity stats for timeline charts",
+)
+async def get_daily_stats(
+    storage: Annotated[NeuralStorage, Depends(get_storage)],
+    days: int = Query(default=30, ge=1, le=365),
+) -> list[DailyStatsEntry]:
+    """Get aggregated daily counts of neurons, fibers, and synapses."""
+    from datetime import timedelta
+
+    from neural_memory.utils.timeutils import utcnow
+
+    now = utcnow()
+    start = now - timedelta(days=days)
+    end = now
+
+    # Use public API: find_neurons with time_range
+    neurons = await storage.find_neurons(time_range=(start, end), limit=1000)
+
+    # Aggregate neurons by day
+    days_map: dict[str, DailyStatsEntry] = {}
+    for i in range(days + 1):
+        d = (now - timedelta(days=days - i)).strftime("%Y-%m-%d")
+        days_map[d] = DailyStatsEntry(date=d)
+
+    for n in neurons:
+        if not n.created_at:
+            continue
+        day = n.created_at.strftime("%Y-%m-%d")
+        if day not in days_map:
+            days_map[day] = DailyStatsEntry(date=day)
+        entry = days_map[day]
+        entry.neurons_created += 1
+        ntype = n.type.value
+        entry.neuron_types[ntype] = entry.neuron_types.get(ntype, 0) + 1
+
+    # Fibers via get_fibers (public API)
+    fibers = await storage.get_fibers(limit=1000)
+    for f in fibers:
+        if not f.created_at:
+            continue
+        if f.created_at < start:
+            continue
+        day = f.created_at.strftime("%Y-%m-%d")
+        if day in days_map:
+            days_map[day].fibers_created += 1
+
+    return sorted(days_map.values(), key=lambda e: e.date)
+
+
 # ── Fiber Diagram API ────────────────────────────────────
 
 

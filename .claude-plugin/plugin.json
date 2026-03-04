@@ -1,6 +1,6 @@
 {
   "name": "neural-memory",
-  "version": "2.24.1",
+  "version": "2.25.0",
   "description": "Reflex-based memory system for AI agents — stores experiences as interconnected neurons and recalls them through spreading activation, mimicking how the human brain works.",
   "author": {
     "name": "NeuralMemory Contributors"
@@ -34,6 +34,7 @@
     "Telegram backup — send brain .db to chat/group/channel",
     "VS Code extension for visual brain exploration"
   ],
+  "instructions": "IMPORTANT: Use Neural Memory proactively. After every task (feature, bug fix, decision), call nmem_remember() to save what you learned. Call nmem_recall() at session start to load past context. Sessions are ephemeral — without explicit saves, all context is lost.",
   "skills": "./skills",
   "commands": "./commands",
   "agents": "./agents",

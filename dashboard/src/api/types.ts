@@ -72,6 +72,15 @@ export interface TimelineResponse {
   total: number
 }
 
+// GET /api/dashboard/timeline/daily-stats
+export interface DailyStats {
+  date: string
+  neurons_created: number
+  fibers_created: number
+  synapses_created: number
+  neuron_types: Record<string, number>
+}
+
 // GET /api/dashboard/evolution
 export interface EvolutionResponse {
   brain: string

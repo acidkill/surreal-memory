@@ -118,7 +118,21 @@
     "title": "Dòng thời gian",
     "memoryTimeline": "Dòng thời gian bộ nhớ",
     "entries": "{{total}} mục",
-    "noEntries": "Không có mục nào."
+    "noEntries": "Không có mục nào.",
+    "range7d": "7 ngày",
+    "range30d": "30 ngày",
+    "range90d": "90 ngày",
+    "rangeAll": "Tất cả",
+    "todayMemories": "Hôm nay",
+    "totalPeriod": "Tổng",
+    "avgPerDay": "TB/Ngày",
+    "activeDays": "Ngày hoạt động",
+    "activityTrend": "Xu hướng hoạt động",
+    "neuronDistribution": "Phân bố Neuron",
+    "recentActivity": "Hoạt động gần đây",
+    "neurons": "Neuron",
+    "fibers": "Fiber",
+    "synapses": "Synapse"
   },
   "evolution": {
     "title": "Tiến hóa",

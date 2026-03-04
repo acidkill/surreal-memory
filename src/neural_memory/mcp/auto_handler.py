@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import TYPE_CHECKING, Any
 
 from neural_memory.mcp.auto_capture import analyze_text_for_memories
@@ -15,12 +16,21 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Tools whose output is worth passively capturing
+_CAPTURABLE_TOOLS: frozenset[str] = frozenset(
+    {"nmem_recall", "nmem_context", "nmem_recap", "nmem_explain"}
+)
+# Rate limit: max passive saves per window
+_PASSIVE_CAPTURE_MAX_PER_WINDOW = 3
+_PASSIVE_CAPTURE_WINDOW_SECS = 60.0
+
 
 class AutoHandler:
     """Mixin: auto-capture tool handlers."""
 
     config: UnifiedConfig
     _remember: Any
+    _passive_capture_timestamps: list[float]
 
     async def get_storage(self) -> NeuralStorage:
         raise NotImplementedError
@@ -223,6 +233,80 @@ class AutoHandler:
                     await self._save_detected_memories(high_confidence)
         except Exception:
             logger.debug("Passive capture failed", exc_info=True)
+
+    async def _post_tool_capture(
+        self, tool_name: str, args: dict[str, Any], result_text: str
+    ) -> None:
+        """Silently capture memories from capturable tool call results.
+
+        Called after tool execution for tools in ``_CAPTURABLE_TOOLS``.
+        Rate-limited to ``_PASSIVE_CAPTURE_MAX_PER_WINDOW`` saves per minute
+        to avoid noise.
+
+        Args:
+            tool_name: Name of the tool that was called.
+            args: The tool's input arguments.
+            result_text: The JSON-serialized tool result string.
+        """
+        if tool_name not in _CAPTURABLE_TOOLS:
+            return
+        if not isinstance(result_text, str) or len(result_text) < 50:
+            return
+
+        # Rate limit check
+        now = time.monotonic()
+        if not hasattr(self, "_passive_capture_timestamps"):
+            self._passive_capture_timestamps = []
+        # Prune old timestamps outside the window
+        self._passive_capture_timestamps = [
+            ts
+            for ts in self._passive_capture_timestamps
+            if now - ts < _PASSIVE_CAPTURE_WINDOW_SECS
+        ]
+        if len(self._passive_capture_timestamps) >= _PASSIVE_CAPTURE_MAX_PER_WINDOW:
+            return
+
+        try:
+            # Capture from query text (agent often embeds decisions in queries)
+            query_text = args.get("query", "") or args.get("text", "") or args.get("topic", "")
+            texts_to_analyze: list[str] = []
+            if isinstance(query_text, str) and len(query_text) >= 30:
+                texts_to_analyze.append(query_text)
+            # Capture from result (truncated to avoid huge payloads)
+            truncated_result = result_text[:MAX_CONTENT_LENGTH]
+            if len(truncated_result) >= 50:
+                texts_to_analyze.append(truncated_result)
+
+            for text in texts_to_analyze:
+                detected = self._run_detection(text)
+                if not detected:
+                    continue
+                type_thresholds = {
+                    "error": 0.7,
+                    "decision": 0.75,
+                    "insight": 0.75,
+                    "preference": 0.75,
+                }
+                high_confidence = [
+                    {**item, "tags": ["passive_capture"]}
+                    for item in detected
+                    if item["confidence"]
+                    >= max(
+                        self.config.auto.min_confidence,
+                        type_thresholds.get(item["type"], 0.8),
+                    )
+                ]
+                if high_confidence:
+                    await self._save_detected_memories(high_confidence)
+                    self._passive_capture_timestamps.append(now)
+                    logger.debug(
+                        "Post-tool passive capture: saved %d memories from %s",
+                        len(high_confidence),
+                        tool_name,
+                    )
+                    return  # One save per call is enough
+        except Exception:
+            logger.debug("Post-tool passive capture failed", exc_info=True)
 
     async def _save_detected_memories(self, detected: list[dict[str, Any]]) -> list[str]:
         """Save detected memories that meet confidence threshold.

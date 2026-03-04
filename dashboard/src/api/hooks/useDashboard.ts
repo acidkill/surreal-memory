@@ -7,6 +7,7 @@ import type {
   HealthReport,
   HealthCheckResponse,
   TimelineResponse,
+  DailyStats,
   EvolutionResponse,
   FiberListResponse,
   FiberDiagramResponse,
@@ -22,6 +23,7 @@ const keys = {
   healthCheck: ["health"] as const,
   timeline: (limit: number, offset: number) =>
     ["dashboard", "timeline", limit, offset] as const,
+  dailyStats: (days: number) => ["dashboard", "timeline", "daily-stats", days] as const,
   evolution: ["dashboard", "evolution"] as const,
   fibers: ["dashboard", "fibers"] as const,
   fiberDiagram: (id: string) => ["dashboard", "fiber", id, "diagram"] as const,
@@ -83,6 +85,17 @@ export function useTimeline(limit = 100, offset = 0) {
     queryFn: () =>
       api.get<TimelineResponse>(
         `/api/dashboard/timeline?limit=${limit}&offset=${offset}`,
+      ),
+  })
+}
+
+// Daily Stats (timeline charts)
+export function useDailyStats(days = 30) {
+  return useQuery({
+    queryKey: keys.dailyStats(days),
+    queryFn: () =>
+      api.get<DailyStats[]>(
+        `/api/dashboard/timeline/daily-stats?days=${days}`,
       ),
   })
 }

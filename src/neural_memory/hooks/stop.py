@@ -28,12 +28,14 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Max lines to read from transcript tail
-MAX_TRANSCRIPT_LINES = 80
+# Max lines to read from transcript tail (increased for longer sessions)
+MAX_TRANSCRIPT_LINES = 150
 # Max characters to process
 MAX_CAPTURE_CHARS = 100_000
 # Normal confidence threshold (not emergency)
 DEFAULT_CONFIDENCE = 0.7
+# Max chars for session summary extraction
+_SUMMARY_TAIL_CHARS = 8_000
 
 
 def read_hook_input() -> dict[str, Any]:
@@ -103,11 +105,43 @@ def _extract_text(entry: dict[str, Any]) -> str:
     return text if isinstance(text, str) else ""
 
 
+def _extract_session_summary(text: str) -> str:
+    """Extract a brief session summary from transcript tail.
+
+    Looks for common session-end signals (decisions, completions, errors fixed)
+    and produces a 1-3 sentence summary. Falls back to a generic summary
+    from the last portion of the transcript.
+
+    Args:
+        text: Full transcript text.
+
+    Returns:
+        A short summary string, or empty string if nothing meaningful found.
+    """
+    tail = text[-_SUMMARY_TAIL_CHARS:] if len(text) > _SUMMARY_TAIL_CHARS else text
+    lines = [line.strip() for line in tail.split("\n") if line.strip() and len(line.strip()) > 15]
+    if not lines:
+        return ""
+
+    # Take last ~10 meaningful lines and join as summary context
+    summary_lines = lines[-10:]
+    summary = " ".join(summary_lines)
+
+    # Truncate to a reasonable length
+    if len(summary) > 500:
+        summary = summary[:500]
+
+    return f"Session activity: {summary}"
+
+
 async def capture_text(text: str) -> dict[str, Any]:
     """Detect and save memorable content from session transcript.
 
     Uses normal (non-emergency) confidence thresholds since this runs
     at clean session end, not under compaction pressure.
+
+    Always saves at least a session summary (type=context) even if no
+    specific patterns are detected, ensuring every session leaves a trace.
     """
     from neural_memory.core.memory_types import MemoryType, Priority, TypedMemory
     from neural_memory.engine.encoder import MemoryEncoder
@@ -130,14 +164,9 @@ async def capture_text(text: str) -> dict[str, Any]:
             capture_preferences=True,
         )
 
-        if not detected:
-            return {"saved": 0, "message": "No memorable content detected"}
-
         # Use configured threshold (or DEFAULT_CONFIDENCE as floor)
         threshold = max(config.auto.min_confidence, DEFAULT_CONFIDENCE)
-        eligible = [item for item in detected if item["confidence"] >= threshold]
-        if not eligible:
-            return {"saved": 0, "message": "No memories met confidence threshold"}
+        eligible = [item for item in detected if item["confidence"] >= threshold] if detected else []
 
         brain = await storage.get_brain(config.current_brain)
         if not brain:
@@ -182,6 +211,31 @@ async def capture_text(text: str) -> dict[str, Any]:
             except Exception:
                 logger.debug("Failed to save stop-hook memory", exc_info=True)
                 continue
+
+        # Always save a session summary if no patterns were detected
+        if not saved:
+            summary = _extract_session_summary(text)
+            if summary and len(summary) > 30:
+                try:
+                    redacted_summary, _, _ = auto_redact_content(
+                        summary, min_severity=auto_redact_severity
+                    )
+                    result = await encoder.encode(
+                        content=redacted_summary,
+                        timestamp=utcnow(),
+                        tags={"stop_hook", "session_end", "session_summary"},
+                    )
+                    typed_mem = TypedMemory.create(
+                        fiber_id=result.fiber.id,
+                        memory_type=MemoryType.CONTEXT,
+                        priority=Priority.from_int(4),
+                        source="stop_hook",
+                        tags={"stop_hook", "session_end", "session_summary"},
+                    )
+                    await storage.add_typed_memory(typed_mem)
+                    saved.append(redacted_summary[:60])
+                except Exception:
+                    logger.debug("Failed to save session summary", exc_info=True)
 
         await storage.batch_save()
 

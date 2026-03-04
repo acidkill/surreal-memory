@@ -118,7 +118,21 @@
     "title": "Timeline",
     "memoryTimeline": "Memory Timeline",
     "entries": "{{total}} entries",
-    "noEntries": "No timeline entries."
+    "noEntries": "No timeline entries.",
+    "range7d": "7 Days",
+    "range30d": "30 Days",
+    "range90d": "90 Days",
+    "rangeAll": "All",
+    "todayMemories": "Today",
+    "totalPeriod": "Total",
+    "avgPerDay": "Avg/Day",
+    "activeDays": "Active Days",
+    "activityTrend": "Activity Trend",
+    "neuronDistribution": "Neuron Distribution",
+    "recentActivity": "Recent Activity",
+    "neurons": "Neurons",
+    "fibers": "Fibers",
+    "synapses": "Synapses"
   },
   "evolution": {
     "title": "Evolution",

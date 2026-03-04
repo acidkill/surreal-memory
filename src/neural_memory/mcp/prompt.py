@@ -327,6 +327,42 @@ def get_system_prompt(compact: bool = False) -> str:
     return COMPACT_PROMPT if compact else SYSTEM_PROMPT
 
 
+MCP_INSTRUCTIONS = """\
+CRITICAL BEHAVIOR: You MUST use Neural Memory proactively in EVERY session.
+
+MANDATORY ACTIONS:
+1. SESSION START: Call nmem_recall("current project context") to load past context.
+2. AFTER EVERY TASK: Call nmem_remember() to save what you learned/decided/fixed.
+3. SESSION END: Call nmem_auto(action="process", text="<summary>") to capture remaining context.
+
+WHAT TO REMEMBER (after each completed task):
+- Decisions: "Chose X over Y because Z" → type="decision", priority=7
+- Bug fixes: "Root cause was X, fixed by Y" → type="error", priority=7
+- Patterns: "This codebase uses X pattern for Y" → type="insight", priority=6
+- User preferences: "User prefers X" → type="preference", priority=8
+
+USE RICH LANGUAGE (creates better neural connections):
+- BAD: "PostgreSQL" (flat, no context)
+- GOOD: "Chose PostgreSQL over MongoDB because ACID needed for payments" (causal, linked)
+
+NEVER skip remembering after completing a feature, fixing a bug, or making a decision.
+Each session starts fresh — without explicit saves, ALL discoveries are lost forever.\
+"""
+
+
+def get_mcp_instructions() -> str:
+    """Get concise behavioral instructions for MCP InitializeResult.
+
+    These instructions are injected into the agent's system context
+    automatically by MCP clients that support the `instructions` field.
+    Keep under ~200 words — behavioral directives, not documentation.
+
+    Returns:
+        Concise instruction string for proactive memory usage.
+    """
+    return MCP_INSTRUCTIONS
+
+
 def get_prompt_for_mcp() -> dict[str, str]:
     """Get prompt formatted for MCP resources."""
     return {

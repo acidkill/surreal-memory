@@ -2135,7 +2135,9 @@ class TestMCPRecallExtended:
         mock_storage._current_brain_id = "test-brain"
 
         # Ensure encryption is disabled so auto-redact path completes without encryption attempt
-        server.config.encryption = MagicMock(enabled=False)
+        server.config.encryption = MagicMock(enabled=False, auto_encrypt_sensitive=False)
+        # Ensure safety config returns proper int for auto_redact_min_severity
+        server.config.safety = MagicMock(auto_redact_min_severity=3)
 
         with patch.object(server, "get_storage", return_value=mock_storage):
             result = await server.call_tool(
