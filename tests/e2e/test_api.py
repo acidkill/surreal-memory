@@ -1,8 +1,12 @@
-"""End-to-end API tests."""
+"""End-to-end API tests.
+
+Uses a temporary data directory so test brains never pollute production DB.
+"""
 
 from __future__ import annotations
 
 from collections.abc import Generator
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -11,11 +15,26 @@ from neural_memory.server.app import create_app
 
 
 @pytest.fixture
-def client() -> Generator[TestClient, None, None]:
-    """Create test client with lifespan context."""
-    app = create_app()
-    with TestClient(app) as c:
-        yield c
+def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[TestClient, None, None]:
+    """Create test client with isolated temp storage."""
+    import neural_memory.unified_config as uc
+
+    # Point all storage to tmp_path instead of ~/.neuralmemory/
+    monkeypatch.setenv("NEURALMEMORY_DIR", str(tmp_path))
+
+    # Clear cached config and storage so they reinitialize with tmp_path
+    monkeypatch.setattr(uc, "_config", None)
+    saved_cache = uc._storage_cache.copy()
+    uc._storage_cache.clear()
+
+    try:
+        app = create_app()
+        with TestClient(app) as c:
+            yield c
+    finally:
+        # Restore storage cache to avoid breaking other tests
+        uc._storage_cache.clear()
+        uc._storage_cache.update(saved_cache)
 
 
 class TestHealthEndpoints:

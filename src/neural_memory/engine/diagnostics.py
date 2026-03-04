@@ -100,7 +100,7 @@ _COMPONENT_WEIGHTS: dict[str, tuple[float, str]] = {
     ),
     "orphan_rate": (
         0.10,
-        "Run: nmem consolidate --strategy prune — removes isolated neurons with no links.",
+        "Run: nmem consolidate --strategy prune — removes neurons with no synapses or fiber links.",
     ),
     "activation_efficiency": (
         0.10,
@@ -163,7 +163,8 @@ def _build_dynamic_action(
     elif component == "orphan_rate" and neuron_count > 0:
         orphan_count = int(orphan_rate * neuron_count)
         return (
-            f"Recall topics near {orphan_count} orphan neurons to create connections, "
+            f"{orphan_count} neurons have no synapses or fiber links. "
+            "Recall related topics to build connections, "
             "or run `nmem consolidate --strategy prune` to clean up."
         )
     elif component == "activation_efficiency":
@@ -318,7 +319,7 @@ class DiagnosticsEngine:
         diversity = self._compute_diversity(synapse_stats)
         freshness = self._compute_freshness(fibers)
         consolidation_ratio = await self._compute_consolidation_ratio(fiber_count)
-        orphan_rate = await self._compute_orphan_rate(neuron_count)
+        orphan_rate = await self._compute_orphan_rate(neuron_count, fibers)
         activation_efficiency = await self._compute_activation_efficiency(neuron_count)
         recall_confidence = self._compute_recall_confidence(synapse_stats)
 
@@ -475,8 +476,17 @@ class DiagnosticsEngine:
         )
         return len(semantic_records) / fiber_count
 
-    async def _compute_orphan_rate(self, neuron_count: int) -> float:
-        """Compute fraction of neurons with zero synapses."""
+    async def _compute_orphan_rate(
+        self, neuron_count: int, fibers: list[Any] | None = None
+    ) -> float:
+        """Compute fraction of neurons with no synapses AND no fiber membership.
+
+        A neuron is considered "connected" if it appears in at least one
+        synapse (source or target) OR belongs to at least one fiber.
+        Previous implementation only checked synapses, inflating orphan
+        counts for spatial/temporal neurons that are fiber-linked but
+        have no direct synapses.
+        """
         if neuron_count == 0:
             return 0.0
 
@@ -485,6 +495,11 @@ class DiagnosticsEngine:
         for s in all_synapses:
             connected.add(s.source_id)
             connected.add(s.target_id)
+
+        # Also count neurons that belong to fibers as connected
+        if fibers:
+            for fiber in fibers:
+                connected.update(fiber.neuron_ids)
 
         orphan_count = max(0, neuron_count - len(connected))
         return orphan_count / neuron_count
@@ -593,11 +608,11 @@ class DiagnosticsEngine:
                 DiagnosticWarning(
                     severity=WarningSeverity.WARNING,
                     code="HIGH_ORPHAN_RATE",
-                    message=f"High orphan rate: {orphan_rate:.0%} of neurons have no connections.",
+                    message=f"High orphan rate: {orphan_rate:.0%} of neurons have no synapses or fiber links.",
                 )
             )
             recommendations.append(
-                f"{orphan_count} neurons ({orphan_rate:.0%}) have no connections. "
+                f"{orphan_count} neurons ({orphan_rate:.0%}) have no synapses or fiber links. "
                 "Run: nmem consolidate --strategy prune to remove orphans, "
                 "or recall related topics to build connections."
             )

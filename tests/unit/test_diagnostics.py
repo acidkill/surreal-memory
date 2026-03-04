@@ -550,13 +550,14 @@ class TestWarnings:
 
     @pytest.mark.asyncio
     async def test_high_orphan_rate_warning(self) -> None:
-        """Brain with many unconnected neurons should get HIGH_ORPHAN_RATE."""
+        """Brain with neurons not in any synapse or fiber should get HIGH_ORPHAN_RATE."""
         store = InMemoryStorage()
         brain = Brain.create(name="orphans", config=BrainConfig(), owner_id="test")
         await store.save_brain(brain)
         store.set_brain(brain.id)
 
-        # 10 neurons, only 2 connected
+        # 10 neurons, only 2 connected via synapse, only 3 in fiber
+        # Remaining 7 are truly orphaned (no synapse, no fiber)
         for i in range(10):
             n = Neuron.create(type=NeuronType.ENTITY, content=f"node-{i}", neuron_id=f"n-{i}")
             await store.add_neuron(n)
@@ -570,8 +571,9 @@ class TestWarnings:
         )
         await store.add_synapse(s)
 
+        # Fiber only covers n-0, n-1, n-2 — leaves n-3..n-9 truly orphaned
         fiber = Fiber.create(
-            neuron_ids={f"n-{i}" for i in range(10)},
+            neuron_ids={"n-0", "n-1", "n-2"},
             synapse_ids={"s-only"},
             anchor_neuron_id="n-0",
             fiber_id="f-orphans",
@@ -582,7 +584,46 @@ class TestWarnings:
         report = await engine.analyze(brain.id)
         codes = {w.code for w in report.warnings}
         assert "HIGH_ORPHAN_RATE" in codes
+        # 7 out of 10 neurons are truly orphaned = 70%
         assert report.orphan_rate > 0.20
+
+    @pytest.mark.asyncio
+    async def test_fiber_membership_reduces_orphan_rate(self) -> None:
+        """Neurons in fibers should not count as orphans even without synapses."""
+        store = InMemoryStorage()
+        brain = Brain.create(name="fiber_linked", config=BrainConfig(), owner_id="test")
+        await store.save_brain(brain)
+        store.set_brain(brain.id)
+
+        # 10 neurons, only 2 connected via synapse, but ALL in fiber
+        for i in range(10):
+            n = Neuron.create(type=NeuronType.ENTITY, content=f"node-{i}", neuron_id=f"n-{i}")
+            await store.add_neuron(n)
+
+        s = Synapse.create(
+            source_id="n-0",
+            target_id="n-1",
+            type=SynapseType.RELATED_TO,
+            weight=0.5,
+            synapse_id="s-only",
+        )
+        await store.add_synapse(s)
+
+        # Fiber covers all 10 neurons
+        fiber = Fiber.create(
+            neuron_ids={f"n-{i}" for i in range(10)},
+            synapse_ids={"s-only"},
+            anchor_neuron_id="n-0",
+            fiber_id="f-all",
+        )
+        await store.add_fiber(fiber)
+
+        engine = DiagnosticsEngine(store)
+        report = await engine.analyze(brain.id)
+        # All neurons are in the fiber, so orphan rate should be 0
+        assert report.orphan_rate == 0.0
+        codes = {w.code for w in report.warnings}
+        assert "HIGH_ORPHAN_RATE" not in codes
 
     @pytest.mark.asyncio
     async def test_no_consolidation_warning(self, rich_storage: InMemoryStorage) -> None:
