@@ -62,12 +62,18 @@ async def mixed_storage() -> InMemoryStorage:
 
     synapses = [
         Synapse.create(
-            source_id="n-syn-a", target_id="n-syn-b",
-            type=SynapseType.RELATED_TO, weight=0.5, synapse_id="s-1",
+            source_id="n-syn-a",
+            target_id="n-syn-b",
+            type=SynapseType.RELATED_TO,
+            weight=0.5,
+            synapse_id="s-1",
         ),
         Synapse.create(
-            source_id="n-both", target_id="n-anchor",
-            type=SynapseType.INVOLVES, weight=0.7, synapse_id="s-2",
+            source_id="n-both",
+            target_id="n-anchor",
+            type=SynapseType.INVOLVES,
+            weight=0.7,
+            synapse_id="s-2",
         ),
     ]
     for s in synapses:
@@ -133,9 +139,7 @@ class TestOrphanDefinitionConsistency:
         )
 
     @pytest.mark.asyncio
-    async def test_fiber_members_never_pruned(
-        self, mixed_storage: InMemoryStorage
-    ) -> None:
+    async def test_fiber_members_never_pruned(self, mixed_storage: InMemoryStorage) -> None:
         """Neurons in fibers must survive consolidation prune."""
         config = ConsolidationConfig(
             prune_min_inactive_days=0.0,
@@ -164,9 +168,7 @@ class TestOrphanDefinitionConsistency:
             assert neuron is None, f"Orphan {nid} should have been pruned"
 
     @pytest.mark.asyncio
-    async def test_synapse_only_neurons_not_orphaned(
-        self, mixed_storage: InMemoryStorage
-    ) -> None:
+    async def test_synapse_only_neurons_not_orphaned(self, mixed_storage: InMemoryStorage) -> None:
         """Neurons connected only via synapses (not in fibers) are not orphans."""
         diag = DiagnosticsEngine(mixed_storage)
         brain_id = mixed_storage._current_brain_id
@@ -214,9 +216,7 @@ class TestHealthMetricsSanity:
         assert report.fiber_count == actual["fiber_count"]
 
     @pytest.mark.asyncio
-    async def test_orphan_count_matches_raw_query(
-        self, mixed_storage: InMemoryStorage
-    ) -> None:
+    async def test_orphan_count_matches_raw_query(self, mixed_storage: InMemoryStorage) -> None:
         """Orphan count from health must match manual graph traversal."""
         brain_id = mixed_storage._current_brain_id
         diag = DiagnosticsEngine(mixed_storage)
@@ -240,9 +240,7 @@ class TestHealthMetricsSanity:
         assert report.orphan_rate == pytest.approx(manual_rate, abs=0.001)
 
     @pytest.mark.asyncio
-    async def test_activation_efficiency_matches_raw(
-        self, mixed_storage: InMemoryStorage
-    ) -> None:
+    async def test_activation_efficiency_matches_raw(self, mixed_storage: InMemoryStorage) -> None:
         """Activation efficiency must match actual neuron state query."""
         brain_id = mixed_storage._current_brain_id
 
@@ -267,9 +265,7 @@ class TestHealthMetricsSanity:
         assert report.activation_efficiency == pytest.approx(expected, abs=0.01)
 
     @pytest.mark.asyncio
-    async def test_connectivity_matches_raw(
-        self, mixed_storage: InMemoryStorage
-    ) -> None:
+    async def test_connectivity_matches_raw(self, mixed_storage: InMemoryStorage) -> None:
         """Connectivity should reflect actual synapse/neuron ratio."""
         brain_id = mixed_storage._current_brain_id
         diag = DiagnosticsEngine(mixed_storage)
@@ -314,9 +310,7 @@ class TestPruneSafety:
                 )
 
     @pytest.mark.asyncio
-    async def test_health_improves_after_prune(
-        self, mixed_storage: InMemoryStorage
-    ) -> None:
+    async def test_health_improves_after_prune(self, mixed_storage: InMemoryStorage) -> None:
         """Orphan rate should decrease (or stay 0) after pruning orphans."""
         brain_id = mixed_storage._current_brain_id
         diag = DiagnosticsEngine(mixed_storage)
@@ -352,9 +346,7 @@ class TestE2EIsolation:
 
         sig = inspect.signature(client)
         params = list(sig.parameters.keys())
-        assert "tmp_path" in params, (
-            "E2E client fixture must use tmp_path for isolated storage"
-        )
+        assert "tmp_path" in params, "E2E client fixture must use tmp_path for isolated storage"
         assert "monkeypatch" in params, (
             "E2E client fixture must use monkeypatch to override NEURALMEMORY_DIR"
         )
