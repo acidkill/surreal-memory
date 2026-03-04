@@ -81,7 +81,31 @@ similarity_threshold = 0.7
 
 > Get a free API key at [ai.google.dev](https://ai.google.dev/). Free tier includes generous embedding quotas.
 
-### 3. OpenAI (API)
+### 3. Ollama (Free, Local)
+
+Uses any Ollama model for embeddings. Runs entirely on your machine via the Ollama API.
+
+```bash
+pip install neural-memory[embeddings]
+# Ensure Ollama is running: ollama serve
+# Pull an embedding model: ollama pull nomic-embed-text
+```
+
+**Config**:
+
+```toml
+[embedding]
+enabled = true
+provider = "ollama"
+model = "nomic-embed-text"              # 768D, fast
+# model = "mxbai-embed-large"           # 1024D, higher quality
+similarity_threshold = 0.7
+# base_url = "http://localhost:11434"    # Default Ollama URL
+```
+
+> Requires Ollama running locally. See [ollama.com](https://ollama.com) for installation.
+
+### 4. OpenAI (API)
 
 Uses OpenAI's `text-embedding-3-small` or `text-embedding-3-large`.
 
@@ -108,17 +132,18 @@ similarity_threshold = 0.7
 
 ## Provider Comparison
 
-| | Sentence Transformer | Gemini | OpenAI |
-|---|---|---|---|
-| **Cost** | Free | Free tier / pay-per-use | Pay-per-use |
-| **Privacy** | 100% local | Data sent to Google | Data sent to OpenAI |
-| **Speed** | 15-150ms (CPU) | ~200ms (network) | ~200ms (network) |
-| **Quality** | Good | Excellent | Excellent |
-| **Multilingual** | With multilingual model | Built-in | Built-in |
-| **Offline** | Yes | No | No |
-| **Setup** | `pip install` only | API key required | API key required |
+| | Sentence Transformer | Ollama | Gemini | OpenAI |
+|---|---|---|---|---|
+| **Cost** | Free | Free | Free tier / pay-per-use | Pay-per-use |
+| **Privacy** | 100% local | 100% local | Data sent to Google | Data sent to OpenAI |
+| **Speed** | 15-150ms (CPU) | 10-50ms (GPU) | ~200ms (network) | ~200ms (network) |
+| **Quality** | Good | Good-Excellent | Excellent | Excellent |
+| **Multilingual** | With multilingual model | Model-dependent | Built-in | Built-in |
+| **Offline** | Yes | Yes | No | No |
+| **Setup** | `pip install` only | Ollama + model pull | API key required | API key required |
+| **GPU Accel** | Optional | Yes (native) | N/A | N/A |
 
-**Recommendation**: Start with `sentence_transformer` + `paraphrase-multilingual-MiniLM-L12-v2`. It's free, private, and works well for most use cases. Switch to Gemini or OpenAI only if you need higher quality for production workloads.
+**Recommendation**: Start with `sentence_transformer` + `paraphrase-multilingual-MiniLM-L12-v2` for simplicity. Use `ollama` if you have a GPU and want fast local inference. Switch to Gemini or OpenAI only if you need higher quality for production workloads.
 
 ## How It Works
 

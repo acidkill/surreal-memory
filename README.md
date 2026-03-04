@@ -12,7 +12,7 @@
 
 NeuralMemory stores experiences as interconnected neurons and recalls them through spreading activation, mimicking how the human brain works. Instead of searching a database, memories surface through associative recall — activating related concepts until the relevant memory emerges.
 
-**28 MCP tools** · **11 memory types** · **24 synapse types** · **Schema v20** · **2860+ tests**
+**28 MCP tools** · **11 memory types** · **24 synapse types** · **Schema v20** · **3150+ tests** · **Proactive auto-save**
 
 ## Why Not RAG / Vector Search?
 
@@ -62,7 +62,7 @@ provider = "sentence_transformer"                      # Free, runs locally
 model = "paraphrase-multilingual-MiniLM-L12-v2"        # 50+ languages
 ```
 
-Three providers available: **sentence_transformer** (free/local), **gemini** (Google API), **openai** (OpenAI API). See the [Embedding Setup Guide](docs/guides/embedding-setup.md) for details.
+Four providers available: **sentence_transformer** (free/local), **ollama** (local via Ollama API), **gemini** (Google API), **openai** (OpenAI API). See the [Embedding Setup Guide](docs/guides/embedding-setup.md) for details.
 
 ## Quick Setup
 
