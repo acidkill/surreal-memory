@@ -424,7 +424,7 @@ class ConsolidationEngine:
                     )
                     await self._storage.update_fiber(updated_fiber)
 
-        # Find orphan neurons (no synapses, not a fiber anchor)
+        # Find orphan neurons (no synapses AND not in any fiber)
         if not self._config.prune_isolated_neurons:
             return
 
@@ -435,15 +435,15 @@ class ConsolidationEngine:
                 connected_neuron_ids.add(syn.source_id)
                 connected_neuron_ids.add(syn.target_id)
 
-        anchor_neuron_ids: set[str] = set()
-        # Reuse fibers list (already fetched above)
+        # Protect ALL neurons in fibers, not just anchors
+        fiber_neuron_ids: set[str] = set()
         for fiber in fibers:
-            anchor_neuron_ids.add(fiber.anchor_neuron_id)
+            fiber_neuron_ids.update(fiber.neuron_ids)
 
         all_neurons = await self._storage.find_neurons(limit=100000)
         orphan_ids: list[str] = []
         for neuron in all_neurons:
-            if neuron.id not in connected_neuron_ids and neuron.id not in anchor_neuron_ids:
+            if neuron.id not in connected_neuron_ids and neuron.id not in fiber_neuron_ids:
                 report.neurons_pruned += 1
                 orphan_ids.append(neuron.id)
 
