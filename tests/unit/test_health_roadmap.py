@@ -55,7 +55,7 @@ class TestBuildDynamicAction:
             "orphan_rate": 0.25,
         }
         action = _build_dynamic_action("orphan_rate", "fallback", metrics)
-        assert "50 orphan" in action
+        assert "50 neurons have no synapses or fiber links" in action
 
     def test_activation_efficiency_action(self) -> None:
         metrics: dict[str, Any] = {"activation_efficiency": 0.6}
