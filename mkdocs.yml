@@ -89,8 +89,11 @@ nav:
     - Spreading Activation: concepts/spreading-activation.md
   - Guides:
     - Integration: guides/integration.md
-    - Brain Sharing: guides/brain-sharing.md
     - MCP Server: guides/mcp-server.md
+    - Embedding Setup: guides/embedding-setup.md
+    - Brain Sharing: guides/brain-sharing.md
+    - Multi-Brain Setup: guides/multi-brain-setup.md
+    - OpenClaw Plugin: guides/openclaw-plugin.md
     - Safety & Security: guides/safety.md
   - API Reference:
     - Python API: api/python.md
@@ -99,8 +102,13 @@ nav:
     - Overview: architecture/overview.md
     - Scalability: architecture/scalability.md
   - Benchmarks: benchmarks.md
+  - FAQ: FAQ.md
   - Contributing: contributing.md
   - Changelog: changelog.md
+  - Blog:
+    - Why I Built NeuralMemory: blog/why-i-built-neuralmemory.md
+    - Honest Comparison 2026: blog/honest-comparison-2026.md
+    - OpenClaw Integration: blog/neural-memory-openclaw.md
 
 extra:
   social:
