@@ -167,7 +167,7 @@ config.toml
 # Dashboard (React SPA)
 dashboard/node_modules/
 dashboard/dist/
-src/neural_memory/server/static/dist/
+# src/neural_memory/server/static/dist/ — tracked (bundled UI for pip install)
 
 # spaCy models
 en_core_web_sm/
