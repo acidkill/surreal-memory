@@ -12,8 +12,6 @@ Three categories:
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
-
 import pytest
 import pytest_asyncio
 
@@ -28,7 +26,6 @@ from neural_memory.engine.consolidation import (
 )
 from neural_memory.engine.diagnostics import DiagnosticsEngine
 from neural_memory.storage.memory_store import InMemoryStorage
-
 
 # ── Shared fixtures ──────────────────────────────────────────────
 
@@ -351,7 +348,7 @@ class TestE2EIsolation:
         """The E2E client fixture must accept tmp_path and monkeypatch params."""
         import inspect
 
-        from tests.e2e.test_api import client  # noqa: F811
+        from tests.e2e.test_api import client
 
         sig = inspect.signature(client)
         params = list(sig.parameters.keys())
