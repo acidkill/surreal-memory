@@ -13,6 +13,26 @@ NeuralMemory works **without embeddings** — its core retrieval uses spreading 
 
 **Rule of thumb**: If you work in a single language and your recall queries use similar wording to what you stored, you don't need embeddings.
 
+## Quick Start: Auto-Detection
+
+The easiest way to enable embeddings — let NeuralMemory detect what's available:
+
+```toml
+# ~/.neuralmemory/config.toml
+[embedding]
+enabled = true
+provider = "auto"
+```
+
+Auto-detection checks (in order):
+
+1. **Ollama** running locally → uses `bge-m3` or best available model
+2. **sentence-transformers** installed → uses `paraphrase-multilingual-MiniLM-L12-v2`
+3. **GEMINI_API_KEY** set → uses Google's free-tier embedding API
+4. **OPENAI_API_KEY** set → uses OpenAI's embedding API
+
+If none are available, embedding stays disabled and recall falls back to graph-only (which works great for single-language use).
+
 ## Providers
 
 ### 1. Sentence Transformer (Free, Local)

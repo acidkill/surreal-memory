@@ -58,11 +58,10 @@ Core recall works without embeddings. Enable embeddings to recall memories acros
 # ~/.neuralmemory/config.toml
 [embedding]
 enabled = true
-provider = "sentence_transformer"                      # Free, runs locally
-model = "paraphrase-multilingual-MiniLM-L12-v2"        # 50+ languages
+provider = "auto"    # Auto-detects: Ollama → sentence-transformers → Gemini → OpenAI
 ```
 
-Four providers available: **sentence_transformer** (free/local), **ollama** (local via Ollama API), **gemini** (Google API), **openai** (OpenAI API). See the [Embedding Setup Guide](docs/guides/embedding-setup.md) for details.
+Or pick a specific provider: **sentence_transformer** (free/local), **ollama** (local via Ollama API), **gemini** (Google free tier), **openai** (paid). See the [Embedding Setup Guide](docs/guides/embedding-setup.md) for details.
 
 ## Quick Setup
 

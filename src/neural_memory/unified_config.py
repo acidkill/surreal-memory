@@ -119,6 +119,7 @@ class EmbeddingSettings:
         "openai",
         "gemini",
         "ollama",
+        "auto",
         "",
     )
 

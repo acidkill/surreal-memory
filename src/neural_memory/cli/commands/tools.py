@@ -478,6 +478,37 @@ def consolidate(
         typer.echo("")
         typer.echo(delta.summary())
 
+        # Post-consolidation health hint: warn about orphans if not pruning
+        if strategy != "prune" and not dry_run:
+            try:
+                from neural_memory.engine.diagnostics import DiagnosticsEngine
+
+                engine = DiagnosticsEngine(storage)
+                report = await engine.analyze(brain_id)
+                if report.orphan_rate > 0.20:
+                    orphan_count = int(report.orphan_rate * report.neuron_count)
+                    typer.echo("")
+                    typer.secho(
+                        f"  Hint: {orphan_count} orphan neurons detected "
+                        f"({report.orphan_rate:.0%} of total).",
+                        fg=typer.colors.YELLOW,
+                    )
+                    typer.echo(
+                        "  Run with --strategy prune to clean up, "
+                        "or recall related topics to build connections."
+                    )
+                if report.consolidation_ratio == 0.0 and strategy != "mature":
+                    typer.echo("")
+                    typer.secho(
+                        "  Hint: No memories have reached SEMANTIC stage yet.",
+                        fg=typer.colors.YELLOW,
+                    )
+                    typer.echo(
+                        "  Run with --strategy mature to advance episodic memories."
+                    )
+            except Exception:
+                pass  # Non-critical hint — don't fail consolidation
+
     run_async(_consolidate())
 
 

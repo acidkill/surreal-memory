@@ -54,6 +54,67 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
+def _auto_detect_provider() -> tuple[str, str]:
+    """Auto-detect the best available embedding provider.
+
+    Detection order (first available wins):
+    1. Ollama running locally (free, no install needed if Ollama app present)
+    2. sentence-transformers installed (free, local, but ~440MB download)
+    3. Gemini API key set (free tier available)
+    4. OpenAI API key set (paid)
+
+    Returns:
+        Tuple of (provider_name, model_name).
+
+    Raises:
+        RuntimeError: If no provider is available.
+    """
+    # 1. Check Ollama (local server)
+    try:
+        import httpx
+
+        resp = httpx.get("http://localhost:11434/api/tags", timeout=2.0)
+        if resp.status_code == 200:
+            models = resp.json().get("models", [])
+            # Prefer multilingual embedding models
+            preferred = ["bge-m3", "nomic-embed-text", "mxbai-embed-large", "all-minilm"]
+            available_names = [m.get("name", "").split(":")[0] for m in models]
+            for pref in preferred:
+                if pref in available_names:
+                    return ("ollama", pref)
+            # Any model works as fallback
+            if models:
+                return ("ollama", "bge-m3")
+    except Exception:
+        pass
+
+    # 2. Check sentence-transformers (local)
+    try:
+        import sentence_transformers  # noqa: F401
+
+        return ("sentence_transformer", "paraphrase-multilingual-MiniLM-L12-v2")
+    except ImportError:
+        pass
+
+    # 3. Check Gemini API key (free tier)
+    import os
+
+    if os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY"):
+        return ("gemini", "models/text-embedding-004")
+
+    # 4. Check OpenAI API key (paid)
+    if os.environ.get("OPENAI_API_KEY"):
+        return ("openai", "text-embedding-3-small")
+
+    raise RuntimeError(
+        "No embedding provider available. Install one of:\n"
+        "  pip install neural-memory[embeddings]    # sentence-transformers (local, free)\n"
+        "  ollama pull bge-m3                       # Ollama (local, free)\n"
+        "  export GEMINI_API_KEY=...                # Google Gemini (free tier)\n"
+        "  export OPENAI_API_KEY=...                # OpenAI (paid)"
+    )
+
+
 def _create_provider(config: BrainConfig, task_type: str = "RETRIEVAL_QUERY") -> Any:
     """Create an embedding provider from BrainConfig.
 
@@ -65,6 +126,11 @@ def _create_provider(config: BrainConfig, task_type: str = "RETRIEVAL_QUERY") ->
     """
     provider_name = config.embedding_provider
     model_name = config.embedding_model
+
+    # Auto-detect best available provider
+    if provider_name == "auto":
+        provider_name, model_name = _auto_detect_provider()
+        logger.info("Auto-detected embedding provider: %s (model: %s)", provider_name, model_name)
 
     if provider_name == "sentence_transformer":
         from neural_memory.engine.embedding.sentence_transformer import (
