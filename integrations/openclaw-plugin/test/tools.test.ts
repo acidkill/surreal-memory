@@ -147,6 +147,24 @@ describe("schema compliance", () => {
     }
   });
 
+  it("every schema has additionalProperties=false (OpenAI strict mode)", () => {
+    for (const tool of tools) {
+      const schema = getSchema(tool);
+      expect(schema.additionalProperties).toBe(false);
+    }
+  });
+
+  it("no schema uses integer type (use number for Gemini compat)", () => {
+    for (const tool of tools) {
+      const schema = getSchema(tool);
+      for (const [, propSchema] of Object.entries(
+        schema.properties ?? {},
+      )) {
+        expect(propSchema.type).not.toBe("integer");
+      }
+    }
+  });
+
   it("schemas are plain JSON-serializable objects (no Zod, no class instances)", () => {
     for (const tool of tools) {
       const json = JSON.stringify(tool.parameters);
@@ -207,12 +225,10 @@ describe("tool schemas", () => {
       );
     });
 
-    it("priority has integer type with min/max bounds", () => {
+    it("priority has number type", () => {
       const schema = getSchema(findTool("nmem_remember"));
       const prio = schema.properties!.priority as Record<string, unknown>;
-      expect(prio.type).toBe("integer");
-      expect(prio.minimum).toBe(0);
-      expect(prio.maximum).toBe(10);
+      expect(prio.type).toBe("number");
     });
 
     it("tags is array of strings", () => {
@@ -241,20 +257,16 @@ describe("tool schemas", () => {
       );
     });
 
-    it("depth has bounded integer range 0-3", () => {
+    it("depth has number type", () => {
       const schema = getSchema(findTool("nmem_recall"));
       const depth = schema.properties!.depth as Record<string, unknown>;
-      expect(depth.type).toBe("integer");
-      expect(depth.minimum).toBe(0);
-      expect(depth.maximum).toBe(3);
+      expect(depth.type).toBe("number");
     });
 
-    it("min_confidence is number type with range 0-1", () => {
+    it("min_confidence is number type", () => {
       const schema = getSchema(findTool("nmem_recall"));
       const conf = schema.properties!.min_confidence as Record<string, unknown>;
       expect(conf.type).toBe("number");
-      expect(conf.minimum).toBe(0);
-      expect(conf.maximum).toBe(1);
     });
   });
 
@@ -359,7 +371,7 @@ describe("tool execution", () => {
     const mcp = makeMockMcp({ callTool });
     const tools = createTools(mcp);
 
-    await tools[0].execute({ content: "remember this", priority: 5 });
+    await tools[0].execute("call-1", { content: "remember this", priority: 5 });
     expect(callTool).toHaveBeenCalledWith("nmem_remember", {
       content: "remember this",
       priority: 5,
@@ -382,7 +394,7 @@ describe("tool execution", () => {
 
     for (let i = 0; i < tools.length; i++) {
       callTool.mockClear();
-      await tools[i].execute({});
+      await tools[i].execute(`call-${i}`, {});
       expect(callTool).toHaveBeenCalledWith(expectedNames[i], {});
     }
   });

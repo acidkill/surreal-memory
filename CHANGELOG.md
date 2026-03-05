@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [OpenClaw Plugin 1.5.0] - 2026-03-05
+
+### Fixed
+
+- **Plugin ID mismatch warning** — Renamed package from `@neuralmemory/openclaw-plugin` to `neuralmemory` to match manifest `id`. OpenClaw's `deriveIdHint()` extracts the unscoped package name as `idHint`, which previously produced `openclaw-plugin` ≠ `neuralmemory`
+- **Tool schema provider compatibility** — Replaced `integer` with `number` (Gemini rejects `integer`), added `additionalProperties: false` (OpenAI strict mode), removed constraint keywords (`maxLength`, `maxItems`, `minimum`, `maximum`) that some providers reject. MCP server validates these server-side
+- **Pre-existing test bugs** — Config test missing `initTimeout` in expected defaults; execute tests passing args as `id` parameter
+
 ## [2.25.0] - 2026-03-04
 
 ### Added

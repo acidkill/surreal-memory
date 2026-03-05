@@ -3,9 +3,11 @@
  *
  * Each tool proxies to the MCP server via JSON-RPC.
  *
- * Uses raw JSON Schema for parameters instead of Zod to avoid
- * schema conversion issues (Zod→JSON Schema can produce $ref wrappers
- * or omit `properties` which Anthropic API rejects).
+ * Uses raw JSON Schema for parameters. Provider compatibility notes:
+ *   - `additionalProperties: false` required by OpenAI strict mode
+ *   - `number` instead of `integer` for Gemini compatibility
+ *   - No `maxLength`/`maxItems`/`minimum`/`maximum` — some providers
+ *     reject schemas with constraint keywords; our MCP server validates
  *
  * Registers 6 core tools:
  *   nmem_remember  — Store a memory
@@ -74,7 +76,6 @@ export function createTools(mcp: NeuralMemoryMcpClient): ToolDefinition[] {
         properties: {
           content: {
             type: "string",
-            maxLength: 100_000,
             description: "The content to remember",
           },
           type: {
@@ -94,25 +95,21 @@ export function createTools(mcp: NeuralMemoryMcpClient): ToolDefinition[] {
             description: "Memory type (auto-detected if not specified)",
           },
           priority: {
-            type: "integer",
-            minimum: 0,
-            maximum: 10,
+            type: "number",
             description: "Priority 0-10 (5=normal, 10=critical)",
           },
           tags: {
             type: "array",
-            items: { type: "string", maxLength: 100 },
-            maxItems: 50,
+            items: { type: "string" },
             description: "Tags for categorization",
           },
           expires_days: {
-            type: "integer",
-            minimum: 1,
-            maximum: 3650,
-            description: "Days until memory expires",
+            type: "number",
+            description: "Days until memory expires (1-3650)",
           },
         },
         required: ["content"],
+        additionalProperties: false,
       },
       execute: (_id, args) => call("nmem_remember", args),
     },
@@ -127,30 +124,24 @@ export function createTools(mcp: NeuralMemoryMcpClient): ToolDefinition[] {
         properties: {
           query: {
             type: "string",
-            maxLength: 10_000,
             description: "The query to search memories",
           },
           depth: {
-            type: "integer",
-            minimum: 0,
-            maximum: 3,
+            type: "number",
             description:
               "Search depth: 0=instant, 1=context, 2=habit, 3=deep",
           },
           max_tokens: {
-            type: "integer",
-            minimum: 1,
-            maximum: 10000,
+            type: "number",
             description: "Maximum tokens in response (default: 500)",
           },
           min_confidence: {
             type: "number",
-            minimum: 0,
-            maximum: 1,
-            description: "Minimum confidence threshold",
+            description: "Minimum confidence threshold (0-1)",
           },
         },
         required: ["query"],
+        additionalProperties: false,
       },
       execute: (_id, args) => call("nmem_recall", args),
     },
@@ -164,16 +155,15 @@ export function createTools(mcp: NeuralMemoryMcpClient): ToolDefinition[] {
         type: "object",
         properties: {
           limit: {
-            type: "integer",
-            minimum: 1,
-            maximum: 200,
-            description: "Number of recent memories (default: 10)",
+            type: "number",
+            description: "Number of recent memories (default: 10, max: 200)",
           },
           fresh_only: {
             type: "boolean",
             description: "Only include memories less than 30 days old",
           },
         },
+        additionalProperties: false,
       },
       execute: (_id, args) => call("nmem_context", args),
     },
@@ -187,17 +177,15 @@ export function createTools(mcp: NeuralMemoryMcpClient): ToolDefinition[] {
         properties: {
           task: {
             type: "string",
-            maxLength: 10_000,
             description: "The task to remember",
           },
           priority: {
-            type: "integer",
-            minimum: 0,
-            maximum: 10,
+            type: "number",
             description: "Priority 0-10 (default: 5)",
           },
         },
         required: ["task"],
+        additionalProperties: false,
       },
       execute: (_id, args) => call("nmem_todo", args),
     },
@@ -209,6 +197,7 @@ export function createTools(mcp: NeuralMemoryMcpClient): ToolDefinition[] {
       parameters: {
         type: "object",
         properties: {},
+        additionalProperties: false,
       },
       execute: (_id, args) => call("nmem_stats", args),
     },
@@ -221,6 +210,7 @@ export function createTools(mcp: NeuralMemoryMcpClient): ToolDefinition[] {
       parameters: {
         type: "object",
         properties: {},
+        additionalProperties: false,
       },
       execute: (_id, args) => call("nmem_health", args),
     },

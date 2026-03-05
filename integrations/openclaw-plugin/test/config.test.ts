@@ -12,6 +12,7 @@ describe("resolveConfig", () => {
       contextDepth: 1,
       maxContextTokens: 500,
       timeout: 30_000,
+      initTimeout: 90_000,
     });
   });
 
