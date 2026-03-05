@@ -93,6 +93,7 @@ nav:
     - Embedding Setup: guides/embedding-setup.md
     - Brain Sharing: guides/brain-sharing.md
     - Multi-Brain Setup: guides/multi-brain-setup.md
+    - Brain Health Guide: guides/brain-health.md
     - OpenClaw Plugin: guides/openclaw-plugin.md
     - Safety & Security: guides/safety.md
   - API Reference:

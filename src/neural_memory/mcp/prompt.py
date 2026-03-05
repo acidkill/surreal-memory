@@ -223,11 +223,41 @@ pip install neural-memory[extract]   # PDF, DOCX, PPTX, HTML, XLSX support
 
 ## Health & Diagnostics
 
-- `nmem_health()` — Brain health: purity score, grade, warnings
+- `nmem_health()` — Brain health: purity score, grade (A-F), warnings, top_penalties
 - `nmem_evolution()` — Brain evolution: maturation, plasticity, coherence
 - `nmem_alerts(action="list")` — View active health alerts
 - `nmem_stats()` — Memory counts, type distribution, freshness
 - `nmem_conflicts(action="list")` — View conflicting memories
+
+### Reading Health Reports
+
+`nmem_health()` returns `top_penalties` — a ranked list of what's hurting the score most.
+**Always fix the highest penalty first** for maximum improvement.
+
+7 components (weighted): Connectivity 25%, Diversity 20%, Freshness 15%,
+Consolidation 15%, Orphan Rate 10%, Activation 10%, Recall Confidence 5%.
+
+**Common fixes:**
+- Consolidation 0% → Run `nmem consolidate --strategy mature` (normal for new brains)
+- Orphan rate > 20% → Run `nmem consolidate --strategy prune`
+- Activation < 10% → Recall stored topics: `nmem_recall('topic')` for 5+ topics
+- Low connectivity → Store memories with context: "X because Y", "after A then B"
+- Low diversity → Use causal/temporal/relational language in memories
+
+### Maintenance Schedule
+- **Every session**: `nmem_recap()` at start (maintains freshness)
+- **Weekly**: `nmem_health()` → fix top penalty → `nmem consolidate`
+- **Monthly**: `nmem consolidate --strategy prune` to clean orphans
+
+## Connection Tracing (nmem_explain)
+
+Trace the shortest path between two concepts in your neural graph:
+```
+nmem_explain(entity_a="Redis", entity_b="auth outage")
+```
+Returns the path with evidence: `Redis → USED_BY → session-store → CAUSED_BY → auth outage`.
+Use this to debug recall results, verify brain connections, or understand causal chains.
+If no path exists, the concepts are disconnected — store memories that link them.
 
 ## Spaced Repetition (nmem_review)
 
@@ -302,7 +332,8 @@ COMPACT_PROMPT = """You have NeuralMemory for persistent memory across sessions.
 - **Pin** (nmem_pin): Pin/unpin memories to prevent decay. Trained KB is auto-pinned.
 
 **Advanced:**
-- **Health** (nmem_health): Brain health score and warnings.
+- **Health** (nmem_health): Brain health score, grade, top_penalties. Fix highest penalty first.
+- **Explain** (nmem_explain): Trace shortest path between two concepts. Debug why recall works/doesn't.
 - **Review** (nmem_review): Spaced repetition queue (Leitner boxes).
 - **Sync** (nmem_sync): Multi-device memory synchronization.
 - **Version** (nmem_version): Brain snapshots, rollback.
@@ -344,6 +375,17 @@ WHAT TO REMEMBER (after each completed task):
 USE RICH LANGUAGE (creates better neural connections):
 - BAD: "PostgreSQL" (flat, no context)
 - GOOD: "Chose PostgreSQL over MongoDB because ACID needed for payments" (causal, linked)
+
+PRIORITY SCALE: 0-3=routine notes, 5=normal, 7-8=important decisions, 9-10=critical errors/security.
+TAGS: Always include project name + topic. Keep lowercase: "react", "auth", "bug-fix".
+
+BRAIN HEALTH: Run nmem_health() weekly. Fix the highest top_penalty first:
+- Consolidation 0% → nmem consolidate (normal for new brains, run after 1 week)
+- Orphans > 20% → nmem consolidate --strategy prune
+- Low activation → Recall 5+ different topics with nmem_recall
+- Low connectivity → Store with context: "X because Y", "after A then B"
+
+CONNECTION TRACING: Use nmem_explain(entity_a, entity_b) to trace paths between concepts.
 
 NEVER skip remembering after completing a feature, fixing a bug, or making a decision.
 Each session starts fresh — without explicit saves, ALL discoveries are lost forever.\

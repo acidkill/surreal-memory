@@ -5,7 +5,7 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![VS Code](https://img.shields.io/visual-studio-marketplace/v/neuralmem.neuralmemory?label=VS%20Code)](https://marketplace.visualstudio.com/items?itemName=neuralmem.neuralmemory)
-[![OpenClaw Plugin](https://img.shields.io/npm/v/@neuralmemory/openclaw-plugin?label=OpenClaw)](https://www.npmjs.com/package/@neuralmemory/openclaw-plugin)
+[![OpenClaw Plugin](https://img.shields.io/npm/v/neuralmemory?label=OpenClaw)](https://www.npmjs.com/package/neuralmemory)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 
 **Reflex-based memory system for AI agents** — retrieval through activation, not search.
@@ -79,7 +79,7 @@ That's it. MCP server, skills, commands, and agent are all configured automatica
 
 ```bash
 pip install neural-memory
-npm install -g @neuralmemory/openclaw-plugin
+npm install -g neuralmemory
 ```
 
 Then set the memory slot in `~/.openclaw/openclaw.json`:
@@ -225,7 +225,8 @@ Once configured, these 28 tools are available to your AI assistant:
 
 | Tool | Description |
 |------|-------------|
-| `nmem_health` | Brain health: purity score, grade, warnings |
+| `nmem_health` | Brain health: purity score, grade (A-F), top penalties with fix actions |
+| `nmem_explain` | Trace shortest path between two concepts — debug recall, verify connections |
 | `nmem_review` | Spaced repetition reviews (Leitner box system) |
 | `nmem_conflicts` | Memory conflicts: list, resolve, or pre-check |
 | `nmem_narrative` | Generate narratives: timeline, topic, or causal chain |
@@ -330,10 +331,30 @@ pip install neural-memory[extract]
 ### Brain Health & Diagnostics
 
 ```bash
-nmem_health()                       # Purity score, grade (A-F), warnings
+nmem_health()                       # Purity score, grade (A-F), top penalties
 nmem_alerts(action="list")          # Active health alerts
 nmem_review(action="queue")         # Spaced repetition review queue
 ```
+
+Health reports include **`top_penalties`** — a ranked list of what's hurting your score most, with exact fix actions. Always fix the highest penalty first.
+
+7 components: Connectivity (25%), Diversity (20%), Freshness (15%), Consolidation (15%), Orphan Rate (10%), Activation (10%), Recall Confidence (5%).
+
+See the [Brain Health Guide](docs/guides/brain-health.md) for detailed explanations and improvement roadmap.
+
+### Connection Tracing
+
+Trace the shortest path between two concepts in your neural graph:
+
+```bash
+# CLI
+nmem explain "Redis" "auth outage"
+
+# MCP tool
+nmem_explain(entity_a="Redis", entity_b="auth outage")
+```
+
+Returns the path with evidence: `Redis → USED_BY → session-store → CAUSED_BY → auth outage`. Use this to debug recall, verify brain connections, or discover unexpected relationships between concepts.
 
 ### Brain Versioning
 
