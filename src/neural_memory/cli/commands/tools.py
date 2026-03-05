@@ -503,9 +503,7 @@ def consolidate(
                         "  Hint: No memories have reached SEMANTIC stage yet.",
                         fg=typer.colors.YELLOW,
                     )
-                    typer.echo(
-                        "  Run with --strategy mature to advance episodic memories."
-                    )
+                    typer.echo("  Run with --strategy mature to advance episodic memories.")
             except Exception:
                 pass  # Non-critical hint — don't fail consolidation
 

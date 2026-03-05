@@ -113,6 +113,19 @@ ALL files must be updated when bumping version:
 5. `tests/unit/test_health_fixes.py` → `assert neural_memory.__version__ == "x.y.z"`
 6. `tests/unit/test_markdown_export.py` → `"version": "x.y.z"` in fixture
 
+## Pre-Ship Verification (MANDATORY)
+
+Before EVERY release, run:
+
+```bash
+python scripts/pre_ship.py        # Verify all checks pass
+python scripts/pre_ship.py --fix  # Auto-fix ruff issues first
+```
+
+This checks: version consistency (6 files), ruff lint+format, mypy, import smoke test, fast unit tests, CHANGELOG entry, OpenClaw plugin consistency.
+
+**Do NOT tag or release if pre_ship.py fails.**
+
 ## Commit Messages
 
 Format: `<type>: <description>` — types: feat, fix, refactor, docs, test, chore, perf, ci
