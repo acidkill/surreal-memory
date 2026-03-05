@@ -18,6 +18,7 @@ from neural_memory.storage.sqlite_brain_ops import SQLiteBrainMixin
 from neural_memory.storage.sqlite_calibration import SQLiteCalibrationMixin
 from neural_memory.storage.sqlite_change_log import SQLiteChangeLogMixin
 from neural_memory.storage.sqlite_coactivation import SQLiteCoActivationMixin
+from neural_memory.storage.sqlite_cognitive import SQLiteCognitiveMixin
 from neural_memory.storage.sqlite_compression import SQLiteCompressionMixin
 from neural_memory.storage.sqlite_depth_priors import SQLiteDepthPriorMixin
 from neural_memory.storage.sqlite_devices import SQLiteDevicesMixin
@@ -58,6 +59,7 @@ class SQLiteStorage(
     SQLiteDepthPriorMixin,
     SQLiteCompressionMixin,
     SQLiteCalibrationMixin,
+    SQLiteCognitiveMixin,
     SQLiteChangeLogMixin,
     SQLiteDevicesMixin,
     SQLiteToolEventsMixin,
