@@ -65,6 +65,7 @@ class HealthReport(BaseModel):
     fiber_count: int = 0
     warnings: list[dict[str, Any]] = Field(default_factory=list)
     recommendations: list[str] = Field(default_factory=list)
+    top_penalties: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class SwitchBrainRequest(BaseModel):
@@ -247,6 +248,17 @@ async def get_health(
             for w in report.warnings
         ],
         recommendations=list(report.recommendations),
+        top_penalties=[
+            {
+                "component": p.component,
+                "current_score": p.current_score,
+                "weight": p.weight,
+                "penalty_points": p.penalty_points,
+                "estimated_gain": p.estimated_gain,
+                "action": p.action,
+            }
+            for p in report.top_penalties
+        ],
     )
 
 

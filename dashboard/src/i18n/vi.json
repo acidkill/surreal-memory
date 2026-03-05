@@ -68,7 +68,14 @@
     "collapseTips": "Thu gọn mẹo",
     "expandTips": "Mở rộng mẹo",
     "less": "Ít hơn",
-    "more": "Thêm"
+    "more": "Thêm",
+    "topPenalties": "Vấn đề chính ảnh hưởng điểm số",
+    "noPenalties": "Không có vấn đề đáng kể. Tiếp tục phát huy!",
+    "penaltyPoints": "Mất {{points}} điểm",
+    "estimatedGain": "+{{gain}} điểm nếu sửa",
+    "currentScore": "Hiện tại: {{score}}%",
+    "weight": "Trọng số: {{weight}}%",
+    "fixAction": "Cách sửa"
   },
   "enrichment": {
     "rememberTitle": "Yêu cầu agent ghi nhớ thường xuyên",

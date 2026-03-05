@@ -4,7 +4,17 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Button } from "@/components/ui/button"
-import { ChevronDown, ChevronUp, Brain, Lightbulb, Zap, BookOpen } from "lucide-react"
+import {
+  ChevronDown,
+  ChevronUp,
+  Brain,
+  Lightbulb,
+  Zap,
+  BookOpen,
+  AlertTriangle,
+  TrendingUp,
+  ArrowRight,
+} from "lucide-react"
 import {
   Radar,
   RadarChart,
@@ -14,14 +24,30 @@ import {
   ResponsiveContainer,
 } from "recharts"
 import { useTranslation } from "react-i18next"
+import type { PenaltyFactor } from "@/api/types"
 
 const ENRICHMENT_ICONS = [Brain, Lightbulb, Zap, BookOpen] as const
 const ENRICHMENT_COLORS = ["#6366f1", "#f59e0b", "#059669", "#06b6d4"] as const
 const ENRICHMENT_KEYS = ["remember", "causal", "diverse", "train"] as const
 
+const GRADE_CONFIG: Record<string, { color: string; bg: string; variant: "success" | "secondary" | "warning" | "destructive" }> = {
+  A: { color: "#059669", bg: "#05966915", variant: "success" },
+  B: { color: "#6366f1", bg: "#6366f115", variant: "secondary" },
+  C: { color: "#f59e0b", bg: "#f59e0b15", variant: "warning" },
+  D: { color: "#ef4444", bg: "#ef444415", variant: "destructive" },
+  F: { color: "#ef4444", bg: "#ef444415", variant: "destructive" },
+}
+
+function getGradeConfig(grade: string) {
+  const letter = grade.charAt(0).toUpperCase()
+  return GRADE_CONFIG[letter] ?? GRADE_CONFIG.F
+}
+
 export default function HealthPage() {
   const { data: health, isLoading } = useHealth()
   const { t } = useTranslation()
+
+  const gradeConfig = health ? getGradeConfig(health.grade) : GRADE_CONFIG.F
 
   const radarData = health
     ? [
@@ -42,19 +68,18 @@ export default function HealthPage() {
         <h1 className="font-display text-2xl font-bold">{t("health.title")}</h1>
         {health && (
           <Badge
-            variant={
-              health.grade.startsWith("A")
-                ? "success"
-                : health.grade.startsWith("B")
-                  ? "secondary"
-                  : "warning"
-            }
+            variant={gradeConfig.variant}
             className="text-lg px-3 py-1"
           >
             {health.grade}
           </Badge>
         )}
       </div>
+
+      {/* Top Penalties — actionable cards */}
+      {health && health.top_penalties && health.top_penalties.length > 0 && (
+        <TopPenaltiesSection penalties={health.top_penalties} />
+      )}
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         {/* Radar Chart */}
@@ -157,6 +182,83 @@ export default function HealthPage() {
       </div>
       {/* Memory Enrichment Guide */}
       <MemoryEnrichmentGuide />
+    </div>
+  )
+}
+
+function TopPenaltiesSection({ penalties }: { penalties: PenaltyFactor[] }) {
+  const { t } = useTranslation()
+
+  return (
+    <Card className="border-amber-500/30 bg-amber-500/5">
+      <CardHeader className="pb-3">
+        <CardTitle className="flex items-center gap-2 text-base">
+          <AlertTriangle className="size-5 text-amber-500" />
+          {t("health.topPenalties")}
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+          {penalties.map((p, i) => (
+            <PenaltyCard key={p.component} penalty={p} rank={i + 1} />
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function PenaltyCard({ penalty, rank }: { penalty: PenaltyFactor; rank: number }) {
+  const { t } = useTranslation()
+  const scorePct = Math.round(penalty.current_score * 100)
+  const weightPct = Math.round(penalty.weight * 100)
+  const penaltyPts = penalty.penalty_points.toFixed(1)
+  const gainPts = penalty.estimated_gain.toFixed(1)
+
+  const barColor =
+    scorePct >= 60 ? "bg-amber-500" : scorePct >= 30 ? "bg-orange-500" : "bg-red-500"
+
+  return (
+    <div className="rounded-lg border border-border bg-card p-4 transition-shadow hover:shadow-md">
+      <div className="mb-3 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <span className="flex size-6 items-center justify-center rounded-full bg-amber-500/15 text-xs font-bold text-amber-600">
+            {rank}
+          </span>
+          <h4 className="text-sm font-semibold capitalize">{penalty.component}</h4>
+        </div>
+        <Badge variant="outline" className="text-xs text-red-500 border-red-500/30">
+          {t("health.penaltyPoints", { points: penaltyPts })}
+        </Badge>
+      </div>
+
+      {/* Score bar */}
+      <div className="mb-3">
+        <div className="mb-1 flex items-center justify-between text-xs text-muted-foreground">
+          <span>{t("health.currentScore", { score: scorePct })}</span>
+          <span>{t("health.weight", { weight: weightPct })}</span>
+        </div>
+        <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+          <div
+            className={`h-full rounded-full transition-all ${barColor}`}
+            style={{ width: `${scorePct}%` }}
+          />
+        </div>
+      </div>
+
+      {/* Estimated gain */}
+      <div className="mb-3 flex items-center gap-1.5 rounded-md bg-emerald-500/10 px-2.5 py-1.5">
+        <TrendingUp className="size-3.5 text-emerald-500" />
+        <span className="text-xs font-medium text-emerald-600">
+          {t("health.estimatedGain", { gain: gainPts })}
+        </span>
+      </div>
+
+      {/* Action */}
+      <div className="flex items-start gap-1.5 text-xs text-muted-foreground">
+        <ArrowRight className="mt-0.5 size-3 shrink-0 text-primary" />
+        <span>{penalty.action}</span>
+      </div>
     </div>
   )
 }

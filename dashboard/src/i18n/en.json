@@ -68,7 +68,14 @@
     "collapseTips": "Collapse tips",
     "expandTips": "Expand tips",
     "less": "Less",
-    "more": "More"
+    "more": "More",
+    "topPenalties": "Top Issues Hurting Your Score",
+    "noPenalties": "No significant penalties. Keep it up!",
+    "penaltyPoints": "{{points}} pts lost",
+    "estimatedGain": "+{{gain}} pts if fixed",
+    "currentScore": "Current: {{score}}%",
+    "weight": "Weight: {{weight}}%",
+    "fixAction": "Fix"
   },
   "enrichment": {
     "rememberTitle": "Ask your agent to remember frequently",

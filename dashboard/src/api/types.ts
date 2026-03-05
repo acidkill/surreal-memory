@@ -49,6 +49,7 @@ export interface HealthReport {
   fiber_count: number
   warnings: HealthWarning[]
   recommendations: string[]
+  top_penalties: PenaltyFactor[]
 }
 
 export interface HealthWarning {
@@ -56,6 +57,15 @@ export interface HealthWarning {
   code: string
   message: string
   details: string
+}
+
+export interface PenaltyFactor {
+  component: string
+  current_score: number
+  weight: number
+  penalty_points: number
+  estimated_gain: number
+  action: string
 }
 
 // GET /api/dashboard/timeline
