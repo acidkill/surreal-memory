@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.27.0] - 2026-03-06
+## [2.27.1] - 2026-03-06
 
 ### Added
 
@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **FK constraint errors** — `INSERT OR REPLACE INTO neuron_states` and `save_maturation` now catch `sqlite3.IntegrityError` when neuron was deleted by consolidation prune (previously crashed with FOREIGN KEY constraint failed)
-- **Auto-type classifier bias** — Reordered `suggest_memory_type()`: insight checked before decision. Tightened TODO keywords (removed overly broad "fix", "implement", "add"). Added guard against descriptive "should" being misclassified as TODO
+- **Auto-type classifier bias** — Reordered `suggest_memory_type()`: DECISION now checked before INSIGHT to prevent "because" from hijacking decisions. Removed overly broad "because"/"pattern" from INSIGHT keywords. Added "rejected"/"went with" to DECISION, "prefers"/"preferred" to PREFERENCE. Tightened TODO keywords and added guard against descriptive "should"
 - **DECISION_PATTERNS greediness** — Removed overly broad patterns (`"we're going to"`, `"let's use"`, `"going to"`) from `auto_capture.py` that caused false decision captures
 - **Synapse FK error message** — Distinguished FOREIGN KEY violations from UNIQUE violations in `add_synapse()` for clearer error messages
 
