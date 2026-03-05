@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.26.0] - 2026-03-05
+
+### Added
+
+- **Brain Health Guide** — comprehensive guide explaining all 7 health metrics with improvement roadmap
+- **Connection Tracing docs** (`nmem_explain`) — previously undocumented feature
+- **Embedding auto-detection** (`provider = "auto"`) — auto-detects Ollama/sentence-transformers/Gemini/OpenAI
+- **Consolidation post-run hints** — warns about orphans and missing consolidation
+- **Pre-ship verification script** — automated quality gate before releases
+- **MCP instructions update** — health interpretation, priority scale, tagging, maintenance
+
 ## [2.25.1] - 2026-03-05
 
 ### Fixed

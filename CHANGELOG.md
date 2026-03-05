@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.26.0] - 2026-03-05
+
+### Added
+
+- **Brain Health Guide** (`docs/guides/brain-health.md`) — comprehensive guide explaining all 7 health metrics, thresholds, improvement roadmap (F through A), common issues, maintenance schedule
+- **Connection Tracing docs** (`nmem_explain`) — added to README, MCP prompt, brain health guide. Previously undocumented feature that traces shortest path between concepts
+- **Embedding auto-detection** (`provider = "auto"`) — automatically detects best available embedding provider: Ollama → sentence-transformers → Gemini → OpenAI. Lowers barrier for cross-language recall
+- **Consolidation post-run hints** — warns about orphan neurons (>20%) and missing consolidation after running `nmem consolidate`
+- **Pre-ship verification script** (`scripts/pre_ship.py`) — automated quality gate: version consistency, ruff, mypy, import smoke test, fast tests, plugin checks
+- **MCP instructions update** — health interpretation, priority scale, tagging strategy, maintenance schedule added to system prompt
+
+### Changed
+
+- README: added nmem_explain to tools table, brain health section, connection tracing section, embedding auto-detect
+- OpenClaw npm package renamed to `neuralmemory` (published on npm)
+
 ## [2.25.1] - 2026-03-05
 
 ### Fixed
