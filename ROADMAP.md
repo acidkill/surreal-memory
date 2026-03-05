@@ -4,7 +4,7 @@
 > Every item passes the VISION.md 4-question test + brain test.
 > ZERO LLM dependency — pure algorithmic, regex, graph-based.
 
-**Current state**: v2.19.0 — 28 MCP tools, 2860+ tests, schema v20, SQLite + FalkorDB backends.
+**Current state**: v2.26.1 — 38 MCP tools, 3200+ tests, schema v21, SQLite + FalkorDB backends, cognitive reasoning layer.
 **Architecture**: Spreading activation reflex engine, biological memory model, MCP standard.
 
 ---

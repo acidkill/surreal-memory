@@ -40,7 +40,7 @@ class TestMCPServer:
         """Test that get_tools returns all expected tools."""
         tools = server.get_tools()
 
-        assert len(tools) == 29
+        assert len(tools) == 38
         tool_names = {tool["name"] for tool in tools}
         assert tool_names == {
             "nmem_remember",
@@ -72,6 +72,15 @@ class TestMCPServer:
             "nmem_pin",
             "nmem_telegram_backup",
             "nmem_explain",
+            "nmem_hypothesize",
+            "nmem_evidence",
+            "nmem_predict",
+            "nmem_verify",
+            "nmem_cognitive",
+            "nmem_gaps",
+            "nmem_schema",
+            "nmem_edit",
+            "nmem_forget",
         }
 
     def test_tool_schemas(self, server: MCPServer) -> None:
@@ -876,7 +885,7 @@ class TestMCPProtocol:
         assert response["id"] == 2
         assert "result" in response
         assert "tools" in response["result"]
-        assert len(response["result"]["tools"]) == 29
+        assert len(response["result"]["tools"]) == 38
 
     @pytest.mark.asyncio
     async def test_tools_call_message(self, server: MCPServer) -> None:
@@ -1030,7 +1039,7 @@ class TestMCPResources:
         content = server.get_resource_content("neuralmemory://prompt/compact")
 
         assert content is not None
-        assert len(content) < 2000  # Compact should be shorter than full prompt
+        assert len(content) < 3000  # Compact should be shorter than full prompt
 
     def test_get_resource_content_unknown(self, server: MCPServer) -> None:
         """Test getting unknown resource returns None."""

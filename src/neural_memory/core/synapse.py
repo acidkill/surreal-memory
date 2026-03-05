@@ -57,6 +57,19 @@ class SynapseType(StrEnum):
     # Deduplication relationships
     ALIAS = "alias"  # New anchor -> Existing anchor (dedup reuse)
 
+    # Cognitive layer — evidence relationships
+    EVIDENCE_FOR = "evidence_for"  # Observation -> Hypothesis (supports it)
+    EVIDENCE_AGAINST = "evidence_against"  # Observation -> Hypothesis (weakens it)
+
+    # Cognitive layer — prediction relationships
+    PREDICTED = "predicted"  # Prediction -> Hypothesis (derived from belief)
+    VERIFIED_BY = "verified_by"  # Prediction -> Observation (outcome confirmed it)
+    FALSIFIED_BY = "falsified_by"  # Prediction -> Observation (outcome disproved it)
+
+    # Cognitive layer — schema relationships
+    SUPERSEDES = "supersedes"  # Schema_v2 -> Schema_v1 (model evolution)
+    DERIVED_FROM = "derived_from"  # Hypothesis/Prediction -> Schema (reasoning origin)
+
 
 class Direction(StrEnum):
     """Direction of synapse connection."""
@@ -84,6 +97,9 @@ INVERSE_TYPES: dict[SynapseType, SynapseType] = {
     SynapseType.LEADS_TO: SynapseType.CAUSED_BY,
     SynapseType.CONTAINS: SynapseType.AT_LOCATION,
     SynapseType.AT_LOCATION: SynapseType.CONTAINS,
+    # Note: VERIFIED_BY and FALSIFIED_BY are NOT inverses — they are
+    # alternative truth-value edges on the same direction (Prediction → Observation).
+    # SUPERSEDES and DERIVED_FROM are intentionally unidirectional with no inverse.
 }
 
 

@@ -72,8 +72,12 @@ class SQLiteSynapseMixin:
             )
             await conn.commit()
             return synapse.id
-        except sqlite3.IntegrityError:
-            raise ValueError(f"Synapse {synapse.id} already exists")
+        except sqlite3.IntegrityError as exc:
+            if "FOREIGN KEY" in str(exc):
+                raise ValueError(
+                    f"Source or target neuron does not exist for synapse {synapse.id}"
+                ) from exc
+            raise ValueError(f"Synapse {synapse.id} already exists") from exc
 
     async def get_synapse(self, synapse_id: str) -> Synapse | None:
         conn = self._ensure_read_conn()

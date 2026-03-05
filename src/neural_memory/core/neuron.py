@@ -24,6 +24,11 @@ class NeuronType(StrEnum):
     SENSORY = "sensory"  # Sensory experiences: "loud", "bright"
     INTENT = "intent"  # Goals/intentions: "learn", "build"
 
+    # Cognitive layer types
+    HYPOTHESIS = "hypothesis"  # Evolving beliefs: "PostgreSQL is better for this project"
+    PREDICTION = "prediction"  # Falsifiable claims: "API will fail at 1000 concurrent"
+    SCHEMA = "schema"  # Mental model snapshots: versioned understanding of a domain
+
 
 @dataclass(frozen=True)
 class Neuron:

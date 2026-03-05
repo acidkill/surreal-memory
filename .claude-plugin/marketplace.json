@@ -37,7 +37,7 @@
       ],
       "category": "productivity",
       "features": [
-        "28 MCP tools for persistent AI memory",
+        "38 MCP tools for persistent AI memory + cognitive reasoning",
         "Knowledge base training from PDF/DOCX/PPTX/HTML/JSON/XLSX/CSV",
         "Spreading activation recall (not keyword search)",
         "Pinned KB memories — permanent, skip decay/prune",
@@ -48,7 +48,9 @@
         "Fernet encryption for sensitive content",
         "React dashboard (7 pages, warm cream theme, Recharts, Sigma.js)",
         "Telegram backup — send brain .db to chat/group/channel",
-        "VS Code extension for visual brain exploration"
+        "VS Code extension for visual brain exploration",
+        "Cognitive reasoning: hypotheses, evidence, predictions, schema evolution",
+        "Knowledge gap detection and metacognition"
       ]
     }
   ]

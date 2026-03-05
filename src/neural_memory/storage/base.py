@@ -1326,3 +1326,112 @@ class NeuralStorage(ABC):
             brain_id: The brain ID to clear
         """
         ...
+
+    # ========== Cognitive State (optional, provided by SQLiteCognitiveMixin) ==========
+
+    async def upsert_cognitive_state(
+        self,
+        neuron_id: str,
+        *,
+        confidence: float = 0.5,
+        evidence_for_count: int = 0,
+        evidence_against_count: int = 0,
+        status: str = "active",
+        predicted_at: str | None = None,
+        resolved_at: str | None = None,
+        schema_version: int = 1,
+        parent_schema_id: str | None = None,
+        last_evidence_at: str | None = None,
+    ) -> None:
+        """Insert or update a cognitive state record."""
+        raise NotImplementedError
+
+    async def get_cognitive_state(self, neuron_id: str) -> dict[str, Any] | None:
+        """Get cognitive state for a neuron."""
+        raise NotImplementedError
+
+    async def list_cognitive_states(
+        self,
+        *,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """List cognitive states, optionally filtered by status."""
+        raise NotImplementedError
+
+    async def update_cognitive_evidence(
+        self,
+        neuron_id: str,
+        *,
+        confidence: float,
+        evidence_for_count: int,
+        evidence_against_count: int,
+        status: str,
+        resolved_at: str | None = None,
+        last_evidence_at: str | None = None,
+    ) -> None:
+        """Update only evidence-related fields of a cognitive state."""
+        raise NotImplementedError
+
+    async def list_predictions(
+        self,
+        *,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """List predictions (cognitive states with predicted_at set)."""
+        raise NotImplementedError
+
+    async def get_calibration_stats(self) -> dict[str, int]:
+        """Get prediction calibration statistics."""
+        raise NotImplementedError
+
+    async def refresh_hot_index(self, items: list[dict[str, Any]]) -> int:
+        """Replace the hot index with freshly scored items."""
+        raise NotImplementedError
+
+    async def get_hot_index(self, limit: int = 10) -> list[dict[str, Any]]:
+        """Get the current hot index items."""
+        raise NotImplementedError
+
+    async def add_knowledge_gap(
+        self,
+        *,
+        topic: str,
+        detection_source: str,
+        priority: float = 0.5,
+        related_neuron_ids: list[str] | None = None,
+    ) -> str:
+        """Create a new knowledge gap record."""
+        raise NotImplementedError
+
+    async def list_knowledge_gaps(
+        self,
+        *,
+        include_resolved: bool = False,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """List knowledge gaps."""
+        raise NotImplementedError
+
+    async def get_knowledge_gap(self, gap_id: str) -> dict[str, Any] | None:
+        """Get a single knowledge gap by ID."""
+        raise NotImplementedError
+
+    async def resolve_knowledge_gap(
+        self,
+        gap_id: str,
+        *,
+        resolved_by_neuron_id: str | None = None,
+    ) -> bool:
+        """Mark a knowledge gap as resolved."""
+        raise NotImplementedError
+
+    async def get_schema_history(
+        self,
+        neuron_id: str,
+        *,
+        max_depth: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Walk the version chain for a hypothesis."""
+        raise NotImplementedError

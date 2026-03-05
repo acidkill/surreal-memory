@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`nmem_edit`** — Edit memory type, content, or priority by fiber ID. Preserves all neural connections. Supports typed_memory path (type/priority) and anchor neuron path (content update)
+- **`nmem_forget`** — Soft delete (sets expires_at for natural decay) or hard delete (permanent removal with cascade to fiber + typed_memory). Also handles orphan neuron deletion
+- **Enhanced MCP instructions** — Richer behavioral directives: brain growth tips, rich language patterns (causal/temporal/relational/decisional/comparative), memory correction guidance, all 38 tools listed
+- **Enhanced plugin instructions** — Comprehensive agent guidance in `.claude-plugin/plugin.json` for proactive memory usage
+
+### Fixed
+
+- **FK constraint errors** — `INSERT OR REPLACE INTO neuron_states` and `save_maturation` now catch `sqlite3.IntegrityError` when neuron was deleted by consolidation prune (previously crashed with FOREIGN KEY constraint failed)
+- **Auto-type classifier bias** — Reordered `suggest_memory_type()`: insight checked before decision. Tightened TODO keywords (removed overly broad "fix", "implement", "add"). Added guard against descriptive "should" being misclassified as TODO
+- **DECISION_PATTERNS greediness** — Removed overly broad patterns (`"we're going to"`, `"let's use"`, `"going to"`) from `auto_capture.py` that caused false decision captures
+- **Synapse FK error message** — Distinguished FOREIGN KEY violations from UNIQUE violations in `add_synapse()` for clearer error messages
+
+- **Cognitive Reasoning Layer** — 8 new MCP tools for hypothesis-driven reasoning (38 tools total)
+  - `nmem_hypothesize` — Create and manage hypotheses with Bayesian confidence tracking and auto-resolution
+  - `nmem_evidence` — Submit evidence for/against hypotheses, auto-updates confidence via sigmoid-dampened shift
+  - `nmem_predict` — Make falsifiable predictions with deadlines, linked to hypotheses via PREDICTED synapse
+  - `nmem_verify` — Verify predictions as correct/wrong, propagates result to linked hypothesis
+  - `nmem_cognitive` — Hot index: ranked summary of active hypotheses + pending predictions with calibration score
+  - `nmem_gaps` — Knowledge gap metacognition: detect, track, prioritize, and resolve what the brain doesn't know
+  - `nmem_schema` — Schema evolution: evolve hypotheses into new versions via SUPERSEDES synapse chain
+  - `nmem_explain` — (moved to cognitive) Trace shortest path between concepts with evidence
+- **Schema v21** — Three new tables: `cognitive_state` (hypothesis/prediction tracking), `hot_index` (ranked cognitive summary), `knowledge_gaps` (metacognition)
+- **Pure cognitive engine** (`engine/cognitive.py`) — Stateless functions: `update_confidence`, `detect_auto_resolution`, `compute_calibration`, `score_hypothesis`, `score_prediction`, `gap_priority`
+- **Bayesian confidence model** — Sigmoid-dampened shift with surprise factor and diminishing returns from total evidence
+- **Auto-resolution** — Hypotheses with confidence ≥0.9 + 3 supporting evidence auto-confirm; ≤0.1 + 3 against auto-refute
+- **Prediction calibration** — Tracks correct/wrong ratio across all resolved predictions
+- **Schema version chain** — `parent_schema_id` column + `get_schema_history()` walks the SUPERSEDES chain with cycle guard
+- **Knowledge gap detection sources** — `contradiction`, `low_confidence_hypothesis`, `user_flagged`, `recall_miss`, `stale_schema`
+
 ## [2.26.1] - 2026-03-05
 
 ### Added

@@ -615,7 +615,7 @@ NeuralMemory is lightweight — it won't slow down your editor.
 
 ## Available Tools
 
-Once configured, these 26 tools are available to your AI assistant:
+Once configured, these 38 tools are available to your AI assistant:
 
 ### Core Memory
 
@@ -626,13 +626,16 @@ Once configured, these 26 tools are available to your AI assistant:
 | `nmem_context` | Inject recent context at session start |
 | `nmem_todo` | Quick TODO with 30-day expiry |
 | `nmem_auto` | Auto-capture memories from conversation text |
+| `nmem_suggest` | Autocomplete suggestions from brain neurons |
+| `nmem_edit` | Edit memory type, content, or priority by fiber ID |
+| `nmem_forget` | Soft delete (set expiry) or hard delete (permanent removal) |
 
 ### Brain Management
 
 | Tool | Description |
 |------|-------------|
 | `nmem_stats` | Brain statistics and freshness |
-| `nmem_health` | Brain health diagnostics (purity score, grade) |
+| `nmem_health` | Brain health diagnostics (purity score, grade, top penalties) |
 | `nmem_evolution` | Brain evolution metrics (maturation, plasticity) |
 | `nmem_version` | Brain version control (snapshot, rollback, diff) |
 | `nmem_transplant` | Copy memories between brains |
@@ -656,14 +659,28 @@ Once configured, these 26 tools are available to your AI assistant:
 | `nmem_train_db` | Train brain from database schema |
 | `nmem_habits` | Manage learned workflow habits |
 | `nmem_review` | Spaced repetition review system |
+| `nmem_pin` | Pin/unpin memories (pinned = permanent, skip decay/prune) |
+
+### Cognitive Reasoning
+
+| Tool | Description |
+|------|-------------|
+| `nmem_hypothesize` | Create and manage hypotheses with Bayesian confidence tracking |
+| `nmem_evidence` | Submit evidence for/against — auto-updates confidence |
+| `nmem_predict` | Falsifiable predictions with deadlines, linked to hypotheses |
+| `nmem_verify` | Verify predictions correct/wrong — propagates to hypotheses |
+| `nmem_cognitive` | Hot index: ranked summary of active hypotheses + predictions |
+| `nmem_gaps` | Knowledge gap metacognition: detect, track, resolve |
+| `nmem_schema` | Schema evolution: evolve hypotheses via SUPERSEDES chain |
+| `nmem_explain` | Trace shortest path between two concepts |
 
 ### Utilities
 
 | Tool | Description |
 |------|-------------|
-| `nmem_suggest` | Autocomplete suggestions from brain neurons |
 | `nmem_import` | Import from ChromaDB, Mem0, Cognee, Graphiti, LlamaIndex |
 | `nmem_narrative` | Generate timeline/topic/causal narratives |
+| `nmem_telegram_backup` | Send brain .db backup to Telegram |
 
 ### Sync (Multi-Device)
 
@@ -677,7 +694,7 @@ Once configured, these 26 tools are available to your AI assistant:
 
 ## Tool Tiers
 
-By default all 26 tools are exposed on every API turn. If you want to reduce token overhead, configure a **tool tier** in `~/.neuralmemory/config.toml`:
+By default all 38 tools are exposed on every API turn. If you want to reduce token overhead, configure a **tool tier** in `~/.neuralmemory/config.toml`:
 
 ```toml
 [tool_tier]
@@ -702,7 +719,7 @@ nmem config tier full         # reset to full
 
 - **minimal** — `remember`, `recall`, `context`, `recap`
 - **standard** — minimal + `todo`, `session`, `auto`, `eternal`
-- **full** — all 26 tools
+- **full** — all 38 tools
 
 > Hidden tools remain callable — only the schema listing changes. If the AI model already knows a tool name, it can still call it even when the tool is not exposed in `tools/list`.
 

@@ -131,12 +131,55 @@ nmem_import(source="chromadb", connection="/path/to/chroma")
 nmem_import(source="mem0", user_id="user123")
 ```
 
+### Edit & Forget — Correct Mistakes
+
+```
+# Fix wrong type (auto-detector got it wrong)
+nmem_edit(memory_id="fiber-abc", type="insight")
+
+# Fix wrong content
+nmem_edit(memory_id="fiber-abc", content="Corrected: the bug was in auth.py, not login.py")
+
+# Adjust priority
+nmem_edit(memory_id="fiber-abc", priority=9)
+
+# Soft delete — memory decays naturally (recommended for outdated info)
+nmem_forget(memory_id="fiber-abc", reason="outdated")
+
+# Hard delete — permanent removal (for sensitive data, test garbage)
+nmem_forget(memory_id="fiber-abc", hard=true)
+```
+
+### Cognitive Reasoning
+
+```
+nmem_hypothesize(action="create", content="Redis is the bottleneck", confidence=0.6)
+nmem_evidence(hypothesis_id="h-1", evidence_type="for", content="Redis latency 200ms")
+nmem_predict(action="create", content="Fix will drop latency 50%", hypothesis_id="h-1", deadline="2026-04-01")
+nmem_verify(prediction_id="p-1", outcome="correct")
+nmem_cognitive(action="summary")           # Hot index
+nmem_gaps(action="detect", topic="...")    # Track unknowns
+nmem_schema(action="evolve", hypothesis_id="h-1", content="...", reason="...")
+```
+
+### Connection Tracing
+
+```
+nmem_explain(entity_a="Redis", entity_b="auth outage")
+```
+
+Traces shortest path with evidence. Use to debug recall or verify connections.
+
 ### Rules
 
 1. **Be proactive** — remember important info without being asked
-2. **Check memory first** — recall before asking questions the user may have answered before
-3. **Use types** — categorize memories correctly (fact/decision/error/preference/todo/workflow)
-4. **Set priority** — critical=7-10, normal=5, trivial=1-3
-5. **Add tags** — organize by project/topic for better retrieval
-6. **Recap on start** — always call `nmem_recap()` at session beginning
-7. **Train KB first** — if project has docs/, train them into memory for permanent context
+2. **Store 3-5 memories per task** — a bug fix has: root cause, fix, insight, prevention
+3. **Use rich language** — "Chose X over Y because Z" not just "X". Mix causal, temporal, relational, comparative
+4. **Check memory first** — recall before asking questions the user may have answered before
+5. **Use diverse types** — fact, decision, error, preference, todo, workflow, insight, instruction, context
+6. **Set priority** — critical=7-10, normal=5, trivial=1-3
+7. **Add tags** — always include project name + topic for better retrieval
+8. **Recap on start** — always call `nmem_recap()` at session beginning
+9. **Train KB first** — if project has docs/, train them into memory for permanent context
+10. **Fix mistakes** — use `nmem_edit` for wrong types/content, `nmem_forget` for outdated info
+11. **Health weekly** — `nmem_health()` and fix the highest penalty first

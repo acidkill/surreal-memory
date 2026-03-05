@@ -851,6 +851,328 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "nmem_hypothesize",
+        "description": "Create, list, or inspect hypotheses — evolving beliefs with Bayesian "
+        "confidence tracking. Hypotheses auto-resolve when evidence is strong enough "
+        "(confirmed at >=0.9 confidence with >=3 evidence-for, refuted at <=0.1 with "
+        ">=3 evidence-against). Use nmem_evidence to add supporting/opposing evidence.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["create", "list", "get"],
+                    "description": "create=new hypothesis, list=show all, get=detail view",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Hypothesis statement (required for create)",
+                },
+                "confidence": {
+                    "type": "number",
+                    "minimum": 0.01,
+                    "maximum": 0.99,
+                    "description": "Initial confidence level (default: 0.5)",
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Tags for categorization",
+                },
+                "priority": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 10,
+                    "description": "Priority 0-10 (default: 6)",
+                },
+                "hypothesis_id": {
+                    "type": "string",
+                    "description": "Hypothesis neuron ID (required for get)",
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ["active", "confirmed", "refuted", "superseded", "pending", "expired"],
+                    "description": "Filter by status (for list action)",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100,
+                    "description": "Max results for list (default: 20)",
+                },
+            },
+            "required": ["action"],
+        },
+    },
+    {
+        "name": "nmem_evidence",
+        "description": "Add evidence for or against a hypothesis. Updates confidence via "
+        "Bayesian update with surprise weighting and diminishing returns. "
+        "Auto-resolves hypothesis when evidence threshold is met.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "hypothesis_id": {
+                    "type": "string",
+                    "description": "Target hypothesis neuron ID",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Evidence content — what was observed/discovered",
+                },
+                "type": {
+                    "type": "string",
+                    "enum": ["for", "against"],
+                    "description": "Evidence direction: 'for' supports, 'against' weakens",
+                },
+                "weight": {
+                    "type": "number",
+                    "minimum": 0.1,
+                    "maximum": 1.0,
+                    "description": "Evidence strength (default: 0.5). Higher = stronger evidence",
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Tags for the evidence memory",
+                },
+                "priority": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 10,
+                    "description": "Priority 0-10 (default: 5)",
+                },
+            },
+            "required": ["hypothesis_id", "content", "type"],
+        },
+    },
+    {
+        "name": "nmem_predict",
+        "description": "Create, list, or inspect predictions — falsifiable claims about future "
+        "observations. Predictions track confidence, optional deadlines, and can link "
+        "to hypotheses via PREDICTED synapse. Verified predictions propagate evidence "
+        "back to linked hypotheses. Use nmem_verify to record outcomes.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["create", "list", "get"],
+                    "description": "create=new prediction, list=show all, get=detail view",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Prediction statement (required for create)",
+                },
+                "confidence": {
+                    "type": "number",
+                    "minimum": 0.01,
+                    "maximum": 0.99,
+                    "description": "How confident you are in this prediction (default: 0.7)",
+                },
+                "deadline": {
+                    "type": "string",
+                    "description": "ISO datetime deadline for verification (e.g. '2026-04-01T00:00:00')",
+                },
+                "hypothesis_id": {
+                    "type": "string",
+                    "description": "Link prediction to a hypothesis (creates PREDICTED synapse)",
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Tags for categorization",
+                },
+                "priority": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 10,
+                    "description": "Priority 0-10 (default: 5)",
+                },
+                "prediction_id": {
+                    "type": "string",
+                    "description": "Prediction neuron ID (required for get)",
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ["active", "confirmed", "refuted", "superseded", "pending", "expired"],
+                    "description": "Filter by status (for list action)",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100,
+                    "description": "Max results for list (default: 20)",
+                },
+            },
+            "required": ["action"],
+        },
+    },
+    {
+        "name": "nmem_verify",
+        "description": "Verify a prediction as correct or wrong. Optionally records an observation, "
+        "creates VERIFIED_BY or FALSIFIED_BY synapse, and propagates evidence to "
+        "linked hypotheses. Returns updated calibration score.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "prediction_id": {
+                    "type": "string",
+                    "description": "Target prediction neuron ID",
+                },
+                "outcome": {
+                    "type": "string",
+                    "enum": ["correct", "wrong"],
+                    "description": "Whether the prediction was correct or wrong",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Observation content — what actually happened (optional)",
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Tags for the observation memory",
+                },
+                "priority": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 10,
+                    "description": "Priority 0-10 (default: 5)",
+                },
+            },
+            "required": ["prediction_id", "outcome"],
+        },
+    },
+    {
+        "name": "nmem_cognitive",
+        "description": "Cognitive overview — O(1) summary of active hypotheses, pending predictions, "
+        "calibration score, and knowledge gaps. Use 'summary' for instant dashboard, "
+        "'refresh' to recompute scores from current state.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["summary", "refresh"],
+                    "description": "summary=get current hot index, refresh=recompute scores",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 20,
+                    "description": "Max hot items to return (default: 10, for summary)",
+                },
+            },
+            "required": ["action"],
+        },
+    },
+    {
+        "name": "nmem_gaps",
+        "description": "Metacognition — track what the brain doesn't know. Detect knowledge gaps "
+        "from contradictions, low-confidence hypotheses, recall misses, or manual flagging. "
+        "Resolve gaps when new information fills them.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["detect", "list", "resolve", "get"],
+                    "description": "detect=flag new gap, list=show gaps, resolve=mark filled, get=detail",
+                },
+                "topic": {
+                    "type": "string",
+                    "description": "What knowledge is missing (required for detect)",
+                },
+                "source": {
+                    "type": "string",
+                    "enum": [
+                        "contradicting_evidence",
+                        "low_confidence_hypothesis",
+                        "user_flagged",
+                        "recall_miss",
+                        "stale_schema",
+                    ],
+                    "description": "How the gap was detected (default: user_flagged)",
+                },
+                "priority": {
+                    "type": "number",
+                    "minimum": 0.0,
+                    "maximum": 1.0,
+                    "description": "Gap priority (auto-set from source if not provided)",
+                },
+                "related_neuron_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Neuron IDs related to this gap (max 10)",
+                },
+                "gap_id": {
+                    "type": "string",
+                    "description": "Gap ID (required for resolve and get)",
+                },
+                "resolved_by_neuron_id": {
+                    "type": "string",
+                    "description": "Neuron that resolved the gap (optional for resolve)",
+                },
+                "include_resolved": {
+                    "type": "boolean",
+                    "description": "Include resolved gaps in list (default: false)",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100,
+                    "description": "Max results for list (default: 20)",
+                },
+            },
+            "required": ["action"],
+        },
+    },
+    {
+        "name": "nmem_schema",
+        "description": "Schema evolution — evolve hypotheses into new versions. "
+        "Creates a version chain via SUPERSEDES synapse so the brain tracks how beliefs changed over time. "
+        "Use when a hypothesis needs updating with new understanding.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["evolve", "history", "compare"],
+                    "description": "evolve=create new version, history=version chain, compare=diff two versions",
+                },
+                "hypothesis_id": {
+                    "type": "string",
+                    "description": "Neuron ID of the hypothesis to evolve or inspect",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Updated content for the new version (required for evolve)",
+                },
+                "confidence": {
+                    "type": "number",
+                    "minimum": 0.01,
+                    "maximum": 0.99,
+                    "description": "Initial confidence for the new version (inherits from old if not set)",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Why the hypothesis is being evolved (stored as synapse metadata)",
+                },
+                "other_id": {
+                    "type": "string",
+                    "description": "Second hypothesis ID for compare action",
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Tags for the new version",
+                },
+            },
+            "required": ["action", "hypothesis_id"],
+        },
+    },
+    {
         "name": "nmem_explain",
         "description": "Find and explain the shortest path between two entities in the neural graph. Returns a step-by-step explanation with synapse types, weights, and supporting memory evidence.",
         "inputSchema": {
@@ -872,6 +1194,72 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
                 },
             },
             "required": ["from_entity", "to_entity"],
+        },
+    },
+    {
+        "name": "nmem_edit",
+        "description": "Edit an existing memory's type, content, or priority. "
+        "Use when a memory was auto-typed incorrectly or needs content correction. "
+        "Preserves all connections (synapses) and fiber associations.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "memory_id": {
+                    "type": "string",
+                    "description": "The fiber ID or neuron ID of the memory to edit",
+                },
+                "type": {
+                    "type": "string",
+                    "enum": [
+                        "fact",
+                        "decision",
+                        "preference",
+                        "todo",
+                        "insight",
+                        "context",
+                        "instruction",
+                        "error",
+                        "workflow",
+                        "reference",
+                    ],
+                    "description": "New memory type",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "New content for the anchor neuron",
+                },
+                "priority": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 10,
+                    "description": "New priority (0-10)",
+                },
+            },
+            "required": ["memory_id"],
+        },
+    },
+    {
+        "name": "nmem_forget",
+        "description": "Explicitly delete or close a specific memory. "
+        "Soft delete by default (marks as expired). Use hard=true for permanent removal. "
+        "Use for closing completed TODOs or removing outdated/incorrect memories.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "memory_id": {
+                    "type": "string",
+                    "description": "The fiber ID of the memory to forget",
+                },
+                "hard": {
+                    "type": "boolean",
+                    "description": "Permanent deletion with cascade cleanup (default: false = soft delete)",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Why this memory is being forgotten (stored in logs)",
+                },
+            },
+            "required": ["memory_id"],
         },
     },
 ]

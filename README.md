@@ -12,7 +12,7 @@
 
 NeuralMemory stores experiences as interconnected neurons and recalls them through spreading activation, mimicking how the human brain works. Instead of searching a database, memories surface through associative recall — activating related concepts until the relevant memory emerges.
 
-**28 MCP tools** · **11 memory types** · **24 synapse types** · **Schema v20** · **3150+ tests** · **Proactive auto-save**
+**38 MCP tools** · **11 memory types** · **24 synapse types** · **Schema v21** · **3200+ tests** · **Cognitive reasoning layer**
 
 ## Why Not RAG / Vector Search?
 
@@ -188,7 +188,7 @@ asyncio.run(main())
 
 ### MCP Tools (Claude Code / Cursor)
 
-Once configured, these 28 tools are available to your AI assistant:
+Once configured, these 38 tools are available to your AI assistant:
 
 **Core Memory:**
 
@@ -200,6 +200,8 @@ Once configured, these 28 tools are available to your AI assistant:
 | `nmem_todo` | Quick TODO with 30-day expiry |
 | `nmem_auto` | Auto-capture memories from conversation text |
 | `nmem_suggest` | Autocomplete suggestions from brain neurons |
+| `nmem_edit` | Edit memory type, content, or priority (preserves connections) |
+| `nmem_forget` | Soft delete (set expiry) or hard delete (permanent removal) |
 
 **Workflow:**
 
@@ -225,7 +227,6 @@ Once configured, these 28 tools are available to your AI assistant:
 | Tool | Description |
 |------|-------------|
 | `nmem_health` | Brain health: purity score, grade (A-F), top penalties with fix actions |
-| `nmem_explain` | Trace shortest path between two concepts — debug recall, verify connections |
 | `nmem_review` | Spaced repetition reviews (Leitner box system) |
 | `nmem_conflicts` | Memory conflicts: list, resolve, or pre-check |
 | `nmem_narrative` | Generate narratives: timeline, topic, or causal chain |
@@ -237,6 +238,19 @@ Once configured, these 28 tools are available to your AI assistant:
 | `nmem_sync_status` | Sync status and pending changes |
 | `nmem_sync_config` | Configure sync settings |
 | `nmem_telegram_backup` | Send brain database backup to Telegram |
+
+**Cognitive Reasoning:**
+
+| Tool | Description |
+|------|-------------|
+| `nmem_hypothesize` | Create and manage hypotheses with Bayesian confidence tracking |
+| `nmem_evidence` | Submit evidence for/against hypotheses — auto-updates confidence |
+| `nmem_predict` | Make falsifiable predictions with deadlines, linked to hypotheses |
+| `nmem_verify` | Verify predictions as correct/wrong — propagates to linked hypotheses |
+| `nmem_cognitive` | Hot index: ranked summary of active hypotheses + predictions |
+| `nmem_gaps` | Knowledge gaps: detect, track, and resolve what the brain doesn't know |
+| `nmem_schema` | Schema evolution: evolve hypotheses into new versions with SUPERSEDES links |
+| `nmem_explain` | Trace shortest path between two concepts — debug recall, verify connections |
 
 ### VS Code Extension
 
@@ -354,6 +368,40 @@ nmem_explain(entity_a="Redis", entity_b="auth outage")
 ```
 
 Returns the path with evidence: `Redis → USED_BY → session-store → CAUSED_BY → auth outage`. Use this to debug recall, verify brain connections, or discover unexpected relationships between concepts.
+
+### Cognitive Reasoning
+
+Hypothesize, predict, verify, and evolve beliefs — the brain reasons about what it knows:
+
+```bash
+# Create a hypothesis with initial confidence
+nmem_hypothesize(action="create", content="Redis is causing the latency spike", confidence=0.6)
+
+# Submit evidence
+nmem_evidence(hypothesis_id="h-1", evidence_type="for", content="Redis latency at 200ms")
+nmem_evidence(hypothesis_id="h-1", evidence_type="against", content="Network latency was 500ms")
+
+# Make a falsifiable prediction
+nmem_predict(action="create", content="Switching to Valkey will fix latency",
+             hypothesis_id="h-1", deadline="2026-04-01")
+
+# Verify prediction outcome — propagates to linked hypothesis
+nmem_verify(prediction_id="p-1", outcome="correct")
+
+# Evolve hypothesis when understanding changes (creates SUPERSEDES chain)
+nmem_schema(action="evolve", hypothesis_id="h-1",
+            content="Network config was root cause, not Redis",
+            reason="New evidence from network team")
+
+# Track what the brain doesn't know
+nmem_gaps(action="detect", topic="Why does latency spike at 3am?", source="recall_miss")
+
+# View cognitive dashboard
+nmem_cognitive(action="summary")    # Hot index of active hypotheses + predictions
+nmem_schema(action="history", hypothesis_id="h-2")  # Version evolution chain
+```
+
+Auto-resolution: hypotheses with confidence ≥0.9 + 3 supporting evidence → auto-confirmed. Confidence ≤0.1 + 3 against → auto-refuted. Calibration score tracks prediction accuracy.
 
 ### Brain Versioning
 
@@ -488,7 +536,7 @@ git clone https://github.com/nhadaututtheky/neural-memory
 cd neural-memory
 pip install -e ".[dev]"
 
-# Run tests (2860+ tests)
+# Run tests (3200+ tests)
 pytest tests/ -v
 
 # Lint & format

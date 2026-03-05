@@ -324,3 +324,37 @@ class TestSuggestMemoryType:
         assert suggest_memory_type("Python 3.11 was released in October 2022") == MemoryType.FACT
         assert suggest_memory_type("The project uses FastAPI") == MemoryType.FACT
         assert suggest_memory_type("Meeting with Alice about API design") == MemoryType.FACT
+
+    def test_fact_not_misclassified_as_decision(self) -> None:
+        """Content describing architecture/config should be FACT, not DECISION."""
+        # These were commonly misclassified as decision
+        assert suggest_memory_type("PostgreSQL uses MVCC for concurrency") == MemoryType.FACT
+        assert suggest_memory_type("The API endpoint returns JSON") == MemoryType.FACT
+        assert suggest_memory_type("Schema version is 21") == MemoryType.FACT
+        assert (
+            suggest_memory_type("Config file located at ~/.neuralmemory/config.toml")
+            == MemoryType.FACT
+        )
+
+    def test_insight_not_misclassified_as_decision(self) -> None:
+        """Causal/discovery content should be INSIGHT, not DECISION."""
+        assert (
+            suggest_memory_type("Root cause was race condition in auth middleware")
+            == MemoryType.INSIGHT
+        )
+        assert (
+            suggest_memory_type("The pattern here is that all errors come from the parser")
+            == MemoryType.INSIGHT
+        )
+        assert (
+            suggest_memory_type("Figured out that the timeout was because of DNS resolution")
+            == MemoryType.INSIGHT
+        )
+
+    def test_todo_not_triggered_by_descriptive_should(self) -> None:
+        """'should' in descriptive context shouldn't trigger TODO."""
+        # "should" + causal context = not a TODO
+        assert (
+            suggest_memory_type("This should work because the architecture supports it")
+            != MemoryType.TODO
+        )

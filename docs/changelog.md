@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`nmem_edit`** — Edit memory type, content, or priority by fiber ID. Preserves all neural connections
+- **`nmem_forget`** — Soft delete (expires) or hard delete (permanent removal with cascade)
+- **Enhanced MCP instructions** — Richer behavioral directives for brain growth, all 38 tools listed
+- **Enhanced plugin instructions** — Comprehensive agent guidance in `.claude-plugin/plugin.json`
+
+### Fixed
+
+- **FK constraint errors** — `INSERT OR REPLACE INTO neuron_states` and `save_maturation` catch IntegrityError for deleted neurons
+- **Auto-type classifier bias** — Insight checked before decision, tightened TODO/decision patterns
+- **DECISION_PATTERNS greediness** — Removed overly broad patterns from auto_capture.py
+
+- **Cognitive Reasoning Layer** — 8 new MCP tools for hypothesis-driven reasoning (38 tools total)
+  - `nmem_hypothesize` — Create and manage hypotheses with Bayesian confidence tracking and auto-resolution
+  - `nmem_evidence` — Submit evidence for/against hypotheses, auto-updates confidence via sigmoid-dampened shift
+  - `nmem_predict` — Make falsifiable predictions with deadlines, linked to hypotheses via PREDICTED synapse
+  - `nmem_verify` — Verify predictions as correct/wrong, propagates result to linked hypothesis
+  - `nmem_cognitive` — Hot index: ranked summary of active hypotheses + pending predictions with calibration score
+  - `nmem_gaps` — Knowledge gap metacognition: detect, track, prioritize, and resolve what the brain doesn't know
+  - `nmem_schema` — Schema evolution: evolve hypotheses into new versions via SUPERSEDES synapse chain
+  - `nmem_explain` — (moved to cognitive) Trace shortest path between concepts with evidence
+- **Schema v21** — Three new tables: `cognitive_state`, `hot_index`, `knowledge_gaps`
+- **Pure cognitive engine** (`engine/cognitive.py`) — Stateless scoring and confidence functions
+- **Bayesian confidence model** — Auto-resolution at confidence thresholds
+- **Prediction calibration** — Tracks correct/wrong ratio
+- **Schema version chain** — SUPERSEDES synapse + `parent_schema_id` walk with cycle guard
+
 ## [2.26.0] - 2026-03-05
 
 ### Added

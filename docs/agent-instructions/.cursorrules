@@ -55,11 +55,32 @@ After indexing, nmem_recall finds related code through the neural graph.
   nmem_eternal(action="save", project_name="MyApp", tech_stack=["React", "Node.js"])
   nmem_eternal(action="save", decision="Use Redis", reason="Low latency caching")
 
+### Edit & Forget
+
+Wrong type? → nmem_edit(memory_id="...", type="insight")
+Wrong content? → nmem_edit(memory_id="...", content="corrected text")
+Outdated? → nmem_forget(memory_id="...", reason="outdated")
+Sensitive/garbage? → nmem_forget(memory_id="...", hard=true)
+
+### Cognitive Reasoning
+
+  nmem_hypothesize(action="create", content="...", confidence=0.6)
+  nmem_evidence(hypothesis_id="h-1", evidence_type="for", content="...")
+  nmem_predict(action="create", content="...", hypothesis_id="h-1", deadline="...")
+  nmem_verify(prediction_id="p-1", outcome="correct")
+  nmem_cognitive(action="summary")
+  nmem_gaps(action="detect", topic="...")
+  nmem_explain(entity_a="X", entity_b="Y")
+
 ### Rules
 
 1. Be proactive — remember important info without being asked
-2. Check memory first — recall before asking repeated questions
-3. Use correct types — fact/decision/error/preference/todo/workflow
-4. Set priority — critical=7-10, normal=5, trivial=1-3
-5. Add tags — organize by project/topic
-6. Recap on start — always nmem_recap() at session beginning
+2. Store 3-5 memories per task — a bug fix has: root cause, fix, insight, prevention
+3. Use rich language — "Chose X over Y because Z", not just "X"
+4. Check memory first — recall before asking repeated questions
+5. Use diverse types — fact/decision/error/preference/todo/workflow/insight/instruction
+6. Set priority — critical=7-10, normal=5, trivial=1-3
+7. Add tags — always include project name + topic
+8. Recap on start — always nmem_recap() at session beginning
+9. Fix mistakes — nmem_edit for wrong types/content, nmem_forget for outdated
+10. Health weekly — nmem_health(), fix highest penalty first

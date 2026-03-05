@@ -351,27 +351,36 @@ class SQLiteNeuronMixin:
         conn = self._ensure_conn()
         brain_id = self._get_brain_id()
 
-        await conn.execute(
-            """INSERT OR REPLACE INTO neuron_states
-               (neuron_id, brain_id, activation_level, access_frequency,
-                last_activated, decay_rate, firing_threshold, refractory_until,
-                refractory_period_ms, homeostatic_target, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                state.neuron_id,
-                brain_id,
-                state.activation_level,
-                state.access_frequency,
-                state.last_activated.isoformat() if state.last_activated else None,
-                state.decay_rate,
-                state.firing_threshold,
-                state.refractory_until.isoformat() if state.refractory_until else None,
-                state.refractory_period_ms,
-                state.homeostatic_target,
-                state.created_at.isoformat(),
-            ),
-        )
-        await conn.commit()
+        try:
+            await conn.execute(
+                """INSERT OR REPLACE INTO neuron_states
+                   (neuron_id, brain_id, activation_level, access_frequency,
+                    last_activated, decay_rate, firing_threshold, refractory_until,
+                    refractory_period_ms, homeostatic_target, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    state.neuron_id,
+                    brain_id,
+                    state.activation_level,
+                    state.access_frequency,
+                    state.last_activated.isoformat() if state.last_activated else None,
+                    state.decay_rate,
+                    state.firing_threshold,
+                    state.refractory_until.isoformat() if state.refractory_until else None,
+                    state.refractory_period_ms,
+                    state.homeostatic_target,
+                    state.created_at.isoformat(),
+                ),
+            )
+            await conn.commit()
+        except sqlite3.IntegrityError:
+            # Neuron was deleted (e.g., by consolidation pruning) between
+            # state read and state write — skip silently.
+            import logging
+
+            logging.getLogger(__name__).debug(
+                "Skipping state update for deleted neuron %s", state.neuron_id
+            )
 
     async def get_all_neuron_states(self) -> list[NeuronState]:
         """Get all neuron states for current brain."""

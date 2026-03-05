@@ -1554,3 +1554,170 @@ class ToolHandler:
             )
         except Exception:
             logger.debug("Action recording failed (non-critical)", exc_info=True)
+
+    # ========== Edit & Forget ==========
+
+    async def _edit(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Edit an existing memory's type, content, or priority."""
+        memory_id = args.get("memory_id")
+        if not memory_id or not isinstance(memory_id, str):
+            return {"error": "memory_id is required"}
+
+        new_type = args.get("type")
+        new_content = args.get("content")
+        new_priority = args.get("priority")
+
+        if new_type is None and new_content is None and new_priority is None:
+            return {"error": "At least one of type, content, or priority must be provided"}
+
+        if new_type is not None:
+            try:
+                MemoryType(new_type)
+            except ValueError:
+                return {"error": f"Invalid memory type: {new_type}"}
+
+        if new_content is not None and len(new_content) > MAX_CONTENT_LENGTH:
+            return {
+                "error": f"Content too long ({len(new_content)} chars). Max: {MAX_CONTENT_LENGTH}."
+            }
+
+        storage = await self.get_storage()
+        try:
+            _require_brain_id(storage)
+        except ValueError:
+            return {"error": "No brain configured"}
+
+        # Try as fiber_id first, then as neuron_id
+        typed_mem = await storage.get_typed_memory(memory_id)
+        fiber = await storage.get_fiber(memory_id) if typed_mem else None
+
+        if typed_mem and fiber:
+            # Edit via fiber path
+            changes: list[str] = []
+
+            # Update typed_memory (type, priority)
+            if new_type is not None or new_priority is not None:
+                from dataclasses import replace as dc_replace
+
+                updated_tm = typed_mem
+                if new_type is not None:
+                    updated_tm = dc_replace(updated_tm, memory_type=MemoryType(new_type))
+                    changes.append(f"type: {typed_mem.memory_type.value} → {new_type}")
+                if new_priority is not None:
+                    updated_tm = dc_replace(updated_tm, priority=Priority.from_int(new_priority))
+                    changes.append(f"priority: {typed_mem.priority.value} → {new_priority}")
+                await storage.update_typed_memory(updated_tm)
+
+            # Update anchor neuron content
+            if new_content is not None:
+                anchor = await storage.get_neuron(fiber.anchor_neuron_id)
+                if anchor:
+                    from dataclasses import replace as dc_replace
+
+                    updated_neuron = dc_replace(anchor, content=new_content)
+                    await storage.update_neuron(updated_neuron)
+                    changes.append(f"content updated ({len(new_content)} chars)")
+
+            return {
+                "status": "edited",
+                "memory_id": memory_id,
+                "changes": changes,
+            }
+
+        # Try as direct neuron_id
+        neuron = await storage.get_neuron(memory_id)
+        if neuron:
+            from dataclasses import replace as dc_replace
+
+            changes = []
+            if new_content is not None:
+                neuron = dc_replace(neuron, content=new_content)
+                changes.append(f"content updated ({len(new_content)} chars)")
+            if new_type is not None:
+                from neural_memory.core.neuron import NeuronType
+
+                try:
+                    neuron = dc_replace(neuron, type=NeuronType(new_type))
+                    changes.append(f"neuron type → {new_type}")
+                except ValueError:
+                    pass  # NeuronType doesn't map 1:1 to MemoryType
+            await storage.update_neuron(neuron)
+            return {
+                "status": "edited",
+                "memory_id": memory_id,
+                "changes": changes,
+            }
+
+        return {"error": f"Memory not found: {memory_id}"}
+
+    async def _forget(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Explicitly delete or close a specific memory."""
+        memory_id = args.get("memory_id")
+        if not memory_id or not isinstance(memory_id, str):
+            return {"error": "memory_id is required"}
+
+        hard = args.get("hard", False)
+        reason = args.get("reason", "")
+
+        storage = await self.get_storage()
+        try:
+            _require_brain_id(storage)
+        except ValueError:
+            return {"error": "No brain configured"}
+
+        # Look up the memory
+        typed_mem = await storage.get_typed_memory(memory_id)
+        fiber = await storage.get_fiber(memory_id) if typed_mem else None
+
+        if not typed_mem and not fiber:
+            # Try as neuron_id — find its fiber
+            neuron = await storage.get_neuron(memory_id)
+            if not neuron:
+                return {"error": f"Memory not found: {memory_id}"}
+            # For neuron-only delete in hard mode
+            if hard:
+                await storage.delete_neuron(memory_id)
+                return {
+                    "status": "hard_deleted",
+                    "memory_id": memory_id,
+                    "message": "Neuron permanently deleted",
+                }
+            return {
+                "error": f"No typed memory found for neuron {memory_id}. Use hard=true for neuron deletion."
+            }
+
+        if hard:
+            # Permanent deletion: fiber + typed_memory + neurons
+            storage.disable_auto_save()
+            try:
+                # Delete typed memory
+                await storage.delete_typed_memory(memory_id)
+
+                # Delete fiber (CASCADE handles fiber_neurons junction)
+                if fiber:
+                    await storage.delete_fiber(memory_id)
+
+                await storage.batch_save()
+            finally:
+                storage.enable_auto_save()
+
+            logger.info("Hard-deleted memory %s (reason: %s)", memory_id, reason or "none")
+            return {
+                "status": "hard_deleted",
+                "memory_id": memory_id,
+                "message": "Memory permanently deleted with cascade cleanup",
+            }
+        else:
+            # Soft delete: expire immediately
+            from dataclasses import replace as dc_replace
+
+            assert typed_mem is not None  # guaranteed by early return above
+            expired_tm = dc_replace(typed_mem, expires_at=utcnow())
+            await storage.update_typed_memory(expired_tm)
+
+            logger.info("Soft-deleted memory %s (reason: %s)", memory_id, reason or "none")
+            return {
+                "status": "soft_deleted",
+                "memory_id": memory_id,
+                "message": "Memory marked as expired (will be cleaned up on next consolidation)",
+            }

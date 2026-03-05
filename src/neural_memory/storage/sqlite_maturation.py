@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -33,21 +34,29 @@ class SQLiteMaturationMixin:
         conn = self._ensure_conn()
         brain_id = self._get_brain_id()
 
-        await conn.execute(
-            """INSERT OR REPLACE INTO memory_maturations
-            (fiber_id, brain_id, stage, stage_entered_at, rehearsal_count,
-             reinforcement_timestamps)
-            VALUES (?, ?, ?, ?, ?, ?)""",
-            (
-                record.fiber_id,
-                brain_id,
-                record.stage.value,
-                record.stage_entered_at.isoformat(),
-                record.rehearsal_count,
-                json.dumps(record.reinforcement_timestamps),
-            ),
-        )
-        await conn.commit()
+        try:
+            await conn.execute(
+                """INSERT OR REPLACE INTO memory_maturations
+                (fiber_id, brain_id, stage, stage_entered_at, rehearsal_count,
+                 reinforcement_timestamps)
+                VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    record.fiber_id,
+                    brain_id,
+                    record.stage.value,
+                    record.stage_entered_at.isoformat(),
+                    record.rehearsal_count,
+                    json.dumps(record.reinforcement_timestamps),
+                ),
+            )
+            await conn.commit()
+        except sqlite3.IntegrityError:
+            # Fiber was deleted (e.g., by consolidation) between read and write.
+            import logging
+
+            logging.getLogger(__name__).debug(
+                "Skipping maturation save for deleted fiber %s", record.fiber_id
+            )
 
     async def get_maturation(self, fiber_id: str) -> MaturationRecord | None:
         """Get a maturation record for a fiber."""

@@ -18,16 +18,14 @@ _MAX_REGEX_TEXT_LENGTH = 50_000
 _TYPE_PREFIXES = ("decision: ", "error: ", "todo: ", "insight: ", "preference: ")
 
 DECISION_PATTERNS = [
-    # English
+    # English — deliberate choice language
     r"(?:we |I )(?:decided|chose|selected|picked|opted)(?: to)?[:\s]+(.+?)(?:\.|$)",
-    r"(?:the )?decision(?: is)?[:\s]+(.+?)(?:\.|$)",
-    r"(?:we\'re |I\'m )going (?:to|with)[:\s]+(.+?)(?:\.|$)",
-    r"let\'s (?:go with|use|choose)[:\s]+(.+?)(?:\.|$)",
+    r"(?:the )?decision(?: is| was)?[:\s]+(.+?)(?:\.|$)",
     r"(?:chose|picked|selected) (.+?) (?:over|instead of) (.+?)(?:\.|$)",
-    r"(?:going|switched|moving) (?:to|with|from .+? to) (.+?)(?:\.|$)",
+    r"(?:switched|moved|migrated) (?:from .+? to|to) (.+?)(?:\.|$)",
     # Vietnamese
-    r"(?:quyết định|chọn|dùng|chuyển sang)[:\s]+(.+?)(?:\.|$)",
-    r"(?:sẽ |sẽ phải )(?:dùng|chọn|chuyển)[:\s]+(.+?)(?:\.|$)",
+    r"(?:quyết định|chọn) (.+?) (?:thay vì|thay cho) (.+?)(?:\.|$)",
+    r"(?:quyết định|đã chọn)[:\s]+(.+?)(?:\.|$)",
 ]
 
 ERROR_PATTERNS = [

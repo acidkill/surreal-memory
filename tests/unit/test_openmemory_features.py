@@ -39,11 +39,11 @@ class TestDefaultDecayRates:
         for mt in MemoryType:
             assert mt in DEFAULT_DECAY_RATES, f"Missing decay rate for {mt}"
 
-    def test_facts_decay_slowest(self) -> None:
-        """Facts should have the lowest (slowest) decay rate."""
-        fact_rate = DEFAULT_DECAY_RATES[MemoryType.FACT]
+    def test_schemas_decay_slowest(self) -> None:
+        """Schemas should have the lowest (slowest) decay rate."""
+        schema_rate = DEFAULT_DECAY_RATES[MemoryType.SCHEMA]
         for mt, rate in DEFAULT_DECAY_RATES.items():
-            assert rate >= fact_rate, f"{mt} decays slower than FACT"
+            assert rate >= schema_rate, f"{mt} decays slower than SCHEMA"
 
     def test_todos_decay_fastest(self) -> None:
         """TODOs should have the highest (fastest) decay rate."""

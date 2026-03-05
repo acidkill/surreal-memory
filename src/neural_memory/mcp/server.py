@@ -30,6 +30,7 @@ from neural_memory import __version__
 from neural_memory.engine.hooks import HookRegistry
 from neural_memory.mcp.alert_handler import AlertHandler
 from neural_memory.mcp.auto_handler import AutoHandler
+from neural_memory.mcp.cognitive_handler import CognitiveHandler
 from neural_memory.mcp.conflict_handler import ConflictHandler
 from neural_memory.mcp.connection_handler import ConnectionHandler
 from neural_memory.mcp.db_train_handler import DBTrainHandler
@@ -88,6 +89,7 @@ class MCPServer(
     ReviewHandler,
     NarrativeHandler,
     ConnectionHandler,
+    CognitiveHandler,
     Mem0SyncHandler,
     OnboardingHandler,
     ExpiryCleanupHandler,
@@ -114,6 +116,7 @@ class MCPServer(
         ReviewHandler       — _review, spaced repetition queue/mark/schedule/stats
         NarrativeHandler    — _narrative, timeline/topic/causal narratives
         ConnectionHandler   — _explain, shortest-path connection explanation
+        CognitiveHandler    — _hypothesize, _evidence, _predict, _verify, _cognitive, _gaps, _schema
         Mem0SyncHandler     — maybe_start_mem0_sync, background auto-sync
         OnboardingHandler   — _check_onboarding, fresh-brain guidance
         ExpiryCleanupHandler — _maybe_run_expiry_cleanup, auto-delete expired
@@ -203,6 +206,15 @@ class MCPServer(
             "nmem_sync_config": self._sync_config,
             "nmem_telegram_backup": self._telegram_backup,
             "nmem_explain": self._explain,
+            "nmem_hypothesize": self._hypothesize,
+            "nmem_evidence": self._evidence,
+            "nmem_predict": self._predict,
+            "nmem_verify": self._verify,
+            "nmem_cognitive": self._cognitive,
+            "nmem_gaps": self._gaps,
+            "nmem_schema": self._schema,
+            "nmem_edit": self._edit,
+            "nmem_forget": self._forget,
         }
         handler = dispatch.get(name)
         if handler:

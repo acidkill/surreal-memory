@@ -34,6 +34,11 @@ class MemoryType(StrEnum):
     REFERENCE = "reference"  # External refs: "Docs at https://..."
     TOOL = "tool"  # Tool usage patterns: "Grep is effective for finding code patterns"
 
+    # Cognitive layer types
+    HYPOTHESIS = "hypothesis"  # Evolving beliefs with evidence-based confidence
+    PREDICTION = "prediction"  # Falsifiable claims about future observations
+    SCHEMA = "schema"  # Mental model versions (explicit knowledge structures)
+
 
 class Priority(IntEnum):
     """Memory priority levels (0-10 scale)."""
@@ -262,6 +267,9 @@ DEFAULT_EXPIRY_DAYS: dict[MemoryType, int | None] = {
     MemoryType.WORKFLOW: 365,  # Workflows change slowly
     MemoryType.REFERENCE: None,  # References persist
     MemoryType.TOOL: 90,  # Tool patterns become stale as workflows change
+    MemoryType.HYPOTHESIS: 180,  # Hypotheses may be resolved or abandoned
+    MemoryType.PREDICTION: 30,  # Predictions should be verified soon
+    MemoryType.SCHEMA: None,  # Schemas persist (superseded, not expired)
 }
 
 
@@ -279,6 +287,9 @@ DEFAULT_DECAY_RATES: dict[MemoryType, float] = {
     MemoryType.ERROR: 0.12,  # Errors become less relevant
     MemoryType.TODO: 0.15,  # TODOs should be acted on quickly
     MemoryType.TOOL: 0.06,  # Tool patterns reinforced by repeated use
+    MemoryType.HYPOTHESIS: 0.03,  # Hypotheses decay slowly (evidence keeps them alive)
+    MemoryType.PREDICTION: 0.10,  # Predictions decay fast (resolve or forget)
+    MemoryType.SCHEMA: 0.01,  # Schemas are the most persistent memories
 }
 
 
@@ -327,17 +338,61 @@ def suggest_memory_type(content: str) -> MemoryType:
     """
     content_lower = content.lower()
 
-    # TODO patterns (highest priority - actionable)
+    # TODO patterns — actionable items
     if any(
         _has_keyword(content_lower, kw)
-        for kw in ["todo", "need to", "should", "must", "fix", "implement", "add"]
+        for kw in ["todo", "fixme", "need to", "have to", "remember to", "should", "must"]
     ):
-        return MemoryType.TODO
+        # Only if content looks actionable (not descriptive)
+        # "Should implement X" = TODO, but "should be noted" = not TODO
+        if not any(
+            _has_keyword(content_lower, kw)
+            for kw in ["because", "root cause", "pattern", "architecture", "config"]
+        ):
+            return MemoryType.TODO
 
-    # Decision patterns
+    # Insight patterns — causal/discovery language (check BEFORE decision/error)
     if any(
         _has_keyword(content_lower, kw)
-        for kw in ["decided", "chose", "will use", "going with", "picked", "selected"]
+        for kw in [
+            "learned",
+            "realized",
+            "discovered",
+            "found that",
+            "turns out",
+            "root cause",
+            "the trick",
+            "key insight",
+            "lesson learned",
+            "because",
+            "pattern",
+            "noticed that",
+            "figured out",
+        ]
+    ):
+        return MemoryType.INSIGHT
+
+    # Error patterns — problem/failure language
+    if any(
+        _has_keyword(content_lower, kw)
+        for kw in ["error", "bug", "crash", "exception", "traceback", "failed", "broken"]
+    ):
+        return MemoryType.ERROR
+
+    # Decision patterns — deliberate choice language
+    if any(
+        _has_keyword(content_lower, kw)
+        for kw in [
+            "decided",
+            "chose",
+            "picked",
+            "selected",
+            "opted for",
+            "going with",
+            "chose over",
+            "instead of",
+            "switched to",
+        ]
     ):
         return MemoryType.DECISION
 
@@ -355,27 +410,15 @@ def suggest_memory_type(content: str) -> MemoryType:
         return MemoryType.INSTRUCTION
 
     # Preference patterns
-    if any(_has_keyword(content_lower, kw) for kw in ["prefer", "like", "favorite", "hate"]):
+    if any(
+        _has_keyword(content_lower, kw) for kw in ["prefer", "like", "favorite", "hate", "dislike"]
+    ):
         return MemoryType.PREFERENCE
-
-    # Insight patterns (check BEFORE error - "discovered" vs "issue")
-    if any(
-        _has_keyword(content_lower, kw)
-        for kw in ["learned", "realized", "discovered", "found that", "turns out"]
-    ):
-        return MemoryType.INSIGHT
-
-    # Error patterns
-    if any(
-        _has_keyword(content_lower, kw)
-        for kw in ["error", "bug", "issue", "problem", "fail", "crash", "exception"]
-    ):
-        return MemoryType.ERROR
 
     # Workflow patterns
     if any(
         _has_keyword(content_lower, kw)
-        for kw in ["workflow", "process", "step", "flow", "pipeline", "deploy"]
+        for kw in ["workflow", "pipeline", "deploy", "ci/cd", "release process", "process", "flow"]
     ):
         return MemoryType.WORKFLOW
 
@@ -383,5 +426,5 @@ def suggest_memory_type(content: str) -> MemoryType:
     if any(_has_keyword(content_lower, kw) for kw in ["http", "https", "docs", "documentation"]):
         return MemoryType.REFERENCE
 
-    # Default to fact
+    # Default to fact (objective information)
     return MemoryType.FACT

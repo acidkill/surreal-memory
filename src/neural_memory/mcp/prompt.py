@@ -177,6 +177,42 @@ nmem_eternal(action="save", decision="Use Redis for caching", reason="Low latenc
 nmem_eternal(action="status")   # View memory counts and session state
 ```
 
+## Edit & Forget (nmem_edit + nmem_forget)
+
+Correct or remove memories without breaking the neural graph:
+
+### Edit (nmem_edit)
+```
+# Change memory type (was auto-detected wrong)
+nmem_edit(memory_id="fiber-abc", type="insight")
+
+# Fix content (typo, wrong info)
+nmem_edit(memory_id="fiber-abc", content="Corrected: the bug was in auth.py, not login.py")
+
+# Adjust priority
+nmem_edit(memory_id="fiber-abc", priority=9)
+
+# Multiple changes at once
+nmem_edit(memory_id="fiber-abc", type="decision", priority=8, content="Updated decision text")
+```
+
+### Forget (nmem_forget)
+```
+# Soft delete — sets expiry, memory decays naturally (recommended)
+nmem_forget(memory_id="fiber-abc", reason="outdated info")
+
+# Hard delete — permanent removal, cascades to fiber + typed_memory
+nmem_forget(memory_id="fiber-abc", hard=true)
+
+# Delete orphan neuron directly
+nmem_forget(memory_id="neuron-xyz", hard=true)
+```
+
+**When to use:**
+- **nmem_edit**: Wrong type assigned, content needs correction, priority adjustment
+- **nmem_forget (soft)**: Info is outdated but deletion trail wanted (default — sets expires_at)
+- **nmem_forget (hard)**: Sensitive data, test garbage, or duplicates that must be permanently removed
+
 ## Memory Types
 
 - `fact`: Objective information
@@ -273,6 +309,17 @@ If no path exists, the concepts are disconnected — store memories that link th
 - `nmem_transplant(source_brain="other-brain", tags=["react"])` — Import memories from another brain
 - `nmem_narrative(action="topic", topic="auth")` — Generate narrative about a topic
 
+## Cognitive Reasoning
+
+- `nmem_hypothesize(action="create", content="...", confidence=0.6)` — Create hypothesis
+- `nmem_evidence(hypothesis_id="h-1", evidence_type="for", content="...")` — Submit evidence
+- `nmem_predict(action="create", content="...", hypothesis_id="h-1", deadline="...")` — Predict
+- `nmem_verify(prediction_id="p-1", outcome="correct")` — Verify prediction
+- `nmem_cognitive(action="summary")` — Hot index of active hypotheses + predictions
+- `nmem_gaps(action="detect", topic="...", source="recall_miss")` — Track knowledge gaps
+- `nmem_schema(action="evolve", hypothesis_id="h-1", content="...", reason="...")` — Evolve hypothesis
+- `nmem_schema(action="history", hypothesis_id="h-1")` — Version chain
+
 ## Telegram Backup (nmem_telegram_backup)
 
 Send brain .db file as backup to Telegram chats:
@@ -291,6 +338,57 @@ Import memories from other systems:
 nmem_import(source="chromadb", connection="/path/to/chroma")
 nmem_import(source="mem0", user_id="user123")
 nmem_import(source="llamaindex", connection="/path/to/index")
+```
+
+## Cognitive Reasoning (hypothesis, evidence, prediction, verify, schema, gaps)
+
+The cognitive layer lets the brain reason about what it knows and doesn't know:
+
+### Hypothesize + Evidence
+```
+# Create a hypothesis
+nmem_hypothesize(action="create", content="Redis is the bottleneck", confidence=0.6)
+
+# Submit evidence (auto-updates confidence via Bayesian model)
+nmem_evidence(hypothesis_id="h-1", evidence_type="for", content="Redis latency 200ms")
+nmem_evidence(hypothesis_id="h-1", evidence_type="against", content="CPU at 10%")
+```
+
+Auto-resolution: confidence ≥0.9 + 3 evidence-for → confirmed. ≤0.1 + 3 against → refuted.
+
+### Predict + Verify
+```
+# Make a falsifiable prediction linked to hypothesis
+nmem_predict(action="create", content="Fixing Redis will drop latency by 50%",
+             hypothesis_id="h-1", deadline="2026-04-01")
+
+# Verify outcome — propagates to linked hypothesis
+nmem_verify(prediction_id="p-1", outcome="correct")  # or "wrong"
+```
+
+### Schema Evolution
+```
+# Evolve hypothesis when understanding changes (SUPERSEDES chain)
+nmem_schema(action="evolve", hypothesis_id="h-1",
+            content="Network config was root cause", reason="New evidence")
+
+# View version history
+nmem_schema(action="history", hypothesis_id="h-2")
+nmem_schema(action="compare", hypothesis_id="h-1", other_id="h-2")
+```
+
+### Knowledge Gaps
+```
+# Track what the brain doesn't know
+nmem_gaps(action="detect", topic="Why 3am latency spike?", source="recall_miss")
+nmem_gaps(action="list")
+nmem_gaps(action="resolve", gap_id="g-1", resolved_by_neuron_id="n-42")
+```
+
+### Cognitive Dashboard
+```
+nmem_cognitive(action="summary")   # Hot index: ranked active hypotheses + predictions
+nmem_cognitive(action="refresh")   # Recompute hot index scores
 ```
 
 ## Sync Engine vs Git Backup
@@ -331,6 +429,10 @@ COMPACT_PROMPT = """You have NeuralMemory for persistent memory across sessions.
 - **Train** (nmem_train): Train docs into permanent memory. Supports PDF/DOCX/PPTX/HTML/JSON/XLSX/CSV.
 - **Pin** (nmem_pin): Pin/unpin memories to prevent decay. Trained KB is auto-pinned.
 
+**Edit & Forget:**
+- **Edit** (nmem_edit): Fix memory type/content/priority by fiber_id. Preserves all connections.
+- **Forget** (nmem_forget): Soft delete (expires) or hard delete (permanent). Use for outdated/wrong memories.
+
 **Advanced:**
 - **Health** (nmem_health): Brain health score, grade, top_penalties. Fix highest penalty first.
 - **Explain** (nmem_explain): Trace shortest path between two concepts. Debug why recall works/doesn't.
@@ -342,6 +444,15 @@ COMPACT_PROMPT = """You have NeuralMemory for persistent memory across sessions.
 - **Conflicts** (nmem_conflicts): View and resolve conflicting memories.
 - **Narrative** (nmem_narrative): Generate topic/timeline/causal narratives.
 - **Telegram** (nmem_telegram_backup): Send brain .db backup to Telegram chats.
+
+**Cognitive Reasoning:**
+- **Hypothesize** (nmem_hypothesize): Create hypotheses with Bayesian confidence tracking.
+- **Evidence** (nmem_evidence): Submit for/against evidence — auto-updates confidence.
+- **Predict** (nmem_predict): Falsifiable predictions with deadlines, linked to hypotheses.
+- **Verify** (nmem_verify): Verify predictions correct/wrong — propagates to hypotheses.
+- **Cognitive** (nmem_cognitive): Hot index of active hypotheses and predictions.
+- **Gaps** (nmem_gaps): Track knowledge gaps — what the brain doesn't know.
+- **Schema** (nmem_schema): Evolve hypotheses into new versions (SUPERSEDES chain).
 
 Be proactive: remember important info without being asked. Call nmem_recap() at session start."""
 
@@ -371,21 +482,59 @@ WHAT TO REMEMBER (after each completed task):
 - Bug fixes: "Root cause was X, fixed by Y" → type="error", priority=7
 - Patterns: "This codebase uses X pattern for Y" → type="insight", priority=6
 - User preferences: "User prefers X" → type="preference", priority=8
+- Workflows: "Deploy process: build → test → push" → type="workflow", priority=6
+- Facts: "API endpoint is /v2/users" → type="fact", priority=5
+- Instructions: "Always run linter before commit" → type="instruction", priority=8
 
 USE RICH LANGUAGE (creates better neural connections):
-- BAD: "PostgreSQL" (flat, no context)
+- BAD: "PostgreSQL" (flat, no context — creates orphan neuron with zero connections)
 - GOOD: "Chose PostgreSQL over MongoDB because ACID needed for payments" (causal, linked)
+- GOOD: "After upgrading to v3, the auth middleware broke because of new cookie format" (temporal + causal)
+- GOOD: "Redis replaced Memcached for session store — 3x faster for our read pattern" (comparative + decisional)
+
+REMEMBER PATTERNS (mix these for maximum brain connectivity):
+- Causal: "X caused Y", "Because of A, B happened", "Root cause was X which led to Y"
+- Temporal: "After A, then B", "Before doing X, must complete Y"
+- Relational: "X depends on Y", "X replaced Y", "X connects to Y through Z"
+- Decisional: "Chose X over Y because Z", "Rejected X due to Y"
+- Comparative: "X is faster than Y for Z scenario"
 
 PRIORITY SCALE: 0-3=routine notes, 5=normal, 7-8=important decisions, 9-10=critical errors/security.
 TAGS: Always include project name + topic. Keep lowercase: "react", "auth", "bug-fix".
+
+BRAIN GROWTH TIPS:
+- Store 3-5 memories per task (not just 1). A bug fix has: root cause, fix, insight, prevention.
+- Use diverse types: don't just store "fact" — use decision, insight, error, workflow, preference.
+- Link memories: mention the same entities across memories to build neural connections.
+- High-priority memories (7+) get boosted in retrieval — use them for things you'll need again.
+- After storing, call nmem_recall on the topic to reinforce the new connections.
+
+MEMORY CORRECTION:
+- Wrong type? → nmem_edit(memory_id="...", type="correct_type")
+- Wrong content? → nmem_edit(memory_id="...", content="corrected text")
+- Outdated? → nmem_forget(memory_id="...", reason="outdated")
+- Sensitive/garbage? → nmem_forget(memory_id="...", hard=true)
 
 BRAIN HEALTH: Run nmem_health() weekly. Fix the highest top_penalty first:
 - Consolidation 0% → nmem consolidate (normal for new brains, run after 1 week)
 - Orphans > 20% → nmem consolidate --strategy prune
 - Low activation → Recall 5+ different topics with nmem_recall
 - Low connectivity → Store with context: "X because Y", "after A then B"
+- Low diversity → Use varied memory types (not just facts)
 
 CONNECTION TRACING: Use nmem_explain(entity_a, entity_b) to trace paths between concepts.
+
+COGNITIVE REASONING: Use nmem_hypothesize to form hypotheses, nmem_evidence to update them,
+nmem_predict for falsifiable predictions, nmem_verify to check outcomes.
+Use nmem_schema(action="evolve") when a hypothesis needs updating.
+Use nmem_gaps(action="detect") when you notice the brain doesn't know something.
+
+ALL 38 TOOLS: nmem_remember, nmem_recall, nmem_context, nmem_todo, nmem_auto, nmem_suggest,
+nmem_session, nmem_eternal, nmem_recap, nmem_stats, nmem_health, nmem_evolution, nmem_habits,
+nmem_version, nmem_transplant, nmem_conflicts, nmem_alerts, nmem_index, nmem_train, nmem_train_db,
+nmem_pin, nmem_review, nmem_narrative, nmem_import, nmem_explain, nmem_hypothesize, nmem_evidence,
+nmem_predict, nmem_verify, nmem_cognitive, nmem_gaps, nmem_schema, nmem_edit, nmem_forget,
+nmem_sync, nmem_sync_status, nmem_sync_config, nmem_telegram_backup.
 
 NEVER skip remembering after completing a feature, fixing a bug, or making a decision.
 Each session starts fresh — without explicit saves, ALL discoveries are lost forever.\
