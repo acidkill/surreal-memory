@@ -744,9 +744,22 @@ def flush(
             typer.secho(f"No content found in transcript: {transcript}", fg=typer.colors.YELLOW)
             raise typer.Exit(0)
     else:
-        # Try reading from stdin (piped input)
+        # Try reading from stdin (piped input).
+        # Guard: when spawned as a subprocess without piped input,
+        # sys.stdin.read() blocks forever (no EOF signal). Use a
+        # background thread with timeout to prevent hanging.
         if not sys.stdin.isatty():
-            flush_content = sys.stdin.read()
+            import concurrent.futures
+
+            def _read_stdin() -> str:
+                return sys.stdin.read()
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(_read_stdin)
+                try:
+                    flush_content = future.result(timeout=5.0)
+                except concurrent.futures.TimeoutError:
+                    pass  # No piped input — fall through to "not enough content"
 
     if not flush_content or len(flush_content.strip()) < 50:
         typer.secho("Not enough content to flush (minimum 50 chars).", fg=typer.colors.YELLOW)
