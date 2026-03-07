@@ -44,10 +44,14 @@ export function createTools(mcp: NeuralMemoryMcpClient): ToolDefinition[] {
     args: Record<string, unknown>,
   ): Promise<unknown> => {
     if (!mcp.connected) {
-      return {
-        error: true,
-        message: "NeuralMemory service not running. Start the service first.",
-      };
+      try {
+        await mcp.ensureConnected();
+      } catch (err) {
+        return {
+          error: true,
+          message: `NeuralMemory auto-connect failed: ${(err as Error).message}`,
+        };
+      }
     }
 
     try {

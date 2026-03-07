@@ -9,6 +9,7 @@ function makeMockMcp(
     connected: true,
     callTool: vi.fn().mockResolvedValue("{}"),
     connect: vi.fn(),
+    ensureConnected: vi.fn().mockResolvedValue(undefined),
     close: vi.fn(),
     ...overrides,
   } as unknown as NeuralMemoryMcpClient;
@@ -316,22 +317,39 @@ describe("tool schemas", () => {
 // ── Tool execution ────────────────────────────────────────
 
 describe("tool execution", () => {
-  it("returns error when service not connected", async () => {
-    const mcp = makeMockMcp({ connected: false });
+  it("auto-connects when service not connected", async () => {
+    const ensureConnected = vi.fn().mockResolvedValue(undefined);
+    const callTool = vi.fn().mockResolvedValue("{}");
+    const mcp = makeMockMcp({
+      connected: false,
+      ensureConnected,
+      callTool,
+    });
     const tools = createTools(mcp);
-    const result = await tools[0].execute({ content: "test" });
+    await tools[0].execute("call-1", { content: "test" });
+    expect(ensureConnected).toHaveBeenCalledOnce();
+    expect(callTool).toHaveBeenCalledWith("nmem_remember", { content: "test" });
+  });
+
+  it("returns error when auto-connect fails", async () => {
+    const ensureConnected = vi
+      .fn()
+      .mockRejectedValue(new Error("python not found"));
+    const mcp = makeMockMcp({ connected: false, ensureConnected });
+    const tools = createTools(mcp);
+    const result = await tools[0].execute("call-1", { content: "test" });
     expect(result).toEqual({
       error: true,
-      message: "NeuralMemory service not running. Start the service first.",
+      message: "NeuralMemory auto-connect failed: python not found",
     });
   });
 
-  it("does not call MCP when disconnected", async () => {
-    const callTool = vi.fn().mockResolvedValue("{}");
-    const mcp = makeMockMcp({ connected: false, callTool });
+  it("skips auto-connect when already connected", async () => {
+    const ensureConnected = vi.fn();
+    const mcp = makeMockMcp({ connected: true, ensureConnected });
     const tools = createTools(mcp);
-    await tools[0].execute({ content: "test" });
-    expect(callTool).not.toHaveBeenCalled();
+    await tools[0].execute("call-1", { content: "test" });
+    expect(ensureConnected).not.toHaveBeenCalled();
   });
 
   it("catches callTool exceptions and returns structured error", async () => {

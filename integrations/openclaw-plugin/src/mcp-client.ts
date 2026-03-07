@@ -78,6 +78,7 @@ export class NeuralMemoryMcpClient {
   private readonly timeout: number;
   private readonly initTimeout: number;
   private _connected = false;
+  private _connecting: Promise<void> | null = null;
 
   constructor(options: McpClientOptions) {
     this.pythonPath = options.pythonPath;
@@ -89,6 +90,25 @@ export class NeuralMemoryMcpClient {
 
   get connected(): boolean {
     return this._connected;
+  }
+
+  /**
+   * Ensure the MCP process is connected. Safe to call concurrently —
+   * concurrent callers share the same in-flight connection attempt.
+   */
+  async ensureConnected(): Promise<void> {
+    if (this._connected) return;
+
+    if (this._connecting) {
+      await this._connecting;
+      return;
+    }
+
+    this._connecting = this.connect().finally(() => {
+      this._connecting = null;
+    });
+
+    await this._connecting;
   }
 
   async connect(): Promise<void> {
