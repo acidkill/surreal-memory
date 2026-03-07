@@ -95,6 +95,9 @@ nav:
     - Multi-Brain Setup: guides/multi-brain-setup.md
     - Brain Health Guide: guides/brain-health.md
     - OpenClaw Plugin: guides/openclaw-plugin.md
+    - Cognitive Reasoning: guides/cognitive-reasoning.md
+    - Schema v21 Migration: guides/schema-v21-migration.md
+    - Learning Habits: guides/learning-habits.md
     - Safety & Security: guides/safety.md
   - API Reference:
     - Python API: api/python.md

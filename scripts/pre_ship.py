@@ -8,6 +8,8 @@ Runs all automated checks before a release to catch common issues:
 - Fast unit tests
 - Import smoke test
 - CHANGELOG has current version entry
+- Auto-type classifier smoke test
+- Cognitive layer integration test
 
 Usage:
     python scripts/pre_ship.py          # Run all checks
@@ -16,6 +18,7 @@ Usage:
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import sys
@@ -182,11 +185,89 @@ def check_tests() -> None:
     check("pytest tests/unit/", passed, summary if not passed else f"({summary})")
 
 
-# ── 6. OpenClaw Plugin ──────────────────────────────────────────
+# ── 6. Auto-Type Classifier Smoke Test ─────────────────────────
+
+
+def check_classifier() -> None:
+    print("\n6. Auto-Type Classifier Smoke Test")
+
+    # These test cases cover the bias bug fixed in v2.27.1
+    # (DECISION was classified as INSIGHT because "because" matched first)
+    test_cases = [
+        # (content, expected_type)
+        ("Chose PostgreSQL over MongoDB because we need ACID for payments", "decision"),
+        ("Decided to use Redis instead of Memcached for caching", "decision"),
+        ("Rejected GraphQL due to team inexperience", "decision"),
+        ("Bug: the auth middleware crashes when cookie is expired", "error"),
+        ("Error: connection refused when connecting to Redis on port 6379", "error"),
+        ("Learned that asyncio.gather swallows exceptions by default", "insight"),
+        ("Turns out the bottleneck was JSON serialization, not DB queries", "insight"),
+        ("TODO: add rate limiting to the /api/upload endpoint", "todo"),
+        ("Need to migrate the database before next release", "todo"),
+        ("User prefers dark mode for all dashboards", "preference"),
+        ("Always use parameterized queries for SQL", "instruction"),
+        ("Deploy process: build, test, push to registry, update k8s", "workflow"),
+        ("API endpoint is /v2/users", "fact"),
+    ]
+
+    result = run([
+        sys.executable, "-c",
+        "from neural_memory.core.memory_types import suggest_memory_type; "
+        "import json, sys; "
+        "cases = json.loads(sys.argv[1]); "
+        "results = [(c, e, suggest_memory_type(c).value) for c, e in cases]; "
+        "failures = [(c, e, a) for c, e, a in results if e != a]; "
+        "print(json.dumps(failures))",
+        json.dumps(test_cases),
+    ])
+
+    if result.returncode != 0:
+        check("classifier import", False, result.stderr.strip()[:200])
+        return
+
+    classifier_failures = json.loads(result.stdout.strip())
+
+    if classifier_failures:
+        details = "; ".join(
+            f"'{c[:40]}...' expected={e} got={a}"
+            for c, e, a in classifier_failures[:3]
+        )
+        check(f"classifier ({len(test_cases)} cases)", False, details)
+    else:
+        check(f"classifier ({len(test_cases)} cases)", True)
+
+
+# ── 7. Cognitive Layer Integration ─────────────────────────────
+
+
+def check_cognitive() -> None:
+    print("\n7. Cognitive Layer Integration")
+
+    # Verify cognitive engine functions are importable and produce sane outputs
+    result = run([
+        sys.executable, "-c",
+        "from neural_memory.engine.cognitive import update_confidence, detect_auto_resolution; "
+        "c = update_confidence(0.5, 'for', 0.7, 0, 0); "
+        "assert 0.5 < c < 0.8, f'confidence {c} out of range'; "
+        "c2 = update_confidence(0.5, 'against', 0.7, 0, 0); "
+        "assert 0.2 < c2 < 0.5, f'confidence {c2} out of range'; "
+        "assert detect_auto_resolution(0.95, 3, 0) == 'confirmed'; "
+        "assert detect_auto_resolution(0.05, 0, 3) == 'refuted'; "
+        "assert detect_auto_resolution(0.5, 1, 1) is None; "
+        "print('ok')",
+    ])
+    check(
+        "cognitive engine (confidence + auto-resolution)",
+        result.returncode == 0 and "ok" in result.stdout,
+        result.stderr.strip()[:200] if result.returncode != 0 else "",
+    )
+
+
+# ── 8. OpenClaw Plugin ──────────────────────────────────────────
 
 
 def check_plugin() -> None:
-    print("\n6. OpenClaw Plugin")
+    print("\n8. OpenClaw Plugin")
 
     plugin_dir = ROOT / "integrations" / "openclaw-plugin"
     pkg = plugin_dir / "package.json"
@@ -236,6 +317,8 @@ def main() -> int:
     check_mypy()
     check_imports()
     check_tests()
+    check_classifier()
+    check_cognitive()
     check_plugin()
 
     print("\n" + "=" * 60)
