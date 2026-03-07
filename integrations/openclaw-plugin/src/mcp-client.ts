@@ -39,7 +39,7 @@ export type McpClientOptions = {
 const PROTOCOL_VERSION = "2024-11-05";
 const DEFAULT_TIMEOUT = 30_000;
 const CLIENT_NAME = "openclaw-neuralmemory";
-const CLIENT_VERSION = "1.5.0";
+const CLIENT_VERSION = "1.6.0";
 const MAX_BUFFER_BYTES = 10 * 1024 * 1024; // 10 MB safety cap
 const MAX_STDERR_LINES = 50;
 
