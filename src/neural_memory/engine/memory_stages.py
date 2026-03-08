@@ -46,6 +46,14 @@ _EPISODIC_TO_SEMANTIC = timedelta(days=7)
 # Spacing effect: minimum distinct days of reinforcement for semantic promotion
 _MIN_DISTINCT_DAYS = 3
 
+# Alternative path for AI agents: high rehearsal count with temporal spread.
+# Agents recall the same memory many times per day but rarely across 3 distinct
+# calendar days. This alternative requires 15+ rehearsals spread across 5+
+# distinct 2-hour windows, still with the 7-day time gate.
+_MIN_REHEARSAL_COUNT = 15
+_MIN_DISTINCT_WINDOWS = 5
+_WINDOW_SIZE_HOURS = 2
+
 
 @dataclass(frozen=True)
 class MaturationRecord:
@@ -126,6 +134,23 @@ class MaturationRecord:
         return len(days)
 
     @property
+    def distinct_reinforcement_windows(self) -> int:
+        """Count distinct 2-hour windows with reinforcement events.
+
+        Groups timestamps into 2-hour buckets (0-1, 2-3, 4-5, ...) per day
+        to measure temporal spread without requiring distinct calendar days.
+        """
+        windows: set[str] = set()
+        for ts_str in self.reinforcement_timestamps:
+            try:
+                dt = datetime.fromisoformat(ts_str)
+                bucket = dt.hour // _WINDOW_SIZE_HOURS
+                windows.add(f"{dt.strftime('%Y-%m-%d')}:{bucket}")
+            except ValueError:
+                continue
+        return len(windows)
+
+    @property
     def decay_multiplier(self) -> float:
         """Get the decay rate multiplier for the current stage."""
         return STAGE_DECAY_MULTIPLIERS.get(self.stage, 1.0)
@@ -174,7 +199,7 @@ def compute_stage_transition(
     Stage transition rules:
     - STM → Working: time > 30 minutes
     - Working → Episodic: time > 4 hours
-    - Episodic → Semantic: time > 7 days AND 3+ distinct reinforcement days
+    - Episodic → Semantic: time > 7 days AND (3+ distinct days OR 15+ rehearsals with 5+ 2h-windows)
 
     Args:
         record: Current maturation record
@@ -195,9 +220,14 @@ def compute_stage_transition(
             return record.advance_stage(MemoryStage.EPISODIC, now)
 
     elif record.stage == MemoryStage.EPISODIC:
-        if (
-            time_in_stage >= _EPISODIC_TO_SEMANTIC
-            and record.distinct_reinforcement_days >= _MIN_DISTINCT_DAYS
+        if time_in_stage >= _EPISODIC_TO_SEMANTIC and (
+            # Classic path: 3+ distinct calendar days (human spaced repetition)
+            record.distinct_reinforcement_days >= _MIN_DISTINCT_DAYS
+            # Agent path: 15+ rehearsals spread across 5+ distinct 2h windows
+            or (
+                record.rehearsal_count >= _MIN_REHEARSAL_COUNT
+                and record.distinct_reinforcement_windows >= _MIN_DISTINCT_WINDOWS
+            )
         ):
             return record.advance_stage(MemoryStage.SEMANTIC, now)
 

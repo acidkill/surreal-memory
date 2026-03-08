@@ -6,7 +6,7 @@
   },
   "metadata": {
     "description": "Reflex-based memory system for AI agents. Stores experiences as interconnected neurons, recalls through spreading activation — not search.",
-    "version": "2.27.3"
+    "version": "2.28.0"
   },
   "plugins": [
     {
@@ -16,7 +16,7 @@
         "repo": "nhadaututtheky/neural-memory"
       },
       "description": "Reflex-based memory system for AI agents — stores experiences as interconnected neurons and recalls them through spreading activation, mimicking how the human brain works.",
-      "version": "2.27.3",
+      "version": "2.28.0",
       "author": {
         "name": "NeuralMemory Contributors"
       },
@@ -37,7 +37,7 @@
       ],
       "category": "productivity",
       "features": [
-        "38 MCP tools for persistent AI memory + cognitive reasoning",
+        "39 MCP tools for persistent AI memory + cognitive reasoning",
         "Knowledge base training from PDF/DOCX/PPTX/HTML/JSON/XLSX/CSV",
         "Spreading activation recall (not keyword search)",
         "Pinned KB memories — permanent, skip decay/prune",

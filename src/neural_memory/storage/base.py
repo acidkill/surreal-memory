@@ -761,6 +761,30 @@ class NeuralStorage(ABC):
         """
         raise NotImplementedError
 
+    async def get_promotion_candidates(
+        self,
+        min_frequency: int = 5,
+        source_type: str = "context",
+    ) -> list[dict[str, Any]]:
+        """Find typed memories eligible for auto-promotion.
+
+        Returns context memories whose fibers have frequency >= min_frequency.
+        """
+        raise NotImplementedError
+
+    async def promote_memory_type(
+        self,
+        fiber_id: str,
+        new_type: MemoryType,
+        new_expires_at: str | None = None,
+    ) -> bool:
+        """Promote a memory's type and update its expiry.
+
+        Stores the original type in metadata for audit trail.
+        Returns True if the promotion was applied.
+        """
+        raise NotImplementedError
+
     async def get_stale_fiber_count(self, brain_id: str, stale_days: int = 90) -> int:
         """Get count of fibers that are stale (unused for a long time).
 

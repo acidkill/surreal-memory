@@ -164,6 +164,20 @@ def row_to_typed_memory(row: aiosqlite.Row) -> TypedMemory:
         ),
     )
 
+    # trust_score and source added in schema v22 — handle missing columns gracefully
+    trust_score = None
+    source = None
+    try:
+        trust_score = row["trust_score"]
+        if trust_score is not None:
+            trust_score = float(trust_score)
+    except (IndexError, KeyError):
+        pass
+    try:
+        source = row["source"]
+    except (IndexError, KeyError):
+        pass
+
     return TypedMemory(
         fiber_id=row["fiber_id"],
         memory_type=MemoryType(row["memory_type"]),
@@ -174,6 +188,8 @@ def row_to_typed_memory(row: aiosqlite.Row) -> TypedMemory:
         tags=frozenset(json.loads(row["tags"])),
         metadata=json.loads(row["metadata"]),
         created_at=datetime.fromisoformat(row["created_at"]),
+        trust_score=trust_score,
+        source=source,
     )
 
 

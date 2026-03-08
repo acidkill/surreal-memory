@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
 from neural_memory.core.memory_types import MemoryType, Priority, TypedMemory
 from neural_memory.storage.sqlite_row_mappers import provenance_to_dict, row_to_typed_memory
 from neural_memory.utils.timeutils import utcnow
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -38,8 +41,9 @@ class SQLiteTypedMemoryMixin:
         await conn.execute(
             """INSERT OR REPLACE INTO typed_memories
                (fiber_id, brain_id, memory_type, priority, provenance,
-                expires_at, project_id, tags, metadata, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                expires_at, project_id, tags, metadata, created_at,
+                trust_score, source)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 typed_memory.fiber_id,
                 brain_id,
@@ -51,6 +55,8 @@ class SQLiteTypedMemoryMixin:
                 json.dumps(list(typed_memory.tags)),
                 json.dumps(typed_memory.metadata),
                 typed_memory.created_at.isoformat(),
+                typed_memory.trust_score,
+                typed_memory.source,
             ),
         )
         await conn.commit()
@@ -121,7 +127,7 @@ class SQLiteTypedMemoryMixin:
         cursor = await conn.execute(
             """UPDATE typed_memories SET memory_type = ?, priority = ?,
                provenance = ?, expires_at = ?, project_id = ?,
-               tags = ?, metadata = ?
+               tags = ?, metadata = ?, trust_score = ?, source = ?
                WHERE fiber_id = ? AND brain_id = ?""",
             (
                 typed_memory.memory_type.value,
@@ -131,6 +137,8 @@ class SQLiteTypedMemoryMixin:
                 typed_memory.project_id,
                 json.dumps(list(typed_memory.tags)),
                 json.dumps(typed_memory.metadata),
+                typed_memory.trust_score,
+                typed_memory.source,
                 typed_memory.fiber_id,
                 brain_id,
             ),
@@ -230,3 +238,97 @@ class SQLiteTypedMemoryMixin:
             project_id=project_id,
             include_expired=include_expired,
         )
+
+    async def get_promotion_candidates(
+        self,
+        min_frequency: int = 5,
+        source_type: str = "context",
+    ) -> list[dict[str, Any]]:
+        """Find typed memories eligible for auto-promotion.
+
+        Returns context memories whose fibers have frequency >= min_frequency.
+        """
+        conn = self._ensure_conn()
+        brain_id = self._get_brain_id()
+
+        async with conn.execute(
+            """SELECT tm.fiber_id, tm.memory_type, tm.expires_at, tm.metadata,
+                      f.frequency, f.conductivity
+               FROM typed_memories tm
+               JOIN fibers f ON f.id = tm.fiber_id AND f.brain_id = tm.brain_id
+               WHERE tm.brain_id = ?
+                 AND tm.memory_type = ?
+                 AND f.frequency >= ?
+                 AND f.pinned = 0
+               LIMIT 200""",
+            (brain_id, source_type, min_frequency),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [
+                {
+                    "fiber_id": row[0],
+                    "memory_type": row[1],
+                    "expires_at": row[2],
+                    "metadata": json.loads(row[3]) if row[3] else {},
+                    "frequency": row[4],
+                    "conductivity": row[5],
+                }
+                for row in rows
+            ]
+
+    async def promote_memory_type(
+        self,
+        fiber_id: str,
+        new_type: MemoryType,
+        new_expires_at: str | None = None,
+    ) -> bool:
+        """Promote a memory's type and update its expiry.
+
+        Stores the original type in metadata for audit trail.
+        Returns True if the promotion was applied.
+        """
+        conn = self._ensure_conn()
+        brain_id = self._get_brain_id()
+
+        # Fetch current metadata to preserve + augment
+        cursor = await conn.execute(
+            "SELECT metadata, memory_type FROM typed_memories WHERE fiber_id = ? AND brain_id = ?",
+            (fiber_id, brain_id),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return False
+
+        current_meta = json.loads(row[0]) if row[0] else {}
+        old_type = row[1]
+
+        # Already promoted or already the target type
+        if old_type == new_type.value:
+            return False
+
+        current_meta["auto_promoted"] = True
+        current_meta["promoted_from"] = old_type
+        current_meta["promoted_at"] = utcnow().isoformat()
+
+        result = await conn.execute(
+            """UPDATE typed_memories
+               SET memory_type = ?, expires_at = ?, metadata = ?
+               WHERE fiber_id = ? AND brain_id = ?""",
+            (
+                new_type.value,
+                new_expires_at,
+                json.dumps(current_meta),
+                fiber_id,
+                brain_id,
+            ),
+        )
+        await conn.commit()
+
+        if result.rowcount > 0:
+            logger.info(
+                "Auto-promoted fiber %s from %s to %s (frequency-based)",
+                fiber_id,
+                old_type,
+                new_type.value,
+            )
+        return result.rowcount > 0

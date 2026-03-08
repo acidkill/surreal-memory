@@ -65,7 +65,7 @@ class TestToolTiers:
 
     def test_full_tier_returns_all(self) -> None:
         tools = get_tool_schemas_for_tier("full")
-        assert len(tools) == 38
+        assert len(tools) == 39
 
     def test_full_tier_matches_get_tool_schemas(self) -> None:
         full = get_tool_schemas_for_tier("full")
@@ -75,13 +75,14 @@ class TestToolTiers:
 
     def test_standard_tier_count(self) -> None:
         tools = get_tool_schemas_for_tier("standard")
-        assert len(tools) == 8
+        assert len(tools) == 9
 
     def test_standard_tier_correct_names(self) -> None:
         tools = get_tool_schemas_for_tier("standard")
         names = {t["name"] for t in tools}
         assert names == {
             "nmem_remember",
+            "nmem_remember_batch",
             "nmem_recall",
             "nmem_context",
             "nmem_recap",
@@ -107,7 +108,7 @@ class TestToolTiers:
 
     def test_invalid_tier_defaults_to_full(self) -> None:
         tools = get_tool_schemas_for_tier("bogus")
-        assert len(tools) == 38
+        assert len(tools) == 39
 
     def test_tier_hierarchy_minimal_subset_of_standard(self) -> None:
         assert TOOL_TIERS["minimal"] < TOOL_TIERS["standard"]
@@ -132,13 +133,13 @@ class TestToolTiers:
         a = get_tool_schemas()
         b = get_tool_schemas()
         a.pop()
-        assert len(b) == 38
+        assert len(b) == 39
 
     def test_get_tool_schemas_for_tier_returns_copy(self) -> None:
         a = get_tool_schemas_for_tier("standard")
         b = get_tool_schemas_for_tier("standard")
         a.pop()
-        assert len(b) == 8
+        assert len(b) == 9
 
 
 class TestServerTierIntegration:
@@ -157,11 +158,11 @@ class TestServerTierIntegration:
 
     def test_server_full_tier(self) -> None:
         server = self._make_server("full")
-        assert len(server.get_tools()) == 38
+        assert len(server.get_tools()) == 39
 
     def test_server_standard_tier(self) -> None:
         server = self._make_server("standard")
-        assert len(server.get_tools()) == 8
+        assert len(server.get_tools()) == 9
 
     def test_server_minimal_tier(self) -> None:
         server = self._make_server("minimal")

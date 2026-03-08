@@ -18,6 +18,7 @@ TOOL_TIERS: dict[str, frozenset[str]] = {
     "standard": frozenset(
         {
             "nmem_remember",
+            "nmem_remember_batch",
             "nmem_recall",
             "nmem_context",
             "nmem_recap",
@@ -124,8 +125,84 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "(e.g. '2026-03-02T08:00:00'). Defaults to current time if not provided. "
                     "Useful for batch-importing past events with correct timestamps.",
                 },
+                "trust_score": {
+                    "type": "number",
+                    "minimum": 0.0,
+                    "maximum": 1.0,
+                    "description": "Trust level 0.0-1.0. Capped by source ceiling "
+                    "(user_input max 0.9, ai_inference max 0.7). NULL = unscored.",
+                },
             },
             "required": ["content"],
+        },
+    },
+    {
+        "name": "nmem_remember_batch",
+        "description": "Store multiple memories in a single call. Max 20 items, 500K total chars. "
+        "Each item supports the same fields as nmem_remember. Returns per-item results "
+        "(partial success — one bad item won't block the rest).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "memories": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "content": {"type": "string", "description": "The content to remember"},
+                            "type": {
+                                "type": "string",
+                                "enum": [
+                                    "fact",
+                                    "decision",
+                                    "preference",
+                                    "todo",
+                                    "insight",
+                                    "context",
+                                    "instruction",
+                                    "error",
+                                    "workflow",
+                                    "reference",
+                                ],
+                                "description": "Memory type (auto-detected if not specified)",
+                            },
+                            "priority": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 10,
+                                "description": "Priority 0-10 (5=normal, 10=critical)",
+                            },
+                            "tags": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Tags for categorization",
+                            },
+                            "expires_days": {
+                                "type": "integer",
+                                "description": "Days until memory expires",
+                            },
+                            "encrypted": {
+                                "type": "boolean",
+                                "description": "Force encrypt this memory",
+                            },
+                            "event_at": {
+                                "type": "string",
+                                "description": "ISO datetime of when the event originally occurred",
+                            },
+                            "trust_score": {
+                                "type": "number",
+                                "minimum": 0.0,
+                                "maximum": 1.0,
+                                "description": "Trust level 0.0-1.0",
+                            },
+                        },
+                        "required": ["content"],
+                    },
+                    "description": "Array of memories to store (max 20)",
+                    "maxItems": 20,
+                },
+            },
+            "required": ["memories"],
         },
     },
     {
@@ -171,6 +248,12 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "Optional list of brain names to query across (max 5). When provided, runs parallel recall across all specified brains and merges results.",
+                },
+                "min_trust": {
+                    "type": "number",
+                    "minimum": 0.0,
+                    "maximum": 1.0,
+                    "description": "Filter: only return memories with trust_score >= this value. Unscored memories (NULL) are always included.",
                 },
             },
             "required": ["query"],

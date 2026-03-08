@@ -93,6 +93,7 @@ class ConsolidationReport:
     action_events_pruned: int = 0
     duplicates_found: int = 0
     semantic_synapses_created: int = 0
+    memories_promoted: int = 0
     fibers_compressed: int = 0
     tokens_saved: int = 0
     neurons_reactivated: int = 0
@@ -117,6 +118,7 @@ class ConsolidationReport:
             f"  Action events pruned: {self.action_events_pruned}",
             f"  Duplicates found: {self.duplicates_found}",
             f"  Semantic synapses: {self.semantic_synapses_created}",
+            f"  Memories promoted: {self.memories_promoted}",
             f"  Fibers compressed: {self.fibers_compressed}",
             f"  Tokens saved: {self.tokens_saved}",
             f"  Duration: {self.duration_ms:.1f}ms",
@@ -711,19 +713,51 @@ class ConsolidationEngine:
         reference_time: datetime,
         dry_run: bool,
     ) -> None:
-        """Advance memory maturation stages and extract semantic patterns.
+        """Advance memory maturation stages, auto-promote types, extract patterns.
 
+        0. Auto-promote frequently-recalled context memories to fact
         1. Advance all maturation records through stage transitions
         2. Extract patterns from episodic memories ready for semantic promotion
         """
         import logging
 
+        from neural_memory.core.memory_types import MemoryType
         from neural_memory.engine.memory_stages import (
             compute_stage_transition,
         )
         from neural_memory.engine.pattern_extraction import extract_patterns
 
         _logger = logging.getLogger(__name__)
+
+        # Phase 0: Auto-promote context→fact for frequently-recalled memories
+        # Must run before prune to prevent promotion candidates from expiring.
+        # Graduated: frequency >= 5 triggers promotion to fact (no expiry).
+        if not dry_run:
+            try:
+                candidates = await self._storage.get_promotion_candidates(
+                    min_frequency=5,
+                    source_type="context",
+                )
+                for candidate in candidates:
+                    fiber_id = candidate["fiber_id"]
+                    meta = candidate.get("metadata", {})
+                    # Skip already-promoted memories
+                    if meta.get("auto_promoted"):
+                        continue
+                    promoted = await self._storage.promote_memory_type(
+                        fiber_id=fiber_id,
+                        new_type=MemoryType.FACT,
+                        new_expires_at=None,  # Facts don't expire
+                    )
+                    if promoted:
+                        report.memories_promoted += 1
+                if report.memories_promoted > 0:
+                    _logger.info(
+                        "Auto-promoted %d context memories to fact",
+                        report.memories_promoted,
+                    )
+            except Exception:
+                _logger.warning("Auto-promote failed (non-critical)", exc_info=True)
 
         # Clean up orphaned maturation records (fibers deleted without CASCADE)
         cleaned = await self._storage.cleanup_orphaned_maturations()

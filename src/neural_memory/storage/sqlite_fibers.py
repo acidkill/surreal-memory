@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal
@@ -12,6 +13,8 @@ from neural_memory.storage.sqlite_row_mappers import row_to_fiber
 
 if TYPE_CHECKING:
     import aiosqlite
+
+logger = logging.getLogger(__name__)
 
 
 class SQLiteFiberMixin:
@@ -206,18 +209,28 @@ class SQLiteFiberMixin:
         )
 
         if cursor.rowcount == 0:
-            raise ValueError(f"Fiber {fiber.id} does not exist")
+            # Fiber was deleted (e.g. by consolidation prune) between
+            # deferred queue enqueue and flush — skip gracefully.
+            logger.debug("Skipping update for deleted fiber %s", fiber.id)
+            return
 
         # Refresh junction table
-        await conn.execute(
-            "DELETE FROM fiber_neurons WHERE brain_id = ? AND fiber_id = ?",
-            (brain_id, fiber.id),
-        )
-        if fiber.neuron_ids:
-            await conn.executemany(
-                "INSERT OR IGNORE INTO fiber_neurons (brain_id, fiber_id, neuron_id) VALUES (?, ?, ?)",
-                [(brain_id, fiber.id, nid) for nid in fiber.neuron_ids],
+        try:
+            await conn.execute(
+                "DELETE FROM fiber_neurons WHERE brain_id = ? AND fiber_id = ?",
+                (brain_id, fiber.id),
             )
+            if fiber.neuron_ids:
+                await conn.executemany(
+                    "INSERT OR IGNORE INTO fiber_neurons (brain_id, fiber_id, neuron_id) VALUES (?, ?, ?)",
+                    [(brain_id, fiber.id, nid) for nid in fiber.neuron_ids],
+                )
+        except sqlite3.IntegrityError:
+            logger.debug(
+                "FK constraint on fiber_neurons for fiber %s — fiber or neuron deleted concurrently",
+                fiber.id,
+            )
+            return
 
         await conn.commit()
 

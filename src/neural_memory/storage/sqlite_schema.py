@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Schema version for migrations
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 22
 
 # â”€â”€ Migrations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Each entry maps (from_version -> to_version) with a list of SQL statements.
@@ -409,6 +409,12 @@ MIGRATIONS: dict[tuple[int, int], list[str]] = {
         "CREATE INDEX IF NOT EXISTS idx_gaps_brain ON knowledge_gaps(brain_id, resolved_at)",
         "CREATE INDEX IF NOT EXISTS idx_gaps_priority ON knowledge_gaps(brain_id, priority DESC)",
     ],
+    (21, 22): [
+        # Trust score: queryable trust level + source on typed memories
+        "ALTER TABLE typed_memories ADD COLUMN trust_score REAL DEFAULT NULL",
+        "ALTER TABLE typed_memories ADD COLUMN source TEXT DEFAULT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_typed_memories_trust ON typed_memories(brain_id, trust_score)",
+    ],
 }
 
 
@@ -612,6 +618,8 @@ CREATE TABLE IF NOT EXISTS typed_memories (
     tags TEXT DEFAULT '[]',  -- JSON array
     metadata TEXT DEFAULT '{}',  -- JSON
     created_at TEXT NOT NULL,
+    trust_score REAL DEFAULT NULL,
+    source TEXT DEFAULT NULL,
     PRIMARY KEY (brain_id, fiber_id),
     FOREIGN KEY (brain_id, fiber_id) REFERENCES fibers(brain_id, id) ON DELETE CASCADE,
     FOREIGN KEY (brain_id) REFERENCES brains(id) ON DELETE CASCADE,
@@ -620,6 +628,7 @@ CREATE TABLE IF NOT EXISTS typed_memories (
 CREATE INDEX IF NOT EXISTS idx_typed_memories_type ON typed_memories(brain_id, memory_type);
 CREATE INDEX IF NOT EXISTS idx_typed_memories_project ON typed_memories(brain_id, project_id);
 CREATE INDEX IF NOT EXISTS idx_typed_memories_expires ON typed_memories(brain_id, expires_at);
+CREATE INDEX IF NOT EXISTS idx_typed_memories_trust ON typed_memories(brain_id, trust_score);
 
 -- Projects table
 CREATE TABLE IF NOT EXISTS projects (

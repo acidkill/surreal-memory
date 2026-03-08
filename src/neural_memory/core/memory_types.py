@@ -117,6 +117,41 @@ class Provenance:
         )
 
 
+# Trust score ceilings per source — agents can lower but not exceed system ceiling.
+_TRUST_CEILINGS: dict[str, float] = {
+    "verified": 1.0,
+    "user_input": 0.9,
+    "direct": 0.9,
+    "observation": 0.8,
+    "import": 0.7,
+    "ai_inference": 0.7,
+    "auto_capture": 0.5,
+    "mcp_tool": 0.8,
+}
+_DEFAULT_TRUST_CEILING = 0.8
+
+
+def _cap_trust_score(trust: float | None, source: str) -> float | None:
+    """Cap trust score to the source-specific ceiling.
+
+    Args:
+        trust: Requested trust score (0.0-1.0) or None
+        source: Memory source label
+
+    Returns:
+        Capped trust score, or None if unscored
+    """
+    if trust is None:
+        return None
+    trust = max(0.0, min(1.0, trust))  # Clamp to valid range
+    # Extract base source (e.g. "mcp:claude_code" → "mcp_tool")
+    base_source = source.split(":")[0] if ":" in source else source
+    if base_source == "mcp":
+        base_source = "mcp_tool"
+    ceiling = _TRUST_CEILINGS.get(base_source, _DEFAULT_TRUST_CEILING)
+    return min(trust, ceiling)
+
+
 @dataclass(frozen=True)
 class TypedMemory:
     """A memory with type classification, priority, and lifecycle metadata.
@@ -133,6 +168,8 @@ class TypedMemory:
         tags: Additional categorization tags
         metadata: Extra type-specific data
         created_at: Creation timestamp
+        trust_score: Trust level 0.0-1.0 (None = unscored)
+        source: Origin label (e.g. "user_input", "ai_inference", "import")
     """
 
     fiber_id: str
@@ -144,6 +181,8 @@ class TypedMemory:
     tags: frozenset[str] = field(default_factory=frozenset)
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at: datetime = field(default_factory=utcnow)
+    trust_score: float | None = None
+    source: str | None = None
 
     @classmethod
     def create(
@@ -157,6 +196,7 @@ class TypedMemory:
         project_id: str | None = None,
         tags: set[str] | None = None,
         metadata: dict[str, Any] | None = None,
+        trust_score: float | None = None,
     ) -> TypedMemory:
         """Factory method to create a TypedMemory.
 
@@ -170,6 +210,7 @@ class TypedMemory:
             project_id: Optional project scope
             tags: Optional tags
             metadata: Optional metadata
+            trust_score: Trust level 0.0-1.0 (None = unscored)
 
         Returns:
             A new TypedMemory instance
@@ -181,6 +222,9 @@ class TypedMemory:
         if expires_in_days is not None:
             expires_at = utcnow() + timedelta(days=expires_in_days)
 
+        # Cap trust_score by source ceiling
+        capped_trust = _cap_trust_score(trust_score, source)
+
         return cls(
             fiber_id=fiber_id,
             memory_type=memory_type,
@@ -191,6 +235,8 @@ class TypedMemory:
             tags=frozenset(tags) if tags else frozenset(),
             metadata=metadata or {},
             created_at=utcnow(),
+            trust_score=capped_trust,
+            source=source,
         )
 
     @property

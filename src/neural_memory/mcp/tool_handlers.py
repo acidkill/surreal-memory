@@ -367,6 +367,16 @@ class ToolHandler:
             mcp_source = f"mcp:{_source}" if _source else "mcp_tool"
 
             expiry_days = args.get("expires_days")
+            raw_trust = args.get("trust_score")
+            trust_score: float | None = None
+            if raw_trust is not None:
+                try:
+                    trust_score = float(raw_trust)
+                    if not (0.0 <= trust_score <= 1.0):
+                        return {"error": f"trust_score must be 0.0-1.0, got {raw_trust}"}
+                except (TypeError, ValueError):
+                    return {"error": f"Invalid trust_score: {raw_trust}"}
+
             typed_mem = TypedMemory.create(
                 fiber_id=result.fiber.id,
                 memory_type=mem_type,
@@ -374,6 +384,7 @@ class ToolHandler:
                 source=mcp_source,
                 expires_in_days=expiry_days,
                 tags=tags if tags else None,
+                trust_score=trust_score,
             )
             await storage.add_typed_memory(typed_mem)
 
@@ -560,6 +571,85 @@ class ToolHandler:
 
         return response
 
+    async def _remember_batch(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Store multiple memories in a single call."""
+        from neural_memory.mcp.constants import MAX_BATCH_SIZE, MAX_BATCH_TOTAL_CHARS
+
+        memories = args.get("memories")
+        if not memories or not isinstance(memories, list):
+            return {"error": "memories is required and must be an array"}
+        if len(memories) > MAX_BATCH_SIZE:
+            return {"error": f"Too many items ({len(memories)}). Max: {MAX_BATCH_SIZE}."}
+        if len(memories) == 0:
+            return {"error": "memories array must not be empty"}
+
+        # Validate total content size to prevent memory pressure
+        total_chars = sum(len(m.get("content", "")) for m in memories if isinstance(m, dict))
+        if total_chars > MAX_BATCH_TOTAL_CHARS:
+            return {
+                "error": f"Total content too large ({total_chars} chars). Max: {MAX_BATCH_TOTAL_CHARS}."
+            }
+
+        results: list[dict[str, Any]] = []
+        saved = 0
+        failed = 0
+
+        for idx, item in enumerate(memories):
+            if not isinstance(item, dict):
+                results.append(
+                    {"index": idx, "status": "error", "reason": "item must be an object"}
+                )
+                failed += 1
+                continue
+
+            # Build args for single _remember, preserving all supported fields
+            single_args: dict[str, Any] = {}
+            for key in (
+                "content",
+                "type",
+                "priority",
+                "tags",
+                "expires_days",
+                "encrypted",
+                "event_at",
+            ):
+                if key in item:
+                    single_args[key] = item[key]
+
+            try:
+                result = await self._remember(single_args)
+                if result.get("success"):
+                    results.append(
+                        {
+                            "index": idx,
+                            "status": "ok",
+                            "fiber_id": result.get("fiber_id"),
+                            "memory_type": result.get("memory_type"),
+                        }
+                    )
+                    saved += 1
+                else:
+                    results.append(
+                        {
+                            "index": idx,
+                            "status": "error",
+                            "reason": result.get("error", "unknown error"),
+                        }
+                    )
+                    failed += 1
+            except Exception as e:
+                logger.error("Batch remember item %d failed: %s", idx, e)
+                results.append({"index": idx, "status": "error", "reason": str(e)})
+                failed += 1
+
+        return {
+            "success": saved > 0,
+            "saved": saved,
+            "failed": failed,
+            "total": len(memories),
+            "results": results,
+        }
+
     async def _recall(self, args: dict[str, Any]) -> dict[str, Any]:
         """Query memories via spreading activation."""
         # Cross-brain recall: early return if brains parameter is provided
@@ -585,6 +675,13 @@ class ToolHandler:
             return {"error": f"Invalid depth level: {args.get('depth')}. Must be 0-3."}
         max_tokens = min(args.get("max_tokens", 500), 10_000)
         min_confidence = args.get("min_confidence", 0.0)
+        min_trust: float | None = None
+        raw_min_trust = args.get("min_trust")
+        if raw_min_trust is not None:
+            try:
+                min_trust = float(raw_min_trust)
+            except (TypeError, ValueError):
+                return {"error": f"Invalid min_trust: {raw_min_trust}"}
 
         # Inject session context for richer recall on vague queries
         effective_query = query
@@ -639,6 +736,27 @@ class ToolHandler:
                 "message": f"No memories found with confidence >= {min_confidence}",
                 "confidence": result.confidence,
             }
+
+        # Post-filter by trust_score if min_trust is specified
+        if min_trust is not None and result.fibers_matched:
+            try:
+                trusted_fiber_ids: set[str] = set()
+                for fid in result.fibers_matched:
+                    tm = await storage.get_typed_memory(fid)
+                    if tm is None:
+                        trusted_fiber_ids.add(fid)  # No typed_memory = include by default
+                    elif tm.trust_score is None:
+                        trusted_fiber_ids.add(fid)  # Unscored = include by default
+                    elif tm.trust_score >= min_trust:
+                        trusted_fiber_ids.add(fid)
+                filtered_fibers = [f for f in result.fibers_matched if f in trusted_fiber_ids]
+                result = (
+                    result._replace(fibers_matched=filtered_fibers)
+                    if hasattr(result, "_replace")
+                    else result
+                )
+            except Exception:
+                logger.debug("Trust filter failed (non-critical)", exc_info=True)
 
         response: dict[str, Any] = {
             "answer": result.context or "No relevant memories found.",

@@ -178,6 +178,7 @@ class MCPServer(
         """Dispatch a tool call to the appropriate handler."""
         dispatch = {
             "nmem_remember": self._remember,
+            "nmem_remember_batch": self._remember_batch,
             "nmem_recall": self._recall,
             "nmem_context": self._context,
             "nmem_todo": self._todo,
@@ -339,13 +340,15 @@ def _lazy_init() -> None:
     Safe to call on every MCP start — no-ops if config already exists.
     Only touches config/brain/hooks; never writes to stdout (reserved for JSON-RPC).
     """
-    from neural_memory.cli.setup import setup_brain, setup_config, setup_hooks_claude
     from neural_memory.unified_config import get_neuralmemory_dir
 
     data_dir = get_neuralmemory_dir()
     config_path = data_dir / "config.toml"
     if config_path.exists():
-        return  # Already initialized — fast path, no work done
+        return  # Already initialized — fast path, no heavy imports
+
+    # Only import cli.setup when first-time init is actually needed
+    from neural_memory.cli.setup import setup_brain, setup_config, setup_hooks_claude
 
     try:
         setup_config(data_dir)
