@@ -269,7 +269,7 @@ def check_cognitive() -> None:
 def check_plugin() -> None:
     print("\n8. OpenClaw Plugin")
 
-    plugin_dir = ROOT / "integrations" / "openclaw-plugin"
+    plugin_dir = ROOT / "integrations" / "neuralmemory"
     pkg = plugin_dir / "package.json"
     manifest = plugin_dir / "openclaw.plugin.json"
 
