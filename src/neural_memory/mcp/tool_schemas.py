@@ -304,7 +304,7 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "name": "nmem_stats",
         "description": "Brain stats: memory counts and freshness.",
-        "inputSchema": {"type": "object", "properties": {}},
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
     },
     {
         "name": "nmem_auto",
@@ -512,12 +512,12 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "name": "nmem_health",
         "description": "Brain health: purity score, grade, warnings.",
-        "inputSchema": {"type": "object", "properties": {}},
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
     },
     {
         "name": "nmem_evolution",
         "description": "Brain evolution: maturation, plasticity, coherence.",
-        "inputSchema": {"type": "object", "properties": {}},
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
     },
     {
         "name": "nmem_habits",
