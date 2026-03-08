@@ -1079,9 +1079,7 @@ class BuildFiberStep:
         )
 
         # Copy metadata to avoid leaking non-serializable objects into the fiber
-        fiber_metadata = {
-            k: v for k, v in ctx.effective_metadata.items() if k != "_pipeline_fiber"
-        }
+        fiber_metadata = {k: v for k, v in ctx.effective_metadata.items() if k != "_pipeline_fiber"}
         fiber = Fiber.create(
             neuron_ids=neuron_ids,
             synapse_ids=synapse_ids,
