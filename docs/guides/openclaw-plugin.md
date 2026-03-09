@@ -37,7 +37,7 @@ context window. Memories survive compaction, session restarts, and device change
 
 ```bash
 pip install neural-memory
-npm install -g @neuralmemory/openclaw-plugin
+npm install neuralmemory
 ```
 
 ### Step 2: Configure the memory slot
