@@ -26,6 +26,13 @@ type JsonRpcMessage = {
   error?: { code: number; message: string; data?: unknown };
 };
 
+/** Raw tool definition from MCP `tools/list` response. */
+export type McpToolDefinition = {
+  name: string;
+  description?: string;
+  inputSchema?: Record<string, unknown>;
+};
+
 export type McpClientOptions = {
   readonly pythonPath: string;
   readonly brain: string;
@@ -39,7 +46,7 @@ export type McpClientOptions = {
 const PROTOCOL_VERSION = "2024-11-05";
 const DEFAULT_TIMEOUT = 30_000;
 const CLIENT_NAME = "openclaw-neuralmemory";
-const CLIENT_VERSION = "1.6.0";
+const CLIENT_VERSION = "1.7.0";
 const MAX_BUFFER_BYTES = 10 * 1024 * 1024; // 10 MB safety cap
 const MAX_STDERR_LINES = 50;
 
@@ -188,6 +195,17 @@ export class NeuralMemoryMcpClient {
     this.logger.info(
       `MCP connected (brain: ${this.brain}, protocol: ${PROTOCOL_VERSION})`,
     );
+  }
+
+  /**
+   * Fetch all available tools from the MCP server via `tools/list`.
+   * Returns the raw MCP tool definitions (name, description, inputSchema).
+   */
+  async listTools(): Promise<McpToolDefinition[]> {
+    const result = (await this.send("tools/list", {})) as {
+      tools?: McpToolDefinition[];
+    };
+    return result.tools ?? [];
   }
 
   async callTool(

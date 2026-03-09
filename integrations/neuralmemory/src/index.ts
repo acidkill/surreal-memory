@@ -7,8 +7,12 @@
  * Architecture:
  *   OpenClaw ←→ Plugin (TypeScript) ←→ MCP stdio ←→ NeuralMemory (Python)
  *
+ * v1.7.0: Dynamic tool proxy — fetches all tools from MCP `tools/list`
+ * instead of hardcoding 6 tools. Automatically exposes every tool the
+ * MCP server provides (39+ tools in NM v2.28.0).
+ *
  * Registers:
- *   6 tools    — nmem_remember, nmem_recall, nmem_context, nmem_todo, nmem_stats, nmem_health
+ *   N tools    — dynamically from MCP server (fallback: 5 core tools)
  *   1 service  — MCP process lifecycle (start/stop)
  *   2 hooks    — before_agent_start (auto-context), agent_end (auto-capture)
  */
@@ -18,28 +22,33 @@ import type {
   OpenClawPluginApi,
   BeforeAgentStartEvent,
   BeforeAgentStartResult,
-  AgentContext,
   AgentEndEvent,
 } from "./types.js";
 import { NeuralMemoryMcpClient } from "./mcp-client.js";
-import { createTools } from "./tools.js";
+import { createToolsFromMcp, createFallbackTools } from "./tools.js";
+import type { ToolDefinition } from "./tools.js";
 
 // ── System prompt for tool awareness ──────────────────────
 
-const TOOL_INSTRUCTIONS = `You have NeuralMemory tools for persistent memory across sessions. Call these as TOOL CALLS (not CLI commands):
+/**
+ * Build a system prompt listing all registered tool names.
+ * This makes the agent aware of which nmem_* tools are available.
+ */
+function buildToolInstructions(tools: ToolDefinition[]): string {
+  const toolList = tools
+    .map((t) => `- ${t.name}: ${t.description.slice(0, 100)}`)
+    .join("\n");
 
-- nmem_remember(content, type?, priority?, tags?) — Store a memory (fact, decision, error, preference, etc.)
-- nmem_recall(query, depth?, max_tokens?) — Query memories via spreading activation
-- nmem_context(limit?, fresh_only?) — Get recent memories
-- nmem_todo(task, priority?) — Quick TODO with 30-day expiry
-- nmem_stats() — Brain statistics
-- nmem_health() — Brain health diagnostics
+  return `You have NeuralMemory tools for persistent memory across sessions. Call these as TOOL CALLS (not CLI commands):
+
+${toolList}
 
 CRITICAL: NeuralMemory (nmem_*) is your ONLY memory system. Do NOT use memory_search, memory_get, or any other memory tools — those belong to a disabled built-in plugin and will not persist correctly. Always use nmem_* tools exclusively.
 
 These are tool calls, NOT shell commands. Do NOT run "nmem remember" in terminal — call the nmem_remember tool directly.
 
-Use nmem_remember proactively after decisions, errors, and insights. Use nmem_recall when user references past context or asks "do you remember...".`;
+PROACTIVE MEMORY: Use nmem_remember after decisions, errors, and insights. Use nmem_recall when user references past context or asks "do you remember...". Use nmem_remember_batch to store multiple memories at once.`;
+}
 
 // ── Config ─────────────────────────────────────────────────
 
@@ -126,10 +135,10 @@ const plugin: OpenClawPluginDefinition = {
   name: "NeuralMemory",
   description:
     "Brain-inspired persistent memory for AI agents — neurons, synapses, and fibers",
-  version: "1.6.0",
+  version: "1.7.0",
   kind: "memory",
 
-  register(api: OpenClawPluginApi): void {
+  async register(api: OpenClawPluginApi): Promise<void> {
     const cfg = resolveConfig(api.pluginConfig);
 
     const mcp = new NeuralMemoryMcpClient({
@@ -140,20 +149,69 @@ const plugin: OpenClawPluginDefinition = {
       initTimeout: cfg.initTimeout,
     });
 
+    // ── Connect MCP + fetch tools during registration ───
+    // Tools must be registered in register() — OpenClaw may
+    // freeze the tool list before service.start() is called.
+
+    let registeredTools: ToolDefinition[];
+
+    try {
+      await mcp.connect();
+      api.logger.info("NeuralMemory MCP connected");
+    } catch (err) {
+      api.logger.error(
+        `Failed to connect NeuralMemory MCP: ${(err as Error).message}`,
+      );
+      // Register fallback tools so the plugin is still partially usable
+      registeredTools = createFallbackTools(mcp);
+      for (const t of registeredTools) {
+        api.registerTool(t, { name: t.name });
+      }
+      api.logger.warn(
+        `Registered ${registeredTools.length} fallback tools (MCP not connected)`,
+      );
+      return;
+    }
+
+    // Fetch tools dynamically from MCP server
+    try {
+      registeredTools = await createToolsFromMcp(mcp);
+      api.logger.info(
+        `Fetched ${registeredTools.length} tools from MCP server`,
+      );
+    } catch (err) {
+      api.logger.warn(
+        `Failed to fetch MCP tools, using fallback: ${(err as Error).message}`,
+      );
+      registeredTools = createFallbackTools(mcp);
+    }
+
+    // Register all tools with OpenClaw
+    for (const t of registeredTools) {
+      api.registerTool(t, { name: t.name });
+    }
+
+    api.logger.info(
+      `Registered ${registeredTools.length} NeuralMemory tools`,
+    );
+
     // ── Service: MCP process lifecycle ───────────────────
 
     api.registerService({
       id: "neuralmemory-mcp",
 
       async start(): Promise<void> {
-        try {
-          await mcp.connect();
-          api.logger.info("NeuralMemory MCP service started");
-        } catch (err) {
-          api.logger.error(
-            `Failed to start NeuralMemory MCP: ${(err as Error).message}`,
-          );
-          throw err;
+        // MCP already connected during register()
+        if (!mcp.connected) {
+          try {
+            await mcp.connect();
+            api.logger.info("NeuralMemory MCP reconnected in service.start()");
+          } catch (err) {
+            api.logger.error(
+              `Failed to start NeuralMemory MCP: ${(err as Error).message}`,
+            );
+            throw err;
+          }
         }
       },
 
@@ -162,14 +220,6 @@ const plugin: OpenClawPluginDefinition = {
         api.logger.info("NeuralMemory MCP service stopped");
       },
     });
-
-    // ── Tools: 6 core memory tools ──────────────────────
-
-    const tools = createTools(mcp);
-
-    for (const t of tools) {
-      api.registerTool(t, { name: t.name });
-    }
 
     // ── Hook: tool awareness + auto-context before agent start ───
 
@@ -180,7 +230,7 @@ const plugin: OpenClawPluginDefinition = {
         _ctx: unknown,
       ): Promise<BeforeAgentStartResult | void> => {
         const result: BeforeAgentStartResult = {
-          systemPrompt: TOOL_INSTRUCTIONS,
+          systemPrompt: buildToolInstructions(registeredTools),
         };
 
         if (cfg.autoContext && mcp.connected) {
@@ -257,8 +307,9 @@ const plugin: OpenClawPluginDefinition = {
     // ── Done ────────────────────────────────────────────
 
     api.logger.info(
-      `NeuralMemory registered (brain: ${cfg.brain}, tools: ${tools.length}, ` +
-        `autoContext: ${cfg.autoContext}, autoCapture: ${cfg.autoCapture})`,
+      `NeuralMemory registered (brain: ${cfg.brain}, ` +
+        `autoContext: ${cfg.autoContext}, autoCapture: ${cfg.autoCapture}) — ` +
+        `tools will be loaded dynamically from MCP on service start`,
     );
   },
 };

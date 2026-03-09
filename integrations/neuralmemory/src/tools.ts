@@ -1,24 +1,22 @@
 /**
- * NeuralMemory tool definitions for OpenClaw.
+ * NeuralMemory dynamic tool proxy for OpenClaw.
  *
- * Each tool proxies to the MCP server via JSON-RPC.
+ * Fetches all available tools from the MCP server via `tools/list` and
+ * converts them into OpenClaw tool definitions. This means the plugin
+ * automatically exposes every tool the MCP server provides — no hardcoded
+ * schemas to maintain.
  *
- * Uses raw JSON Schema for parameters. Provider compatibility notes:
- *   - `additionalProperties: false` required by OpenAI strict mode
- *   - `number` instead of `integer` for Gemini compatibility
- *   - No `maxLength`/`maxItems`/`minimum`/`maximum` — some providers
- *     reject schemas with constraint keywords; our MCP server validates
- *
- * Registers 6 core tools:
- *   nmem_remember  — Store a memory
- *   nmem_recall    — Query/search memories
- *   nmem_context   — Get recent context
- *   nmem_todo      — Quick TODO shortcut
- *   nmem_stats     — Brain statistics
- *   nmem_health    — Brain health diagnostics
+ * Provider compatibility:
+ *   - Strips constraint keywords (`minimum`, `maximum`, `maxLength`,
+ *     `maxItems`, `minLength`) that some providers reject
+ *   - Adds `additionalProperties: false` on all object schemas for
+ *     OpenAI strict mode
+ *   - Ensures every object type has a `properties` field (required by
+ *     Anthropic SDK validation)
+ *   - Uses `number` instead of `integer` for Gemini compatibility
  */
 
-import type { NeuralMemoryMcpClient } from "./mcp-client.js";
+import type { NeuralMemoryMcpClient, McpToolDefinition } from "./mcp-client.js";
 
 // ── Types ──────────────────────────────────────────────────
 
@@ -36,10 +34,104 @@ export type ToolDefinition = {
   readonly execute: (id: string, args: Record<string, unknown>) => Promise<unknown>;
 };
 
+// ── Schema normalization ───────────────────────────────────
+
+/** Keywords that some LLM providers reject in function schemas. */
+const STRIP_KEYS = new Set([
+  "minimum",
+  "maximum",
+  "maxLength",
+  "minLength",
+  "maxItems",
+  "minItems",
+  "exclusiveMinimum",
+  "exclusiveMaximum",
+]);
+
+/**
+ * Recursively normalize a JSON Schema node for provider compatibility:
+ * - Strip constraint keywords
+ * - Replace `integer` with `number` (Gemini compat)
+ * - Add `additionalProperties: false` to objects (OpenAI strict mode)
+ * - Ensure every object has `properties` (Anthropic SDK)
+ */
+function normalizeSchema(node: unknown): unknown {
+  if (node === null || node === undefined || typeof node !== "object") {
+    return node;
+  }
+
+  if (Array.isArray(node)) {
+    return node.map(normalizeSchema);
+  }
+
+  const obj = node as Record<string, unknown>;
+  const result: Record<string, unknown> = {};
+
+  for (const [key, value] of Object.entries(obj)) {
+    if (STRIP_KEYS.has(key)) continue;
+
+    if (key === "type" && value === "integer") {
+      result[key] = "number";
+    } else if (key === "properties" && typeof value === "object" && value !== null) {
+      // Recurse into each property definition
+      const props: Record<string, unknown> = {};
+      for (const [propName, propSchema] of Object.entries(value as Record<string, unknown>)) {
+        props[propName] = normalizeSchema(propSchema);
+      }
+      result[key] = props;
+    } else if (key === "items" && typeof value === "object" && value !== null) {
+      result[key] = normalizeSchema(value);
+    } else if (
+      (key === "anyOf" || key === "oneOf" || key === "allOf") &&
+      Array.isArray(value)
+    ) {
+      result[key] = value.map(normalizeSchema);
+    } else {
+      result[key] = value;
+    }
+  }
+
+  // Ensure objects have `properties` and `additionalProperties`
+  if (result["type"] === "object") {
+    if (!("properties" in result) || result["properties"] === undefined) {
+      result["properties"] = {};
+    }
+    if (!("additionalProperties" in result)) {
+      result["additionalProperties"] = false;
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Convert an MCP inputSchema into a provider-safe OpenClaw JsonSchema.
+ * Falls back to an empty-properties object if the schema is missing/invalid.
+ */
+function toSafeSchema(inputSchema?: Record<string, unknown>): JsonSchema {
+  if (!inputSchema || typeof inputSchema !== "object") {
+    return { type: "object", properties: {}, additionalProperties: false };
+  }
+
+  const normalized = normalizeSchema(inputSchema) as Record<string, unknown>;
+
+  return {
+    type: "object",
+    properties: (normalized["properties"] ?? {}) as Record<string, unknown>,
+    ...(Array.isArray(normalized["required"]) && normalized["required"].length > 0
+      ? { required: normalized["required"] as string[] }
+      : {}),
+    additionalProperties: false,
+  };
+}
+
 // ── Tool factory ───────────────────────────────────────────
 
-export function createTools(mcp: NeuralMemoryMcpClient): ToolDefinition[] {
-  const call = async (
+/**
+ * Create a tool call helper that auto-reconnects to MCP.
+ */
+function makeCallFn(mcp: NeuralMemoryMcpClient) {
+  return async (
     toolName: string,
     args: Record<string, unknown>,
   ): Promise<unknown> => {
@@ -68,6 +160,43 @@ export function createTools(mcp: NeuralMemoryMcpClient): ToolDefinition[] {
       };
     }
   };
+}
+
+/**
+ * Convert a single MCP tool definition into an OpenClaw ToolDefinition.
+ */
+function mcpToolToOpenClaw(
+  mcpTool: McpToolDefinition,
+  call: (name: string, args: Record<string, unknown>) => Promise<unknown>,
+): ToolDefinition {
+  return {
+    name: mcpTool.name,
+    description: mcpTool.description ?? `NeuralMemory tool: ${mcpTool.name}`,
+    parameters: toSafeSchema(mcpTool.inputSchema),
+    execute: (_id, args) => call(mcpTool.name, args),
+  };
+}
+
+/**
+ * Fetch all tools from the MCP server and convert them to OpenClaw format.
+ * Must be called after MCP connection is established.
+ */
+export async function createToolsFromMcp(
+  mcp: NeuralMemoryMcpClient,
+): Promise<ToolDefinition[]> {
+  const mcpTools = await mcp.listTools();
+  const call = makeCallFn(mcp);
+  return mcpTools.map((t) => mcpToolToOpenClaw(t, call));
+}
+
+/**
+ * Fallback: create minimal hardcoded tools if MCP tools/list fails.
+ * Ensures the plugin still works even if the MCP server is an older version.
+ */
+export function createFallbackTools(
+  mcp: NeuralMemoryMcpClient,
+): ToolDefinition[] {
+  const call = makeCallFn(mcp);
 
   return [
     {
@@ -78,38 +207,20 @@ export function createTools(mcp: NeuralMemoryMcpClient): ToolDefinition[] {
       parameters: {
         type: "object",
         properties: {
-          content: {
-            type: "string",
-            description: "The content to remember",
-          },
+          content: { type: "string", description: "The content to remember" },
           type: {
             type: "string",
             enum: [
-              "fact",
-              "decision",
-              "preference",
-              "todo",
-              "insight",
-              "context",
-              "instruction",
-              "error",
-              "workflow",
-              "reference",
+              "fact", "decision", "preference", "todo", "insight",
+              "context", "instruction", "error", "workflow", "reference",
             ],
             description: "Memory type (auto-detected if not specified)",
           },
-          priority: {
-            type: "number",
-            description: "Priority 0-10 (5=normal, 10=critical)",
-          },
+          priority: { type: "number", description: "Priority 0-10 (5=normal, 10=critical)" },
           tags: {
             type: "array",
             items: { type: "string" },
             description: "Tags for categorization",
-          },
-          expires_days: {
-            type: "number",
-            description: "Days until memory expires (1-3650)",
           },
         },
         required: ["content"],
@@ -117,7 +228,6 @@ export function createTools(mcp: NeuralMemoryMcpClient): ToolDefinition[] {
       },
       execute: (_id, args) => call("nmem_remember", args),
     },
-
     {
       name: "nmem_recall",
       description:
@@ -126,96 +236,37 @@ export function createTools(mcp: NeuralMemoryMcpClient): ToolDefinition[] {
       parameters: {
         type: "object",
         properties: {
-          query: {
-            type: "string",
-            description: "The query to search memories",
-          },
-          depth: {
-            type: "number",
-            description:
-              "Search depth: 0=instant, 1=context, 2=habit, 3=deep",
-          },
-          max_tokens: {
-            type: "number",
-            description: "Maximum tokens in response (default: 500)",
-          },
-          min_confidence: {
-            type: "number",
-            description: "Minimum confidence threshold (0-1)",
-          },
+          query: { type: "string", description: "The query to search memories" },
+          depth: { type: "number", description: "Search depth: 0=instant, 1=context, 2=habit, 3=deep" },
+          max_tokens: { type: "number", description: "Maximum tokens in response (default: 500)" },
         },
         required: ["query"],
         additionalProperties: false,
       },
       execute: (_id, args) => call("nmem_recall", args),
     },
-
     {
       name: "nmem_context",
-      description:
-        "Get recent context from NeuralMemory. Use this at the start of " +
-        "tasks to inject relevant recent memories.",
+      description: "Get recent context from NeuralMemory.",
       parameters: {
         type: "object",
         properties: {
-          limit: {
-            type: "number",
-            description: "Number of recent memories (default: 10, max: 200)",
-          },
-          fresh_only: {
-            type: "boolean",
-            description: "Only include memories less than 30 days old",
-          },
+          limit: { type: "number", description: "Number of recent memories (default: 10)" },
         },
         additionalProperties: false,
       },
       execute: (_id, args) => call("nmem_context", args),
     },
-
-    {
-      name: "nmem_todo",
-      description:
-        "Quick shortcut to add a TODO memory with 30-day expiry.",
-      parameters: {
-        type: "object",
-        properties: {
-          task: {
-            type: "string",
-            description: "The task to remember",
-          },
-          priority: {
-            type: "number",
-            description: "Priority 0-10 (default: 5)",
-          },
-        },
-        required: ["task"],
-        additionalProperties: false,
-      },
-      execute: (_id, args) => call("nmem_todo", args),
-    },
-
     {
       name: "nmem_stats",
-      description:
-        "Get brain statistics including memory counts and freshness.",
-      parameters: {
-        type: "object",
-        properties: {},
-        additionalProperties: false,
-      },
+      description: "Get brain statistics including memory counts and freshness.",
+      parameters: { type: "object", properties: {}, additionalProperties: false },
       execute: (_id, args) => call("nmem_stats", args),
     },
-
     {
       name: "nmem_health",
-      description:
-        "Get brain health diagnostics including grade, purity score, " +
-        "and recommendations.",
-      parameters: {
-        type: "object",
-        properties: {},
-        additionalProperties: false,
-      },
+      description: "Get brain health diagnostics including grade and recommendations.",
+      parameters: { type: "object", properties: {}, additionalProperties: false },
       execute: (_id, args) => call("nmem_health", args),
     },
   ];

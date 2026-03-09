@@ -1,6 +1,6 @@
 {
   "name": "neuralmemory",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "NeuralMemory plugin for OpenClaw — brain-inspired persistent memory for AI agents",
   "type": "module",
   "main": "dist/index.js",
@@ -30,10 +30,12 @@
     "ai-agent",
     "persistent-memory"
   ],
+  "author": "NeuralMemory Contributors",
   "license": "MIT",
+  "homepage": "https://github.com/nhadaututtheky/neural-memory#readme",
   "repository": {
     "type": "git",
-    "url": "https://github.com/pinkponk/NeuralMemory"
+    "url": "https://github.com/nhadaututtheky/neural-memory"
   },
   "files": [
     "src/",
