@@ -100,12 +100,17 @@ async def query_memory(
     pipeline = ReflexPipeline(storage, brain.config)
 
     depth = DepthLevel(request.depth) if request.depth is not None else None
+    # Filter out empty/whitespace-only tags
+    tags = {t.strip() for t in request.tags if t.strip()} if request.tags else None
+    if tags is not None and not tags:
+        tags = None
 
     result = await pipeline.query(
         query=request.query,
         depth=depth,
         max_tokens=request.max_tokens,
         reference_time=request.reference_time,
+        tags=tags,
     )
 
     subgraph = None

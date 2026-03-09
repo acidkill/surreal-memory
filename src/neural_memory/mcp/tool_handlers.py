@@ -675,6 +675,12 @@ class ToolHandler:
             return {"error": f"Invalid depth level: {args.get('depth')}. Must be 0-3."}
         max_tokens = min(args.get("max_tokens", 500), 10_000)
         min_confidence = args.get("min_confidence", 0.0)
+        raw_tags = args.get("tags")
+        tags: set[str] | None = None
+        if raw_tags and isinstance(raw_tags, list):
+            tags = {t for t in raw_tags[:20] if isinstance(t, str) and 0 < len(t) <= 100}
+            if not tags:
+                tags = None
         min_trust: float | None = None
         raw_min_trust = args.get("min_trust")
         if raw_min_trust is not None:
@@ -722,6 +728,7 @@ class ToolHandler:
             max_tokens=max_tokens,
             reference_time=utcnow(),
             valid_at=valid_at,
+            tags=tags,
         )
 
         # Passive auto-capture on long queries
@@ -899,6 +906,14 @@ class ToolHandler:
             depth = 1
         max_tokens = min(int(args.get("max_tokens", 500)), 10_000)
 
+        # Parse tags for cross-brain filtering
+        raw_tags = args.get("tags")
+        tags: set[str] | None = None
+        if raw_tags and isinstance(raw_tags, list):
+            tags = {t for t in raw_tags[:20] if isinstance(t, str) and 0 < len(t) <= 100}
+            if not tags:
+                tags = None
+
         try:
             result = await cross_brain_recall(
                 config=self.config,
@@ -906,6 +921,7 @@ class ToolHandler:
                 query=query,
                 depth=depth,
                 max_tokens=max_tokens,
+                tags=tags,
             )
         except Exception:
             logger.error("Cross-brain recall failed", exc_info=True)
