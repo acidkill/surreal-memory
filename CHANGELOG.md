@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Tag filtering in Query API and MCP** — `POST /query` accepts `tags: list[str]` (AND filter, max 20). `nmem_recall` accepts `tags: list[str]` to scope results to specific tag sets. Filters across `tags`, `auto_tags`, and `agent_tags` columns. Backward compatible — `tags=None` returns all results as before.
+
 ## [2.28.0] - 2026-03-08
 
 ### Added

@@ -172,6 +172,7 @@ class FalkorDBFiberMixin(FalkorDBBaseMixin):
         self,
         neuron_ids: list[str],
         limit_per_neuron: int = 10,
+        tags: set[str] | None = None,
     ) -> list[Fiber]:
         if not neuron_ids:
             return []
@@ -197,7 +198,11 @@ class FalkorDBFiberMixin(FalkorDBBaseMixin):
             """,
             {"nids": neuron_ids, "lpn": limit_per_neuron, "limit": max_results},
         )
-        return [self._row_to_fiber(r) for r in rows]
+        fibers = [self._row_to_fiber(r) for r in rows]
+        # fiber.tags property = auto_tags | agent_tags (union)
+        if tags:
+            fibers = [f for f in fibers if tags.issubset(f.tags)]
+        return fibers
 
     async def update_fiber(self, fiber: Fiber) -> None:
         rows = await self._query(

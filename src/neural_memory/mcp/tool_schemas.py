@@ -108,7 +108,8 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
                 },
                 "tags": {
                     "type": "array",
-                    "items": {"type": "string"},
+                    "items": {"type": "string", "maxLength": 100},
+                    "maxItems": 50,
                     "description": "Tags for categorization",
                 },
                 "expires_days": {
@@ -254,6 +255,12 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "minimum": 0.0,
                     "maximum": 1.0,
                     "description": "Filter: only return memories with trust_score >= this value. Unscored memories (NULL) are always included.",
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string", "maxLength": 100},
+                    "maxItems": 20,
+                    "description": "Filter by tags (AND — all must match). Checks tags, auto_tags, and agent_tags columns.",
                 },
             },
             "required": ["query"],

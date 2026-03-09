@@ -39,6 +39,12 @@ class QueryRequest(BaseModel):
     reference_time: datetime | None = Field(
         None, description="Reference time for temporal parsing (default: now)"
     )
+    tags: list[str] | None = Field(
+        None,
+        max_length=20,
+        description="Filter by tags (AND — all must match). Checks tags, auto_tags, and agent_tags.",
+        json_schema_extra={"items": {"type": "string", "maxLength": 100}},
+    )
 
 
 class CreateBrainRequest(BaseModel):

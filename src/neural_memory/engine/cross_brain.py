@@ -54,6 +54,7 @@ async def _query_single_brain(
     query: str,
     depth: DepthLevel,
     max_tokens: int,
+    tags: set[str] | None = None,
 ) -> tuple[str, list[CrossBrainFiber], int, str]:
     """Query a single brain and return its results.
 
@@ -81,6 +82,7 @@ async def _query_single_brain(
             depth=depth,
             max_tokens=max_tokens,
             reference_time=utcnow(),
+            tags=tags,
         )
 
         fibers: list[CrossBrainFiber] = []
@@ -142,6 +144,7 @@ async def cross_brain_recall(
     query: str,
     depth: int = 1,
     max_tokens: int = 500,
+    tags: set[str] | None = None,
 ) -> CrossBrainResult:
     """Run recall across multiple brains in parallel.
 
@@ -188,7 +191,7 @@ async def cross_brain_recall(
 
     # Query all brains in parallel
     tasks = [
-        _query_single_brain(db_path, name, query, depth_level, max_tokens)
+        _query_single_brain(db_path, name, query, depth_level, max_tokens, tags=tags)
         for name, db_path in valid_brains
     ]
     results = await asyncio.gather(*tasks)

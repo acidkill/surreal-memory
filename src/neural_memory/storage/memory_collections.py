@@ -72,6 +72,7 @@ class InMemoryCollectionsMixin:
         self,
         neuron_ids: list[str],
         limit_per_neuron: int = 10,
+        tags: set[str] | None = None,
     ) -> list[Fiber]:
         """Find fibers containing any of the given neurons from in-memory store."""
         brain_id = self._get_brain_id()
@@ -82,9 +83,13 @@ class InMemoryCollectionsMixin:
         for fiber in self._fibers[brain_id].values():
             if fiber.id in seen:
                 continue
-            if fiber.neuron_ids & nid_set:
-                seen.add(fiber.id)
-                result.append(fiber)
+            if not (fiber.neuron_ids & nid_set):
+                continue
+            # fiber.tags property = auto_tags | agent_tags (union)
+            if tags is not None and not tags.issubset(fiber.tags):
+                continue
+            seen.add(fiber.id)
+            result.append(fiber)
 
         result.sort(key=lambda f: f.salience, reverse=True)
         return result
