@@ -31,22 +31,65 @@ context window. Memories survive compaction, session restarts, and device change
 - **Python 3.11+** with pip
 - **Node.js 18+** with npm
 
-## Setup (3 Steps)
+## Setup
 
-### Step 1: Install packages
+> ⚠️ **Order matters strictly.** Steps 1 and 2 must be completed and verified
+> before editing the config in Step 3. Adding `slots.memory = "neuralmemory"`
+> before the plugin is loaded causes OpenClaw to refuse to start with
+> `plugin not found: neuralmemory`.
+
+
+### Step 1 — Install packages
+
+Install the Python backend and the npm plugin package:
 
 ```bash
 pip install neural-memory
-npm install neuralmemory
+npm install -g neuralmemory
 ```
 
-### Step 2: Configure the memory slot
+Verify both are working before continuing:
 
-Edit `~/.openclaw/openclaw.json` and set the memory slot to `neuralmemory`:
+```bash
+nmem --help       # should show NeuralMemory CLI commands
+nmem-mcp --help   # should show MCP server help
+```
+
+### Step 2 — Register the plugin with OpenClaw
+
+Installing via `npm install -g` alone is not enough — OpenClaw does not scan the
+global npm registry automatically. Copy the plugin into OpenClaw's extensions
+directory:
+
+```bash
+cp -r $(npm root -g)/neuralmemory ~/.openclaw/extensions/neuralmemory
+```
+
+**Verify before continuing:**
+
+```bash
+openclaw plugins list | grep -i neural
+```
+
+You must see `neuralmemory` in the output before proceeding to Step 3. If it does
+not appear, do **not** continue — adding `slots.memory` without the plugin loaded
+will cause the gateway to fail on every restart.
+
+---
+
+### Step 3 — Configure openclaw.json
+
+Only after the plugin is confirmed visible in `openclaw plugins list`, edit
+`~/.openclaw/openclaw.json` and add or merge the following into the `plugins`
+section:
 
 ```json
 {
   "plugins": {
+    "allow": ["neuralmemory"],
+    "load": {
+      "paths": ["~/.openclaw/extensions/neuralmemory"]
+    },
     "slots": {
       "memory": "neuralmemory"
     }
@@ -54,31 +97,46 @@ Edit `~/.openclaw/openclaw.json` and set the memory slot to `neuralmemory`:
 }
 ```
 
-This disables `memory-core` and activates NeuralMemory as the exclusive memory
-provider. OpenClaw plugin slots are **exclusive** — only one plugin per slot.
+**Notes on this config:**
 
-### Step 3: Restart the gateway
+- **`allow`** — lists all non-bundled plugins you trust. Any plugin not listed
+  here will emit a warning and may be disabled. Add all other plugins you use
+  (e.g. `"telegram"`, `"llm-task"`).
+
+- **`load.paths`** — explicitly tells OpenClaw where to find the plugin. Required
+  when the plugin was registered via manual copy in Step 2.
+
+- **`slots.memory`** — disables `memory-core` and activates NeuralMemory as the
+  exclusive memory provider. Plugin slots are exclusive — only one plugin can own
+  a slot at a time.
+
+### Step 4 — Restart the gateway
 
 ```bash
-# If running as daemon
+# If running as a daemon
 openclaw gateway restart
 
-# Or stop + start
+# Or stop and start manually
 openclaw gateway stop
 openclaw gateway
 ```
 
 ### Verify
 
-Ask your agent:
+```bash
+openclaw doctor
+```
+
+There should be no errors about `neuralmemory`. Then ask your agent:
 
 ```
 What memory tools do you have?
 ```
 
 The agent should list `nmem_remember`, `nmem_recall`, `nmem_context`, `nmem_todo`,
-`nmem_stats`, and `nmem_health`. If it mentions `memory_search` or `memory_get`
-instead, the slot config is not applied — check Step 2.
+`nmem_stats`, and `nmem_health`. If it lists `memory_search` or `memory_get`
+instead, the slot config is not applied — recheck Step 3.
+
 
 ## How It Works
 
@@ -115,6 +173,10 @@ Optional config under `plugins.entries.neuralmemory.config` in `openclaw.json`:
 ```json
 {
   "plugins": {
+    "allow": ["neuralmemory"],
+    "load": {
+      "paths": ["~/.openclaw/extensions/neuralmemory"]
+    },
     "slots": {
       "memory": "neuralmemory"
     },
