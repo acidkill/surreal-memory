@@ -98,9 +98,7 @@ class TestTagFilterSingleTag:
     """Test single tag filtering across all tag columns."""
 
     @pytest.mark.asyncio
-    async def test_find_fibers_batch_single_tag_in_agent_tags(
-        self, storage: SQLiteStorage
-    ) -> None:
+    async def test_find_fibers_batch_single_tag_in_agent_tags(self, storage: SQLiteStorage) -> None:
         """Single tag in agent_tags should be found."""
         n1 = Neuron.create(type=NeuronType.CONCEPT, content="Knowledge base")
         n2 = Neuron.create(type=NeuronType.CONCEPT, content="Query")
@@ -129,9 +127,7 @@ class TestTagFilterSingleTag:
         assert result[0].id == f1.id
 
     @pytest.mark.asyncio
-    async def test_find_fibers_batch_single_tag_in_auto_tags(
-        self, storage: SQLiteStorage
-    ) -> None:
+    async def test_find_fibers_batch_single_tag_in_auto_tags(self, storage: SQLiteStorage) -> None:
         """Single tag in auto_tags should be found."""
         n1 = Neuron.create(type=NeuronType.CONCEPT, content="Entity extraction")
         n2 = Neuron.create(type=NeuronType.CONCEPT, content="NLP")
@@ -160,9 +156,7 @@ class TestTagFilterSingleTag:
         assert result[0].id == f1.id
 
     @pytest.mark.asyncio
-    async def test_find_fibers_batch_single_tag_mismatch(
-        self, storage: SQLiteStorage
-    ) -> None:
+    async def test_find_fibers_batch_single_tag_mismatch(self, storage: SQLiteStorage) -> None:
         """Single tag that doesn't match should return empty."""
         n1 = Neuron.create(type=NeuronType.CONCEPT, content="Topic")
         await storage.add_neuron(n1)
@@ -260,9 +254,7 @@ class TestTagFilterMixedFibers:
     """Test filtering with multiple fibers having different tag combinations."""
 
     @pytest.mark.asyncio
-    async def test_find_fibers_batch_mixed_fibers(
-        self, storage: SQLiteStorage
-    ) -> None:
+    async def test_find_fibers_batch_mixed_fibers(self, storage: SQLiteStorage) -> None:
         """Filter returns only matching fibers from mixed set."""
         # Create neurons
         n1 = Neuron.create(type=NeuronType.CONCEPT, content="Node 1")
@@ -323,9 +315,7 @@ class TestTagFilterMixedFibers:
         await storage.add_fiber(f3)
 
         # Find fibers with "kb" tag - should return f1 and f2
-        result = await storage.find_fibers_batch(
-            [n1.id, n2.id, n3.id, n4.id], tags={"kb"}
-        )
+        result = await storage.find_fibers_batch([n1.id, n2.id, n3.id, n4.id], tags={"kb"})
         assert len(result) == 2
         result_ids = {f.id for f in result}
         assert f1.id in result_ids
@@ -333,9 +323,7 @@ class TestTagFilterMixedFibers:
         assert f3.id not in result_ids
 
         # Find fibers with "react" tag - should return f1 and f3
-        result = await storage.find_fibers_batch(
-            [n1.id, n2.id, n3.id, n4.id], tags={"react"}
-        )
+        result = await storage.find_fibers_batch([n1.id, n2.id, n3.id, n4.id], tags={"react"})
         assert len(result) == 2
         result_ids = {f.id for f in result}
         assert f1.id in result_ids
@@ -343,9 +331,7 @@ class TestTagFilterMixedFibers:
         assert f2.id not in result_ids
 
         # Find fibers with "kb" AND "react" - should return f1 only
-        result = await storage.find_fibers_batch(
-            [n1.id, n2.id, n3.id, n4.id], tags={"kb", "react"}
-        )
+        result = await storage.find_fibers_batch([n1.id, n2.id, n3.id, n4.id], tags={"kb", "react"})
         assert len(result) == 1
         assert result[0].id == f1.id
 
@@ -354,17 +340,13 @@ class TestTagFilterEdgeCases:
     """Test edge cases and special scenarios."""
 
     @pytest.mark.asyncio
-    async def test_find_fibers_batch_empty_neuron_list(
-        self, storage: SQLiteStorage
-    ) -> None:
+    async def test_find_fibers_batch_empty_neuron_list(self, storage: SQLiteStorage) -> None:
         """Empty neuron list should return empty."""
         result = await storage.find_fibers_batch([], tags={"kb"})
         assert len(result) == 0
 
     @pytest.mark.asyncio
-    async def test_find_fibers_batch_no_neurons_with_tag(
-        self, storage: SQLiteStorage
-    ) -> None:
+    async def test_find_fibers_batch_no_neurons_with_tag(self, storage: SQLiteStorage) -> None:
         """When no neurons in neuron_ids, should return empty."""
         n1 = Neuron.create(type=NeuronType.CONCEPT, content="Unrelated")
         await storage.add_neuron(n1)
@@ -382,9 +364,7 @@ class TestTagFilterEdgeCases:
         assert len(result) == 0
 
     @pytest.mark.asyncio
-    async def test_find_fibers_batch_tag_case_sensitivity(
-        self, storage: SQLiteStorage
-    ) -> None:
+    async def test_find_fibers_batch_tag_case_sensitivity(self, storage: SQLiteStorage) -> None:
         """Tag matching should be case-sensitive."""
         n1 = Neuron.create(type=NeuronType.CONCEPT, content="Case test")
         await storage.add_neuron(n1)
@@ -407,9 +387,7 @@ class TestTagFilterEdgeCases:
         assert len(result) == 1
 
     @pytest.mark.asyncio
-    async def test_find_fibers_batch_empty_tags_set(
-        self, storage: SQLiteStorage
-    ) -> None:
+    async def test_find_fibers_batch_empty_tags_set(self, storage: SQLiteStorage) -> None:
         """Empty tags set should return no filters (all fibers)."""
         n1 = Neuron.create(type=NeuronType.CONCEPT, content="Any fiber")
         await storage.add_neuron(n1)
@@ -432,9 +410,7 @@ class TestTagFilterIntegration:
     """Integration tests combining multiple features."""
 
     @pytest.mark.asyncio
-    async def test_find_fibers_batch_with_limit_and_tags(
-        self, storage: SQLiteStorage
-    ) -> None:
+    async def test_find_fibers_batch_with_limit_and_tags(self, storage: SQLiteStorage) -> None:
         """Tag filtering should respect limit_per_neuron."""
         n1 = Neuron.create(type=NeuronType.CONCEPT, content="Hub")
         n2 = Neuron.create(type=NeuronType.CONCEPT, content="Node")
@@ -454,15 +430,11 @@ class TestTagFilterIntegration:
             fibers.append(f)
 
         # Query with limit
-        result = await storage.find_fibers_batch(
-            [n1.id], limit_per_neuron=2, tags={"kb"}
-        )
+        result = await storage.find_fibers_batch([n1.id], limit_per_neuron=2, tags={"kb"})
         assert len(result) <= 2
 
     @pytest.mark.asyncio
-    async def test_find_fibers_batch_preserves_properties(
-        self, storage: SQLiteStorage
-    ) -> None:
+    async def test_find_fibers_batch_preserves_properties(self, storage: SQLiteStorage) -> None:
         """Retrieved fibers should maintain all properties including tags."""
         n1 = Neuron.create(type=NeuronType.CONCEPT, content="Full fiber")
         await storage.add_neuron(n1)

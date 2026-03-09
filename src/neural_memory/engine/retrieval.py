@@ -1093,7 +1093,9 @@ class ReflexPipeline:
         )[:20]
 
         top_neuron_ids = [a.neuron_id for a in top_neurons]
-        fibers = await self._storage.find_fibers_batch(top_neuron_ids, limit_per_neuron=3, tags=tags)
+        fibers = await self._storage.find_fibers_batch(
+            top_neuron_ids, limit_per_neuron=3, tags=tags
+        )
 
         # Apply point-in-time temporal filter
         if valid_at is not None:

@@ -657,7 +657,6 @@ class ToolHandler:
         if brain_names and isinstance(brain_names, list) and len(brain_names) > 0:
             return await self._cross_brain_recall(args, brain_names)
 
-
         storage = await self.get_storage()
         try:
             brain_id = _require_brain_id(storage)
