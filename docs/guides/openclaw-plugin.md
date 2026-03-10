@@ -241,7 +241,7 @@ exclusively and **not** use `memory_search` or `memory_get` from the disabled
 | Agent still uses `memory_search` | Slot not configured | Set `plugins.slots.memory = "neuralmemory"` in `openclaw.json` |
 | Agent uses both `nmem_*` and `memory_*` | `memory-core` still active | Check slot config — only one memory plugin can be active |
 | `MCP timeout` | Slow machine or large brain | Increase `timeout` in plugin config (default: 30000ms) |
-| Plugin not found | Not installed globally | Run `npm install -g @neuralmemory/openclaw-plugin` |
+| Plugin not found | Not installed globally | Run `npm install -g neuralmemory` |
 
 ## Common Mistakes
 

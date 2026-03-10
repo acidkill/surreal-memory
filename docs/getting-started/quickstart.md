@@ -15,7 +15,7 @@ This guide walks you through basic NeuralMemory usage in 5 minutes.
 
 ```bash
 pip install neural-memory
-npm install -g @neuralmemory/openclaw-plugin
+npm install -g neuralmemory
 ```
 
 Then in `~/.openclaw/openclaw.json`:
