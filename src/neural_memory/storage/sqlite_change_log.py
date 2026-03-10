@@ -134,6 +134,116 @@ class SQLiteChangeLogMixin:
         await conn.commit()
         return cursor.rowcount
 
+    async def seed_change_log(self, device_id: str = "") -> dict[str, int]:
+        """Seed the change log with all existing entities as 'insert' entries.
+
+        This enables initial sync for brains created before sync was enabled.
+        Existing change_log entries are preserved — only entities NOT already
+        tracked in the log are added.
+
+        Returns:
+            Dict with counts: neurons, synapses, fibers seeded.
+        """
+        conn = self._ensure_conn()
+        brain_id = self._get_brain_id()
+        now = utcnow().isoformat()
+        counts: dict[str, int] = {"neurons": 0, "synapses": 0, "fibers": 0}
+
+        # Seed neurons not already in change_log
+        cursor = await conn.execute(
+            """INSERT INTO change_log
+               (brain_id, entity_type, entity_id, operation, device_id, changed_at, payload, synced)
+               SELECT ?, 'neuron', n.id, 'insert', ?, ?, json_object(
+                   'id', n.id,
+                   'type', n.type,
+                   'content', n.content,
+                   'metadata', n.metadata,
+                   'content_hash', n.content_hash,
+                   'created_at', n.created_at
+               ), 0
+               FROM neurons n
+               WHERE n.brain_id = ?
+                 AND NOT EXISTS (
+                     SELECT 1 FROM change_log cl
+                     WHERE cl.brain_id = ? AND cl.entity_type = 'neuron' AND cl.entity_id = n.id
+                 )""",
+            (brain_id, device_id, now, brain_id, brain_id),
+        )
+        counts["neurons"] = cursor.rowcount
+
+        # Seed synapses not already in change_log
+        cursor = await conn.execute(
+            """INSERT INTO change_log
+               (brain_id, entity_type, entity_id, operation, device_id, changed_at, payload, synced)
+               SELECT ?, 'synapse', s.id, 'insert', ?, ?, json_object(
+                   'id', s.id,
+                   'source_id', s.source_id,
+                   'target_id', s.target_id,
+                   'type', s.type,
+                   'weight', s.weight,
+                   'direction', s.direction,
+                   'metadata', s.metadata,
+                   'reinforced_count', s.reinforced_count,
+                   'last_activated', s.last_activated,
+                   'created_at', s.created_at
+               ), 0
+               FROM synapses s
+               WHERE s.brain_id = ?
+                 AND NOT EXISTS (
+                     SELECT 1 FROM change_log cl
+                     WHERE cl.brain_id = ? AND cl.entity_type = 'synapse' AND cl.entity_id = s.id
+                 )""",
+            (brain_id, device_id, now, brain_id, brain_id),
+        )
+        counts["synapses"] = cursor.rowcount
+
+        # Seed fibers not already in change_log
+        cursor = await conn.execute(
+            """INSERT INTO change_log
+               (brain_id, entity_type, entity_id, operation, device_id, changed_at, payload, synced)
+               SELECT ?, 'fiber', f.id, 'insert', ?, ?, json_object(
+                   'id', f.id,
+                   'neuron_ids', f.neuron_ids,
+                   'synapse_ids', f.synapse_ids,
+                   'anchor_neuron_id', f.anchor_neuron_id,
+                   'pathway', f.pathway,
+                   'conductivity', f.conductivity,
+                   'last_conducted', f.last_conducted,
+                   'time_start', f.time_start,
+                   'time_end', f.time_end,
+                   'coherence', f.coherence,
+                   'salience', f.salience,
+                   'frequency', f.frequency,
+                   'summary', f.summary,
+                   'auto_tags', f.auto_tags,
+                   'agent_tags', f.agent_tags,
+                   'metadata', f.metadata,
+                   'compression_tier', f.compression_tier,
+                   'created_at', f.created_at
+               ), 0
+               FROM fibers f
+               WHERE f.brain_id = ?
+                 AND NOT EXISTS (
+                     SELECT 1 FROM change_log cl
+                     WHERE cl.brain_id = ? AND cl.entity_type = 'fiber' AND cl.entity_id = f.id
+                 )""",
+            (brain_id, device_id, now, brain_id, brain_id),
+        )
+        counts["fibers"] = cursor.rowcount
+
+        await conn.commit()
+
+        total = counts["neurons"] + counts["synapses"] + counts["fibers"]
+        logger.info(
+            "Seeded change log for brain %s: %d neurons, %d synapses, %d fibers (%d total)",
+            brain_id,
+            counts["neurons"],
+            counts["synapses"],
+            counts["fibers"],
+            total,
+        )
+        return counts
+
     async def get_change_log_stats(self) -> dict[str, Any]:
         """Get change log statistics."""
         conn = self._ensure_read_conn()

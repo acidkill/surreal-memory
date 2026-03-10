@@ -1250,6 +1250,20 @@ class NeuralStorage(ABC):
         """
         raise NotImplementedError
 
+    async def seed_change_log(self, device_id: str = "") -> dict[str, int]:
+        """Seed the change log with all existing entities as 'insert' entries.
+
+        Enables initial sync for brains created before sync was enabled.
+        Only adds entities not already tracked in the change log.
+
+        Args:
+            device_id: Device ID to tag the seeded entries with.
+
+        Returns:
+            Dict with counts: neurons, synapses, fibers seeded.
+        """
+        raise NotImplementedError
+
     async def get_change_log_stats(self) -> dict[str, Any]:
         """Get change log statistics for the current brain.
 

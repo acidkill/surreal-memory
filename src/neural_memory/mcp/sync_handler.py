@@ -25,10 +25,28 @@ class SyncToolHandler:
         """Handle nmem_sync tool call."""
         try:
             action = args.get("action", "full")
-            if action not in ("push", "pull", "full"):
-                return {"error": "Invalid action. Use: push, pull, full"}
+            if action not in ("push", "pull", "full", "seed"):
+                return {"error": "Invalid action. Use: push, pull, full, seed"}
 
             storage = await self.get_storage()
+
+            # Seed: populate change_log from existing entities (for initial sync)
+            if action == "seed":
+                device_id = self.config.device_id
+                counts = await storage.seed_change_log(device_id=device_id)
+                total = counts["neurons"] + counts["synapses"] + counts["fibers"]
+                return {
+                    "status": "success",
+                    "action": "seed",
+                    "seeded": counts,
+                    "total": total,
+                    "message": (
+                        f"Seeded {total} entities into change log. "
+                        "Run nmem_sync(action='push') to push to hub."
+                        if total > 0
+                        else "No new entities to seed — change log already up to date."
+                    ),
+                }
 
             # Check if sync is configured
             if not self.config.sync.enabled:

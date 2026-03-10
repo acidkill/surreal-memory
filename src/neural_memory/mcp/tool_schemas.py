@@ -883,8 +883,8 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["push", "pull", "full"],
-                    "description": "push=send local changes, pull=get remote changes, full=bidirectional sync",
+                    "enum": ["push", "pull", "full", "seed"],
+                    "description": "push=send local changes, pull=get remote changes, full=bidirectional sync, seed=populate change log from existing data for initial sync",
                 },
                 "hub_url": {
                     "type": "string",
