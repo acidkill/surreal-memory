@@ -22,8 +22,11 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Maximum file size to process (50MB)
-_MAX_FILE_SIZE = 50 * 1024 * 1024
+# Maximum file size to process (2GB)
+_MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024
+
+# Threshold for page-by-page PDF extraction (50MB)
+_PDF_STREAMING_THRESHOLD = 50 * 1024 * 1024
 
 # Maximum rows for tabular data (CSV/XLSX)
 _MAX_TABLE_ROWS = 10_000
@@ -147,7 +150,11 @@ def _extract_text(file_path: Path) -> str:
 
 
 def _extract_pdf(file_path: Path) -> str:
-    """Extract PDF to markdown using pymupdf4llm."""
+    """Extract PDF to markdown using pymupdf4llm.
+
+    For files larger than _PDF_STREAMING_THRESHOLD (50MB), uses page-by-page
+    extraction to avoid loading the entire document into memory at once.
+    """
     try:
         import pymupdf4llm
     except ImportError:
@@ -155,11 +162,74 @@ def _extract_pdf(file_path: Path) -> str:
             "PDF extraction requires pymupdf4llm. Install with: pip install neural-memory[extract]"
         )
 
+    file_size = file_path.stat().st_size
+    if file_size <= _PDF_STREAMING_THRESHOLD:
+        # Small PDF — extract all at once (fast)
+        try:
+            md_text: str = pymupdf4llm.to_markdown(str(file_path))
+            return md_text
+        except Exception as exc:
+            raise ExtractionError(f"PDF extraction failed: {exc}")
+
+    # Large PDF — page-by-page extraction to limit RAM usage
+    return _extract_pdf_paged(file_path)
+
+
+def _extract_pdf_paged(file_path: Path) -> str:
+    """Page-by-page PDF extraction for large files (>50MB).
+
+    Opens the PDF once with pymupdf, then extracts pages in batches
+    to keep memory bounded. Each batch is converted to markdown and
+    appended to the result.
+    """
     try:
-        md_text: str = pymupdf4llm.to_markdown(str(file_path))
-        return md_text
+        import pymupdf  # pymupdf4llm depends on pymupdf
+        import pymupdf4llm
+    except ImportError:
+        raise ExtractionError(
+            "PDF extraction requires pymupdf4llm. Install with: pip install neural-memory[extract]"
+        )
+
+    page_batch = 20  # pages per batch to balance speed vs memory
+
+    try:
+        doc = pymupdf.open(str(file_path))
     except Exception as exc:
-        raise ExtractionError(f"PDF extraction failed: {exc}")
+        raise ExtractionError(f"Failed to open PDF: {exc}")
+
+    total_pages = len(doc)
+    doc.close()
+
+    logger.info(
+        "Large PDF detected (%.1fMB, %d pages) — using paged extraction",
+        file_path.stat().st_size / (1024 * 1024),
+        total_pages,
+    )
+
+    parts: list[str] = []
+    for start in range(0, total_pages, page_batch):
+        end = min(start + page_batch, total_pages) - 1  # pymupdf4llm uses inclusive end
+        try:
+            batch_md: str = pymupdf4llm.to_markdown(
+                str(file_path),
+                pages=list(range(start, end + 1)),
+            )
+            parts.append(batch_md)
+        except Exception as exc:
+            logger.warning(
+                "Failed to extract pages %d-%d from %s: %s",
+                start,
+                end,
+                file_path.name,
+                exc,
+            )
+            # Continue with remaining pages instead of aborting
+            continue
+
+    if not parts:
+        raise ExtractionError("All page batches failed during paged extraction")
+
+    return "\n\n".join(parts)
 
 
 def _extract_docx(file_path: Path) -> str:

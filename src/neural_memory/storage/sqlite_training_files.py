@@ -15,8 +15,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Maximum file size to hash (50MB safety limit)
-_MAX_HASH_SIZE = 50 * 1024 * 1024
+# Maximum file size to hash (2GB — streaming hash, safe for large files)
+_MAX_HASH_SIZE = 2 * 1024 * 1024 * 1024
 
 
 class SQLiteTrainingFilesMixin:
