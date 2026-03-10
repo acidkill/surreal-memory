@@ -8,6 +8,7 @@ import {
   Share2,
   Settings,
   Brain,
+  Gamepad2,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useLayoutStore } from "@/stores/useLayoutStore"
@@ -20,6 +21,7 @@ const navItems = [
   { to: "/timeline", icon: Clock, labelKey: "nav.timeline" },
   { to: "/evolution", icon: TrendingUp, labelKey: "nav.evolution" },
   { to: "/diagrams", icon: Share2, labelKey: "nav.mindmap" },
+  { to: "/neurodungeon", icon: Gamepad2, labelKey: "nav.neurodungeon" },
   { to: "/settings", icon: Settings, labelKey: "nav.settings" },
 ] as const
 

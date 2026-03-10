@@ -8,16 +8,16 @@ export function AppShell() {
   const sidebarOpen = useLayoutStore((s) => s.sidebarOpen)
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="h-screen bg-background overflow-hidden">
       <Sidebar />
       <div
         className={cn(
-          "flex flex-col transition-all duration-[var(--transition-normal)]",
+          "flex flex-col h-full transition-all duration-[var(--transition-normal)]",
           sidebarOpen ? "ml-56" : "ml-16",
         )}
       >
         <TopBar />
-        <main className="flex-1">
+        <main className="flex-1 overflow-auto">
           <Outlet />
         </main>
       </div>
