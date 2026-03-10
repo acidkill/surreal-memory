@@ -9,6 +9,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from neural_memory.core.brain import Brain, BrainConfig
 from neural_memory.server.dependencies import get_storage, require_local_request
 from neural_memory.storage.base import NeuralStorage
 from neural_memory.sync.protocol import ConflictStrategy, SyncChange, SyncRequest, SyncResponse
@@ -106,6 +107,20 @@ async def register_device(
     _validate_device_id(body.device_id)
 
     try:
+        # Auto-create brain if needed
+        existing_brain = await storage.get_brain(body.brain_id)
+        if existing_brain is None:
+            now = utcnow()
+            brain = Brain(
+                id=body.brain_id,
+                name=body.brain_id,
+                config=BrainConfig(),
+                created_at=now,
+                updated_at=now,
+            )
+            await storage.save_brain(brain)
+            logger.info("Hub auto-created brain %s for device registration", body.brain_id)
+
         storage.set_brain(body.brain_id)
         device = await storage.register_device(body.device_id, body.device_name)
     except Exception:
@@ -167,6 +182,20 @@ async def hub_sync(
     )
 
     try:
+        # Auto-create brain if it doesn't exist on the hub yet.
+        existing_brain = await storage.get_brain(body.brain_id)
+        if existing_brain is None:
+            now = utcnow()
+            brain = Brain(
+                id=body.brain_id,
+                name=body.brain_id,
+                config=BrainConfig(),
+                created_at=now,
+                updated_at=now,
+            )
+            await storage.save_brain(brain)
+            logger.info("Hub auto-created brain %s for incoming sync", body.brain_id)
+
         storage.set_brain(body.brain_id)
         sync_engine = SyncEngine(storage, device_id="hub", strategy=conflict_strategy)
         response: SyncResponse = await sync_engine.handle_hub_sync(sync_request)
