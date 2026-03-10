@@ -35,7 +35,7 @@ The plugin occupies the exclusive **memory slot** — auto-injects context befor
 
 ```bash
 # Install from npm
-npm install -g @neuralmemory/openclaw-plugin
+npm install -g neuralmemory
 ```
 
 Add to `~/.openclaw/openclaw.json`:
@@ -87,7 +87,7 @@ On Windows, use forward slashes or escaped backslashes in `openclaw.json` paths:
 {
   "plugins": {
     "load": {
-      "paths": ["C:/Users/<you>/AppData/Roaming/npm/node_modules/@neuralmemory/openclaw-plugin"]
+      "paths": ["C:/Users/<you>/AppData/Roaming/npm/node_modules/neuralmemory"]
     }
   }
 }
@@ -96,7 +96,7 @@ On Windows, use forward slashes or escaped backslashes in `openclaw.json` paths:
 To find the installed path:
 
 ```powershell
-npm list -g @neuralmemory/openclaw-plugin --parseable
+npm list -g neuralmemory --parseable
 ```
 
 If `openclaw plugins list` doesn't show the plugin:

@@ -11,6 +11,9 @@
  * instead of hardcoding 6 tools. Automatically exposes every tool the
  * MCP server provides (39+ tools in NM v2.28.0).
  *
+ * v1.8.0: Compatible with NM v2.29.0 — RRF score fusion, graph-based
+ * query expansion, and Personalized PageRank activation.
+ *
  * Registers:
  *   N tools    — dynamically from MCP server (fallback: 5 core tools)
  *   1 service  — MCP process lifecycle (start/stop)
@@ -135,7 +138,7 @@ const plugin: OpenClawPluginDefinition = {
   name: "NeuralMemory",
   description:
     "Brain-inspired persistent memory for AI agents — neurons, synapses, and fibers",
-  version: "1.7.0",
+  version: "1.8.0",
   kind: "memory",
 
   async register(api: OpenClawPluginApi): Promise<void> {

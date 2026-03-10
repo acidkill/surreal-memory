@@ -19,7 +19,7 @@ nmem-mcp --help
 ## Install
 
 ```bash
-npm install neuralmemory
+npm install -g neuralmemory
 ```
 
 Or add to your OpenClaw config directly.
