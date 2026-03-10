@@ -223,7 +223,6 @@ def shared_sync(
                     await local_storage.import_brain(
                         snapshot, local_storage._current_brain_id or ""
                     )
-                    await local_storage.save()
                     sync_result["pulled"] = True
                     sync_result["neurons_pulled"] = len(snapshot.neurons)
                     sync_result["synapses_pulled"] = len(snapshot.synapses)
