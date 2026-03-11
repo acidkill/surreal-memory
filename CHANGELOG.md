@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-03-11
+
+### Added
+
+- **Source-Aware Memory (v3.0 Pillar 4)** — Brain that knows its sources. 6-phase plan fully shipped.
+- **`nmem_show` tool** — Retrieve exact verbatim content of a memory by fiber ID
+- **Exact recall mode** — `mode="exact"` in `nmem_recall` returns verbatim content without summarization
+- **Source Registry** — Schema v23 with `sources` table, `SOURCE_OF` synapse type, `nmem_source` tool for registering and querying memory provenance
+- **Structured encoding** — Schema-aware encoder detects tabular data (CSV, markdown tables, JSON arrays) and preserves structure through the pipeline
+- **Citation engine** — `citation.py` generates citation metadata with audit synapses linking memories to their sources
+- **`nmem init --wizard`** — Interactive first-run wizard: brain name → embedding provider → MCP config → test memory
+- **`nmem doctor`** — System health diagnostics with 8 checks (Python, config, brain, deps, embeddings, schema, MCP, CLI tools)
+- **`nmem setup embeddings`** — Interactive embedding provider setup with installation status and API key detection
+- **Change log tracking** — `sqlite_change_log.py` records schema and data mutations for audit trail
+
+### Fixed
+
+- **SharedStorage brain_id parity** — Abstract `brain_id` property on base class, all backends implement consistently (#53)
+- **Hub auto-creates brain** — First sync or device registration no longer fails on missing brain
+- **Error message leaks** — Batch remember no longer exposes `str(e)` exception details to clients
+
+### Improved
+
+- **DX Sprint** — Actionable error messages across CLI and MCP, embedding setup guides new users through provider selection
+- **VS Code extension v0.5.0** — 6 lifecycle and config bug fixes
+
+### Tests
+
+- 200+ new tests across all v3.0 phases (show handler, source registry, structured encoding, citation, audit synapses, DX wizard/doctor/embedding)
+- Total: 3515 passing
+
 ## [2.29.0] - 2026-03-10
 
 ### Added
