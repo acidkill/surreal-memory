@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-03-11
+
+### Added
+
+- **Session Intelligence (v4.0 Phase 1)** — In-memory session state tracking across MCP calls with topic EMA scoring, LRU eviction (max 10 sessions), 2h auto-expiry, and SQLite persistence via `session_summaries` table (schema v24)
+- **Dashboard assets in wheel** — Bundled `server/static/dist/` via hatch artifacts config, fixing blank dashboard on pip install (#54)
+
+### Fixed
+
+- **Config singleton mutation** — `wizard.py` and `embedding_setup.py` now use immutable `replace()` pattern instead of mutating the cached config singleton (H1/H2)
+- **Structure detector false positives** — Added 4096-char size guard and CSV all-text column rejection heuristic (H4/H5)
+- **Source registry validation** — `_row_to_source()` handles invalid SourceType/SourceStatus gracefully, `update_source()` validates before SQL write (H2/H3)
+- **Source handler error handling** — `_require_brain_id()` and `Source.create()` wrapped in try/except ValueError (H1/M1)
+
+### Tests
+
+- 40 new tests for session intelligence (QueryRecord, SessionState EMA, SessionManager LRU, SQLite persistence)
+- Total: 3650 passing
+
 ## [3.1.0] - 2026-03-11
 
 ### Added
