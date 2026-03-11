@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.5.0] - 2026-03-12
+
+### Added
+
+- **Predictive Priming** — Brain anticipates next query from session context with 4-source priming engine
+- **Activation Cache** — Recent query results carry forward as soft activation with exponential decay (`0.7^n` per query)
+- **Topic Pre-Warming** — Session topics with EMA > 0.5 pre-warm related neurons before query parsing (truly predictive)
+- **Habit-Based Priming** — Query pattern co-occurrence (CONCEPT neurons + BEFORE synapses) predicts next topic, max 3 predicted topics
+- **Co-Activation Priming** — Hebbian binding data (strength >= 0.5, count >= 3) boosts associated neurons
+- **Priming Metrics** — Hit rate tracking with auto-adjusted aggressiveness (0.5x-1.5x) based on priming effectiveness
+- **Session priming fields** — `priming_hit_rate`, `priming_total` exposed in session summaries and result metadata
+
+### Tests
+
+- 57 new tests covering all priming sources, metrics, orchestration, merging, backward compat
+- Total: 3759 passing
+
 ## [3.4.0] - 2026-03-12
 
 ### Added
