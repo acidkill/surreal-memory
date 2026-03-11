@@ -150,6 +150,10 @@ class ReflexPipeline:
         self._query_router = QueryRouter()
         self._cached_encryptor: Any = _UNSET
 
+        # Predictive priming caches (per-session, keyed by session_id)
+        self._activation_caches: dict[str, Any] = {}  # session_id → ActivationCache
+        self._priming_metrics: dict[str, Any] = {}  # session_id → PrimingMetrics
+
         # Adaptive depth selection (Bayesian priors)
         self._adaptive_selector: AdaptiveDepthSelector | None = None
         if config.adaptive_depth_enabled:
@@ -276,6 +280,51 @@ class ReflexPipeline:
             )
             if fused_scores:
                 anchor_activations = rrf_to_activation_levels(fused_scores)
+
+        # 3.7 Predictive priming: merge session-aware activation boosts
+        _priming_result = None
+        _primed_neuron_ids: set[str] = set()
+        if session_id and _session_state is not None:
+            try:
+                from neural_memory.engine.priming import (
+                    ActivationCache,
+                    PrimingMetrics,
+                    compute_priming,
+                    merge_priming_into_activations,
+                )
+
+                # Get or create per-session cache and metrics
+                if session_id not in self._activation_caches:
+                    self._activation_caches[session_id] = ActivationCache()
+                if session_id not in self._priming_metrics:
+                    self._priming_metrics[session_id] = PrimingMetrics()
+
+                _act_cache = self._activation_caches[session_id]
+                _prim_metrics = self._priming_metrics[session_id]
+
+                # Get recent result neuron IDs from cache for co-activation priming
+                _recent_nids = list(_act_cache.get_priming_activations().keys())[:50]
+
+                _priming_result = await compute_priming(
+                    storage=self._storage,
+                    session_state=_session_state,
+                    activation_cache=_act_cache,
+                    recent_neuron_ids=_recent_nids,
+                    metrics=_prim_metrics,
+                )
+
+                if _priming_result.total_primed > 0:
+                    _primed_neuron_ids = set(_priming_result.activation_boosts.keys())
+                    anchor_activations = merge_priming_into_activations(
+                        anchor_activations, _priming_result
+                    )
+                    logger.debug(
+                        "Priming: %d neurons from %s",
+                        _priming_result.total_primed,
+                        _priming_result.source_counts,
+                    )
+            except Exception:
+                logger.debug("Predictive priming failed (non-critical)", exc_info=True)
 
         # Choose activation method based on strategy (auto-select from graph density)
         strategy = self._config.activation_strategy
@@ -491,6 +540,34 @@ class ReflexPipeline:
                 "sufficiency_confidence": _sufficiency.confidence,
             },
         )
+
+        # Update priming cache and metrics (non-critical)
+        if session_id and _priming_result is not None:
+            try:
+                from neural_memory.engine.priming import record_priming_outcome
+
+                _act_cache = self._activation_caches.get(session_id)
+                _prim_metrics = self._priming_metrics.get(session_id)
+
+                # Update activation cache with this query's results
+                if _act_cache is not None:
+                    activation_levels = {
+                        nid: ar.activation_level for nid, ar in activations.items()
+                    }
+                    _act_cache.update_from_result(activation_levels)
+
+                # Record priming outcome (hit/miss)
+                if _prim_metrics is not None and _primed_neuron_ids:
+                    _result_nids = set(activations.keys())
+                    record_priming_outcome(_prim_metrics, _primed_neuron_ids, _result_nids)
+                    result.metadata["priming"] = {
+                        "neurons_primed": _priming_result.total_primed,
+                        "sources": _priming_result.source_counts,
+                        "hit_rate": round(_prim_metrics.hit_rate, 4),
+                        "aggressiveness": round(_prim_metrics.aggressiveness_multiplier, 2),
+                    }
+            except Exception:
+                logger.debug("Priming cache update failed (non-critical)", exc_info=True)
 
         # Record calibration feedback (non-critical)
         try:
