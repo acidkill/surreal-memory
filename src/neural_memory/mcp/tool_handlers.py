@@ -692,6 +692,9 @@ class ToolHandler:
             return {"error": f"Invalid depth level: {args.get('depth')}. Must be 0-3."}
         max_tokens = min(args.get("max_tokens", 500), 10_000)
         min_confidence = args.get("min_confidence", 0.0)
+        recall_mode = args.get("mode", "associative")
+        if recall_mode not in ("associative", "exact"):
+            return {"error": f"Invalid mode: {recall_mode}. Must be 'associative' or 'exact'."}
         tags = _parse_tags(args)
         min_trust: float | None = None
         raw_min_trust = args.get("min_trust")
@@ -777,14 +780,62 @@ class ToolHandler:
             except Exception:
                 logger.debug("Trust filter failed (non-critical)", exc_info=True)
 
-        response: dict[str, Any] = {
-            "answer": result.context or "No relevant memories found.",
-            "confidence": result.confidence,
-            "neurons_activated": result.neurons_activated,
-            "fibers_matched": result.fibers_matched,
-            "depth_used": result.depth_used.value,
-            "tokens_used": result.tokens_used,
-        }
+        # Exact mode: return raw neuron contents without truncation
+        if recall_mode == "exact" and result.fibers_matched:
+            exact_items: list[dict[str, Any]] = []
+            for fid in result.fibers_matched:
+                fiber = await storage.get_fiber(fid)
+                if not fiber:
+                    continue
+                anchor = await storage.get_neuron(fiber.anchor_neuron_id)
+                if not anchor:
+                    continue
+                content = anchor.content
+                # Decrypt if needed
+                if fiber.metadata.get("encrypted"):
+                    try:
+                        from pathlib import Path
+
+                        from neural_memory.safety.encryption import MemoryEncryptor
+
+                        keys_dir_str = getattr(self.config.encryption, "keys_dir", "")
+                        keys_dir = (
+                            Path(keys_dir_str) if keys_dir_str else (self.config.data_dir / "keys")
+                        )
+                        encryptor = MemoryEncryptor(keys_dir=keys_dir)
+                        bid = storage.brain_id or ""
+                        content = encryptor.decrypt(content, bid)
+                    except Exception:
+                        logger.debug("Decryption failed in exact recall", exc_info=True)
+                tm = await storage.get_typed_memory(fid)
+                exact_items.append(
+                    {
+                        "fiber_id": fid,
+                        "content": content,
+                        "memory_type": tm.memory_type.value if tm else None,
+                        "priority": tm.priority.value if tm else None,
+                        "tags": list(tm.tags) if tm and tm.tags else [],
+                        "created_at": fiber.created_at.isoformat() if fiber.created_at else None,
+                    }
+                )
+
+            response: dict[str, Any] = {
+                "mode": "exact",
+                "memories": exact_items,
+                "confidence": result.confidence,
+                "neurons_activated": result.neurons_activated,
+                "fibers_matched": result.fibers_matched,
+                "depth_used": result.depth_used.value,
+            }
+        else:
+            response = {
+                "answer": result.context or "No relevant memories found.",
+                "confidence": result.confidence,
+                "neurons_activated": result.neurons_activated,
+                "fibers_matched": result.fibers_matched,
+                "depth_used": result.depth_used.value,
+                "tokens_used": result.tokens_used,
+            }
 
         if result.score_breakdown is not None:
             response["score_breakdown"] = {
@@ -1695,7 +1746,101 @@ class ToolHandler:
         except Exception:
             logger.debug("Action recording failed (non-critical)", exc_info=True)
 
-    # ========== Edit & Forget ==========
+    # ========== Show, Edit & Forget ==========
+
+    async def _show(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Get full verbatim content + metadata + synapses for a memory by ID."""
+        memory_id = args.get("memory_id")
+        if not memory_id or not isinstance(memory_id, str):
+            return {"error": "memory_id is required"}
+
+        storage = await self.get_storage()
+        try:
+            _require_brain_id(storage)
+        except ValueError:
+            return {"error": "No brain configured"}
+
+        # Try as fiber_id first (typed memory), then as neuron_id
+        typed_mem = await storage.get_typed_memory(memory_id)
+        fiber = await storage.get_fiber(memory_id) if typed_mem else None
+
+        if typed_mem and fiber:
+            anchor = await storage.get_neuron(fiber.anchor_neuron_id)
+            content = anchor.content if anchor else ""
+
+            # Decrypt if needed
+            if anchor and fiber.metadata.get("encrypted"):
+                try:
+                    from pathlib import Path
+
+                    from neural_memory.safety.encryption import MemoryEncryptor
+
+                    keys_dir_str = getattr(self.config.encryption, "keys_dir", "")
+                    keys_dir = (
+                        Path(keys_dir_str) if keys_dir_str else (self.config.data_dir / "keys")
+                    )
+                    encryptor = MemoryEncryptor(keys_dir=keys_dir)
+                    bid = storage.brain_id or ""
+                    content = encryptor.decrypt(content, bid)
+                except Exception:
+                    logger.debug("Decryption failed in show", exc_info=True)
+
+            # Get connected synapses
+            synapses_out = await storage.get_synapses(source_id=fiber.anchor_neuron_id)
+            synapses_in = await storage.get_synapses(target_id=fiber.anchor_neuron_id)
+            synapse_list = [
+                {
+                    "type": s.type.value if hasattr(s.type, "value") else str(s.type),
+                    "target_id": s.target_id,
+                    "source_id": s.source_id,
+                    "weight": s.weight,
+                }
+                for s in [*synapses_out, *synapses_in]
+            ]
+
+            return {
+                "memory_id": memory_id,
+                "content": content,
+                "memory_type": typed_mem.memory_type.value,
+                "priority": typed_mem.priority.value,
+                "tags": list(typed_mem.tags) if typed_mem.tags else [],
+                "created_at": fiber.created_at.isoformat() if fiber.created_at else None,
+                "anchor_neuron_id": fiber.anchor_neuron_id,
+                "neuron_count": fiber.neuron_count,
+                "summary": fiber.summary,
+                "metadata": fiber.metadata,
+                "synapses": synapse_list,
+                "trust_score": typed_mem.trust_score,
+                "expires_at": typed_mem.expires_at.isoformat() if typed_mem.expires_at else None,
+            }
+
+        # Try as direct neuron_id
+        neuron = await storage.get_neuron(memory_id)
+        if neuron:
+            synapses_out = await storage.get_synapses(source_id=memory_id)
+            synapses_in = await storage.get_synapses(target_id=memory_id)
+            synapse_list = [
+                {
+                    "type": s.type.value if hasattr(s.type, "value") else str(s.type),
+                    "target_id": s.target_id,
+                    "source_id": s.source_id,
+                    "weight": s.weight,
+                }
+                for s in [*synapses_out, *synapses_in]
+            ]
+
+            return {
+                "memory_id": memory_id,
+                "content": neuron.content,
+                "neuron_type": neuron.type.value
+                if hasattr(neuron.type, "value")
+                else str(neuron.type),
+                "created_at": neuron.created_at.isoformat() if neuron.created_at else None,
+                "metadata": neuron.metadata,
+                "synapses": synapse_list,
+            }
+
+        return {"error": f"Memory not found: {memory_id}"}
 
     async def _edit(self, args: dict[str, Any]) -> dict[str, Any]:
         """Edit an existing memory's type, content, or priority."""

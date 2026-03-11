@@ -167,6 +167,80 @@ async def get_fiber(
 
 
 @router.get(
+    "/show/{memory_id}",
+    summary="Get full memory detail",
+    description="Get verbatim content, metadata, and synapses for a memory by fiber_id or neuron_id.",
+    responses={404: {"model": ErrorResponse}},
+)
+async def show_memory(
+    memory_id: str,
+    brain: Annotated[Brain, Depends(get_brain)],
+    storage: Annotated[NeuralStorage, Depends(get_storage)],
+) -> dict[str, Any]:
+    """Get full memory detail by ID (fiber_id or neuron_id)."""
+    # Try as fiber_id first
+    typed_mem = await storage.get_typed_memory(memory_id)
+    fiber = await storage.get_fiber(memory_id) if typed_mem else None
+
+    if typed_mem and fiber:
+        anchor = await storage.get_neuron(fiber.anchor_neuron_id)
+        content = anchor.content if anchor else ""
+
+        synapses_out = await storage.get_synapses(source_id=fiber.anchor_neuron_id)
+        synapses_in = await storage.get_synapses(target_id=fiber.anchor_neuron_id)
+        synapse_list = [
+            {
+                "type": s.type.value if hasattr(s.type, "value") else str(s.type),
+                "target_id": s.target_id,
+                "source_id": s.source_id,
+                "weight": s.weight,
+            }
+            for s in [*synapses_out, *synapses_in]
+        ]
+
+        return {
+            "memory_id": memory_id,
+            "content": content,
+            "memory_type": typed_mem.memory_type.value,
+            "priority": typed_mem.priority.value,
+            "tags": list(typed_mem.tags) if typed_mem.tags else [],
+            "created_at": fiber.created_at.isoformat() if fiber.created_at else None,
+            "anchor_neuron_id": fiber.anchor_neuron_id,
+            "neuron_count": fiber.neuron_count,
+            "summary": fiber.summary,
+            "metadata": fiber.metadata,
+            "synapses": synapse_list,
+            "trust_score": typed_mem.trust_score,
+            "expires_at": typed_mem.expires_at.isoformat() if typed_mem.expires_at else None,
+        }
+
+    # Try as neuron_id
+    neuron = await storage.get_neuron(memory_id)
+    if neuron:
+        synapses_out = await storage.get_synapses(source_id=memory_id)
+        synapses_in = await storage.get_synapses(target_id=memory_id)
+        synapse_list = [
+            {
+                "type": s.type.value if hasattr(s.type, "value") else str(s.type),
+                "target_id": s.target_id,
+                "source_id": s.source_id,
+                "weight": s.weight,
+            }
+            for s in [*synapses_out, *synapses_in]
+        ]
+        return {
+            "memory_id": memory_id,
+            "content": neuron.content,
+            "neuron_type": neuron.type.value if hasattr(neuron.type, "value") else str(neuron.type),
+            "created_at": neuron.created_at.isoformat() if neuron.created_at else None,
+            "metadata": neuron.metadata,
+            "synapses": synapse_list,
+        }
+
+    raise HTTPException(status_code=404, detail=f"Memory not found: {memory_id}")
+
+
+@router.get(
     "/neurons",
     summary="List neurons",
     description="List neurons in the brain with optional filters.",

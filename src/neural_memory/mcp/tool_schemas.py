@@ -264,8 +264,28 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "maxItems": 20,
                     "description": "Filter by tags (AND — all must match). Checks tags, auto_tags, and agent_tags columns.",
                 },
+                "mode": {
+                    "type": "string",
+                    "enum": ["associative", "exact"],
+                    "description": "Recall mode: 'associative' (default) returns formatted context, 'exact' returns raw neuron contents verbatim without truncation or summarization.",
+                },
             },
             "required": ["query"],
+        },
+    },
+    {
+        "name": "nmem_show",
+        "description": "Get full verbatim content + metadata + synapses for a specific memory by ID. "
+        "Use this when you need the exact, unmodified content of a stored memory.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "memory_id": {
+                    "type": "string",
+                    "description": "The fiber_id or neuron_id of the memory to retrieve",
+                },
+            },
+            "required": ["memory_id"],
         },
     },
     {

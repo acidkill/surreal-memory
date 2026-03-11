@@ -214,6 +214,7 @@ class MCPServer(
             "nmem_cognitive": self._cognitive,
             "nmem_gaps": self._gaps,
             "nmem_schema": self._schema,
+            "nmem_show": self._show,
             "nmem_edit": self._edit,
             "nmem_forget": self._forget,
             "nmem_consolidate": self._consolidate,

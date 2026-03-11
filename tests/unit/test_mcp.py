@@ -40,7 +40,7 @@ class TestMCPServer:
         """Test that get_tools returns all expected tools."""
         tools = server.get_tools()
 
-        assert len(tools) == 40
+        assert len(tools) == 41
         tool_names = {tool["name"] for tool in tools}
         assert tool_names == {
             "nmem_remember",
@@ -80,6 +80,7 @@ class TestMCPServer:
             "nmem_cognitive",
             "nmem_gaps",
             "nmem_schema",
+            "nmem_show",
             "nmem_edit",
             "nmem_forget",
             "nmem_consolidate",
@@ -998,7 +999,7 @@ class TestMCPProtocol:
         assert response["id"] == 2
         assert "result" in response
         assert "tools" in response["result"]
-        assert len(response["result"]["tools"]) == 40
+        assert len(response["result"]["tools"]) == 41
 
     @pytest.mark.asyncio
     async def test_tools_call_message(self, server: MCPServer) -> None:
