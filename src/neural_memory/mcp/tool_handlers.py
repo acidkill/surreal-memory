@@ -865,6 +865,7 @@ class ToolHandler:
             reference_time=utcnow(),
             valid_at=valid_at,
             tags=tags,
+            session_id=f"mcp-{id(self)}",
         )
 
         # Passive auto-capture on long queries
@@ -1042,6 +1043,12 @@ class ToolHandler:
                     response["sources"] = source_map
         except Exception:
             logger.debug("Source enrichment failed (non-critical)", exc_info=True)
+
+        # Session intelligence: attach topic context
+        session_topics = (result.metadata or {}).get("session_topics")
+        if session_topics:
+            response["session_topics"] = session_topics
+            response["session_query_count"] = (result.metadata or {}).get("session_query_count", 0)
 
         await self._record_tool_action("recall", query[:100])
 
@@ -1910,7 +1917,10 @@ class ToolHandler:
             return {"error": "action is required"}
 
         storage = await self.get_storage()
-        brain_id = _require_brain_id(storage)
+        try:
+            brain_id = _require_brain_id(storage)
+        except ValueError:
+            return {"error": "No brain configured"}
 
         if action == "register":
             name = args.get("name")
@@ -1919,14 +1929,17 @@ class ToolHandler:
 
             from neural_memory.core.source import Source
 
-            source = Source.create(
-                brain_id=brain_id,
-                name=name,
-                source_type=args.get("source_type", "document"),
-                version=args.get("version", ""),
-                file_hash=args.get("file_hash", ""),
-                metadata=args.get("metadata") or {},
-            )
+            try:
+                source = Source.create(
+                    brain_id=brain_id,
+                    name=name,
+                    source_type=args.get("source_type", "document"),
+                    version=args.get("version", ""),
+                    file_hash=args.get("file_hash", ""),
+                    metadata=args.get("metadata") or {},
+                )
+            except ValueError:
+                return {"error": f"Invalid source_type: {args.get('source_type')}"}
             source_id = await storage.add_source(source)
             return {
                 "source_id": source_id,

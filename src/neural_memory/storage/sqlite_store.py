@@ -33,6 +33,7 @@ from neural_memory.storage.sqlite_schema import (
     ensure_fts_tables,
     run_migrations,
 )
+from neural_memory.storage.sqlite_sessions import SQLiteSessionsMixin
 from neural_memory.storage.sqlite_sources import SQLiteSourcesMixin
 from neural_memory.storage.sqlite_synapses import SQLiteSynapseMixin
 from neural_memory.storage.sqlite_sync_state import SQLiteSyncStateMixin
@@ -63,6 +64,7 @@ class SQLiteStorage(
     SQLiteCognitiveMixin,
     SQLiteChangeLogMixin,
     SQLiteDevicesMixin,
+    SQLiteSessionsMixin,
     SQLiteSourcesMixin,
     SQLiteToolEventsMixin,
     SQLiteTrainingFilesMixin,
@@ -309,6 +311,7 @@ class SQLiteStorage(
         conn = self._ensure_conn()
 
         brain_tables = (
+            "session_summaries",
             "change_log",
             "devices",
             "review_schedules",

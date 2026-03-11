@@ -146,6 +146,11 @@ include = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/neural_memory"]
 
+[tool.hatch.build]
+artifacts = [
+    "src/neural_memory/server/static/dist/**",
+]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"

@@ -125,6 +125,10 @@ class SQLiteSourcesMixin:
         params: list[Any] = [utcnow().isoformat()]
 
         if status is not None:
+            try:
+                SourceStatus(status)
+            except ValueError:
+                raise ValueError(f"Invalid status: {status!r}. Must be one of {[s.value for s in SourceStatus]}")
             sets.append("status = ?")
             params.append(status)
         if version is not None:
@@ -194,17 +198,35 @@ def _row_to_source(row: dict[str, Any]) -> Source:
         return datetime.fromisoformat(str(val))
 
     raw_metadata = row.get("metadata", "{}")
-    metadata = json.loads(str(raw_metadata)) if raw_metadata else {}
+    try:
+        metadata = json.loads(str(raw_metadata)) if raw_metadata else {}
+    except (json.JSONDecodeError, ValueError):
+        logger.warning("_row_to_source: invalid JSON in metadata for source %s, using {}", row.get("id"))
+        metadata = {}
+
+    raw_source_type = str(row["source_type"])
+    try:
+        source_type = SourceType(raw_source_type)
+    except ValueError:
+        logger.warning("_row_to_source: unknown source_type %r for source %s, falling back to DOCUMENT", raw_source_type, row.get("id"))
+        source_type = SourceType.DOCUMENT
+
+    raw_status = str(row["status"])
+    try:
+        status = SourceStatus(raw_status)
+    except ValueError:
+        logger.warning("_row_to_source: unknown status %r for source %s, falling back to ACTIVE", raw_status, row.get("id"))
+        status = SourceStatus.ACTIVE
 
     return Source(
         id=str(row["id"]),
         brain_id=str(row["brain_id"]),
         name=str(row["name"]),
-        source_type=SourceType(str(row["source_type"])),
+        source_type=source_type,
         version=str(row.get("version") or ""),
         effective_date=_parse_dt(row.get("effective_date")),
         expires_at=_parse_dt(row.get("expires_at")),
-        status=SourceStatus(str(row["status"])),
+        status=status,
         file_hash=str(row.get("file_hash") or ""),
         metadata=metadata,
         created_at=_parse_dt(row.get("created_at")) or utcnow(),

@@ -190,6 +190,7 @@ class ReflexPipeline:
         reference_time: datetime | None = None,
         valid_at: datetime | None = None,
         tags: set[str] | None = None,
+        session_id: str | None = None,
     ) -> RetrievalResult:
         """
         Execute the retrieval pipeline.
@@ -525,6 +526,48 @@ class ReflexPipeline:
                 await self._write_queue.flush(self._storage)
             except Exception:
                 logger.debug("Deferred write flush failed (non-critical)", exc_info=True)
+
+        # Record session query (non-critical)
+        if session_id:
+            try:
+                from neural_memory.engine.session_state import SessionManager
+
+                session_mgr = SessionManager.get_instance()
+                session = session_mgr.get_or_create(session_id)
+                session.record_query(
+                    query=query,
+                    depth_used=depth.value,
+                    confidence=reconstruction.confidence,
+                    fibers_matched=len(fibers_matched),
+                    entities=[e.text for e in stimulus.entities] if stimulus.entities else [],
+                    keywords=list(stimulus.keywords) if stimulus.keywords else [],
+                )
+                # Attach session context to result metadata
+                top_topics = session.get_top_topics()
+                if top_topics:
+                    result.metadata["session_topics"] = top_topics
+                    result.metadata["session_query_count"] = session.query_count
+
+                # Periodic session summary persist
+                if session.needs_persist():
+                    try:
+                        summary = session.to_summary_dict()
+                        await self._storage.save_session_summary(  # type: ignore[attr-defined]
+                            session_id=session.session_id,
+                            topics=summary["topics"],
+                            topic_weights=summary["topic_weights"],
+                            top_entities=summary["top_entities"],
+                            query_count=summary["query_count"],
+                            avg_confidence=summary["avg_confidence"],
+                            avg_depth=summary["avg_depth"],
+                            started_at=utcnow().isoformat(),
+                            ended_at=utcnow().isoformat(),
+                        )
+                        session.mark_persisted()
+                    except (AttributeError, Exception):
+                        logger.debug("Session summary persist failed (non-critical)", exc_info=True)
+            except Exception:
+                logger.debug("Session recording failed (non-critical)", exc_info=True)
 
         return result
 

@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Schema version for migrations
-SCHEMA_VERSION = 23
+SCHEMA_VERSION = 24
 
 # â”€â”€ Migrations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Each entry maps (from_version -> to_version) with a list of SQL statements.
@@ -436,6 +436,25 @@ MIGRATIONS: dict[tuple[int, int], list[str]] = {
         "CREATE INDEX IF NOT EXISTS idx_sources_type ON sources(brain_id, source_type)",
         "CREATE INDEX IF NOT EXISTS idx_sources_status ON sources(brain_id, status)",
         "CREATE INDEX IF NOT EXISTS idx_sources_name ON sources(brain_id, name)",
+    ],
+    (23, 24): [
+        # Session summaries: persist session intelligence for drift detection
+        """CREATE TABLE IF NOT EXISTS session_summaries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            brain_id TEXT NOT NULL,
+            topics_json TEXT NOT NULL DEFAULT '[]',
+            topic_weights_json TEXT NOT NULL DEFAULT '{}',
+            top_entities_json TEXT NOT NULL DEFAULT '[]',
+            query_count INTEGER NOT NULL DEFAULT 0,
+            avg_confidence REAL NOT NULL DEFAULT 0.0,
+            avg_depth REAL NOT NULL DEFAULT 0.0,
+            started_at TEXT NOT NULL,
+            ended_at TEXT NOT NULL,
+            FOREIGN KEY (brain_id) REFERENCES brains(id) ON DELETE CASCADE
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_session_summaries_brain ON session_summaries(brain_id, ended_at)",
+        "CREATE INDEX IF NOT EXISTS idx_session_summaries_session ON session_summaries(session_id)",
     ],
 }
 
@@ -960,4 +979,22 @@ CREATE TABLE IF NOT EXISTS sources (
 CREATE INDEX IF NOT EXISTS idx_sources_type ON sources(brain_id, source_type);
 CREATE INDEX IF NOT EXISTS idx_sources_status ON sources(brain_id, status);
 CREATE INDEX IF NOT EXISTS idx_sources_name ON sources(brain_id, name);
+
+-- Session summaries for session intelligence
+CREATE TABLE IF NOT EXISTS session_summaries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    brain_id TEXT NOT NULL,
+    topics_json TEXT NOT NULL DEFAULT '[]',
+    topic_weights_json TEXT NOT NULL DEFAULT '{}',
+    top_entities_json TEXT NOT NULL DEFAULT '[]',
+    query_count INTEGER NOT NULL DEFAULT 0,
+    avg_confidence REAL NOT NULL DEFAULT 0.0,
+    avg_depth REAL NOT NULL DEFAULT 0.0,
+    started_at TEXT NOT NULL,
+    ended_at TEXT NOT NULL,
+    FOREIGN KEY (brain_id) REFERENCES brains(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_session_summaries_brain ON session_summaries(brain_id, ended_at);
+CREATE INDEX IF NOT EXISTS idx_session_summaries_session ON session_summaries(session_id);
 """

@@ -171,13 +171,11 @@ def _save_embedding_config(provider_key: str, model: str) -> None:
     from neural_memory.unified_config import get_config
 
     config = get_config(reload=True)
-    config.embedding = replace(
-        config.embedding,
-        enabled=True,
-        provider=provider_key,
-        model=model,
+    updated = replace(
+        config,
+        embedding=replace(config.embedding, enabled=True, provider=provider_key, model=model),
     )
-    config.save()
+    updated.save()
 
 
 def _save_embedding_disabled() -> None:
@@ -187,5 +185,5 @@ def _save_embedding_disabled() -> None:
     from neural_memory.unified_config import get_config
 
     config = get_config(reload=True)
-    config.embedding = replace(config.embedding, enabled=False)
-    config.save()
+    updated = replace(config, embedding=replace(config.embedding, enabled=False))
+    updated.save()

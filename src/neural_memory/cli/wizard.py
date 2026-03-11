@@ -223,8 +223,10 @@ def _setup_brain_with_name(data_dir: Path, name: str) -> None:
 
         config = get_config(reload=True)
         if config.current_brain != name:
-            config.current_brain = name
-            config.save()
+            from dataclasses import replace as dc_replace
+
+            updated = dc_replace(config, current_brain=name)
+            updated.save()
 
 
 def _save_embedding_config(data_dir: Path, provider: str) -> None:
@@ -234,8 +236,8 @@ def _save_embedding_config(data_dir: Path, provider: str) -> None:
     config = get_config(reload=True)
     from dataclasses import replace
 
-    config.embedding = replace(config.embedding, enabled=True, provider=provider)
-    config.save()
+    updated = replace(config, embedding=replace(config.embedding, enabled=True, provider=provider))
+    updated.save()
 
 
 def _format_mcp_result(results: dict[str, str], label: str, status: str) -> None:

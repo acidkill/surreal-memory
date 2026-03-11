@@ -165,6 +165,11 @@ def _detect_csv_row(content: str) -> StructuredContent | None:
         )
         confidence = 0.7
 
+    # If every column is plain text (no numbers, dates, or currency), this is
+    # likely prose with commas rather than actual CSV data.
+    if all(f.field_type == "text" for f in fields):
+        return None
+
     return StructuredContent(
         format=ContentFormat.CSV_ROW,
         fields=fields,
@@ -265,6 +270,8 @@ def _detect_table_row(content: str) -> StructuredContent | None:
 
 # ── Main detector ─────────────────────────────────────────────
 
+MAX_DETECT_CHARS = 4096  # Structure detection only meaningful on short content
+
 
 def detect_structure(content: str) -> StructuredContent:
     """Detect structured content format.
@@ -282,7 +289,7 @@ def detect_structure(content: str) -> StructuredContent:
     Returns:
         StructuredContent with detected format and extracted fields.
     """
-    if not content or not content.strip():
+    if not content or not content.strip() or len(content) > MAX_DETECT_CHARS:
         return StructuredContent(format=ContentFormat.PLAIN, raw=content)
 
     # Try each detector in order

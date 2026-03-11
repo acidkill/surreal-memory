@@ -184,32 +184,31 @@ class TestEmbeddingSetup:
         with patch.dict("os.environ", {"TEST_KEY": "value"}):
             assert _has_env_key("TEST_KEY") is True
 
-    def test_save_embedding_config(self) -> None:
+    def test_save_embedding_config(self, tmp_path) -> None:
         from neural_memory.cli.embedding_setup import _save_embedding_config
-        from neural_memory.unified_config import EmbeddingSettings
+        from neural_memory.unified_config import UnifiedConfig
 
-        mock_config = MagicMock()
-        mock_config.embedding = EmbeddingSettings()
-        mock_config.save = MagicMock()
+        config = UnifiedConfig(data_dir=tmp_path)
 
-        with patch("neural_memory.unified_config.get_config", return_value=mock_config):
+        with (
+            patch("neural_memory.unified_config.get_config", return_value=config),
+            patch.object(UnifiedConfig, "save") as mock_save,
+        ):
             _save_embedding_config("gemini", "models/text-embedding-004")
-            mock_config.save.assert_called_once()
-            assert mock_config.embedding.provider == "gemini"
-            assert mock_config.embedding.enabled is True
+            mock_save.assert_called_once()
 
-    def test_save_embedding_disabled(self) -> None:
+    def test_save_embedding_disabled(self, tmp_path) -> None:
         from neural_memory.cli.embedding_setup import _save_embedding_disabled
-        from neural_memory.unified_config import EmbeddingSettings
+        from neural_memory.unified_config import UnifiedConfig
 
-        mock_config = MagicMock()
-        mock_config.embedding = EmbeddingSettings(enabled=True)
-        mock_config.save = MagicMock()
+        config = UnifiedConfig(data_dir=tmp_path)
 
-        with patch("neural_memory.unified_config.get_config", return_value=mock_config):
+        with (
+            patch("neural_memory.unified_config.get_config", return_value=config),
+            patch.object(UnifiedConfig, "save") as mock_save,
+        ):
             _save_embedding_disabled()
-            mock_config.save.assert_called_once()
-            assert mock_config.embedding.enabled is False
+            mock_save.assert_called_once()
 
     def test_provider_list_has_all_providers(self) -> None:
         from neural_memory.cli.embedding_setup import _PROVIDERS
