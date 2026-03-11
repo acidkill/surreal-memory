@@ -6,31 +6,41 @@ import { CardBack } from "./CardBack"
 interface FlipCardProps {
   card: OracleCard
   autoFlipDelay?: number
+  onFlip?: () => void
   className?: string
 }
 
-export function FlipCard({ card, autoFlipDelay, className = "" }: FlipCardProps) {
+export function FlipCard({ card, autoFlipDelay, onFlip, className = "" }: FlipCardProps) {
   const [isFlipped, setIsFlipped] = useState(false)
 
   useEffect(() => {
     if (autoFlipDelay !== undefined && autoFlipDelay >= 0) {
-      const timer = setTimeout(() => setIsFlipped(true), autoFlipDelay)
+      const timer = setTimeout(() => {
+        setIsFlipped(true)
+        onFlip?.()
+      }, autoFlipDelay)
       return () => clearTimeout(timer)
     }
-  }, [autoFlipDelay])
+  }, [autoFlipDelay, onFlip])
+
+  const handleFlip = () => {
+    const next = !isFlipped
+    setIsFlipped(next)
+    if (next) onFlip?.()
+  }
 
   return (
     <div
       className={`cursor-pointer ${className}`}
       style={{ perspective: "1000px" }}
-      onClick={() => setIsFlipped((prev) => !prev)}
+      onClick={handleFlip}
       role="button"
       tabIndex={0}
       aria-label={isFlipped ? `Card: ${card.title}` : "Tap to reveal card"}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault()
-          setIsFlipped((prev) => !prev)
+          handleFlip()
         }
       }}
     >

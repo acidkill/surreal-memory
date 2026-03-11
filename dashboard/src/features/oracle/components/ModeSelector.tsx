@@ -1,10 +1,11 @@
 import { Sparkles, Shuffle, Swords } from "lucide-react"
 import type { OracleMode } from "../engine/types"
+import { useTranslation } from "react-i18next"
 
-const MODES: { key: OracleMode; label: string; icon: typeof Sparkles }[] = [
-  { key: "daily", label: "Daily Reading", icon: Sparkles },
-  { key: "whatif", label: "What If", icon: Shuffle },
-  { key: "matchup", label: "Matchup", icon: Swords },
+const MODES: { key: OracleMode; labelKey: string; icon: typeof Sparkles }[] = [
+  { key: "daily", labelKey: "oracle.dailyReading", icon: Sparkles },
+  { key: "whatif", labelKey: "oracle.whatif", icon: Shuffle },
+  { key: "matchup", labelKey: "oracle.matchup", icon: Swords },
 ]
 
 interface ModeSelectorProps {
@@ -13,9 +14,10 @@ interface ModeSelectorProps {
 }
 
 export function ModeSelector({ mode, onModeChange }: ModeSelectorProps) {
+  const { t } = useTranslation()
   return (
     <div className="flex gap-2">
-      {MODES.map(({ key, label, icon: Icon }) => (
+      {MODES.map(({ key, labelKey, icon: Icon }) => (
         <button
           key={key}
           onClick={() => onModeChange(key)}
@@ -26,7 +28,7 @@ export function ModeSelector({ mode, onModeChange }: ModeSelectorProps) {
           }`}
         >
           <Icon className="size-4" />
-          {label}
+          {t(labelKey)}
         </button>
       ))}
     </div>
