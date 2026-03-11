@@ -375,6 +375,45 @@ class ExtractIntentNeuronsStep:
         return ctx
 
 
+# ── Step 3.5: Structure Detection ──
+
+
+@dataclass
+class StructureDetectionStep:
+    """Detect structured content (CSV, JSON, key-value, table).
+
+    Runs before auto-tagging so structure tags are included in merged_tags.
+    Stores structure metadata in effective_metadata for downstream steps.
+    """
+
+    @property
+    def name(self) -> str:
+        return "structure_detection"
+
+    async def execute(
+        self,
+        ctx: PipelineContext,
+        storage: NeuralStorage,
+        config: BrainConfig,
+    ) -> PipelineContext:
+        from neural_memory.extraction.structure_detector import detect_structure
+
+        result = detect_structure(ctx.content)
+        if result.is_structured:
+            # Store structure info in metadata for neuron persistence
+            ctx.metadata["_structure"] = {
+                "format": result.format.value,
+                "fields": [
+                    {"name": f.name, "value": f.value, "type": f.field_type} for f in result.fields
+                ],
+                "confidence": result.confidence,
+            }
+            # Add structure tag for filtering
+            ctx.tags.add(f"_structured:{result.format.value}")
+
+        return ctx
+
+
 # ── Step 4: Auto-Tag + Metadata ──
 
 

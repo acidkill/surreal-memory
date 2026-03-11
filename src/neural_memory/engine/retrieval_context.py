@@ -62,6 +62,9 @@ async def format_context(
                 else:
                     continue
 
+            # Format structured content if metadata has _structure
+            content = _format_if_structured(content, fiber.metadata)
+
             # Truncate long content to fit within token budget
             remaining_budget = max_tokens - token_estimate
             if remaining_budget <= 0:
@@ -111,3 +114,44 @@ async def format_context(
             lines.append(line)
 
     return "\n".join(lines), token_estimate
+
+
+def _format_if_structured(content: str, metadata: dict[str, Any]) -> str:
+    """Format content using structure metadata if available.
+
+    If the neuron/fiber has _structure metadata (set by StructureDetectionStep),
+    re-format the content for readable output. Otherwise return as-is.
+    """
+    structure = metadata.get("_structure")
+    if not structure or not isinstance(structure, dict):
+        return content
+
+    fmt = structure.get("format", "plain")
+    if fmt == "plain":
+        return content
+
+    fields = structure.get("fields", [])
+    if not fields:
+        return content
+
+    # Rebuild StructuredContent from stored metadata for formatting
+    from neural_memory.extraction.structure_detector import (
+        ContentFormat,
+        StructuredContent,
+        StructuredField,
+        format_structured_output,
+    )
+
+    sc = StructuredContent(
+        format=ContentFormat(fmt),
+        fields=tuple(
+            StructuredField(
+                name=f.get("name", ""),
+                value=f.get("value", ""),
+                field_type=f.get("type", "text"),
+            )
+            for f in fields
+        ),
+        raw=content,
+    )
+    return format_structured_output(sc)

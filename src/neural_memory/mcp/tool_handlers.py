@@ -821,16 +821,19 @@ class ToolHandler:
                     except Exception:
                         logger.debug("Decryption failed in exact recall", exc_info=True)
                 tm = await storage.get_typed_memory(fid)
-                exact_items.append(
-                    {
-                        "fiber_id": fid,
-                        "content": content,
-                        "memory_type": tm.memory_type.value if tm else None,
-                        "priority": tm.priority.value if tm else None,
-                        "tags": list(tm.tags) if tm and tm.tags else [],
-                        "created_at": fiber.created_at.isoformat() if fiber.created_at else None,
-                    }
-                )
+                item: dict[str, Any] = {
+                    "fiber_id": fid,
+                    "content": content,
+                    "memory_type": tm.memory_type.value if tm else None,
+                    "priority": tm.priority.value if tm else None,
+                    "tags": list(tm.tags) if tm and tm.tags else [],
+                    "created_at": fiber.created_at.isoformat() if fiber.created_at else None,
+                }
+                # Include structure metadata if present
+                structure = anchor.metadata.get("_structure") if anchor.metadata else None
+                if structure:
+                    item["structure"] = structure
+                exact_items.append(item)
 
             response: dict[str, Any] = {
                 "mode": "exact",
