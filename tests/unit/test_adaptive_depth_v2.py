@@ -14,19 +14,17 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from neural_memory.engine.depth_prior import AdaptiveDepthSelector, DepthDecision, DepthPrior
+from neural_memory.engine.depth_prior import AdaptiveDepthSelector, DepthPrior
 from neural_memory.engine.retrieval_types import DepthLevel
+from neural_memory.engine.score_fusion import DEFAULT_RETRIEVER_WEIGHTS
 from neural_memory.engine.sufficiency import (
     GateCalibration,
     SufficiencyMetrics,
     SufficiencyResult,
     _apply_calibration,
-    check_sufficiency,
 )
-from neural_memory.engine.score_fusion import DEFAULT_RETRIEVER_WEIGHTS
 from neural_memory.extraction.entities import Entity, EntityType
 from neural_memory.extraction.parser import Perspective, QueryIntent, Stimulus
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -294,9 +292,7 @@ class TestCalibrationThresholdTuning:
             metrics=_make_sufficiency_metrics(anchor_count=0),
         )
         calibration = {
-            "no_anchors": GateCalibration(
-                accuracy=0.95, avg_confidence=0.9, sample_count=100
-            )
+            "no_anchors": GateCalibration(accuracy=0.95, avg_confidence=0.9, sample_count=100)
         }
         adjusted = _apply_calibration(result, calibration)
         assert not adjusted.sufficient  # Still insufficient
