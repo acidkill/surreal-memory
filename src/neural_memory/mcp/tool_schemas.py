@@ -1009,6 +1009,10 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "enum": ["prefer_recent", "prefer_local", "prefer_remote", "prefer_stronger"],
                     "description": "Conflict resolution strategy (default: from config)",
                 },
+                "api_key": {
+                    "type": "string",
+                    "description": "API key override (default: from config)",
+                },
             },
             "required": ["action"],
         },
@@ -1023,14 +1027,14 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "nmem_sync_config",
-        "description": "View or update sync configuration.",
+        "description": "View or update sync configuration. Use action='setup' for guided onboarding.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["get", "set"],
-                    "description": "get=view current config, set=update config",
+                    "enum": ["get", "set", "setup"],
+                    "description": "get=view config, set=update config, setup=guided onboarding",
                 },
                 "enabled": {
                     "type": "boolean",
@@ -1038,7 +1042,11 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
                 },
                 "hub_url": {
                     "type": "string",
-                    "description": "Hub server URL",
+                    "description": "Hub server URL (default: cloud hub)",
+                },
+                "api_key": {
+                    "type": "string",
+                    "description": "API key for cloud hub (starts with nmk_)",
                 },
                 "auto_sync": {
                     "type": "boolean",

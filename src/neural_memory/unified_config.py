@@ -417,6 +417,7 @@ class SyncConfig:
 
     enabled: bool = False
     hub_url: str = ""
+    api_key: str = ""
     auto_sync: bool = False
     sync_interval_seconds: int = 300
     conflict_strategy: str = "prefer_recent"
@@ -425,6 +426,7 @@ class SyncConfig:
         return {
             "enabled": self.enabled,
             "hub_url": self.hub_url,
+            "api_key": self.api_key,
             "auto_sync": self.auto_sync,
             "sync_interval_seconds": self.sync_interval_seconds,
             "conflict_strategy": self.conflict_strategy,
@@ -446,9 +448,14 @@ class SyncConfig:
             hub_url = ""
         # Truncate URL to reasonable length
         hub_url = hub_url[:256]
+        api_key = str(data.get("api_key", ""))
+        # Validate api_key format: must start with nmk_ or be empty
+        if api_key and not api_key.startswith("nmk_"):
+            api_key = ""
         return cls(
             enabled=bool(data.get("enabled", False)),
             hub_url=hub_url,
+            api_key=api_key,
             auto_sync=bool(data.get("auto_sync", False)),
             sync_interval_seconds=interval,
             conflict_strategy=strategy,

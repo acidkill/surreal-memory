@@ -11,6 +11,34 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_HUB_URL = "https://neural-memory-sync-hub.vietnam11399.workers.dev"
+
+
+def _mask_key(api_key: str) -> str:
+    """Mask API key for display: nmk_a1b2****."""
+    if not api_key or len(api_key) < 12:
+        return "(not set)"
+    return f"{api_key[:12]}****"
+
+
+def _build_sync_url(hub_url: str) -> str:
+    """Build the sync endpoint URL with version prefix.
+
+    Cloud hub uses /v1/hub/sync, local hub uses /hub/sync.
+    """
+    base = hub_url.rstrip("/")
+    if "localhost" in base or "127.0.0.1" in base:
+        return f"{base}/hub/sync"
+    return f"{base}/v1/hub/sync"
+
+
+def _build_hub_url(hub_url: str, path: str) -> str:
+    """Build a hub endpoint URL with version prefix."""
+    base = hub_url.rstrip("/")
+    if "localhost" in base or "127.0.0.1" in base:
+        return f"{base}{path}"
+    return f"{base}/v1{path}"
+
 
 class SyncToolHandler:
     """Mixin providing sync-related MCP tool handlers."""
@@ -52,14 +80,14 @@ class SyncToolHandler:
             if not self.config.sync.enabled:
                 return {
                     "status": "disabled",
-                    "message": "Sync is not enabled. Use nmem_sync_config to enable it.",
+                    "message": "Sync is not enabled. Use nmem_sync_config(action='setup') to get started.",
                 }
 
             hub_url = args.get("hub_url") or self.config.sync.hub_url
             if not hub_url:
                 return {
                     "status": "error",
-                    "message": "No hub URL configured. Set it via nmem_sync_config.",
+                    "message": "No hub URL configured. Use nmem_sync_config(action='setup') to configure.",
                 }
 
             # Get strategy
@@ -84,12 +112,27 @@ class SyncToolHandler:
             # Prepare request
             request = await engine.prepare_sync_request(brain_id)
 
+            # Build headers with API key auth
+            api_key = args.get("api_key") or self.config.sync.api_key
+            headers: dict[str, str] = {"Content-Type": "application/json"}
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+
+            # Refuse non-HTTPS for cloud hubs
+            if hub_url and not hub_url.startswith("https://"):
+                if "localhost" not in hub_url and "127.0.0.1" not in hub_url:
+                    return {
+                        "status": "error",
+                        "message": "Cloud hub requires HTTPS. Use https:// URL.",
+                    }
+
             # Send to hub
             import aiohttp
 
+            sync_url = _build_sync_url(hub_url)
             async with aiohttp.ClientSession() as session:
                 async with session.post(
-                    f"{hub_url.rstrip('/')}/hub/sync",
+                    sync_url,
                     json={
                         "device_id": request.device_id,
                         "brain_id": request.brain_id,
@@ -108,10 +151,11 @@ class SyncToolHandler:
                         ],
                         "strategy": request.strategy.value,
                     },
+                    headers=headers,
                     timeout=aiohttp.ClientTimeout(total=30),
                 ) as resp:
                     if resp.status != 200:
-                        return {"status": "error", "message": f"Hub returned status {resp.status}"}
+                        return _handle_http_error(resp.status)
                     response_data = await resp.json()
 
             # Process response
@@ -192,9 +236,10 @@ class SyncToolHandler:
                 for d in devices_raw
             ]
 
-            return {
+            result: dict[str, Any] = {
                 "sync_enabled": self.config.sync.enabled,
                 "hub_url": self.config.sync.hub_url or "(not set)",
+                "api_key": _mask_key(self.config.sync.api_key),
                 "device_id": self.config.device_id,
                 "auto_sync": self.config.sync.auto_sync,
                 "conflict_strategy": self.config.sync.conflict_strategy,
@@ -202,9 +247,42 @@ class SyncToolHandler:
                 "devices": devices,
                 "device_count": len(devices),
             }
+
+            # If connected to cloud hub, fetch tier info
+            if self.config.sync.enabled and self.config.sync.api_key:
+                cloud_info = await self._fetch_cloud_profile()
+                if cloud_info:
+                    result["cloud"] = cloud_info
+
+            return result
         except Exception:
             logger.error("Sync status failed", exc_info=True)
             return {"error": "Failed to get sync status"}
+
+    async def _fetch_cloud_profile(self) -> dict[str, Any] | None:
+        """Fetch cloud hub profile (/v1/auth/me) for status display."""
+        try:
+            import aiohttp
+
+            url = _build_hub_url(self.config.sync.hub_url, "/auth/me")
+            headers = {"Authorization": f"Bearer {self.config.sync.api_key}"}
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    url,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        return {
+                            "email": data.get("email", ""),
+                            "tier": data.get("tier", ""),
+                            "brains": data.get("usage", {}).get("brains", 0),
+                            "devices": data.get("usage", {}).get("devices", 0),
+                        }
+        except Exception:
+            pass
+        return None
 
     async def _sync_config(self, args: dict[str, Any]) -> dict[str, Any]:
         """Handle nmem_sync_config tool call."""
@@ -215,10 +293,31 @@ class SyncToolHandler:
                 return {
                     "enabled": self.config.sync.enabled,
                     "hub_url": self.config.sync.hub_url or "(not set)",
+                    "api_key": _mask_key(self.config.sync.api_key),
                     "auto_sync": self.config.sync.auto_sync,
                     "sync_interval_seconds": self.config.sync.sync_interval_seconds,
                     "conflict_strategy": self.config.sync.conflict_strategy,
                     "device_id": self.config.device_id,
+                }
+
+            if action == "setup":
+                if self.config.sync.enabled and self.config.sync.api_key:
+                    return {
+                        "status": "already_configured",
+                        "hub_url": self.config.sync.hub_url,
+                        "api_key": _mask_key(self.config.sync.api_key),
+                        "message": "Cloud sync is already configured. Use action='get' to view settings.",
+                    }
+                return {
+                    "status": "setup_needed",
+                    "steps": [
+                        f"1. Register: curl -X POST {DEFAULT_HUB_URL}/v1/auth/register -H 'Content-Type: application/json' -d '{{\"email\":\"you@example.com\"}}'",
+                        "2. Save the API key from the response (shown once, starts with nmk_)",
+                        f"3. Run: nmem_sync_config(action='set', hub_url='{DEFAULT_HUB_URL}', api_key='nmk_YOUR_KEY')",
+                        "4. Run: nmem_sync(action='seed') to prepare existing memories",
+                        "5. Run: nmem_sync(action='push') to upload to cloud",
+                    ],
+                    "default_hub_url": DEFAULT_HUB_URL,
                 }
 
             if action == "set":
@@ -232,6 +331,11 @@ class SyncToolHandler:
                     if url and not url.startswith(("http://", "https://")):
                         return {"error": "hub_url must start with http:// or https://"}
                     new_sync = dc_replace(new_sync, hub_url=url[:256])
+                if "api_key" in args:
+                    key = str(args["api_key"]).strip()
+                    if key and not key.startswith("nmk_"):
+                        return {"error": "API key must start with 'nmk_'"}
+                    new_sync = dc_replace(new_sync, api_key=key)
                 if "auto_sync" in args:
                     new_sync = dc_replace(new_sync, auto_sync=bool(args["auto_sync"]))
                 if "sync_interval_seconds" in args:
@@ -244,19 +348,61 @@ class SyncToolHandler:
                         return {"error": f"Invalid strategy. Use: {', '.join(sorted(valid))}"}
                     new_sync = dc_replace(new_sync, conflict_strategy=strategy)
 
+                # Auto-enable when both hub_url and api_key are provided
+                if new_sync.hub_url and new_sync.api_key and not new_sync.enabled:
+                    new_sync = dc_replace(new_sync, enabled=True)
+
                 self.config = dc_replace(self.config, sync=new_sync)
                 self.config.save()
 
-                return {
+                result: dict[str, Any] = {
                     "status": "updated",
                     "enabled": self.config.sync.enabled,
                     "hub_url": self.config.sync.hub_url or "(not set)",
+                    "api_key": _mask_key(self.config.sync.api_key),
                     "auto_sync": self.config.sync.auto_sync,
                     "sync_interval_seconds": self.config.sync.sync_interval_seconds,
                     "conflict_strategy": self.config.sync.conflict_strategy,
                 }
 
-            return {"error": "Invalid action. Use: get, set"}
+                # Test connectivity if newly configured
+                if self.config.sync.enabled and self.config.sync.api_key:
+                    connectivity = await self._test_hub_connectivity()
+                    result["connectivity"] = connectivity
+
+                return result
+
+            return {"error": "Invalid action. Use: get, set, setup"}
         except Exception:
             logger.error("Sync config failed", exc_info=True)
             return {"error": "Failed to manage sync config"}
+
+    async def _test_hub_connectivity(self) -> dict[str, Any]:
+        """Test hub connectivity with a health check."""
+        try:
+            import aiohttp
+
+            url = _build_hub_url(self.config.sync.hub_url, "/health")
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    url,
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    if resp.status == 200:
+                        return {"status": "ok", "message": "Hub is reachable"}
+                    return {"status": "error", "message": f"Hub returned {resp.status}"}
+        except Exception as e:
+            return {"status": "error", "message": f"Cannot reach hub: {e}"}
+
+
+def _handle_http_error(status: int) -> dict[str, Any]:
+    """Map HTTP status codes to user-friendly error messages."""
+    messages: dict[int, str] = {
+        401: "Invalid or expired API key. Run nmem_sync_config(action='setup') to reconfigure.",
+        403: "Access denied. You don't own this brain or need to upgrade your plan.",
+        413: "Payload too large. Reduce the number of changes per sync.",
+        422: "Invalid request format. Check brain_id and device_id.",
+        429: "Rate limited. Try again in a few seconds.",
+    }
+    message = messages.get(status, f"Hub returned status {status}")
+    return {"status": "error", "http_status": status, "message": message}

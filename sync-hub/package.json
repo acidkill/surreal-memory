@@ -1,0 +1,27 @@
+{
+  "name": "neural-memory-sync-hub",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Cloudflare Worker sync hub for Neural Memory",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "db:migrate:local": "wrangler d1 execute SYNC_DB --local --file=src/db/migrations/0001_initial.sql",
+    "db:migrate:remote": "wrangler d1 execute SYNC_DB --remote --file=src/db/migrations/0001_initial.sql"
+  },
+  "dependencies": {
+    "hono": "^4.7.0"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.8.0",
+    "@cloudflare/workers-types": "^4.20250109.0",
+    "@types/node": "^25.4.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0",
+    "wrangler": "^4.0.0"
+  }
+}
