@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from neural_memory.core.source import Source, SourceStatus, SourceType
-
 
 # ──────────────────── Source dataclass ────────────────────
 
