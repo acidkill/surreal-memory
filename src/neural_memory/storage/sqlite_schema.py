@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Schema version for migrations
-SCHEMA_VERSION = 25
+SCHEMA_VERSION = 26
 
 # â”€â”€ Migrations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Each entry maps (from_version -> to_version) with a list of SQL statements.
@@ -469,6 +469,33 @@ MIGRATIONS: dict[tuple[int, int], list[str]] = {
         "CREATE INDEX IF NOT EXISTS idx_retriever_cal_brain ON retriever_calibration(brain_id, retriever_type, created_at)",
         # Graph density metric in brain metadata
         """ALTER TABLE brains ADD COLUMN graph_density REAL NOT NULL DEFAULT 0.0""",
+    ],
+    (25, 26): [
+        # Tag co-occurrence matrix for semantic drift detection
+        """CREATE TABLE IF NOT EXISTS tag_cooccurrence (
+            brain_id TEXT NOT NULL,
+            tag_a TEXT NOT NULL,
+            tag_b TEXT NOT NULL,
+            count INTEGER NOT NULL DEFAULT 1,
+            last_seen TEXT NOT NULL,
+            PRIMARY KEY (brain_id, tag_a, tag_b),
+            FOREIGN KEY (brain_id) REFERENCES brains(id) ON DELETE CASCADE
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_tag_cooccurrence_brain ON tag_cooccurrence(brain_id, count DESC)",
+        # Drift detection results (persisted for review/dismiss)
+        """CREATE TABLE IF NOT EXISTS drift_clusters (
+            id TEXT NOT NULL,
+            brain_id TEXT NOT NULL,
+            canonical TEXT NOT NULL,
+            members TEXT NOT NULL DEFAULT '[]',
+            confidence REAL NOT NULL DEFAULT 0.0,
+            status TEXT NOT NULL DEFAULT 'detected',
+            created_at TEXT NOT NULL,
+            resolved_at TEXT,
+            PRIMARY KEY (brain_id, id),
+            FOREIGN KEY (brain_id) REFERENCES brains(id) ON DELETE CASCADE
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_drift_clusters_status ON drift_clusters(brain_id, status)",
     ],
 }
 
@@ -1023,4 +1050,31 @@ CREATE TABLE IF NOT EXISTS retriever_calibration (
     FOREIGN KEY (brain_id) REFERENCES brains(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_retriever_cal_brain ON retriever_calibration(brain_id, retriever_type, created_at);
+
+-- Tag co-occurrence matrix for semantic drift detection (v26)
+CREATE TABLE IF NOT EXISTS tag_cooccurrence (
+    brain_id TEXT NOT NULL,
+    tag_a TEXT NOT NULL,
+    tag_b TEXT NOT NULL,
+    count INTEGER NOT NULL DEFAULT 1,
+    last_seen TEXT NOT NULL,
+    PRIMARY KEY (brain_id, tag_a, tag_b),
+    FOREIGN KEY (brain_id) REFERENCES brains(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_tag_cooccurrence_brain ON tag_cooccurrence(brain_id, count DESC);
+
+-- Drift detection results (v26)
+CREATE TABLE IF NOT EXISTS drift_clusters (
+    id TEXT NOT NULL,
+    brain_id TEXT NOT NULL,
+    canonical TEXT NOT NULL,
+    members TEXT NOT NULL DEFAULT '[]',
+    confidence REAL NOT NULL DEFAULT 0.0,
+    status TEXT NOT NULL DEFAULT 'detected',
+    created_at TEXT NOT NULL,
+    resolved_at TEXT,
+    PRIMARY KEY (brain_id, id),
+    FOREIGN KEY (brain_id) REFERENCES brains(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_drift_clusters_status ON drift_clusters(brain_id, status);
 """
