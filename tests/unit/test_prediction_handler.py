@@ -20,6 +20,7 @@ def _make_storage(brain_id: str | None = "test-brain") -> AsyncMock:
     """Build a mock NeuralStorage with explicit brain_id."""
     storage = AsyncMock()
     storage._current_brain_id = brain_id
+    storage.brain_id = brain_id
     storage.current_brain_id = brain_id
     storage.get_brain = AsyncMock(return_value=MagicMock(config=MagicMock()))
     storage.get_cognitive_state = AsyncMock(return_value=None)

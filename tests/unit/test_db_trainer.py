@@ -582,6 +582,7 @@ class TestDBTrainHandler:
         mock_brain.config = MagicMock()
         mock_storage = AsyncMock()
         mock_storage._current_brain_id = "brain-1"
+        mock_storage.brain_id = "brain-1"
         mock_storage.get_brain = AsyncMock(return_value=mock_brain)
         handler.get_storage = AsyncMock(return_value=mock_storage)
 
@@ -725,6 +726,7 @@ class TestHandlerHappyPath:
         mock_brain.config = MagicMock()
         mock_storage = AsyncMock()
         mock_storage._current_brain_id = "brain-1"
+        mock_storage.brain_id = "brain-1"
         mock_storage.get_brain = AsyncMock(return_value=mock_brain)
         handler.get_storage = AsyncMock(return_value=mock_storage)
         return handler, mock_storage
@@ -786,6 +788,7 @@ class TestHandlerErrorPaths:
         mock_brain.config = MagicMock()
         mock_storage = AsyncMock()
         mock_storage._current_brain_id = "brain-1"
+        mock_storage.brain_id = "brain-1"
         mock_storage.get_brain = AsyncMock(return_value=mock_brain)
         handler.get_storage = AsyncMock(return_value=mock_storage)
         return handler
@@ -868,6 +871,7 @@ class TestHandlerNewValidations:
         mock_brain.config = MagicMock()
         mock_storage = AsyncMock()
         mock_storage._current_brain_id = "brain-1"
+        mock_storage.brain_id = "brain-1"
         mock_storage.get_brain = AsyncMock(return_value=mock_brain)
         handler.get_storage = AsyncMock(return_value=mock_storage)
         return handler

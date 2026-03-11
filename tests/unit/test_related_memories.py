@@ -115,6 +115,7 @@ class TestRelatedMemoryDiscovery:
 
         mock_storage = AsyncMock()
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
         mock_storage.get_brain = AsyncMock(return_value=_FakeBrain())
         mock_storage.get_neurons_batch = AsyncMock(return_value={})
         mock_storage.find_fibers_batch = AsyncMock(return_value=[])
@@ -175,6 +176,7 @@ class TestRelatedMemoryDiscovery:
 
         mock_storage = AsyncMock()
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
         mock_storage.get_brain = AsyncMock(return_value=_FakeBrain())
         mock_storage.get_neurons_batch = AsyncMock(
             return_value={
@@ -252,6 +254,7 @@ class TestRelatedMemoryDiscovery:
 
         mock_storage = AsyncMock()
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
         mock_storage.get_brain = AsyncMock(return_value=_FakeBrain())
 
         server._storage = mock_storage
@@ -319,6 +322,7 @@ class TestRelatedMemoryDiscovery:
 
         mock_storage = AsyncMock()
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
         mock_storage.get_brain = AsyncMock(return_value=_FakeBrain())
         mock_storage.get_neurons_batch = AsyncMock(return_value=neurons_batch)
         mock_storage.find_fibers_batch = AsyncMock(return_value=related_fibers)

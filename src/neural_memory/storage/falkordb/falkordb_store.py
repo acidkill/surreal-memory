@@ -94,7 +94,7 @@ class FalkorDBStorage(
         self._graphs.clear()
 
     @property
-    def current_brain_id(self) -> str | None:
+    def brain_id(self) -> str | None:
         """The active brain ID, or None if not set."""
         return self._current_brain_id
 

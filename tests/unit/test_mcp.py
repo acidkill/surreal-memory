@@ -216,6 +216,7 @@ class TestMCPToolCalls:
         )
         mock_storage.get_brain = AsyncMock(return_value=mock_brain)
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
 
         mock_fiber = MagicMock(id="fiber-123")
         mock_encoder = AsyncMock()
@@ -242,6 +243,7 @@ class TestMCPToolCalls:
         mock_storage = AsyncMock()
         mock_storage.get_brain = AsyncMock(return_value=None)
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
 
         with patch.object(server, "get_storage", return_value=mock_storage):
             result = await server.call_tool("nmem_remember", {"content": "Test"})
@@ -260,6 +262,7 @@ class TestMCPToolCalls:
         )
         mock_storage.get_brain = AsyncMock(return_value=mock_brain)
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
 
         mock_pipeline = AsyncMock()
         mock_pipeline.query = AsyncMock(
@@ -296,6 +299,7 @@ class TestMCPToolCalls:
         )
         mock_storage.get_brain = AsyncMock(return_value=mock_brain)
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
 
         mock_pipeline = AsyncMock()
         mock_pipeline.query = AsyncMock(
@@ -359,6 +363,7 @@ class TestMCPToolCalls:
         )
         mock_storage.get_brain = AsyncMock(return_value=mock_brain)
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
 
         mock_fiber = MagicMock(id="todo-123")
         mock_encoder = AsyncMock()
@@ -384,6 +389,7 @@ class TestMCPToolCalls:
         mock_brain.name = "my-brain"
         mock_storage.get_brain = AsyncMock(return_value=mock_brain)
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
         mock_storage.get_enhanced_stats = AsyncMock(
             return_value={
                 "neuron_count": 100,
@@ -473,6 +479,7 @@ class TestMCPToolCalls:
         )
         mock_storage.get_brain = AsyncMock(return_value=mock_brain)
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
 
         mock_fiber = MagicMock(id="auto-123")
         mock_encoder = AsyncMock()
@@ -572,6 +579,7 @@ class TestMCPToolCalls:
         mock_brain = MagicMock(id="test-brain", name="test", config=MagicMock())
         mock_storage.get_brain = AsyncMock(return_value=mock_brain)
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
 
         mock_fiber = MagicMock(id="idx-123")
         mock_result = MagicMock(
@@ -627,6 +635,7 @@ class TestMCPToolCalls:
         mock_brain = MagicMock(id="test-brain", name="test", config=MagicMock())
         mock_storage.get_brain = AsyncMock(return_value=mock_brain)
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
         mock_storage.find_typed_memories = AsyncMock(return_value=[])
 
         mock_fiber = MagicMock(id="session-123")
@@ -664,6 +673,7 @@ class TestMCPToolCalls:
         mock_brain = MagicMock(id="test-brain", name="test", config=MagicMock())
         mock_storage.get_brain = AsyncMock(return_value=mock_brain)
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
 
         mock_existing = MagicMock(
             metadata={
@@ -714,6 +724,7 @@ class TestMCPToolCalls:
         """Test nmem_consolidate with default strategy."""
         mock_storage = AsyncMock()
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
         mock_storage.get_brain = AsyncMock(
             return_value=MagicMock(id="test-brain", name="test", config=MagicMock())
         )
@@ -746,6 +757,7 @@ class TestMCPToolCalls:
         """Test nmem_consolidate with dry_run=true."""
         mock_storage = AsyncMock()
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
         mock_storage.get_brain = AsyncMock(
             return_value=MagicMock(id="test-brain", name="test", config=MagicMock())
         )
@@ -779,6 +791,7 @@ class TestMCPToolCalls:
         """Test nmem_consolidate with invalid strategy returns error."""
         mock_storage = AsyncMock()
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
         mock_storage.get_brain = AsyncMock(
             return_value=MagicMock(id="test-brain", name="test", config=MagicMock())
         )
@@ -795,6 +808,7 @@ class TestMCPToolCalls:
         mock_storage = AsyncMock()
         mock_storage.get_brain = AsyncMock(return_value=None)
         mock_storage._current_brain_id = None
+        mock_storage.brain_id = None
 
         with patch.object(server, "get_storage", return_value=mock_storage):
             result = await server.call_tool("nmem_consolidate", {})
@@ -821,6 +835,7 @@ class TestMCPErrorPaths:
         mock_storage = AsyncMock()
         mock_storage.get_brain = AsyncMock(return_value=None)
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
         mock_storage.find_typed_memories = AsyncMock(return_value=[])
 
         with patch.object(server, "get_storage", return_value=mock_storage):
@@ -838,6 +853,7 @@ class TestMCPErrorPaths:
         mock_storage = AsyncMock()
         mock_storage.get_brain = AsyncMock(return_value=None)
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
 
         mock_existing = MagicMock(
             metadata={
@@ -869,6 +885,7 @@ class TestMCPErrorPaths:
         mock_storage = AsyncMock()
         mock_storage.get_brain = AsyncMock(return_value=None)
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
 
         ctx = AsyncMock()
 
@@ -894,6 +911,7 @@ class TestMCPErrorPaths:
         mock_storage = AsyncMock()
         mock_storage.get_brain = AsyncMock(return_value=None)
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
 
         with (
             patch.object(server, "get_eternal_context", return_value=ctx),
@@ -911,6 +929,7 @@ class TestMCPErrorPaths:
         mock_brain = MagicMock(id="test-brain", config=MagicMock())
         mock_storage.get_brain = AsyncMock(return_value=mock_brain)
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
         mock_storage.find_typed_memories = AsyncMock(return_value=[])
 
         mock_pipeline = AsyncMock()
@@ -1406,6 +1425,7 @@ class TestPassiveCapture:
         )
         mock_storage.get_brain = AsyncMock(return_value=mock_brain)
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
 
         mock_pipeline = AsyncMock()
         mock_pipeline.query = AsyncMock(
@@ -1594,6 +1614,7 @@ class TestMCPEternal:
         mock_brain = MagicMock(id="test-brain", config=MagicMock())
         mock_storage.get_brain = AsyncMock(return_value=mock_brain)
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
 
         with (
             patch.object(server, "get_eternal_context", return_value=ctx),
@@ -1613,6 +1634,7 @@ class TestMCPEternal:
         mock_brain = MagicMock(id="test-brain", config=MagicMock())
         mock_storage.get_brain = AsyncMock(return_value=mock_brain)
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
         mock_storage.find_typed_memories = AsyncMock(return_value=[])
         mock_remember = AsyncMock(return_value={"stored": True})
 
@@ -1649,6 +1671,7 @@ class TestMCPEternal:
         mock_brain = MagicMock(id="test-brain", config=MagicMock())
         mock_storage.get_brain = AsyncMock(return_value=mock_brain)
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
 
         remember_calls: list[dict] = []
 
@@ -1692,6 +1715,7 @@ class TestMCPEternal:
         mock_brain = MagicMock(id="test-brain", config=MagicMock())
         mock_storage.get_brain = AsyncMock(return_value=mock_brain)
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
         old_mem = MagicMock(fiber_id="old-fiber-1")
         mock_storage.find_typed_memories = AsyncMock(return_value=[old_mem])
         mock_storage.delete_typed_memory = AsyncMock()
@@ -1795,6 +1819,7 @@ class TestMCPEternal:
         mock_brain = MagicMock(id="test-brain", config=MagicMock())
         mock_storage.get_brain = AsyncMock(return_value=mock_brain)
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
 
         mock_pipeline = AsyncMock()
         mock_pipeline.query = AsyncMock(
@@ -1837,6 +1862,7 @@ class TestMCPImport:
         mock_brain = MagicMock(id="test-brain", config=MagicMock())
         mock_storage.get_brain = AsyncMock(return_value=mock_brain)
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
 
         mock_result = MagicMock(
             source_system="chromadb",
@@ -1876,6 +1902,7 @@ class TestMCPImport:
         mock_storage = AsyncMock()
         mock_storage.get_brain = AsyncMock(return_value=None)
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
 
         with patch.object(server, "get_storage", return_value=mock_storage):
             result = await server.call_tool("nmem_import", {"source": "chromadb"})
@@ -1890,6 +1917,7 @@ class TestMCPImport:
         mock_brain = MagicMock(id="test-brain", config=MagicMock())
         mock_storage.get_brain = AsyncMock(return_value=mock_brain)
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
 
         with patch.object(server, "get_storage", return_value=mock_storage):
             result = await server.call_tool("nmem_import", {"source": ""})
@@ -1904,6 +1932,7 @@ class TestMCPImport:
         mock_brain = MagicMock(id="test-brain", config=MagicMock())
         mock_storage.get_brain = AsyncMock(return_value=mock_brain)
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
 
         with (
             patch.object(server, "get_storage", return_value=mock_storage),
@@ -1925,6 +1954,7 @@ class TestMCPImport:
         mock_brain = MagicMock(id="test-brain", config=MagicMock())
         mock_storage.get_brain = AsyncMock(return_value=mock_brain)
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
 
         mock_adapter = MagicMock()
         mock_engine = MagicMock()
@@ -1949,6 +1979,7 @@ class TestMCPImport:
         mock_brain = MagicMock(id="test-brain", config=MagicMock())
         mock_storage.get_brain = AsyncMock(return_value=mock_brain)
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
 
         mock_result = MagicMock(
             source_system="awf",
@@ -2072,6 +2103,7 @@ class TestMCPAutoExtended:
         mock_brain = MagicMock(id="test-brain", config=MagicMock())
         mock_storage.get_brain = AsyncMock(return_value=mock_brain)
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
 
         mock_fiber = MagicMock(id="auto-save-123")
         mock_encoder = AsyncMock()
@@ -2179,6 +2211,7 @@ class TestMCPRecallExtended:
         mock_storage = AsyncMock()
         mock_storage.get_brain = AsyncMock(return_value=None)
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
 
         with patch.object(server, "get_storage", return_value=mock_storage):
             result = await server.call_tool("nmem_recall", {"query": "test"})
@@ -2194,6 +2227,7 @@ class TestMCPRecallExtended:
         mock_brain = MagicMock(id="test-brain", config=MagicMock())
         mock_storage.get_brain = AsyncMock(return_value=mock_brain)
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
 
         # Simulate active session
         mock_session = MagicMock(metadata={"feature": "auth", "task": "login", "active": True})
@@ -2236,6 +2270,7 @@ class TestMCPRecallExtended:
         mock_brain = MagicMock(id="test-brain", config=MagicMock())
         mock_storage.get_brain = AsyncMock(return_value=mock_brain)
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
 
         # Ensure encryption is disabled so auto-redact path completes without encryption attempt
         server.config.encryption = MagicMock(enabled=False, auto_encrypt_sensitive=False)
@@ -2260,6 +2295,7 @@ class TestMCPRecallExtended:
         mock_brain = MagicMock(id="test-brain", config=MagicMock())
         mock_storage.get_brain = AsyncMock(return_value=mock_brain)
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
 
         mock_fiber = MagicMock(id="fiber-auto")
         mock_encoder = AsyncMock()
@@ -2301,6 +2337,7 @@ class TestMCPMiscErrors:
         mock_storage = AsyncMock()
         mock_storage.get_brain = AsyncMock(return_value=None)
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
 
         with patch.object(server, "get_storage", return_value=mock_storage):
             result = await server.call_tool("nmem_stats", {})
@@ -2333,6 +2370,7 @@ class TestMCPMiscErrors:
         mock_storage = AsyncMock()
         mock_storage.get_brain = AsyncMock(return_value=None)
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
 
         with patch.object(server, "get_storage", return_value=mock_storage):
             result = await server.call_tool("nmem_index", {"action": "scan"})
@@ -2346,6 +2384,7 @@ class TestMCPMiscErrors:
         mock_brain = MagicMock(id="test-brain", config=MagicMock())
         mock_storage.get_brain = AsyncMock(return_value=mock_brain)
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
 
         with patch.object(server, "get_storage", return_value=mock_storage):
             result = await server.call_tool(
@@ -2467,6 +2506,7 @@ class TestMCPInputValidation:
         mock_brain = MagicMock(id="test-brain", config=MagicMock())
         mock_storage.get_brain = AsyncMock(return_value=mock_brain)
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
 
         with patch.object(server, "get_storage", return_value=mock_storage):
             result = await server.call_tool("nmem_remember", {"content": "x" * 200_000})
@@ -2502,6 +2542,7 @@ class TestMCPInputValidation:
         mock_brain = MagicMock(id="test-brain", config=MagicMock())
         mock_storage.get_brain = AsyncMock(return_value=mock_brain)
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
 
         with patch.object(server, "get_storage", return_value=mock_storage):
             result = await server.call_tool(
@@ -2519,6 +2560,7 @@ class TestMCPInputValidation:
         mock_brain = MagicMock(id="test-brain", config=MagicMock())
         mock_storage.get_brain = AsyncMock(return_value=mock_brain)
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
 
         with patch.object(server, "get_storage", return_value=mock_storage):
             result = await server.call_tool("nmem_recall", {"query": "test", "depth": 99})
@@ -2532,6 +2574,7 @@ class TestMCPInputValidation:
         server = self._make_server()
         mock_storage = AsyncMock()
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
 
         with patch.object(server, "get_storage", return_value=mock_storage):
             result = await server.call_tool(

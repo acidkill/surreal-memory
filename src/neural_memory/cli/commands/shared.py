@@ -209,7 +209,7 @@ def shared_sync(
         try:
             if direction in ("push", "both"):
                 # Export local and push to remote
-                snapshot = await local_storage.export_brain(local_storage._current_brain_id or "")
+                snapshot = await local_storage.export_brain(local_storage.brain_id or "")
                 await remote.import_brain(snapshot, config.current_brain)
                 sync_result["pushed"] = True
                 sync_result["neurons_pushed"] = len(snapshot.neurons)
@@ -221,7 +221,7 @@ def shared_sync(
                 try:
                     snapshot = await remote.export_brain(config.current_brain)
                     await local_storage.import_brain(
-                        snapshot, local_storage._current_brain_id or ""
+                        snapshot, local_storage.brain_id or ""
                     )
                     sync_result["pulled"] = True
                     sync_result["neurons_pulled"] = len(snapshot.neurons)

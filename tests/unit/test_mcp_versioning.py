@@ -169,6 +169,7 @@ class TestVersionTool:
         mock_storage = AsyncMock()
         mock_storage.get_brain = AsyncMock(return_value=None)
         mock_storage._current_brain_id = "nonexistent"
+        mock_storage.brain_id = "nonexistent"
 
         with patch.object(server, "get_storage", return_value=mock_storage):
             result = await server.call_tool("nmem_version", {"action": "list"})
@@ -196,6 +197,7 @@ class TestTransplantTool:
         mock_brain = MagicMock(id="test-brain", name="test-brain")
         mock_storage.get_brain = AsyncMock(return_value=mock_brain)
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
 
         with (
             patch.object(server, "get_storage", return_value=mock_storage),
@@ -218,6 +220,7 @@ class TestTransplantTool:
         mock_brain = MagicMock(id="test-brain")
         mock_storage.get_brain = AsyncMock(return_value=mock_brain)
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
 
         with patch.object(server, "get_storage", return_value=mock_storage):
             result = await server.call_tool("nmem_transplant", {})
@@ -230,6 +233,7 @@ class TestTransplantTool:
         mock_storage = AsyncMock()
         mock_storage.get_brain = AsyncMock(return_value=None)
         mock_storage._current_brain_id = "nonexistent"
+        mock_storage.brain_id = "nonexistent"
 
         with patch.object(server, "get_storage", return_value=mock_storage):
             result = await server.call_tool("nmem_transplant", {"source_brain": "some-brain"})

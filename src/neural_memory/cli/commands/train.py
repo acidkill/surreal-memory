@@ -60,7 +60,7 @@ async def _train_async(
         typer.echo("Error: Path not found", err=True)
         raise typer.Exit(code=1)
 
-    brain_data = await storage.get_brain(storage._current_brain_id or "")
+    brain_data = await storage.get_brain(storage.brain_id or "")
     if not brain_data:
         typer.echo("Error: No brain configured", err=True)
         raise typer.Exit(code=1)

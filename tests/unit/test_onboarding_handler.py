@@ -18,6 +18,7 @@ def _make_handler(
 
     mock_storage = AsyncMock()
     mock_storage._current_brain_id = "test-brain"
+    mock_storage.brain_id = "test-brain"
 
     if stats_error:
         mock_storage.get_stats = AsyncMock(side_effect=RuntimeError("db error"))
@@ -134,6 +135,7 @@ class TestOnboardingIntegration:
         """_context on empty brain includes onboarding key."""
         mock_storage = AsyncMock()
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
         mock_storage.get_fibers = AsyncMock(return_value=[])
         mock_storage.get_stats = AsyncMock(
             return_value={"neuron_count": 0, "fiber_count": 0, "synapse_count": 0}
@@ -154,6 +156,7 @@ class TestOnboardingIntegration:
         """_stats on fresh brain includes onboarding key."""
         mock_storage = AsyncMock()
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
         mock_storage.get_brain = AsyncMock(
             return_value=MagicMock(id="test-brain", name="test-brain", config=MagicMock())
         )

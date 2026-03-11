@@ -60,7 +60,7 @@ async def render_dashboard(storage: PersistentStorage) -> None:
     """Render a rich dashboard with brain stats and recent activity."""
     from neural_memory.safety.freshness import analyze_freshness, evaluate_freshness
 
-    brain = await storage.get_brain(storage._current_brain_id or "")
+    brain = await storage.get_brain(storage.brain_id or "")
     if not brain:
         console.print("[red]No brain configured[/red]")
         return
@@ -216,7 +216,7 @@ async def render_memory_browser(
     """Render an interactive memory browser."""
     from neural_memory.safety.freshness import evaluate_freshness, format_age
 
-    brain = await storage.get_brain(storage._current_brain_id or "")
+    brain = await storage.get_brain(storage.brain_id or "")
     if not brain:
         console.print("[red]No brain configured[/red]")
         return
@@ -338,7 +338,7 @@ async def render_graph(
     """Render a text-based graph visualization."""
     from neural_memory.core.synapse import SynapseType
 
-    brain = await storage.get_brain(storage._current_brain_id or "")
+    brain = await storage.get_brain(storage.brain_id or "")
     if not brain:
         console.print("[red]No brain configured[/red]")
         return
@@ -445,7 +445,7 @@ async def render_graph(
 
 async def render_quick_stats(storage: PersistentStorage) -> str:
     """Render a compact stats string for context injection."""
-    brain = await storage.get_brain(storage._current_brain_id or "")
+    brain = await storage.get_brain(storage.brain_id or "")
     if not brain:
         return "No brain configured"
 

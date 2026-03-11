@@ -72,7 +72,7 @@ class Mem0SyncHandler:
         """
         try:
             storage = await self.get_storage()  # type: ignore[attr-defined]
-            brain = await storage.get_brain(storage._current_brain_id)
+            brain = await storage.get_brain(storage.brain_id)
             if not brain:
                 logger.warning("Mem0 auto-sync: no brain configured, skipping")
                 return

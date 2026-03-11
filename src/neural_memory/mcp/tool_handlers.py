@@ -56,7 +56,7 @@ logger = logging.getLogger(__name__)
 
 def _require_brain_id(storage: NeuralStorage) -> str:
     """Return the current brain ID or raise ValueError if not set."""
-    brain_id = storage._current_brain_id
+    brain_id = storage.brain_id
     if not brain_id:
         raise ValueError("No brain context set")
     return brain_id
@@ -1608,7 +1608,7 @@ class ToolHandler:
         from neural_memory.unified_config import get_shared_storage
 
         target_storage = await self.get_storage()
-        target_brain_id = target_storage._current_brain_id
+        target_brain_id = target_storage.brain_id
         if not target_brain_id:
             return {"error": "No brain configured"}
 
@@ -1633,7 +1633,7 @@ class ToolHandler:
             logger.error("Failed to open source brain storage", exc_info=True)
             return {"error": "Source brain not found"}
 
-        source_brain_id = source_storage._current_brain_id
+        source_brain_id = source_storage.brain_id
         if not source_brain_id:
             return {"error": "Source brain not found"}
 

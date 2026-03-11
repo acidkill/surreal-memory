@@ -97,6 +97,7 @@ class TestRelatedMemoryFailureGraceful:
         # Create mock storage
         mock_storage = AsyncMock()
         mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
 
         from neural_memory.core.brain import BrainConfig
 

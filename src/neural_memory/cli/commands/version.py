@@ -43,7 +43,7 @@ def version_create(
 
         storage = await get_storage(config)
         try:
-            brain = await storage.get_brain(storage._current_brain_id or "")
+            brain = await storage.get_brain(storage.brain_id or "")
             if not brain:
                 return {"error": "No brain configured"}
 
@@ -105,7 +105,7 @@ def version_list(
 
         storage = await get_storage(config)
         try:
-            brain = await storage.get_brain(storage._current_brain_id or "")
+            brain = await storage.get_brain(storage.brain_id or "")
             if not brain:
                 return {"error": "No brain configured"}
 
@@ -173,7 +173,7 @@ def version_rollback(
 
         storage = await get_storage(config)
         try:
-            brain = await storage.get_brain(storage._current_brain_id or "")
+            brain = await storage.get_brain(storage.brain_id or "")
             if not brain:
                 return {"error": "No brain configured"}
 
@@ -227,7 +227,7 @@ def version_diff(
 
         storage = await get_storage(config)
         try:
-            brain = await storage.get_brain(storage._current_brain_id or "")
+            brain = await storage.get_brain(storage.brain_id or "")
             if not brain:
                 return {"error": "No brain configured"}
 

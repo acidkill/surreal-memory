@@ -112,7 +112,7 @@ class MaintenanceHandler:
 
         try:
             storage = await self.get_storage()  # type: ignore[attr-defined]
-            brain_id = storage._current_brain_id
+            brain_id = storage.brain_id
             stats: dict[str, int] = await storage.get_stats(brain_id)
         except Exception:
             logger.debug("Health pulse: get_stats failed", exc_info=True)

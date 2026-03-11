@@ -478,7 +478,8 @@ class TestInputValidation:
 def _make_no_brain_storage() -> Any:
     """Return a storage mock that has no brain configured."""
     storage = MagicMock()
-    storage._current_brain_id = None
+    storage.brain_id = None
+    storage.current_brain_id = None
     return storage
 
 
@@ -492,7 +493,8 @@ def _make_brain_storage() -> Any:
 
     brain = Brain.create(name="test")
     storage = MagicMock()
-    storage._current_brain_id = brain.id
+    storage.brain_id = brain.id
+    storage.current_brain_id = brain.id
     storage.get_brain = AsyncMock(return_value=brain)
     storage.disable_auto_save = MagicMock()
     return storage

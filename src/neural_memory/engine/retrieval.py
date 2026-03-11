@@ -410,7 +410,7 @@ class ReflexPipeline:
 
         # Create encryptor for decryption if encryption is enabled (cached)
         _encryptor = self._get_encryptor()
-        _brain_id = self._storage._current_brain_id or "" if _encryptor else ""
+        _brain_id = self._storage.brain_id or "" if _encryptor else ""
 
         context, tokens_used = await format_context(
             self._storage,

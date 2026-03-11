@@ -193,7 +193,7 @@ def habits_status(
         config = get_config()
         storage = await get_storage(config)
         try:
-            brain = await storage.get_brain(storage._current_brain_id or "")
+            brain = await storage.get_brain(storage.brain_id or "")
             if not brain:
                 typer.secho("No brain configured.", fg=typer.colors.RED, err=True)
                 raise typer.Exit(1)

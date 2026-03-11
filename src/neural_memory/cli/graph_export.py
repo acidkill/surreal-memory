@@ -360,7 +360,7 @@ async def collect_graph_data(
 
     Mirrors the data-fetching logic of tui.render_graph().
     """
-    brain = await storage.get_brain(storage._current_brain_id or "")
+    brain = await storage.get_brain(storage.brain_id or "")
     if not brain:
         return "unknown", []
 

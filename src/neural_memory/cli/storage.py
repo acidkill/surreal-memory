@@ -86,15 +86,15 @@ class PersistentStorage(InMemoryStorage):
 
     async def _save_to_file(self) -> None:
         """Save data to JSON file."""
-        if not self._current_brain_id:
+        if not self.brain_id:
             return
 
-        brain = await self.get_brain(self._current_brain_id)
+        brain = await self.get_brain(self.brain_id)
         if not brain:
             return
 
         # Export as snapshot
-        snapshot = await self.export_brain(self._current_brain_id)
+        snapshot = await self.export_brain(self.brain_id)
 
         data = {
             "brain": {

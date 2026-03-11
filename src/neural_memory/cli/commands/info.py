@@ -28,7 +28,7 @@ def stats(
         config = get_config()
         storage = await get_storage(config)
 
-        brain = await storage.get_brain(storage._current_brain_id or "")
+        brain = await storage.get_brain(storage.brain_id or "")
         if not brain:
             return {"error": "No brain configured"}
 
@@ -226,7 +226,7 @@ def status(
         config = get_config()
         storage = await get_storage(config)
 
-        brain = await storage.get_brain(storage._current_brain_id or "")
+        brain = await storage.get_brain(storage.brain_id or "")
         if not brain:
             return {
                 "error": "No brain configured. Run: nmem brain create default && nmem brain use default"
@@ -353,7 +353,7 @@ def health(
         config = get_config()
         storage = await get_storage(config)
 
-        brain = await storage.get_brain(storage._current_brain_id or "")
+        brain = await storage.get_brain(storage.brain_id or "")
         if not brain:
             return {
                 "error": "No brain configured. Run: nmem brain create default && nmem brain use default"

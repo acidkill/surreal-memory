@@ -44,6 +44,7 @@ def _make_handler(
 
     mock_storage = AsyncMock()
     mock_storage._current_brain_id = "test-brain"
+    mock_storage.brain_id = "test-brain"
     handler.get_storage = AsyncMock(return_value=mock_storage)  # type: ignore[attr-defined]
 
     return handler

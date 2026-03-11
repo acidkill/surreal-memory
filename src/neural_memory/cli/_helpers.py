@@ -79,7 +79,7 @@ async def get_storage(
     name = brain_name or config.current_brain
 
     # Remote shared mode (via server)
-    use_shared = (config.is_shared_mode or force_shared) and not force_local
+    use_shared = (config.is_shared_mode or force_shared) and not force_local and not force_sqlite
     if use_shared:
         from neural_memory.storage.shared_store import SharedStorage
 

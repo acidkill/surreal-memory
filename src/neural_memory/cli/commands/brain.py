@@ -156,7 +156,7 @@ def brain_export(
             raise typer.Exit(1)
 
         storage = await get_storage(config, brain_name=brain_name)
-        brain_id = storage._current_brain_id
+        brain_id = storage.brain_id
         if not brain_id:
             typer.secho("No brain context set.", fg=typer.colors.RED)
             raise typer.Exit(1)
@@ -317,7 +317,7 @@ def brain_import(
 
         # Load/create storage and import
         storage = await get_storage(config, brain_name=brain_name)
-        await storage.import_brain(snapshot, storage._current_brain_id)
+        await storage.import_brain(snapshot, storage.brain_id)
         await storage.close()
 
         if use:
@@ -480,8 +480,8 @@ def brain_transplant(
         source_storage = await get_storage(config, brain_name=source)
         target_storage = await get_storage(config, brain_name=target_name)
         try:
-            source_brain_id = source_storage._current_brain_id
-            target_brain_id = target_storage._current_brain_id
+            source_brain_id = source_storage.brain_id
+            target_brain_id = target_storage.brain_id
             if not source_brain_id or not target_brain_id:
                 return {"error": "Brain context not set for source or target."}
             source_brain = await source_storage.get_brain(source_brain_id)
@@ -562,7 +562,7 @@ def brain_health(
             return {"error": f"Brain '{brain_name}' not found."}
 
         storage = await get_storage(config, brain_name=brain_name)
-        brain_id = storage._current_brain_id
+        brain_id = storage.brain_id
         if not brain_id:
             return {"error": "No brain context set"}
         brain = await storage.get_brain(brain_id)

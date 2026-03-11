@@ -222,8 +222,8 @@ def remember(
         storage = await get_storage(config, force_shared=shared)
 
         brain_id: str = (
-            storage._current_brain_id or ""
-            if hasattr(storage, "_current_brain_id")
+            storage.brain_id or ""
+            if hasattr(storage, "brain_id")
             else config.current_brain
         )
         brain = await storage.get_brain(brain_id)
@@ -307,7 +307,7 @@ def todo(
         config = get_config()
         storage = await get_storage(config)
 
-        brain = await storage.get_brain(storage._current_brain_id or "")
+        brain = await storage.get_brain(storage.brain_id or "")
         if not brain:
             return {"error": "No brain configured"}
 
@@ -414,8 +414,8 @@ def recall(
         storage = await get_storage(config, force_shared=shared)
 
         brain_id: str = (
-            storage._current_brain_id or ""
-            if hasattr(storage, "_current_brain_id")
+            storage.brain_id or ""
+            if hasattr(storage, "brain_id")
             else config.current_brain
         )
         brain = await storage.get_brain(brain_id)

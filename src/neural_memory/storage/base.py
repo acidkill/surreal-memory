@@ -29,9 +29,14 @@ class NeuralStorage(ABC):
     _current_brain_id: str | None
 
     @property
-    def current_brain_id(self) -> str | None:
+    def brain_id(self) -> str | None:
         """The active brain ID, or None if not set."""
         return getattr(self, "_current_brain_id", None)
+
+    @property
+    def current_brain_id(self) -> str | None:
+        """Alias for brain_id (backward compatibility)."""
+        return self.brain_id
 
     # ========== Batch Operations ==========
 
