@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.0] - 2026-03-12
+
+### Added
+
+- **Cloud Sync Hub** — Cloudflare Workers + D1 sync hub with API key auth, brain ownership, device management. Live at `neural-memory-sync-hub.vietnam11399.workers.dev`
+- **API key auth** — `nmk_` prefixed keys, SHA-256 hashed storage, Bearer token transport, key masking in all outputs
+- **`nmem_sync_config(action='setup')`** — Guided onboarding flow for cloud sync setup
+- **URL versioning** — Cloud hub uses `/v1/` prefix, localhost preserves backward-compatible paths
+- **HTTP error mapping** — User-friendly messages for 401/403/413/429 status codes
+- **Cloud profile in `nmem_sync_status`** — Shows tier, email, usage when connected to cloud hub
+- **HTTPS enforcement** — Refuses non-HTTPS for cloud hub URLs (localhost exempt)
+
+### Tests
+
+- 22 new tests: SyncConfig api_key, key masking, URL versioning, HTTP error handling
+- Sync hub: 10 Vitest tests (health, auth, validation, type shapes)
+- Total: 3672 passing
+
 ## [3.2.0] - 2026-03-11
 
 ### Added
