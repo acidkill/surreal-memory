@@ -8,14 +8,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from neural_memory.engine.clustering import UnionFind
-from neural_memory.utils.timeutils import utcnow
 from neural_memory.engine.drift_detection import (
-    JACCARD_ALIAS_THRESHOLD,
     JACCARD_MERGE_THRESHOLD,
-    JACCARD_REVIEW_THRESHOLD,
-    MAX_CLUSTER_SIZE,
     MIN_COOCCURRENCE_COUNT,
-    MIN_TAG_FIBERS,
     DriftReport,
     TagCluster,
     compute_jaccard,
@@ -23,7 +18,7 @@ from neural_memory.engine.drift_detection import (
     detect_temporal_drift,
     run_drift_detection,
 )
-
+from neural_memory.utils.timeutils import utcnow
 
 # ── compute_jaccard ─────────────────────────────────────────────────
 
@@ -101,14 +96,10 @@ class TestDetectClusters:
 
     def test_alias_suggestion(self) -> None:
         # Medium Jaccard (0.4-0.7) → alias
-        cooccurrences = [("auth", "authentication", 5)]
-        counts = {"auth": 10, "authentication": 10}
-        # J = 5/(10+10-5) = 5/15 ≈ 0.333 — below alias. Need higher co-occurrence.
-        # Let's use counts that give 0.5
-        cooccurrences2 = [("auth", "authentication", 6)]
-        counts2 = {"auth": 8, "authentication": 8}
         # J = 6/(8+8-6) = 6/10 = 0.6
-        reports = detect_clusters(cooccurrences2, counts2)
+        cooccurrences = [("auth", "authentication", 6)]
+        counts = {"auth": 8, "authentication": 8}
+        reports = detect_clusters(cooccurrences, counts)
         assert len(reports) == 1
         assert reports[0].suggestion == "alias"
 
@@ -205,10 +196,12 @@ class TestTemporalDrift:
     @pytest.mark.asyncio
     async def test_insufficient_history(self) -> None:
         storage = MagicMock()
-        storage.get_session_summaries = AsyncMock(return_value=[
-            {"topics": ["a"]},
-            {"topics": ["b"]},
-        ])
+        storage.get_session_summaries = AsyncMock(
+            return_value=[
+                {"topics": ["a"]},
+                {"topics": ["b"]},
+            ]
+        )
         result = await detect_temporal_drift(storage)
         assert result == []
 
@@ -261,12 +254,17 @@ class TestRunDriftDetection:
     @pytest.mark.asyncio
     async def test_full_pipeline(self) -> None:
         storage = MagicMock()
-        storage.get_tag_cooccurrence = AsyncMock(return_value=[
-            ("react", "reactjs", 10),
-        ])
-        storage.get_tag_fiber_counts = AsyncMock(return_value={
-            "react": 12, "reactjs": 11,
-        })
+        storage.get_tag_cooccurrence = AsyncMock(
+            return_value=[
+                ("react", "reactjs", 10),
+            ]
+        )
+        storage.get_tag_fiber_counts = AsyncMock(
+            return_value={
+                "react": 12,
+                "reactjs": 11,
+            }
+        )
         storage.save_drift_cluster = AsyncMock()
         storage.get_session_summaries = AsyncMock(return_value=[])
 
@@ -279,9 +277,11 @@ class TestRunDriftDetection:
     @pytest.mark.asyncio
     async def test_persists_clusters(self) -> None:
         storage = MagicMock()
-        storage.get_tag_cooccurrence = AsyncMock(return_value=[
-            ("a", "b", 10),
-        ])
+        storage.get_tag_cooccurrence = AsyncMock(
+            return_value=[
+                ("a", "b", 10),
+            ]
+        )
         storage.get_tag_fiber_counts = AsyncMock(return_value={"a": 12, "b": 12})
         storage.save_drift_cluster = AsyncMock()
         storage.get_session_summaries = AsyncMock(return_value=[])
@@ -413,7 +413,11 @@ class TestSQLiteDriftMixin:
         clusters = await storage.get_drift_clusters()
         assert len(clusters) == 1
         assert clusters[0]["confidence"] == 0.9
-        assert "c" in json.loads(clusters[0]["members"]) if isinstance(clusters[0]["members"], str) else "c" in clusters[0]["members"]
+        assert (
+            "c" in json.loads(clusters[0]["members"])
+            if isinstance(clusters[0]["members"], str)
+            else "c" in clusters[0]["members"]
+        )
 
     @pytest.mark.asyncio
     async def test_get_tag_fiber_counts(self, storage) -> None:
@@ -422,11 +426,31 @@ class TestSQLiteDriftMixin:
         # Insert fibers with tags
         await conn.execute(
             "INSERT INTO fibers (id, brain_id, anchor_neuron_id, neuron_ids, synapse_ids, summary, auto_tags, agent_tags, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            ("f1", "test-brain", "n1", "[]", "[]", "test", json.dumps(["react", "typescript"]), json.dumps([]), now),
+            (
+                "f1",
+                "test-brain",
+                "n1",
+                "[]",
+                "[]",
+                "test",
+                json.dumps(["react", "typescript"]),
+                json.dumps([]),
+                now,
+            ),
         )
         await conn.execute(
             "INSERT INTO fibers (id, brain_id, anchor_neuron_id, neuron_ids, synapse_ids, summary, auto_tags, agent_tags, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            ("f2", "test-brain", "n2", "[]", "[]", "test2", json.dumps(["react", "python"]), json.dumps(["api"]), now),
+            (
+                "f2",
+                "test-brain",
+                "n2",
+                "[]",
+                "[]",
+                "test2",
+                json.dumps(["react", "python"]),
+                json.dumps(["api"]),
+                now,
+            ),
         )
         await conn.commit()
 
@@ -490,9 +514,11 @@ class TestDriftHandler:
         mock_storage = MagicMock()
         mock_storage.brain_id = "test"
         mock_storage._current_brain_id = "test"
-        mock_storage.get_drift_clusters = AsyncMock(return_value=[
-            {"id": "c1", "canonical": "react", "members": ["react", "reactjs"]},
-        ])
+        mock_storage.get_drift_clusters = AsyncMock(
+            return_value=[
+                {"id": "c1", "canonical": "react", "members": ["react", "reactjs"]},
+            ]
+        )
         handler.get_storage = AsyncMock(return_value=mock_storage)
 
         result = await handler._drift({"action": "list"})
