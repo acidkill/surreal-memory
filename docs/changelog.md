@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.0] - 2026-03-12
+
+### Added
+
+- **Cloud Sync Hub** — Sync memories across devices with API key auth, brain ownership, and device management
+- **API key auth** — `nmk_` prefixed keys, Bearer token transport, key masking in all outputs
+- **`nmem_sync_config(action='setup')`** — Guided onboarding flow for cloud sync
+- **URL versioning** — Cloud hub uses `/v1/` prefix, localhost preserves backward-compatible paths
+- **HTTP error mapping** — User-friendly messages for 401/403/413/429 status codes
+- **Cloud profile in `nmem_sync_status`** — Shows tier, email, usage when connected
+
+### Tests
+
+- 22 new tests: SyncConfig api_key, key masking, URL versioning, HTTP error handling
+- Sync hub: 10 Vitest tests (health, auth, validation, type shapes)
+- Total: 3672 passing
+
 ## [2.27.2] - 2026-03-07
 
 ### Fixed

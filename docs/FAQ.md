@@ -280,6 +280,41 @@ After restarting Claude Code, just ask naturally:
 
 The agent will automatically call the `recall` tool to search your brain.
 
+### Q: How do I sync memories across multiple devices?
+
+Use cloud sync — register once, then sync from any device:
+
+```python
+# One-time setup
+nmem_sync_config(action="setup")  # Shows registration steps
+
+# Connect (after getting your API key)
+nmem_sync_config(action="set",
+    hub_url="https://neural-memory-sync-hub.vietnam11399.workers.dev",
+    api_key="nmk_YOUR_KEY")
+
+# Sync
+nmem_sync(action="seed")   # Prepare existing memories (first time)
+nmem_sync(action="push")   # Push to cloud
+nmem_sync(action="pull")   # Pull on another device
+```
+
+See the full [Cloud Sync Guide](../guides/cloud-sync.md) for details.
+
+### Q: Is cloud sync free?
+
+Yes, the free tier is available for personal use. Your data is transmitted over HTTPS and only accessible with your API key.
+
+### Q: Can I self-host the sync hub?
+
+Yes. Run `nmem serve` locally and point your devices to it:
+
+```python
+nmem_sync_config(action="set", hub_url="http://localhost:8000")
+```
+
+Local hubs don't require API keys or HTTPS.
+
 ## NeuralMemory vs RAG
 
 ### Q: I have 100 document files (law, specs, etc.) — should I use NeuralMemory or RAG?

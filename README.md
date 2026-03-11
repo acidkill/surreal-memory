@@ -234,9 +234,9 @@ Once configured, these 38 tools are available to your AI assistant:
 | `nmem_version` | Brain version control: snapshot, list, rollback, diff |
 | `nmem_transplant` | Transplant memories between brains by tags/types |
 | `nmem_import` | Import from ChromaDB, Mem0, Cognee, Graphiti, LlamaIndex |
-| `nmem_sync` | Multi-device sync (push/pull/full) |
-| `nmem_sync_status` | Sync status and pending changes |
-| `nmem_sync_config` | Configure sync settings |
+| `nmem_sync` | Cloud sync: push, pull, full, or seed |
+| `nmem_sync_status` | Sync status, devices, and cloud tier |
+| `nmem_sync_config` | Configure sync — setup, get, or set |
 | `nmem_telegram_backup` | Send brain database backup to Telegram |
 
 **Cognitive Reasoning:**
@@ -453,13 +453,28 @@ nmem telegram backup --brain work # Specific brain
 nmem_telegram_backup(brain_name="work")
 ```
 
-### Multi-Device Sync
+### Cloud Sync (Multi-Device)
 
-```bash
-nmem_sync(action="full")           # Bidirectional sync
-nmem_sync_status()                 # Pending changes, devices
-nmem_sync_config(action="set", hub_url="http://hub:8080")
+Sync memories across all your devices with one command:
+
+```python
+# 1. Get your API key (one-time)
+nmem_sync_config(action="setup")       # Shows registration steps
+
+# 2. Connect
+nmem_sync_config(action="set",
+    hub_url="https://neural-memory-sync-hub.vietnam11399.workers.dev",
+    api_key="nmk_YOUR_KEY")
+
+# 3. Sync
+nmem_sync(action="seed")              # Prepare existing memories
+nmem_sync(action="push")              # Push to cloud
+nmem_sync(action="pull")              # Pull on another device
+nmem_sync(action="full")              # Bidirectional sync
+nmem_sync_status()                    # Check sync status & devices
 ```
+
+See the full [Cloud Sync Guide](https://nhadaututtheky.github.io/neural-memory/guides/cloud-sync/) for key management, conflict resolution, and troubleshooting.
 
 ### External Memory Import
 
@@ -514,9 +529,10 @@ POST /memory/encode     - Store memory
 POST /memory/query      - Query memories
 POST /brain/create      - Create brain
 GET  /brain/{id}/export - Export brain
-WS   /sync/ws           - Real-time sync
-POST /hub/sync          - Multi-device incremental sync
-GET  /hub/devices/{id}  - List registered devices
+WS   /sync/ws           - Real-time sync (local server)
+POST /v1/hub/sync       - Cloud sync (push/pull/full)
+POST /v1/hub/register   - Register device for sync
+GET  /v1/hub/status     - Hub sync status
 GET  /dashboard         - Web dashboard
 GET  /docs              - API documentation
 ```
