@@ -40,7 +40,7 @@ class TestMCPServer:
         """Test that get_tools returns all expected tools."""
         tools = server.get_tools()
 
-        assert len(tools) == 39
+        assert len(tools) == 40
         tool_names = {tool["name"] for tool in tools}
         assert tool_names == {
             "nmem_remember",
@@ -82,6 +82,7 @@ class TestMCPServer:
             "nmem_schema",
             "nmem_edit",
             "nmem_forget",
+            "nmem_consolidate",
         }
 
     def test_tool_schemas(self, server: MCPServer) -> None:
@@ -708,6 +709,95 @@ class TestMCPToolCalls:
         assert result["active"] is False
         assert "No active session" in result["message"]
 
+    @pytest.mark.asyncio
+    async def test_consolidate_default(self, server: MCPServer) -> None:
+        """Test nmem_consolidate with default strategy."""
+        mock_storage = AsyncMock()
+        mock_storage._current_brain_id = "test-brain"
+        mock_storage.get_brain = AsyncMock(
+            return_value=MagicMock(id="test-brain", name="test", config=MagicMock())
+        )
+
+        mock_delta = MagicMock()
+        mock_delta.to_dict.return_value = {
+            "before": {"purity_score": 60},
+            "after": {"purity_score": 65},
+            "delta": {"purity": 5},
+            "grade_changed": False,
+        }
+        mock_delta.report.summary.return_value = "Consolidation Report (dry run)"
+
+        with (
+            patch.object(server, "get_storage", return_value=mock_storage),
+            patch(
+                "neural_memory.engine.consolidation_delta.run_with_delta",
+                new_callable=AsyncMock,
+                return_value=mock_delta,
+            ),
+        ):
+            result = await server.call_tool("nmem_consolidate", {})
+
+        assert result["strategy"] == "all"
+        assert result["dry_run"] is False
+        assert "summary" in result
+
+    @pytest.mark.asyncio
+    async def test_consolidate_dry_run(self, server: MCPServer) -> None:
+        """Test nmem_consolidate with dry_run=true."""
+        mock_storage = AsyncMock()
+        mock_storage._current_brain_id = "test-brain"
+        mock_storage.get_brain = AsyncMock(
+            return_value=MagicMock(id="test-brain", name="test", config=MagicMock())
+        )
+
+        mock_delta = MagicMock()
+        mock_delta.to_dict.return_value = {"before": {}, "after": {}, "delta": {}, "grade_changed": False}
+        mock_delta.report.summary.return_value = "dry run"
+
+        with (
+            patch.object(server, "get_storage", return_value=mock_storage),
+            patch(
+                "neural_memory.engine.consolidation_delta.run_with_delta",
+                new_callable=AsyncMock,
+                return_value=mock_delta,
+            ),
+        ):
+            result = await server.call_tool(
+                "nmem_consolidate", {"strategy": "prune", "dry_run": True}
+            )
+
+        assert result["strategy"] == "prune"
+        assert result["dry_run"] is True
+
+    @pytest.mark.asyncio
+    async def test_consolidate_invalid_strategy(self, server: MCPServer) -> None:
+        """Test nmem_consolidate with invalid strategy returns error."""
+        mock_storage = AsyncMock()
+        mock_storage._current_brain_id = "test-brain"
+        mock_storage.get_brain = AsyncMock(
+            return_value=MagicMock(id="test-brain", name="test", config=MagicMock())
+        )
+
+        with patch.object(server, "get_storage", return_value=mock_storage):
+            result = await server.call_tool(
+                "nmem_consolidate", {"strategy": "invalid_strategy"}
+            )
+
+        assert "error" in result
+        assert "Invalid strategy" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_consolidate_no_brain(self, server: MCPServer) -> None:
+        """Test nmem_consolidate when no brain is configured."""
+        mock_storage = AsyncMock()
+        mock_storage.get_brain = AsyncMock(return_value=None)
+        mock_storage._current_brain_id = None
+
+        with patch.object(server, "get_storage", return_value=mock_storage):
+            result = await server.call_tool("nmem_consolidate", {})
+
+        assert "error" in result
+
 
 class TestMCPErrorPaths:
     """Tests for error paths: no brain, missing storage, etc."""
@@ -886,7 +976,7 @@ class TestMCPProtocol:
         assert response["id"] == 2
         assert "result" in response
         assert "tools" in response["result"]
-        assert len(response["result"]["tools"]) == 39
+        assert len(response["result"]["tools"]) == 40
 
     @pytest.mark.asyncio
     async def test_tools_call_message(self, server: MCPServer) -> None:

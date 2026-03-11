@@ -1861,3 +1861,63 @@ class ToolHandler:
                 "memory_id": memory_id,
                 "message": "Memory marked as expired (will be cleaned up on next consolidation)",
             }
+
+    async def _consolidate(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Run memory consolidation on the current brain."""
+        from neural_memory.engine.consolidation import (
+            ConsolidationConfig,
+            ConsolidationStrategy,
+        )
+        from neural_memory.engine.consolidation_delta import run_with_delta
+
+        storage = await self.get_storage()
+        try:
+            brain_id = _require_brain_id(storage)
+        except ValueError:
+            return {"error": "No brain configured"}
+
+        # Parse strategy
+        strategy_str = args.get("strategy", "all")
+        try:
+            strategy = ConsolidationStrategy(strategy_str)
+        except ValueError:
+            valid = [s.value for s in ConsolidationStrategy]
+            return {"error": f"Invalid strategy: {strategy_str}. Valid: {valid}"}
+
+        strategies = [strategy]
+        dry_run = bool(args.get("dry_run", False))
+
+        # Build config with optional overrides
+        config_kwargs: dict[str, Any] = {}
+        if "prune_weight_threshold" in args:
+            val = args["prune_weight_threshold"]
+            if isinstance(val, (int, float)):
+                config_kwargs["prune_weight_threshold"] = float(val)
+        if "merge_overlap_threshold" in args:
+            val = args["merge_overlap_threshold"]
+            if isinstance(val, (int, float)):
+                config_kwargs["merge_overlap_threshold"] = float(val)
+        if "prune_min_inactive_days" in args:
+            val = args["prune_min_inactive_days"]
+            if isinstance(val, (int, float)):
+                config_kwargs["prune_min_inactive_days"] = float(val)
+
+        config = ConsolidationConfig(**config_kwargs) if config_kwargs else None
+
+        try:
+            delta = await run_with_delta(
+                storage,
+                brain_id,
+                strategies=strategies,
+                dry_run=dry_run,
+                config=config,
+            )
+        except Exception:
+            logger.error("Consolidation failed", exc_info=True)
+            return {"error": "Consolidation failed unexpectedly"}
+
+        result = delta.to_dict()
+        result["strategy"] = strategy_str
+        result["dry_run"] = dry_run
+        result["summary"] = delta.report.summary()
+        return result

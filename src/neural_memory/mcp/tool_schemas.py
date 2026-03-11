@@ -1370,4 +1370,55 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
             "required": ["memory_id"],
         },
     },
+    {
+        "name": "nmem_consolidate",
+        "description": "Run memory consolidation on the current brain. "
+        "Strategies: prune (remove weak synapses/orphans), merge (combine overlapping fibers), "
+        "summarize (cluster topic neurons), mature (episodic→semantic), infer (co-activation synapses), "
+        "enrich (metadata extraction), dream (synthetic bridges), learn_habits (workflow patterns), "
+        "dedup (merge near-duplicates), semantic_link (cross-domain connections), compress (old fibers), "
+        "process_tool_events, all (run all in dependency order). "
+        "Use dry_run=true to preview without applying changes.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "strategy": {
+                    "type": "string",
+                    "enum": [
+                        "prune",
+                        "merge",
+                        "summarize",
+                        "mature",
+                        "infer",
+                        "enrich",
+                        "dream",
+                        "learn_habits",
+                        "dedup",
+                        "semantic_link",
+                        "compress",
+                        "process_tool_events",
+                        "all",
+                    ],
+                    "description": "Consolidation strategy to run (default: all)",
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "Preview changes without applying (default: false)",
+                },
+                "prune_weight_threshold": {
+                    "type": "number",
+                    "description": "Synapse weight threshold for pruning (default: 0.05)",
+                },
+                "merge_overlap_threshold": {
+                    "type": "number",
+                    "description": "Jaccard overlap threshold for merging fibers (default: 0.5)",
+                },
+                "prune_min_inactive_days": {
+                    "type": "number",
+                    "description": "Grace period in days before pruning inactive synapses (default: 7.0)",
+                },
+            },
+            "required": [],
+        },
+    },
 ]
