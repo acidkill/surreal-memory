@@ -12,7 +12,7 @@ import os
 import typer
 
 # Provider definitions with detection logic
-_PROVIDERS = [
+_PROVIDERS: list[dict[str, str]] = [
     {
         "key": "sentence_transformer",
         "name": "Sentence Transformers",
@@ -22,7 +22,7 @@ _PROVIDERS = [
         "default_model": "all-MiniLM-L6-v2",
         "multilingual_model": "paraphrase-multilingual-MiniLM-L12-v2",
         "note": "~440MB, runs locally, no API key needed",
-        "env_key": None,
+        "env_key": "",
     },
     {
         "key": "gemini",
@@ -42,7 +42,7 @@ _PROVIDERS = [
         "install": "pip install neural-memory[embeddings]",
         "default_model": "nomic-embed-text",
         "note": "Free, needs Ollama running locally",
-        "env_key": None,
+        "env_key": "",
     },
     {
         "key": "openai",
@@ -66,7 +66,7 @@ def _is_installed(module_name: str) -> bool:
         return False
 
 
-def _has_env_key(key: str | None) -> bool:
+def _has_env_key(key: str) -> bool:
     """Check if an environment variable is set."""
     if not key:
         return True
@@ -86,7 +86,7 @@ def run_embedding_setup() -> None:
     # Show providers with status
     for i, p in enumerate(_PROVIDERS, 1):
         installed = _is_installed(p["module"])
-        has_key = _has_env_key(p.get("env_key"))
+        has_key = _has_env_key(p["env_key"])
 
         status_parts = []
         if installed:
