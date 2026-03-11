@@ -27,6 +27,7 @@ from neural_memory.storage.sqlite_maturation import SQLiteMaturationMixin
 from neural_memory.storage.sqlite_neurons import SQLiteNeuronMixin
 from neural_memory.storage.sqlite_projects import SQLiteProjectMixin
 from neural_memory.storage.sqlite_reviews import SQLiteReviewsMixin
+from neural_memory.storage.sqlite_sources import SQLiteSourcesMixin
 from neural_memory.storage.sqlite_schema import (
     SCHEMA,
     SCHEMA_VERSION,
@@ -62,6 +63,7 @@ class SQLiteStorage(
     SQLiteCognitiveMixin,
     SQLiteChangeLogMixin,
     SQLiteDevicesMixin,
+    SQLiteSourcesMixin,
     SQLiteToolEventsMixin,
     SQLiteTrainingFilesMixin,
     SQLiteBrainMixin,

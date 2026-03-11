@@ -19,6 +19,7 @@ from neural_memory.core.memory_types import (
 )
 from neural_memory.core.neuron import Neuron, NeuronState, NeuronType
 from neural_memory.core.project import MemoryScope, Project
+from neural_memory.core.source import Source, SourceStatus, SourceType
 from neural_memory.core.synapse import Direction, Synapse, SynapseType
 
 __all__ = [
@@ -46,6 +47,10 @@ __all__ = [
     "Provenance",
     "TypedMemory",
     "suggest_memory_type",
+    # Source tracking
+    "Source",
+    "SourceType",
+    "SourceStatus",
     # Project scoping
     "Project",
     "MemoryScope",

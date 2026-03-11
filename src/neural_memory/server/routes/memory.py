@@ -241,6 +241,65 @@ async def show_memory(
 
 
 @router.get(
+    "/sources",
+    summary="List sources",
+    description="List registered sources for the brain.",
+)
+async def list_sources(
+    brain: Annotated[Brain, Depends(get_brain)],
+    storage: Annotated[NeuralStorage, Depends(get_storage)],
+    source_type: str | None = None,
+    status: str | None = None,
+    limit: int = Query(default=50, ge=1, le=1000),
+) -> dict[str, Any]:
+    """List sources with optional filters."""
+    sources = await storage.list_sources(source_type=source_type, status=status, limit=limit)
+    return {
+        "sources": [
+            {
+                "source_id": s.id,
+                "name": s.name,
+                "source_type": s.source_type.value,
+                "version": s.version,
+                "status": s.status.value,
+                "created_at": s.created_at.isoformat(),
+            }
+            for s in sources
+        ],
+        "count": len(sources),
+    }
+
+
+@router.get(
+    "/sources/{source_id}",
+    summary="Get source detail",
+    responses={404: {"model": ErrorResponse}},
+)
+async def get_source(
+    source_id: str,
+    brain: Annotated[Brain, Depends(get_brain)],
+    storage: Annotated[NeuralStorage, Depends(get_storage)],
+) -> dict[str, Any]:
+    """Get detailed source info including linked neuron count."""
+    source = await storage.get_source(source_id)
+    if source is None:
+        raise HTTPException(status_code=404, detail=f"Source not found: {source_id}")
+    neuron_count = await storage.count_neurons_for_source(source_id)
+    return {
+        "source_id": source.id,
+        "name": source.name,
+        "source_type": source.source_type.value,
+        "version": source.version,
+        "status": source.status.value,
+        "file_hash": source.file_hash,
+        "metadata": source.metadata,
+        "linked_neuron_count": neuron_count,
+        "created_at": source.created_at.isoformat(),
+        "updated_at": source.updated_at.isoformat(),
+    }
+
+
+@router.get(
     "/neurons",
     summary="List neurons",
     description="List neurons in the brain with optional filters.",

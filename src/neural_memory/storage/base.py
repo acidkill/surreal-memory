@@ -704,6 +704,10 @@ class NeuralStorage(ABC):
         """
         raise NotImplementedError
 
+    async def update_typed_memory_source(self, fiber_id: str, source: str) -> bool:
+        """Update only the source field on a typed memory."""
+        raise NotImplementedError
+
     async def delete_typed_memory(self, fiber_id: str) -> bool:
         """Delete a typed memory by its fiber ID.
 
@@ -1479,4 +1483,45 @@ class NeuralStorage(ABC):
         max_depth: int = 20,
     ) -> list[dict[str, Any]]:
         """Walk the version chain for a hypothesis."""
+        raise NotImplementedError
+
+    # ========== Source Registry ==========
+
+    async def add_source(self, source: Any) -> str:
+        """Insert a source record. Returns the source ID."""
+        raise NotImplementedError
+
+    async def get_source(self, source_id: str) -> Any:
+        """Get a source by ID within the current brain."""
+        raise NotImplementedError
+
+    async def list_sources(
+        self,
+        source_type: str | None = None,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> list[Any]:
+        """List sources for the current brain."""
+        raise NotImplementedError
+
+    async def update_source(
+        self,
+        source_id: str,
+        status: str | None = None,
+        version: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> bool:
+        """Update a source. Returns True if modified."""
+        raise NotImplementedError
+
+    async def delete_source(self, source_id: str) -> bool:
+        """Delete a source. Returns True if deleted."""
+        raise NotImplementedError
+
+    async def count_neurons_for_source(self, source_id: str) -> int:
+        """Count neurons linked to a source."""
+        raise NotImplementedError
+
+    async def find_source_by_name(self, name: str) -> Any:
+        """Find a source by exact name."""
         raise NotImplementedError

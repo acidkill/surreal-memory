@@ -422,6 +422,16 @@ class ToolHandler:
                     )
                     await storage.update_neuron_state(updated_state)
 
+            # Link to registered source if source_id provided
+            source_id = args.get("source_id")
+            if source_id and isinstance(source_id, str):
+                source_obj = await storage.get_source(source_id)
+                if source_obj is not None:
+                    # Store source_id in typed_memory's source field
+                    await storage.update_typed_memory_source(result.fiber.id, f"source:{source_id}")
+                else:
+                    logger.warning("source_id '%s' not found, skipping source link", source_id)
+
             await storage.batch_save()
         finally:
             storage.enable_auto_save()
@@ -460,6 +470,9 @@ class ToolHandler:
             "neurons_created": len(result.neurons_created),
             "message": f"Remembered: {content[:50]}{'...' if len(content) > 50 else ''}",
         }
+
+        if source_id and isinstance(source_id, str):
+            response["source_id"] = source_id
 
         if redacted_matches:
             response["auto_redacted"] = True
@@ -887,6 +900,29 @@ class ToolHandler:
                     ]
             except Exception:
                 logger.debug("Expiry warning check failed", exc_info=True)
+
+        # Enrich results with source metadata from typed_memory.source
+        try:
+            if result.fibers_matched:
+                source_map: dict[str, dict[str, Any]] = {}
+                for fid in result.fibers_matched:
+                    tm = await storage.get_typed_memory(fid)
+                    if not tm or not tm.source or not tm.source.startswith("source:"):
+                        continue
+                    src_id = tm.source[len("source:") :]
+                    src = await storage.get_source(src_id)
+                    if src:
+                        source_map[fid] = {
+                            "source_id": src.id,
+                            "name": src.name,
+                            "source_type": src.source_type.value,
+                            "version": src.version,
+                            "status": src.status.value,
+                        }
+                if source_map:
+                    response["sources"] = source_map
+        except Exception:
+            logger.debug("Source enrichment failed (non-critical)", exc_info=True)
 
         await self._record_tool_action("recall", query[:100])
 
@@ -1745,6 +1781,118 @@ class ToolHandler:
             )
         except Exception:
             logger.debug("Action recording failed (non-critical)", exc_info=True)
+
+    # ========== Source Registry ==========
+
+    async def _source(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Manage memory sources (provenance registry)."""
+        action = args.get("action", "")
+        if not action:
+            return {"error": "action is required"}
+
+        storage = await self.get_storage()
+        brain_id = _require_brain_id(storage)
+
+        if action == "register":
+            name = args.get("name")
+            if not name or not isinstance(name, str):
+                return {"error": "name is required for register"}
+
+            from neural_memory.core.source import Source
+
+            source = Source.create(
+                brain_id=brain_id,
+                name=name,
+                source_type=args.get("source_type", "document"),
+                version=args.get("version", ""),
+                file_hash=args.get("file_hash", ""),
+                metadata=args.get("metadata") or {},
+            )
+            source_id = await storage.add_source(source)
+            return {
+                "source_id": source_id,
+                "name": source.name,
+                "source_type": source.source_type.value,
+                "status": source.status.value,
+            }
+
+        if action == "list":
+            sources = await storage.list_sources(
+                source_type=args.get("source_type"),
+                status=args.get("status"),
+            )
+            return {
+                "sources": [
+                    {
+                        "source_id": s.id,
+                        "name": s.name,
+                        "source_type": s.source_type.value,
+                        "version": s.version,
+                        "status": s.status.value,
+                        "created_at": s.created_at.isoformat(),
+                    }
+                    for s in sources
+                ],
+                "count": len(sources),
+            }
+
+        if action == "get":
+            source_id = str(args.get("source_id") or "")
+            if not source_id:
+                return {"error": "source_id is required for get"}
+            source = await storage.get_source(source_id)
+            if source is None:
+                return {"error": f"Source '{source_id}' not found"}
+            neuron_count = await storage.count_neurons_for_source(source_id)
+            return {
+                "source_id": source.id,
+                "name": source.name,
+                "source_type": source.source_type.value,
+                "version": source.version,
+                "status": source.status.value,
+                "file_hash": source.file_hash,
+                "metadata": source.metadata,
+                "linked_neuron_count": neuron_count,
+                "created_at": source.created_at.isoformat(),
+                "updated_at": source.updated_at.isoformat(),
+            }
+
+        if action == "update":
+            source_id = str(args.get("source_id") or "")
+            if not source_id:
+                return {"error": "source_id is required for update"}
+            updated = await storage.update_source(
+                source_id,
+                status=args.get("status"),
+                version=args.get("version"),
+                metadata=args.get("metadata"),
+            )
+            if not updated:
+                return {"error": f"Source '{source_id}' not found"}
+            return {"updated": True, "source_id": source_id}
+
+        if action == "delete":
+            source_id = str(args.get("source_id") or "")
+            if not source_id:
+                return {"error": "source_id is required for delete"}
+            # Warn about linked neurons
+            neuron_count = await storage.count_neurons_for_source(source_id)
+            if neuron_count > 0:
+                # Soft-delete: mark superseded instead of hard delete
+                await storage.update_source(source_id, status="superseded")
+                return {
+                    "deleted": False,
+                    "superseded": True,
+                    "source_id": source_id,
+                    "warning": f"Source has {neuron_count} linked neurons. "
+                    "Marked as superseded instead of deleted.",
+                }
+            deleted = await storage.delete_source(source_id)
+            if not deleted:
+                return {"error": f"Source '{source_id}' not found"}
+            return {"deleted": True, "source_id": source_id}
+
+        return {"error": f"Unknown action: {action}"}
 
     # ========== Show, Edit & Forget ==========
 

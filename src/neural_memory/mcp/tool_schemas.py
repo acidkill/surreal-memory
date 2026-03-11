@@ -135,6 +135,11 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "description": "Trust level 0.0-1.0. Capped by source ceiling "
                     "(user_input max 0.9, ai_inference max 0.7). NULL = unscored.",
                 },
+                "source_id": {
+                    "type": "string",
+                    "description": "Link this memory to a registered source. "
+                    "Creates a SOURCE_OF synapse for provenance tracking.",
+                },
             },
             "required": ["content"],
         },
@@ -197,6 +202,10 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
                                 "minimum": 0.0,
                                 "maximum": 1.0,
                                 "description": "Trust level 0.0-1.0",
+                            },
+                            "source_id": {
+                                "type": "string",
+                                "description": "Link to a registered source",
                             },
                         },
                         "required": ["content"],
@@ -286,6 +295,62 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
                 },
             },
             "required": ["memory_id"],
+        },
+    },
+    {
+        "name": "nmem_source",
+        "description": "Manage memory sources (provenance). Register external documents, laws, APIs, "
+        "or other origins so memories can answer 'where did this come from?'.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["register", "list", "get", "update", "delete"],
+                    "description": "Action to perform on sources.",
+                },
+                "source_id": {
+                    "type": "string",
+                    "description": "Source ID (required for get/update/delete).",
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Source name (required for register).",
+                },
+                "source_type": {
+                    "type": "string",
+                    "enum": [
+                        "law",
+                        "contract",
+                        "ledger",
+                        "document",
+                        "api",
+                        "manual",
+                        "website",
+                        "book",
+                        "research",
+                    ],
+                    "description": "Type of source (default: document).",
+                },
+                "version": {
+                    "type": "string",
+                    "description": "Version string (e.g. '2024-01', 'v2.0').",
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ["active", "superseded", "repealed", "draft"],
+                    "description": "Source lifecycle status.",
+                },
+                "file_hash": {
+                    "type": "string",
+                    "description": "File hash for integrity checking.",
+                },
+                "metadata": {
+                    "type": "object",
+                    "description": "Additional metadata.",
+                },
+            },
+            "required": ["action"],
         },
     },
     {

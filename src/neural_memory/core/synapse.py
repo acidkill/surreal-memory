@@ -66,6 +66,9 @@ class SynapseType(StrEnum):
     VERIFIED_BY = "verified_by"  # Prediction -> Observation (outcome confirmed it)
     FALSIFIED_BY = "falsified_by"  # Prediction -> Observation (outcome disproved it)
 
+    # Source tracking
+    SOURCE_OF = "source_of"  # Source -> Neuron (provenance link)
+
     # Cognitive layer — schema relationships
     SUPERSEDES = "supersedes"  # Schema_v2 -> Schema_v1 (model evolution)
     DERIVED_FROM = "derived_from"  # Hypothesis/Prediction -> Schema (reasoning origin)

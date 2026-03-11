@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Schema version for migrations
-SCHEMA_VERSION = 22
+SCHEMA_VERSION = 23
 
 # â”€â”€ Migrations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Each entry maps (from_version -> to_version) with a list of SQL statements.
@@ -414,6 +414,28 @@ MIGRATIONS: dict[tuple[int, int], list[str]] = {
         "ALTER TABLE typed_memories ADD COLUMN trust_score REAL DEFAULT NULL",
         "ALTER TABLE typed_memories ADD COLUMN source TEXT DEFAULT NULL",
         "CREATE INDEX IF NOT EXISTS idx_typed_memories_trust ON typed_memories(brain_id, trust_score)",
+    ],
+    (22, 23): [
+        # Source registry: first-class provenance tracking
+        """CREATE TABLE IF NOT EXISTS sources (
+            id TEXT NOT NULL,
+            brain_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            source_type TEXT NOT NULL DEFAULT 'document',
+            version TEXT DEFAULT '',
+            effective_date TEXT,
+            expires_at TEXT,
+            status TEXT NOT NULL DEFAULT 'active',
+            file_hash TEXT DEFAULT '',
+            metadata TEXT DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (brain_id, id),
+            FOREIGN KEY (brain_id) REFERENCES brains(id) ON DELETE CASCADE
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_sources_type ON sources(brain_id, source_type)",
+        "CREATE INDEX IF NOT EXISTS idx_sources_status ON sources(brain_id, status)",
+        "CREATE INDEX IF NOT EXISTS idx_sources_name ON sources(brain_id, name)",
     ],
 }
 
@@ -917,4 +939,25 @@ CREATE TABLE IF NOT EXISTS knowledge_gaps (
 );
 CREATE INDEX IF NOT EXISTS idx_gaps_brain ON knowledge_gaps(brain_id, resolved_at);
 CREATE INDEX IF NOT EXISTS idx_gaps_priority ON knowledge_gaps(brain_id, priority DESC);
+
+-- Source registry for provenance tracking
+CREATE TABLE IF NOT EXISTS sources (
+    id TEXT NOT NULL,
+    brain_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    source_type TEXT NOT NULL DEFAULT 'document',
+    version TEXT DEFAULT '',
+    effective_date TEXT,
+    expires_at TEXT,
+    status TEXT NOT NULL DEFAULT 'active',
+    file_hash TEXT DEFAULT '',
+    metadata TEXT DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (brain_id, id),
+    FOREIGN KEY (brain_id) REFERENCES brains(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_sources_type ON sources(brain_id, source_type);
+CREATE INDEX IF NOT EXISTS idx_sources_status ON sources(brain_id, status);
+CREATE INDEX IF NOT EXISTS idx_sources_name ON sources(brain_id, name);
 """
