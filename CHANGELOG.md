@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.0.0] - 2026-03-12
+
+### Added
+
+- **Semantic Drift Detection** — Find tag synonyms/aliases via Jaccard similarity on co-occurrence data
+- **Tag Co-Occurrence Matrix** — Automatically recorded on every memory encode, tracks which tags appear together
+- **Union-Find Clustering** — Groups related tags with confidence thresholds: merge (>0.7), alias (>0.4), review (>0.3)
+- **Temporal Drift Detection** — Compares early vs recent session topics to detect terminology shifts
+- **`nmem_drift` MCP Tool** — detect/list/merge/alias/dismiss actions for managing drift clusters
+- **`detect_drift` Consolidation Strategy** — Runs drift analysis during periodic consolidation
+- **Schema v26** — New `tag_cooccurrence` and `drift_clusters` tables
+
+### Improved
+
+- **Brain Intelligence Complete** — v4.0 milestone: session intelligence, adaptive depth, predictive priming, and semantic drift detection work together as feedback loops
+- Consolidation engine now includes drift detection in the final tier alongside semantic_link
+
+### Tests
+
+- 51 new drift detection tests (Jaccard, clustering, storage, MCP handler, Union-Find)
+- Total: 3810 passing
+
 ## [3.5.0] - 2026-03-12
 
 ### Added
