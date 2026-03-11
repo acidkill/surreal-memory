@@ -27,13 +27,13 @@ from neural_memory.storage.sqlite_maturation import SQLiteMaturationMixin
 from neural_memory.storage.sqlite_neurons import SQLiteNeuronMixin
 from neural_memory.storage.sqlite_projects import SQLiteProjectMixin
 from neural_memory.storage.sqlite_reviews import SQLiteReviewsMixin
-from neural_memory.storage.sqlite_sources import SQLiteSourcesMixin
 from neural_memory.storage.sqlite_schema import (
     SCHEMA,
     SCHEMA_VERSION,
     ensure_fts_tables,
     run_migrations,
 )
+from neural_memory.storage.sqlite_sources import SQLiteSourcesMixin
 from neural_memory.storage.sqlite_synapses import SQLiteSynapseMixin
 from neural_memory.storage.sqlite_sync_state import SQLiteSyncStateMixin
 from neural_memory.storage.sqlite_tool_events import SQLiteToolEventsMixin
