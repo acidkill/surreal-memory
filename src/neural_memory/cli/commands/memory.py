@@ -222,9 +222,7 @@ def remember(
         storage = await get_storage(config, force_shared=shared)
 
         brain_id: str = (
-            storage.brain_id or ""
-            if hasattr(storage, "brain_id")
-            else config.current_brain
+            storage.brain_id or "" if hasattr(storage, "brain_id") else config.current_brain
         )
         brain = await storage.get_brain(brain_id)
         if not brain:
@@ -414,9 +412,7 @@ def recall(
         storage = await get_storage(config, force_shared=shared)
 
         brain_id: str = (
-            storage.brain_id or ""
-            if hasattr(storage, "brain_id")
-            else config.current_brain
+            storage.brain_id or "" if hasattr(storage, "brain_id") else config.current_brain
         )
         brain = await storage.get_brain(brain_id)
         if not brain:

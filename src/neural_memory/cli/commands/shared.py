@@ -220,9 +220,7 @@ def shared_sync(
                 # Pull from remote and import locally
                 try:
                     snapshot = await remote.export_brain(config.current_brain)
-                    await local_storage.import_brain(
-                        snapshot, local_storage.brain_id or ""
-                    )
+                    await local_storage.import_brain(snapshot, local_storage.brain_id or "")
                     sync_result["pulled"] = True
                     sync_result["neurons_pulled"] = len(snapshot.neurons)
                     sync_result["synapses_pulled"] = len(snapshot.synapses)

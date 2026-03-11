@@ -12,6 +12,7 @@ from neural_memory.core.memory_types import MemoryType, Priority
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_handler(brain_id: str = "test-brain"):
     """Build a minimal ToolHandler with mock storage."""
     from neural_memory.mcp.tool_handlers import ToolHandler

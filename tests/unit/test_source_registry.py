@@ -62,7 +62,17 @@ class TestSourceDataclass:
             src.name = "Y"  # type: ignore[misc]
 
     def test_source_type_enum(self) -> None:
-        for t in ("law", "contract", "ledger", "document", "api", "manual", "website", "book", "research"):
+        for t in (
+            "law",
+            "contract",
+            "ledger",
+            "document",
+            "api",
+            "manual",
+            "website",
+            "book",
+            "research",
+        ):
             assert SourceType(t).value == t
 
     def test_source_status_enum(self) -> None:
@@ -146,9 +156,7 @@ class TestSQLiteSourcesMixin:
 
     async def test_list_sources(self, storage) -> None:
         for i in range(3):
-            src = Source.create(
-                brain_id=storage.brain_id, name=f"Doc {i}", source_id=f"src-{i}"
-            )
+            src = Source.create(brain_id=storage.brain_id, name=f"Doc {i}", source_id=f"src-{i}")
             await storage.add_source(src)
 
         sources = await storage.list_sources()
@@ -260,11 +268,13 @@ class TestSourceHandler:
         handler, storage = self._make_handler()
         storage.add_source = AsyncMock(return_value="src-123")
 
-        result = await handler._source({
-            "action": "register",
-            "name": "BLDS 2015",
-            "source_type": "law",
-        })
+        result = await handler._source(
+            {
+                "action": "register",
+                "name": "BLDS 2015",
+                "source_type": "law",
+            }
+        )
 
         assert result["name"] == "BLDS 2015"
         assert result["source_type"] == "law"
@@ -310,11 +320,13 @@ class TestSourceHandler:
         handler, storage = self._make_handler()
         storage.update_source = AsyncMock(return_value=True)
 
-        result = await handler._source({
-            "action": "update",
-            "source_id": "s1",
-            "status": "superseded",
-        })
+        result = await handler._source(
+            {
+                "action": "update",
+                "source_id": "s1",
+                "status": "superseded",
+            }
+        )
         assert result["updated"] is True
 
     @pytest.mark.asyncio
