@@ -170,6 +170,14 @@ def init(
         bool,
         typer.Option("--skip-skills", help="Skip skills installation"),
     ] = False,
+    wizard: Annotated[
+        bool,
+        typer.Option("--wizard", "-w", help="Interactive setup wizard"),
+    ] = False,
+    defaults: Annotated[
+        bool,
+        typer.Option("--defaults", help="Non-interactive with all defaults"),
+    ] = False,
 ) -> None:
     """Set up NeuralMemory in one command.
 
@@ -178,10 +186,18 @@ def init(
 
     Examples:
         nmem init                # Full setup
+        nmem init --wizard       # Interactive wizard
+        nmem init --defaults     # Non-interactive defaults
         nmem init --force        # Overwrite existing config
         nmem init --skip-mcp     # Skip MCP auto-config
         nmem init --skip-skills  # Skip skills installation
     """
+    if wizard:
+        from neural_memory.cli.wizard import run_wizard
+
+        run_wizard(force=force)
+        return
+
     from neural_memory.cli.setup import (
         print_summary,
         setup_brain,
@@ -817,6 +833,60 @@ def flush(
             )
 
 
+def doctor(
+    json_output: Annotated[bool, typer.Option("--json", "-j", help="Output as JSON")] = False,
+) -> None:
+    """Run system health diagnostics.
+
+    Checks Python version, config, brain, dependencies, embedding provider,
+    schema version, MCP config, and CLI tools. Shows actionable fixes.
+
+    Examples:
+        nmem doctor          # Run all checks
+        nmem doctor --json   # Machine-readable output
+    """
+    import json as json_mod
+
+    from neural_memory.cli.doctor import run_doctor
+
+    result = run_doctor(json_output=json_output)
+
+    if json_output:
+        typer.echo(json_mod.dumps(result, indent=2, default=str))
+
+    if result["failed"] > 0:
+        raise typer.Exit(1)
+
+
+def setup(
+    component: Annotated[
+        str,
+        typer.Argument(help="Component to set up: embeddings"),
+    ] = "",
+) -> None:
+    """Set up optional components.
+
+    Examples:
+        nmem setup embeddings   # Configure embedding provider
+    """
+    if component == "embeddings":
+        from neural_memory.cli.embedding_setup import run_embedding_setup
+
+        run_embedding_setup()
+    elif not component:
+        typer.echo("Available components:")
+        typer.echo("  embeddings  — Configure embedding provider for semantic search")
+        typer.echo()
+        typer.echo("Usage: nmem setup <component>")
+    else:
+        typer.secho(
+            f"Unknown component: {component}. Available: embeddings",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(1)
+
+
 def register(app: typer.Typer) -> None:
     """Register tool commands on the app."""
     app.command()(mcp)
@@ -830,3 +900,5 @@ def register(app: typer.Typer) -> None:
     app.command()(hooks)
     app.command()(flush)
     app.command(name="install-skills")(install_skills)
+    app.command()(doctor)
+    app.command()(setup)

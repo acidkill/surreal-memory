@@ -776,7 +776,7 @@ class ToolHandler:
                     failed += 1
             except Exception as e:
                 logger.error("Batch remember item %d failed: %s", idx, e)
-                results.append({"index": idx, "status": "error", "reason": str(e)})
+                results.append({"index": idx, "status": "error", "reason": "failed to store"})
                 failed += 1
 
         return {

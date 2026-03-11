@@ -11,7 +11,7 @@ Vision Pillar 4: Brain that knows its sources. Verbatim + Navigational recall mo
 | 2 | Source Registry | ✅ Done | plan-v3-phase2.md | Schema v23, sources table, SOURCE_OF synapse |
 | 3 | Structured Encoding | ✅ Done | plan-v3-phase3.md | Schema-aware encoder, tabular data support |
 | 4 | Citation + Audit | ✅ Done | plan-v3-phase4.md | Citation output format, audit synapses |
-| 5 | DX Sprint | ⬚ Pending | plan-v3-phase5.md | One-line installer, first-run wizard, embedding UX |
+| 5 | DX Sprint | ✅ Done | plan-v3-phase5.md | Wizard, doctor, embedding setup, error messages |
 
 ## Key Decisions
 

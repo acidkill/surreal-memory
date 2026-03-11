@@ -1,0 +1,372 @@
+"""System health diagnostic — nmem doctor.
+
+Checks Python version, dependencies, config validity, brain accessibility,
+embedding provider, storage integrity, and schema version. Produces
+green/yellow/red status per check with actionable fix suggestions.
+"""
+
+from __future__ import annotations
+
+import importlib
+import shutil
+import sys
+from pathlib import Path
+from typing import Any
+
+import typer
+
+from neural_memory.cli._helpers import run_async
+
+# Check result constants
+OK = "ok"
+WARN = "warn"
+FAIL = "fail"
+SKIP = "skip"
+
+
+def run_doctor(*, json_output: bool = False) -> dict[str, Any]:
+    """Run all diagnostic checks and return results."""
+    checks: list[dict[str, Any]] = []
+
+    checks.append(_check_python_version())
+    checks.append(_check_config())
+    checks.append(_check_brain())
+    checks.append(_check_dependencies())
+    checks.append(_check_embedding_provider())
+    checks.append(_check_schema_version())
+    checks.append(_check_mcp_config())
+    checks.append(_check_cli_tools())
+
+    result = {
+        "checks": checks,
+        "passed": sum(1 for c in checks if c["status"] == OK),
+        "warnings": sum(1 for c in checks if c["status"] == WARN),
+        "failed": sum(1 for c in checks if c["status"] == FAIL),
+        "total": len(checks),
+    }
+
+    if not json_output:
+        _render_results(result)
+
+    return result
+
+
+def _check_python_version() -> dict[str, Any]:
+    """Check Python version is 3.11+."""
+    version = sys.version_info
+    version_str = f"{version.major}.{version.minor}.{version.micro}"
+
+    if version >= (3, 11):
+        return {"name": "Python version", "status": OK, "detail": version_str}
+
+    return {
+        "name": "Python version",
+        "status": FAIL,
+        "detail": f"{version_str} (requires 3.11+)",
+        "fix": "Install Python 3.11 or newer",
+    }
+
+
+def _check_config() -> dict[str, Any]:
+    """Check config.toml exists and is valid."""
+    from neural_memory.unified_config import get_neuralmemory_dir
+
+    data_dir = get_neuralmemory_dir()
+    config_path = data_dir / "config.toml"
+
+    if not config_path.exists():
+        return {
+            "name": "Configuration",
+            "status": FAIL,
+            "detail": f"{config_path} not found",
+            "fix": "Run: nmem init",
+        }
+
+    try:
+        from neural_memory.unified_config import get_config
+
+        config = get_config(reload=True)
+        return {
+            "name": "Configuration",
+            "status": OK,
+            "detail": f"{config_path} (brain: {config.current_brain})",
+        }
+    except Exception as exc:
+        return {
+            "name": "Configuration",
+            "status": FAIL,
+            "detail": f"Invalid config: {exc}",
+            "fix": "Run: nmem init --force",
+        }
+
+
+def _check_brain() -> dict[str, Any]:
+    """Check default brain DB exists and is accessible."""
+    from neural_memory.unified_config import get_neuralmemory_dir
+
+    data_dir = get_neuralmemory_dir()
+
+    try:
+        from neural_memory.unified_config import get_config
+
+        config = get_config(reload=True)
+        brain_name = config.current_brain
+    except Exception:
+        brain_name = "default"
+
+    brains_dir = data_dir / "brains"
+    db_path = brains_dir / f"{brain_name}.db"
+
+    if not db_path.exists():
+        return {
+            "name": "Brain database",
+            "status": FAIL,
+            "detail": f"{db_path} not found",
+            "fix": f"Run: nmem brain create {brain_name}",
+        }
+
+    size_kb = db_path.stat().st_size / 1024
+    return {
+        "name": "Brain database",
+        "status": OK,
+        "detail": f"{brain_name} ({size_kb:.0f} KB)",
+    }
+
+
+def _check_dependencies() -> dict[str, Any]:
+    """Check core dependencies are importable."""
+    required = ["aiosqlite", "typer"]
+    missing = []
+
+    for dep in required:
+        try:
+            importlib.import_module(dep)
+        except ImportError:
+            missing.append(dep)
+
+    if missing:
+        return {
+            "name": "Dependencies",
+            "status": FAIL,
+            "detail": f"Missing: {', '.join(missing)}",
+            "fix": "Run: pip install neural-memory",
+        }
+
+    return {"name": "Dependencies", "status": OK, "detail": "all core deps available"}
+
+
+def _check_embedding_provider() -> dict[str, Any]:
+    """Check embedding provider availability."""
+    try:
+        from neural_memory.unified_config import get_config
+
+        config = get_config(reload=True)
+    except Exception:
+        return {
+            "name": "Embedding provider",
+            "status": SKIP,
+            "detail": "config not loaded",
+        }
+
+    if not config.embedding.enabled:
+        return {
+            "name": "Embedding provider",
+            "status": WARN,
+            "detail": "disabled (semantic search unavailable)",
+            "fix": "Run: nmem setup embeddings",
+        }
+
+    provider = config.embedding.provider
+
+    # Check if provider package is importable
+    provider_checks: dict[str, str] = {
+        "sentence_transformer": "sentence_transformers",
+        "openai": "openai",
+        "gemini": "google.generativeai",
+        "ollama": "ollama",
+    }
+
+    module_name = provider_checks.get(provider)
+    if module_name:
+        try:
+            importlib.import_module(module_name)
+            return {
+                "name": "Embedding provider",
+                "status": OK,
+                "detail": f"{provider} (model: {config.embedding.model})",
+            }
+        except ImportError:
+            install_hint = {
+                "sentence_transformer": "pip install neural-memory[embeddings]",
+                "openai": "pip install neural-memory[embeddings-openai]",
+                "gemini": "pip install neural-memory[embeddings-gemini]",
+                "ollama": "pip install neural-memory[embeddings]",
+            }
+            return {
+                "name": "Embedding provider",
+                "status": FAIL,
+                "detail": f"{provider} configured but not installed",
+                "fix": f"Run: {install_hint.get(provider, 'pip install neural-memory[embeddings]')}",
+            }
+
+    return {
+        "name": "Embedding provider",
+        "status": OK,
+        "detail": f"{provider} (model: {config.embedding.model})",
+    }
+
+
+def _check_schema_version() -> dict[str, Any]:
+    """Check database schema version."""
+    try:
+        from neural_memory.unified_config import get_config, get_neuralmemory_dir
+
+        config = get_config(reload=True)
+        brain_name = config.current_brain
+        db_path = get_neuralmemory_dir() / "brains" / f"{brain_name}.db"
+
+        if not db_path.exists() or db_path.stat().st_size == 0:
+            return {
+                "name": "Schema version",
+                "status": SKIP,
+                "detail": "empty database (schema created on first use)",
+            }
+
+        async def _get_version() -> int:
+            import aiosqlite
+
+            async with aiosqlite.connect(str(db_path)) as db:
+                cursor = await db.execute("PRAGMA user_version")
+                row = await cursor.fetchone()
+                return row[0] if row else 0
+
+        version = run_async(_get_version())
+
+        from neural_memory.storage.sqlite.migrations import CURRENT_VERSION
+
+        if version == CURRENT_VERSION:
+            return {
+                "name": "Schema version",
+                "status": OK,
+                "detail": f"v{version} (current)",
+            }
+        if version < CURRENT_VERSION:
+            return {
+                "name": "Schema version",
+                "status": WARN,
+                "detail": f"v{version} (latest: v{CURRENT_VERSION})",
+                "fix": "Schema will auto-migrate on next use",
+            }
+        return {
+            "name": "Schema version",
+            "status": WARN,
+            "detail": f"v{version} (newer than expected v{CURRENT_VERSION})",
+        }
+    except Exception as exc:
+        return {
+            "name": "Schema version",
+            "status": WARN,
+            "detail": f"could not check: {exc}",
+        }
+
+
+def _check_mcp_config() -> dict[str, Any]:
+    """Check MCP server is configured in Claude Code."""
+    import json
+
+    claude_json = Path.home() / ".claude.json"
+    if not claude_json.exists():
+        return {
+            "name": "MCP configuration",
+            "status": WARN,
+            "detail": "~/.claude.json not found",
+            "fix": "Run: nmem init",
+        }
+
+    try:
+        data = json.loads(claude_json.read_text(encoding="utf-8"))
+        servers = data.get("mcpServers", {})
+        if "neural-memory" in servers:
+            return {
+                "name": "MCP configuration",
+                "status": OK,
+                "detail": "neural-memory registered in Claude Code",
+            }
+        return {
+            "name": "MCP configuration",
+            "status": WARN,
+            "detail": "neural-memory not found in ~/.claude.json",
+            "fix": "Run: nmem init",
+        }
+    except (json.JSONDecodeError, OSError):
+        return {
+            "name": "MCP configuration",
+            "status": WARN,
+            "detail": "could not parse ~/.claude.json",
+            "fix": "Run: nmem init",
+        }
+
+
+def _check_cli_tools() -> dict[str, Any]:
+    """Check CLI tools are on PATH."""
+    tools = ["nmem", "nmem-mcp"]
+    found = [t for t in tools if shutil.which(t)]
+    missing = [t for t in tools if t not in found]
+
+    if not missing:
+        return {
+            "name": "CLI tools",
+            "status": OK,
+            "detail": "nmem + nmem-mcp on PATH",
+        }
+
+    if "nmem" in missing:
+        return {
+            "name": "CLI tools",
+            "status": FAIL,
+            "detail": f"missing: {', '.join(missing)}",
+            "fix": "Run: pip install neural-memory",
+        }
+
+    return {
+        "name": "CLI tools",
+        "status": WARN,
+        "detail": f"missing: {', '.join(missing)} (nmem mcp fallback available)",
+    }
+
+
+def _render_results(result: dict[str, Any]) -> None:
+    """Render diagnostic results to terminal."""
+    typer.echo()
+    typer.secho("  NeuralMemory Doctor", bold=True)
+    typer.secho("  ───────────────────", dim=True)
+    typer.echo()
+
+    icons = {
+        OK: typer.style("[OK]", fg=typer.colors.GREEN),
+        WARN: typer.style("[!!]", fg=typer.colors.YELLOW),
+        FAIL: typer.style("[XX]", fg=typer.colors.RED),
+        SKIP: typer.style("[--]", fg=typer.colors.BRIGHT_BLACK),
+    }
+
+    for check in result["checks"]:
+        icon = icons.get(check["status"], icons[SKIP])
+        typer.echo(f"  {icon} {check['name']:<22}{check['detail']}")
+        if "fix" in check:
+            typer.secho(f"       Fix: {check['fix']}", dim=True)
+
+    typer.echo()
+    passed = result["passed"]
+    total = result["total"]
+    warns = result["warnings"]
+    fails = result["failed"]
+
+    summary_parts = [f"{passed}/{total} passed"]
+    if warns:
+        summary_parts.append(f"{warns} warnings")
+    if fails:
+        summary_parts.append(f"{fails} failed")
+
+    color = typer.colors.GREEN if fails == 0 else typer.colors.RED
+    typer.secho(f"  {', '.join(summary_parts)}", fg=color, bold=True)
+    typer.echo()
