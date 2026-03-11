@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.4.0] - 2026-03-12
+
+### Added
+
+- **Session-aware depth selection** — Primed topics go shallower (already in context), new topics go deeper (need exploration). Uses session EMA topic weights
+- **Calibration-driven gate tuning** — High-accuracy gates get confidence boost (+10%), low-accuracy gates get dampened (-30%), very low avg_confidence triggers downgrade to insufficient
+- **Agent feedback signal** — `agent_used_result` parameter: remember-after-recall = strong positive, unused recall = raised bar for success
+- **Dynamic RRF weights** — Per-brain retriever weights evolve from outcome history via `retriever_calibration` table and EMA
+- **Auto activation strategy** — `activation_strategy="auto"` selects classic/PPR/hybrid based on graph density (synapses/neuron ratio)
+- **Schema v25** — `retriever_calibration` table + `graph_density` column on brains
+
+### Tests
+
+- 30 new tests covering all 5 features + backward compatibility
+- Total: 3702 passing
+
 ## [3.3.0] - 2026-03-12
 
 ### Added
