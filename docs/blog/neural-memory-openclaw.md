@@ -240,7 +240,7 @@ v1.3.0 mở rộng Integrations tab: activity log realtime, setup wizards cho Cl
 Cài đặt native plugin thay vì SKILL:
 
 ```bash
-npm install -g @neuralmemory/openclaw-plugin
+npm install -g neuralmemory
 ```
 
 Plugin tự động:
@@ -268,7 +268,7 @@ Neural Memory là **pure algorithmic** — 1,352 tests, Python thuần, SQLite s
 
 ```bash
 pip install neural-memory
-npm install -g @neuralmemory/openclaw-plugin
+npm install -g neuralmemory
 ```
 
 Plugin tự động register 6 tools, inject context trước session, auto-capture sau session. Zero config. Brain auto-init khi dùng lần đầu.
@@ -463,7 +463,7 @@ OpenClaw đã có đôi tay tuyệt vời. Giờ hãy cho nó một bộ não.
 
 *[Neural Memory](https://github.com/nhadaututtheky/neural-memory) — Reflex-based memory system for AI agents. Retrieval through activation, not search. v1.3.0, 1,352 tests, 16 MCP tools.*
 
-*[OpenClaw Plugin](https://www.npmjs.com/package/@neuralmemory/openclaw-plugin) — Native OpenClaw integration. `npm install -g @neuralmemory/openclaw-plugin`*
+*[OpenClaw Plugin](https://www.npmjs.com/package/neuralmemory) — Native OpenClaw integration. `npm install -g neuralmemory`*
 
 *[ClawHub Skill](https://clawhub.ai/skills/neural-memory) — Install NeuralMemory as an OpenClaw skill in one click.*
 
