@@ -855,7 +855,9 @@ async def update_sync_config(
     if hub_url is not None:
         url = str(hub_url).strip()
         if url and not url.startswith(("http://", "https://")):
-            raise HTTPException(status_code=422, detail="hub_url must start with http:// or https://")
+            raise HTTPException(
+                status_code=422, detail="hub_url must start with http:// or https://"
+            )
         new_sync = dc_replace(new_sync, hub_url=url[:256])
 
     api_key = body.get("api_key")
@@ -872,7 +874,9 @@ async def update_sync_config(
         valid = {"prefer_recent", "prefer_local", "prefer_remote", "prefer_stronger"}
         strategy = str(body["conflict_strategy"])
         if strategy not in valid:
-            raise HTTPException(status_code=422, detail=f"Invalid strategy. Use: {', '.join(sorted(valid))}")
+            raise HTTPException(
+                status_code=422, detail=f"Invalid strategy. Use: {', '.join(sorted(valid))}"
+            )
         new_sync = dc_replace(new_sync, conflict_strategy=strategy)
 
     # Auto-enable when both hub_url and api_key are set
