@@ -10,6 +10,7 @@ const TimelinePage = lazy(() => import("@/features/timeline/TimelinePage"))
 const EvolutionPage = lazy(() => import("@/features/evolution/EvolutionPage"))
 const DiagramsPage = lazy(() => import("@/features/diagrams/DiagramsPage"))
 const SettingsPage = lazy(() => import("@/features/settings/SettingsPage"))
+const SyncPage = lazy(() => import("@/features/sync/SyncPage"))
 const NeurodungeonPage = lazy(() => import("@/features/neurodungeon/NeurodungeonPage"))
 
 export default function App() {
@@ -69,6 +70,14 @@ export default function App() {
           element={
             <Suspense fallback={<PageSkeleton />}>
               <SettingsPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="sync"
+          element={
+            <Suspense fallback={<PageSkeleton />}>
+              <SyncPage />
             </Suspense>
           }
         />

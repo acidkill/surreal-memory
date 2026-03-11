@@ -6,6 +6,7 @@ import {
   Clock,
   TrendingUp,
   Share2,
+  Cloud,
   Settings,
   Brain,
   Gamepad2,
@@ -21,6 +22,7 @@ const navItems = [
   { to: "/timeline", icon: Clock, labelKey: "nav.timeline" },
   { to: "/evolution", icon: TrendingUp, labelKey: "nav.evolution" },
   { to: "/diagrams", icon: Share2, labelKey: "nav.mindmap" },
+  { to: "/sync", icon: Cloud, labelKey: "nav.sync" },
   { to: "/neurodungeon", icon: Gamepad2, labelKey: "nav.neurodungeon" },
   { to: "/settings", icon: Settings, labelKey: "nav.settings" },
 ] as const
