@@ -751,7 +751,12 @@ class TestMCPToolCalls:
         )
 
         mock_delta = MagicMock()
-        mock_delta.to_dict.return_value = {"before": {}, "after": {}, "delta": {}, "grade_changed": False}
+        mock_delta.to_dict.return_value = {
+            "before": {},
+            "after": {},
+            "delta": {},
+            "grade_changed": False,
+        }
         mock_delta.report.summary.return_value = "dry run"
 
         with (
@@ -779,9 +784,7 @@ class TestMCPToolCalls:
         )
 
         with patch.object(server, "get_storage", return_value=mock_storage):
-            result = await server.call_tool(
-                "nmem_consolidate", {"strategy": "invalid_strategy"}
-            )
+            result = await server.call_tool("nmem_consolidate", {"strategy": "invalid_strategy"})
 
         assert "error" in result
         assert "Invalid strategy" in result["error"]
