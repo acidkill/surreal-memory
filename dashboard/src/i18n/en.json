@@ -260,6 +260,9 @@
     "score": "Score",
     "dailyReading": "Daily Reading",
     "whatif": "What If",
-    "matchup": "Matchup"
+    "matchup": "Matchup",
+    "copyCard": "Copy Card",
+    "copied": "Copied!",
+    "downloadCard": "Download"
   }
 }

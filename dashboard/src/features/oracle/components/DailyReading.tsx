@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react"
+import { useState } from "react"
 import { FlipCard } from "./FlipCard"
-import { generateDailyReading } from "../engine/reading-engine"
-import type { OracleCard, DailyReading as DailyReadingType } from "../engine/types"
+import { ShareButton } from "./ShareButton"
+import { useDaily } from "../hooks/useDaily"
+import type { OracleCard } from "../engine/types"
 import { useTranslation } from "react-i18next"
 
 interface DailyReadingProps {
@@ -13,14 +14,8 @@ const POSITIONS = ["past", "present", "future"] as const
 
 export function DailyReading({ cards, brainName }: DailyReadingProps) {
   const { t } = useTranslation()
-  const [reading, setReading] = useState<DailyReadingType | null>(null)
+  const reading = useDaily(cards, brainName)
   const [revealed, setRevealed] = useState(0)
-
-  useEffect(() => {
-    const result = generateDailyReading(cards, brainName)
-    setReading(result)
-    setRevealed(0)
-  }, [cards, brainName])
 
   if (!reading) return null
 
@@ -48,7 +43,7 @@ export function DailyReading({ cards, brainName }: DailyReadingProps) {
         ))}
       </div>
 
-      {/* Interpretation appears after all 3 cards revealed */}
+      {/* Interpretation + share buttons appear after all 3 cards revealed */}
       {revealed >= 3 && (
         <div className="max-w-xl animate-in fade-in slide-in-from-bottom-4 duration-700">
           <div className="rounded-xl border border-primary/20 bg-primary/5 p-5">
@@ -58,6 +53,9 @@ export function DailyReading({ cards, brainName }: DailyReadingProps) {
             <p className="mt-3 text-center text-xs text-muted-foreground">
               {t("oracle.readingDate", { date: reading.date, brain: reading.brainName })}
             </p>
+          </div>
+          <div className="mt-4 flex justify-center">
+            <ShareButton reading={reading} />
           </div>
         </div>
       )}
