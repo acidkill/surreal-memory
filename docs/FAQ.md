@@ -424,6 +424,20 @@ To regenerate on your hardware:
 python benchmarks/run_benchmarks.py
 ```
 
+### Q: Why is my consolidation 0%?
+
+This is **completely normal for new brains**. Consolidation measures how many memories have matured from episodic (raw) to semantic (pattern) stage. A new brain has no matured memories yet.
+
+**When to worry**: If your brain is older than 1 week with 50+ memories and consolidation is still 0%, run:
+
+```bash
+nmem consolidate --strategy mature
+```
+
+Or in Claude Code, just say: "consolidate my memories".
+
+**Expected progression**: After 1-2 weeks of active use → 20-40%. After a month → 50%+. A brand new brain at 0% is not a bug — it just means no memories have been recalled enough times to qualify for maturation.
+
 ### Q: How does consolidation work? When should I run it?
 
 Consolidation maintains brain health through three strategies:
@@ -490,7 +504,7 @@ NeuralMemory is designed for **AI agent memory** — not as a general-purpose da
 
 | Aspect | Status |
 |--------|--------|
-| **Test suite** | 584+ tests, 70%+ coverage enforced by CI |
+| **Test suite** | 3778+ tests, 67%+ coverage enforced by CI |
 | **Security** | Input validation, ReDoS protection, activation queue caps, sensitive content detection |
 | **Stability** | 51+ releases, used daily by the maintainers in production AI workflows |
 | **Scalability** | Tested up to 5,000 neurons with sub-ms latency; designed for agent-scale data, not big data |
