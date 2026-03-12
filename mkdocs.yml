@@ -81,7 +81,8 @@ nav:
   - Getting Started:
     - Installation: getting-started/installation.md
     - Quick Start: getting-started/quickstart.md
-    - CLI Reference: getting-started/cli.md
+    - CLI Guide: getting-started/cli.md
+    - CLI Reference: getting-started/cli-reference.md
   - Concepts:
     - How It Works: concepts/how-it-works.md
     - Neurons & Synapses: concepts/neurons-synapses.md
@@ -101,6 +102,7 @@ nav:
     - Learning Habits: guides/learning-habits.md
     - Safety & Security: guides/safety.md
   - API Reference:
+    - MCP Tools: api/mcp-tools.md
     - Python API: api/python.md
     - Server API: api/server.md
   - Architecture:

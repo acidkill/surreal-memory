@@ -10,6 +10,7 @@ Runs all automated checks before a release to catch common issues:
 - CHANGELOG has current version entry
 - Auto-type classifier smoke test
 - Cognitive layer integration test
+- Documentation freshness (auto-generated docs up-to-date)
 
 Usage:
     python scripts/pre_ship.py          # Run all checks
@@ -302,6 +303,34 @@ def check_plugin() -> None:
         )
 
 
+# ── 9. Documentation Freshness ─────────────────────────────────
+
+
+def check_docs() -> None:
+    print("\n9. Documentation Freshness")
+
+    for script, label in [
+        ("scripts/gen_mcp_docs.py", "MCP tools reference"),
+        ("scripts/gen_cli_docs.py", "CLI reference"),
+    ]:
+        script_path = ROOT / script
+        if not script_path.exists():
+            warn(f"{script} not found — skipping {label} check")
+            continue
+
+        result = subprocess.run(
+            [sys.executable, str(script_path), "--check"],
+            capture_output=True,
+            text=True,
+            cwd=str(ROOT),
+        )
+        check(
+            f"{label} up-to-date",
+            result.returncode == 0,
+            result.stdout.strip()[:200] if result.returncode != 0 else "",
+        )
+
+
 # ── Main ────────────────────────────────────────────────────────
 
 
@@ -320,6 +349,7 @@ def main() -> int:
     check_classifier()
     check_cognitive()
     check_plugin()
+    check_docs()
 
     print("\n" + "=" * 60)
     if failures:
