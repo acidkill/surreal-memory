@@ -17,8 +17,11 @@
  * v1.8.1: Fix async register() — OpenClaw requires synchronous registration.
  * Fallback tools registered sync; MCP connection deferred to service.start().
  *
+ * v1.9.0: Backward-compat shim tools (memory_search, memory_get) to prevent
+ * "allowList contains unknown entries" warnings when NM replaces memory-core.
+ *
  * Registers:
- *   N tools    — dynamically from MCP server (fallback: 5 core tools)
+ *   N tools    — dynamically from MCP server (fallback: 5 core + 2 compat)
  *   1 service  — MCP process lifecycle (start/stop)
  *   2 hooks    — before_agent_start (auto-context), agent_end (auto-capture)
  */
@@ -31,7 +34,7 @@ import type {
   AgentEndEvent,
 } from "./types.js";
 import { NeuralMemoryMcpClient } from "./mcp-client.js";
-import { createToolsFromMcp, createFallbackTools } from "./tools.js";
+import { createToolsFromMcp, createFallbackTools, createCompatibilityTools } from "./tools.js";
 import type { ToolDefinition } from "./tools.js";
 
 // ── System prompt for tool awareness ──────────────────────
@@ -49,7 +52,7 @@ function buildToolInstructions(tools: ToolDefinition[]): string {
 
 ${toolList}
 
-CRITICAL: NeuralMemory (nmem_*) is your ONLY memory system. Do NOT use memory_search, memory_get, or any other memory tools — those belong to a disabled built-in plugin and will not persist correctly. Always use nmem_* tools exclusively.
+NeuralMemory (nmem_*) is your primary memory system. memory_search and memory_get are legacy aliases that redirect to nmem_recall — prefer nmem_* tools directly for full functionality.
 
 These are tool calls, NOT shell commands. Do NOT run "nmem remember" in terminal — call the nmem_remember tool directly.
 
@@ -141,7 +144,7 @@ const plugin: OpenClawPluginDefinition = {
   name: "NeuralMemory",
   description:
     "Brain-inspired persistent memory for AI agents — neurons, synapses, and fibers",
-  version: "1.8.1",
+  version: "1.9.0",
   kind: "memory",
 
   register(api: OpenClawPluginApi): void {
@@ -162,12 +165,14 @@ const plugin: OpenClawPluginDefinition = {
     // Fallback tools auto-reconnect MCP on first call.
 
     const registeredTools = createFallbackTools(mcp);
-    for (const t of registeredTools) {
+    const compatTools = createCompatibilityTools(mcp);
+
+    for (const t of [...registeredTools, ...compatTools]) {
       api.registerTool(t, { name: t.name });
     }
 
     api.logger.info(
-      `Registered ${registeredTools.length} NeuralMemory tools (sync)`,
+      `Registered ${registeredTools.length} NeuralMemory tools + ${compatTools.length} compat shims (sync)`,
     );
 
     // ── Service: MCP process lifecycle ───────────────────

@@ -271,3 +271,52 @@ export function createFallbackTools(
     },
   ];
 }
+
+/**
+ * Create backward-compatible shim tools that map legacy OpenClaw memory-core
+ * tool names to NeuralMemory equivalents.
+ *
+ * This prevents "allowList contains unknown entries (memory_search, memory_get)"
+ * warnings when NM occupies the `memory` plugin slot, which removes the built-in
+ * memory-core tools but leaves the tools.profile allowList referencing them.
+ */
+export function createCompatibilityTools(
+  mcp: NeuralMemoryMcpClient,
+): ToolDefinition[] {
+  const call = makeCallFn(mcp);
+
+  return [
+    {
+      name: "memory_search",
+      description:
+        "Search memories (legacy alias for nmem_recall). " +
+        "Prefer nmem_recall for full NeuralMemory features.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "The search query" },
+        },
+        required: ["query"],
+        additionalProperties: false,
+      },
+      execute: (_id, args) =>
+        call("nmem_recall", { query: args.query, depth: 1 }),
+    },
+    {
+      name: "memory_get",
+      description:
+        "Get a memory by ID (legacy alias for nmem_recall). " +
+        "Prefer nmem_recall for full NeuralMemory features.",
+      parameters: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "Memory identifier or query" },
+        },
+        required: ["id"],
+        additionalProperties: false,
+      },
+      execute: (_id, args) =>
+        call("nmem_recall", { query: String(args.id), depth: 0 }),
+    },
+  ];
+}
