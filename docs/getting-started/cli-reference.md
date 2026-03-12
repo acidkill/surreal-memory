@@ -6,6 +6,10 @@ Complete reference for the `nmem` command-line interface.
 !!! tip
     Run `nmem --help` or `nmem <command> --help` for the latest usage info.
 
+!!! info "See also"
+    For a guided walkthrough with examples, see the [CLI Guide](cli.md).
+    For MCP tool usage in Claude Code, see the [MCP Tools Reference](../api/mcp-tools.md).
+
 ## Table of Contents
 
 - [Memory Operations](#memory)

@@ -6,6 +6,9 @@ Complete reference for all NeuralMemory MCP tools.
 !!! tip
     Tools are called as MCP tool calls, not CLI commands. In Claude Code, call `nmem_recall` directly — do not run `nmem recall` in terminal.
 
+!!! info "See also"
+    For CLI terminal usage, see the [CLI Guide](../getting-started/cli.md) and [CLI Reference](../getting-started/cli-reference.md).
+
 ## Table of Contents
 
 - [Core Memory](#core)

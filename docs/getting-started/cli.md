@@ -1,6 +1,10 @@
-# CLI Reference
+# CLI Guide
 
-Complete reference for all NeuralMemory CLI commands.
+Guide to using the NeuralMemory CLI with examples and common workflows.
+
+!!! info "See also"
+    For a complete auto-generated reference of all 66 commands, see the [CLI Reference](cli-reference.md).
+    For MCP tool usage in Claude Code, see the [MCP Tools Reference](../api/mcp-tools.md).
 
 ## Core Commands
 
