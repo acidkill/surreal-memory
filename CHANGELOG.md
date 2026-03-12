@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.1.1] - 2026-03-12
+
+### Fixed
+
+- **`nmem doctor` crash** — fixed `No module named 'neural_memory.storage.sqlite'` caused by stale import after storage restructuring (now imports from `sqlite_schema`)
+- **`nmem_pin action=list`** — new `list` action to query pinned fibers (#57)
+
+### Improved
+
+- **Stale references audit** — updated tool counts (39→44), schema version (v22→v26), test counts across README, ROADMAP, plugin.json, mcp-server.md
+- **FAQ** — added "Why is my consolidation 0%?" entry
+- **Regenerated docs** — MCP tools + CLI reference refreshed for v4.1.x
+
 ## [4.1.0] - 2026-03-12
 
 ### Added
