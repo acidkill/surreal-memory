@@ -302,14 +302,16 @@ class SQLiteFiberMixin:
 
         results: list[dict[str, Any]] = []
         for row in rows:
-            results.append({
-                "fiber_id": row[0],
-                "summary": row[1] or "",
-                "type": row[2] or "unknown",
-                "priority": row[3] or 5,
-                "tags": json.loads(row[4]) if row[4] else [],
-                "created_at": row[5] or "",
-            })
+            results.append(
+                {
+                    "fiber_id": row[0],
+                    "summary": row[1] or "",
+                    "type": row[2] or "unknown",
+                    "priority": row[3] or 5,
+                    "tags": json.loads(row[4]) if row[4] else [],
+                    "created_at": row[5] or "",
+                }
+            )
         return results
 
     async def pin_fibers(self, fiber_ids: list[str], pinned: bool = True) -> int:
