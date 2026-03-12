@@ -838,22 +838,28 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "nmem_pin",
-        "description": "Pin or unpin memories. Pinned memories skip decay, pruning, and compression — "
-        "use for permanent knowledge base content.",
+        "description": "Pin, unpin, or list pinned memories. Pinned memories skip decay, pruning, "
+        "and compression — use for permanent knowledge base content.",
         "inputSchema": {
             "type": "object",
             "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["pin", "unpin", "list"],
+                    "description": "Action: pin (default), unpin, or list pinned memories",
+                },
                 "fiber_ids": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Fiber IDs to pin or unpin",
+                    "description": "Fiber IDs to pin or unpin (required for pin/unpin, ignored for list)",
                 },
-                "pinned": {
-                    "type": "boolean",
-                    "description": "true to pin, false to unpin (default: true)",
+                "limit": {
+                    "type": "integer",
+                    "description": "Max results for list action (default: 50, max: 200)",
+                    "minimum": 1,
+                    "maximum": 200,
                 },
             },
-            "required": ["fiber_ids"],
         },
     },
     {

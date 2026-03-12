@@ -282,6 +282,36 @@ class SQLiteFiberMixin:
                 result.update(json.loads(neuron_ids_raw))
         return result
 
+    async def list_pinned_fibers(self, limit: int = 50) -> list[dict[str, Any]]:
+        """List all pinned fibers for the current brain.
+
+        Returns:
+            List of dicts with fiber details.
+        """
+        conn = self._ensure_read_conn()
+        brain_id = self._get_brain_id()
+        safe_limit = min(limit, 200)
+
+        async with conn.execute(
+            "SELECT id, summary, type, priority, tags, created_at "
+            "FROM fibers WHERE brain_id = ? AND pinned = 1 "
+            "ORDER BY created_at DESC LIMIT ?",
+            (brain_id, safe_limit),
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            results.append({
+                "fiber_id": row[0],
+                "summary": row[1] or "",
+                "type": row[2] or "unknown",
+                "priority": row[3] or 5,
+                "tags": json.loads(row[4]) if row[4] else [],
+                "created_at": row[5] or "",
+            })
+        return results
+
     async def pin_fibers(self, fiber_ids: list[str], pinned: bool = True) -> int:
         """Pin or unpin fibers by ID.
 

@@ -445,12 +445,13 @@ Explicitly delete or close a specific memory. Soft delete by default (marks as e
 
 ### `nmem_pin`
 
-Pin or unpin memories. Pinned memories skip decay, pruning, and compression — use for permanent knowledge base content.
+Pin, unpin, or list pinned memories. Pinned memories skip decay, pruning, and compression — use for permanent knowledge base content.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `fiber_ids` | array[string] | Yes | — | Fiber IDs to pin or unpin |
-| `pinned` | boolean | No | default: true | true to pin, false to unpin (default: true) |
+| `action` | string (`pin`, `unpin`, `list`) | No | — | Action: pin (default), unpin, or list pinned memories |
+| `fiber_ids` | array[string] | No | — | Fiber IDs to pin or unpin (required for pin/unpin, ignored for list) |
+| `limit` | integer | No | default: 50, max: 200 | Max results for list action (default: 50, max: 200) |
 
 ### `nmem_consolidate`
 

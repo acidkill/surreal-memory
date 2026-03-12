@@ -164,24 +164,39 @@ class TrainHandler:
         return result
 
     async def _pin(self, args: dict[str, Any]) -> dict[str, Any]:
-        """Pin or unpin memory fibers."""
+        """Pin, unpin, or list pinned memory fibers."""
         storage = await self.get_storage()
 
+        action = args.get("action", "pin")
+
+        # Legacy compat: if pinned=false is passed without action, treat as unpin
+        if action == "pin" and args.get("pinned") is False:
+            action = "unpin"
+
+        if action == "list":
+            if not hasattr(storage, "list_pinned_fibers"):
+                return {"error": "Storage does not support listing pinned fibers"}
+            limit = min(args.get("limit", 50), 200)
+            fibers = await storage.list_pinned_fibers(limit=limit)
+            return {
+                "pinned_count": len(fibers),
+                "fibers": fibers,
+            }
+
+        # pin or unpin
         fiber_ids = args.get("fiber_ids", [])
         if not fiber_ids:
-            return {"error": "fiber_ids is required"}
+            return {"error": "fiber_ids is required for pin/unpin"}
 
         if not isinstance(fiber_ids, list) or len(fiber_ids) > 100:
             return {"error": "fiber_ids must be a list of up to 100 IDs"}
 
-        pinned = args.get("pinned", True)
-
         if not hasattr(storage, "pin_fibers"):
             return {"error": "Storage does not support pinning"}
 
+        pinned = action == "pin"
         count = await storage.pin_fibers(fiber_ids, pinned=pinned)
-        action = "pinned" if pinned else "unpinned"
         return {
             "updated": count,
-            "message": f"{action} {count} fiber(s)",
+            "message": f"{action}ned {count} fiber(s)",
         }
