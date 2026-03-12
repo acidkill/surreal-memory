@@ -74,6 +74,26 @@ jobs:
           files: ./coverage.xml
           fail_ci_if_error: false
 
+  docs:
+    name: Docs Freshness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Check MCP docs are up-to-date
+        run: python scripts/gen_mcp_docs.py --check
+
+      - name: Check CLI docs are up-to-date
+        run: python scripts/gen_cli_docs.py --check
+
   security:
     name: Security Scan
     runs-on: ubuntu-latest
