@@ -54,7 +54,7 @@ Add to `~/.openclaw/openclaw.json`:
 
 **v1.7.0+**: The plugin dynamically fetches **all tools** from the MCP server at startup. Whatever version of `neural-memory` you have installed, the plugin automatically exposes every tool it provides — no plugin update needed when new tools are added.
 
-With `neural-memory>=2.28.0`, this includes **39 tools**:
+With `neural-memory>=2.28.0`, this includes **44 tools**:
 
 | Category | Tools |
 |----------|-------|

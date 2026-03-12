@@ -141,13 +141,22 @@ dashboard/src/features/oracle/
   engine/
     types.ts          — Card suits, OracleCard, OracleMode, reading types
     card-generator.ts — neuronsToCards(): GraphNeuron[] → OracleCard[]
+    reading-engine.ts — Reading logic: daily seed, card selection, spread layouts
+    templates.ts      — Template interpolation for What If collision text
   components/
     CardBack.tsx      — CSS geometric mandala pattern (conic-gradient)
     CardFace.tsx      — Suit-colored gradient, symbol, content, stats
     FlipCard.tsx      — 3D CSS flip (perspective + rotateY, 600ms)
     ModeSelector.tsx  — Daily/WhatIf/Matchup mode tabs
+    DailyReading.tsx  — Past/Present/Future 3-card spread
+    WhatIfMode.tsx    — Collision mode: 2 cards collide → outcome
+    MatchupMode.tsx   — Compare 2 cards side-by-side
+    ShareButton.tsx   — Export reading as PNG image
   hooks/
     useOracleData.ts  — useGraph(500) → neuronsToCards(), memoized
+    useDaily.ts       — Daily reading persistence (localStorage)
+  utils/
+    share-image.ts    — Canvas-based PNG generation for sharing
   OraclePage.tsx      — Main page: mode selector + card layouts
 ```
 
@@ -155,7 +164,7 @@ dashboard/src/features/oracle/
 
 - **TS 5.9 compat**: Use `as const` objects + derived types, NOT TypeScript enums
 - **0 new dependencies**: Pure CSS animations + React
-- **9 card suits**: decision→Architect, error→Shadow, insight→Oracle, fact→Scholar, workflow→Engineer, preference→Heart, instruction→Sentinel, pattern→Weaver, other→Wanderer
+- **9 card suits**: decision→Architect, error→Shadow, insight→Oracle, fact→Scholar, workflow→Engineer, concept→Dreamer, entity→Keeper, pattern→Weaver, preference→Compass, unknown→Wanderer
 - **3 modes**: Daily Reading (Past/Present/Future), What If (collision), Matchup (compare 2)
 - **Data**: Uses existing `/api/graph?limit=500`, card stats from neuron activation/connections/age
 - **Flip animation**: CSS-only 3D with `backface-visibility: hidden`, `autoFlipDelay` for stagger
@@ -163,4 +172,4 @@ dashboard/src/features/oracle/
 ### Plan & Status
 
 Full plan: `.rune/plan-brain-oracle.md`
-Phase 1 (Foundation) complete. Phase 2 (Game Modes) + Phase 3 (Polish) pending.
+All 3 phases complete: Foundation, Game Modes, Polish (share PNG, daily persistence, i18n).

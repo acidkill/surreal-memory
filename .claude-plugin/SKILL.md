@@ -8,7 +8,7 @@ Neural Memory gives AI agents persistent, associative memory across sessions. In
 
 ## Key Features
 
-- **39 MCP tools** for persistent memory + cognitive reasoning
+- **44 MCP tools** for persistent memory + cognitive reasoning
 - **Spreading activation recall** — not keyword search, memories activate related memories
 - **Cognitive reasoning** — hypotheses, evidence, predictions, schema evolution
 - **Knowledge base training** from PDF, DOCX, PPTX, HTML, JSON, XLSX, CSV
