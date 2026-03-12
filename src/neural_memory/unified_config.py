@@ -1361,7 +1361,11 @@ async def _get_sqlite_storage(
             raise
 
         # Create brain if it doesn't exist
+        # Try by id first (normal case: brain_id == name),
+        # then fallback to name lookup (handles brains with UUID ids from older versions)
         brain = await storage.get_brain(name)
+        if brain is None:
+            brain = await storage.find_brain_by_name(name)
 
         if brain is None:
             from neural_memory.core.brain import BrainConfig
@@ -1420,7 +1424,10 @@ async def _get_falkordb_storage(config: UnifiedConfig, name: str) -> NeuralStora
 
     # Ensure brain exists and set context
     await storage.set_brain_with_indexes(name)
+    # Try by id first, then fallback to name lookup (older brains may use UUID ids)
     brain = await storage.get_brain(name)
+    if brain is None:
+        brain = await storage.find_brain_by_name(name)
 
     if brain is None:
         from neural_memory.core.brain import BrainConfig
