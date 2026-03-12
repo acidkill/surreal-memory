@@ -20,6 +20,11 @@
  * v1.9.0: Backward-compat shim tools (memory_search, memory_get) to prevent
  * "allowList contains unknown entries" warnings when NM replaces memory-core.
  *
+ * v1.10.0: Singleton MCP client — multiple workspaces (multi-agent) share
+ * the same connected client instance, keyed by (pythonPath, brain). Fixes
+ * "NeuralMemory service not running" when OpenClaw registers the plugin
+ * for a second workspace after gateway startup.
+ *
  * Registers:
  *   N tools    — dynamically from MCP server (fallback: 5 core + 2 compat)
  *   1 service  — MCP process lifecycle (start/stop)
@@ -34,6 +39,7 @@ import type {
   AgentEndEvent,
 } from "./types.js";
 import { NeuralMemoryMcpClient } from "./mcp-client.js";
+import type { PluginLogger } from "./types.js";
 import { createToolsFromMcp, createFallbackTools, createCompatibilityTools } from "./tools.js";
 import type { ToolDefinition } from "./tools.js";
 
@@ -137,6 +143,36 @@ export function resolveConfig(raw?: Record<string, unknown>): PluginConfig {
   };
 }
 
+// ── Singleton MCP client pool ────────────────────────────────
+// Multiple workspaces may call register() independently, but all
+// should share the same MCP process per (pythonPath, brain) combo.
+
+const mcpClients = new Map<string, NeuralMemoryMcpClient>();
+
+function getOrCreateMcpClient(
+  cfg: PluginConfig,
+  logger: PluginLogger,
+): NeuralMemoryMcpClient {
+  const key = `${cfg.pythonPath}::${cfg.brain}`;
+
+  const existing = mcpClients.get(key);
+  if (existing) {
+    logger.info(`Reusing existing MCP client for brain "${cfg.brain}"`);
+    return existing;
+  }
+
+  const mcp = new NeuralMemoryMcpClient({
+    pythonPath: cfg.pythonPath,
+    brain: cfg.brain,
+    logger,
+    timeout: cfg.timeout,
+    initTimeout: cfg.initTimeout,
+  });
+
+  mcpClients.set(key, mcp);
+  return mcp;
+}
+
 // ── Plugin definition ──────────────────────────────────────
 
 const plugin: OpenClawPluginDefinition = {
@@ -144,19 +180,13 @@ const plugin: OpenClawPluginDefinition = {
   name: "NeuralMemory",
   description:
     "Brain-inspired persistent memory for AI agents — neurons, synapses, and fibers",
-  version: "1.9.0",
+  version: "1.10.0",
   kind: "memory",
 
   register(api: OpenClawPluginApi): void {
     const cfg = resolveConfig(api.pluginConfig);
 
-    const mcp = new NeuralMemoryMcpClient({
-      pythonPath: cfg.pythonPath,
-      brain: cfg.brain,
-      logger: api.logger,
-      timeout: cfg.timeout,
-      initTimeout: cfg.initTimeout,
-    });
+    const mcp = getOrCreateMcpClient(cfg, api.logger);
 
     // ── Register fallback tools synchronously ────────────
     // OpenClaw requires register() to be synchronous.
@@ -208,6 +238,9 @@ const plugin: OpenClawPluginDefinition = {
       },
 
       async stop(): Promise<void> {
+        // Remove from singleton pool so next register() creates fresh client
+        const key = `${cfg.pythonPath}::${cfg.brain}`;
+        mcpClients.delete(key);
         await mcp.close();
         api.logger.info("NeuralMemory MCP service stopped");
       },
