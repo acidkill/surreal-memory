@@ -242,7 +242,7 @@ def _check_schema_version() -> dict[str, Any]:
 
         version = run_async(_get_version())
 
-        from neural_memory.storage.sqlite.migrations import CURRENT_VERSION
+        from neural_memory.storage.sqlite_schema import SCHEMA_VERSION as CURRENT_VERSION
 
         if version == CURRENT_VERSION:
             return {
