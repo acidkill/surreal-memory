@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.1.0] - 2026-03-12
+
+### Added
+
+- **Auto-generated MCP Tool Reference** — `scripts/gen_mcp_docs.py` introspects all 44 MCP tool schemas and generates `docs/api/mcp-tools.md` with parameter tables, categories, and tier badges
+- **Auto-generated CLI Reference** — `scripts/gen_cli_docs.py` introspects all 66 CLI commands (Typer/Click) and generates `docs/getting-started/cli-reference.md`
+- **Documentation Chatbot** — Gradio UI (`chatbot/app.py`) powered by NeuralMemory's ReflexPipeline, answers docs questions without an LLM using spreading activation retrieval
+- **Docs Brain Trainer** — `chatbot/train_docs_brain.py` trains a brain from project docs (40 files → 1045 chunks → 9175 neurons)
+- **CI Docs Freshness Check** — new `docs` job in GitHub Actions runs `--check` mode on both generators, fails CI when auto-generated docs are stale
+
+### Fixed
+
+- **Brain lookup fallback** — `get_brain(name)` now falls back to `find_brain_by_name()` when id-based lookup fails, preventing duplicate "brain.v2" creation for users upgrading from older versions with UUID-based brain ids
+
+### Improved
+
+- **Docs navigation** — added orphan pages (Companion Setup, Lessons Learned) to mkdocs.yml nav
+- **Cross-links** — CLI Guide, CLI Reference, and MCP Tools Reference now link to each other via admonition boxes
+- **CLI Guide renamed** — title changed from "CLI Reference" to "CLI Guide" to avoid confusion with auto-generated reference
+
 ## [4.0.1] - 2026-03-12
 
 ### Security

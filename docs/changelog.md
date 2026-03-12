@@ -5,22 +5,211 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [4.1.0] - 2026-03-12
+
+### Added
+
+- **Auto-generated MCP Tool Reference** — `scripts/gen_mcp_docs.py` introspects all 44 MCP tool schemas and generates `docs/api/mcp-tools.md` with parameter tables, categories, and tier badges
+- **Auto-generated CLI Reference** — `scripts/gen_cli_docs.py` introspects all 66 CLI commands (Typer/Click) and generates `docs/getting-started/cli-reference.md`
+- **Documentation Chatbot** — Gradio UI (`chatbot/app.py`) powered by NeuralMemory's ReflexPipeline, answers docs questions without an LLM using spreading activation retrieval
+- **Docs Brain Trainer** — `chatbot/train_docs_brain.py` trains a brain from project docs (40 files → 1045 chunks → 9175 neurons)
+- **CI Docs Freshness Check** — new `docs` job in GitHub Actions runs `--check` mode on both generators, fails CI when auto-generated docs are stale
+
+### Fixed
+
+- **Brain lookup fallback** — `get_brain(name)` now falls back to `find_brain_by_name()` when id-based lookup fails, preventing duplicate "brain.v2" creation for users upgrading from older versions with UUID-based brain ids
+
+### Improved
+
+- **Docs navigation** — added orphan pages (Companion Setup, Lessons Learned) to mkdocs.yml nav
+- **Cross-links** — CLI Guide, CLI Reference, and MCP Tools Reference now link to each other via admonition boxes
+- **CLI Guide renamed** — title changed from "CLI Reference" to "CLI Guide" to avoid confusion with auto-generated reference
+
+## [4.0.1] - 2026-03-12
+
+### Security
+
+- **Fix path traversal** in `index_handler.py` — adapter connection paths now validated with `is_relative_to()` against allowed directories (cwd, home, temp)
+- **Fix path traversal** in `pre_compact.py` hook — stdin transcript path now validated against `~/.claude` directory
+- **Update `cryptography>=46.0.5`** — fix CVE-2026-26007
+- **Add `python-multipart>=0.0.22`** floor constraint — fix CVE-2026-24486
+- **Remove internal info from error messages** — 9 locations no longer leak memory IDs, hypothesis IDs, or filesystem paths to clients
+- **CORS hardening** — replace `localhost:*` wildcard with explicit port list (3000, 3001, 5173, 5174, 8000, 8080, 8888)
+
+### Fixed
+
+- Fix 8 silent `except Exception: pass` blocks — all now log at DEBUG level with `exc_info=True`
+- Fix 14 redundant exception tuples (`except (AttributeError, Exception)` → `except Exception`)
+- Remove unused `python-dateutil` from core dependencies
+
+## [4.0.0] - 2026-03-12
+
+### Added
+
+- **Semantic Drift Detection** — Find tag synonyms/aliases via Jaccard similarity on co-occurrence data
+- **Tag Co-Occurrence Matrix** — Automatically recorded on every memory encode, tracks which tags appear together
+- **Union-Find Clustering** — Groups related tags with confidence thresholds: merge (>0.7), alias (>0.4), review (>0.3)
+- **Temporal Drift Detection** — Compares early vs recent session topics to detect terminology shifts
+- **`nmem_drift` MCP Tool** — detect/list/merge/alias/dismiss actions for managing drift clusters
+- **`detect_drift` Consolidation Strategy** — Runs drift analysis during periodic consolidation
+- **Schema v26** — New `tag_cooccurrence` and `drift_clusters` tables
+
+### Improved
+
+- **Brain Intelligence Complete** — v4.0 milestone: session intelligence, adaptive depth, predictive priming, and semantic drift detection work together as feedback loops
+- Consolidation engine now includes drift detection in the final tier alongside semantic_link
+
+### Tests
+
+- 51 new drift detection tests (Jaccard, clustering, storage, MCP handler, Union-Find)
+- Total: 3810 passing
+
+## [3.5.0] - 2026-03-12
+
+### Added
+
+- **Predictive Priming** — Brain anticipates next query from session context with 4-source priming engine
+- **Activation Cache** — Recent query results carry forward as soft activation with exponential decay (`0.7^n` per query)
+- **Topic Pre-Warming** — Session topics with EMA > 0.5 pre-warm related neurons before query parsing (truly predictive)
+- **Habit-Based Priming** — Query pattern co-occurrence (CONCEPT neurons + BEFORE synapses) predicts next topic, max 3 predicted topics
+- **Co-Activation Priming** — Hebbian binding data (strength >= 0.5, count >= 3) boosts associated neurons
+- **Priming Metrics** — Hit rate tracking with auto-adjusted aggressiveness (0.5x-1.5x) based on priming effectiveness
+- **Session priming fields** — `priming_hit_rate`, `priming_total` exposed in session summaries and result metadata
+
+### Tests
+
+- 57 new tests covering all priming sources, metrics, orchestration, merging, backward compat
+- Total: 3759 passing
+
+## [3.4.0] - 2026-03-12
+
+### Added
+
+- **Session-aware depth selection** — Primed topics go shallower (already in context), new topics go deeper (need exploration). Uses session EMA topic weights
+- **Calibration-driven gate tuning** — High-accuracy gates get confidence boost (+10%), low-accuracy gates get dampened (-30%), very low avg_confidence triggers downgrade to insufficient
+- **Agent feedback signal** — `agent_used_result` parameter: remember-after-recall = strong positive, unused recall = raised bar for success
+- **Dynamic RRF weights** — Per-brain retriever weights evolve from outcome history via `retriever_calibration` table and EMA
+- **Auto activation strategy** — `activation_strategy="auto"` selects classic/PPR/hybrid based on graph density (synapses/neuron ratio)
+- **Schema v25** — `retriever_calibration` table + `graph_density` column on brains
+
+### Tests
+
+- 30 new tests covering all 5 features + backward compatibility
+- Total: 3702 passing
+
 ## [3.3.0] - 2026-03-12
 
 ### Added
 
-- **Cloud Sync Hub** — Sync memories across devices with API key auth, brain ownership, and device management
-- **API key auth** — `nmk_` prefixed keys, Bearer token transport, key masking in all outputs
-- **`nmem_sync_config(action='setup')`** — Guided onboarding flow for cloud sync
+- **Cloud Sync Hub** — Cloudflare Workers + D1 sync hub with API key auth, brain ownership, device management. Live at `neural-memory-sync-hub.vietnam11399.workers.dev`
+- **API key auth** — `nmk_` prefixed keys, SHA-256 hashed storage, Bearer token transport, key masking in all outputs
+- **`nmem_sync_config(action='setup')`** — Guided onboarding flow for cloud sync setup
 - **URL versioning** — Cloud hub uses `/v1/` prefix, localhost preserves backward-compatible paths
 - **HTTP error mapping** — User-friendly messages for 401/403/413/429 status codes
-- **Cloud profile in `nmem_sync_status`** — Shows tier, email, usage when connected
+- **Cloud profile in `nmem_sync_status`** — Shows tier, email, usage when connected to cloud hub
+- **HTTPS enforcement** — Refuses non-HTTPS for cloud hub URLs (localhost exempt)
 
 ### Tests
 
 - 22 new tests: SyncConfig api_key, key masking, URL versioning, HTTP error handling
 - Sync hub: 10 Vitest tests (health, auth, validation, type shapes)
 - Total: 3672 passing
+
+## [3.2.0] - 2026-03-11
+
+### Added
+
+- **Session Intelligence (v4.0 Phase 1)** — In-memory session state tracking across MCP calls with topic EMA scoring, LRU eviction (max 10 sessions), 2h auto-expiry, and SQLite persistence via `session_summaries` table (schema v24)
+- **Dashboard assets in wheel** — Bundled `server/static/dist/` via hatch artifacts config, fixing blank dashboard on pip install (#54)
+
+### Fixed
+
+- **Config singleton mutation** — `wizard.py` and `embedding_setup.py` now use immutable `replace()` pattern instead of mutating the cached config singleton (H1/H2)
+- **Structure detector false positives** — Added 4096-char size guard and CSV all-text column rejection heuristic (H4/H5)
+- **Source registry validation** — `_row_to_source()` handles invalid SourceType/SourceStatus gracefully, `update_source()` validates before SQL write (H2/H3)
+- **Source handler error handling** — `_require_brain_id()` and `Source.create()` wrapped in try/except ValueError (H1/M1)
+
+### Tests
+
+- 40 new tests for session intelligence (QueryRecord, SessionState EMA, SessionManager LRU, SQLite persistence)
+- Total: 3650 passing
+
+## [3.1.0] - 2026-03-11
+
+### Added
+
+- **Source-Aware Memory (v3.0 Pillar 4)** — Brain that knows its sources. 6-phase plan fully shipped.
+- **`nmem_show` tool** — Retrieve exact verbatim content of a memory by fiber ID
+- **Exact recall mode** — `mode="exact"` in `nmem_recall` returns verbatim content without summarization
+- **Source Registry** — Schema v23 with `sources` table, `SOURCE_OF` synapse type, `nmem_source` tool for registering and querying memory provenance
+- **Structured encoding** — Schema-aware encoder detects tabular data (CSV, markdown tables, JSON arrays) and preserves structure through the pipeline
+- **Citation engine** — `citation.py` generates citation metadata with audit synapses linking memories to their sources
+- **`nmem init --wizard`** — Interactive first-run wizard: brain name → embedding provider → MCP config → test memory
+- **`nmem doctor`** — System health diagnostics with 8 checks (Python, config, brain, deps, embeddings, schema, MCP, CLI tools)
+- **`nmem setup embeddings`** — Interactive embedding provider setup with installation status and API key detection
+- **Change log tracking** — `sqlite_change_log.py` records schema and data mutations for audit trail
+
+### Fixed
+
+- **SharedStorage brain_id parity** — Abstract `brain_id` property on base class, all backends implement consistently (#53)
+- **Hub auto-creates brain** — First sync or device registration no longer fails on missing brain
+- **Error message leaks** — Batch remember no longer exposes `str(e)` exception details to clients
+
+### Improved
+
+- **DX Sprint** — Actionable error messages across CLI and MCP, embedding setup guides new users through provider selection
+- **VS Code extension v0.5.0** — 6 lifecycle and config bug fixes
+
+### Tests
+
+- 200+ new tests across all v3.0 phases (show handler, source registry, structured encoding, citation, audit synapses, DX wizard/doctor/embedding)
+- Total: 3515 passing
+
+## [2.29.0] - 2026-03-10
+
+### Added
+
+- **Reciprocal Rank Fusion (RRF)** — Multi-retriever score blending for anchor ranking. Combines BM25/FTS5, embedding similarity, and graph expansion ranks into unified scores using the RRF formula (`score = Σ weight_i / (k + rank_i)`). Anchors now start with differentiated activation levels instead of uniform 1.0. Config: `rrf_k` (default 60).
+- **Graph-based query expansion** — 1-hop neighbor traversal from entity/concept anchors adds soft expansion anchors. Exploits knowledge graph structure for associative priming (e.g., "auth" → OAuth2 → JWT, session). Config: `graph_expansion_enabled`, `graph_expansion_max`, `graph_expansion_min_weight`.
+- **Personalized PageRank (PPR) activation** — Optional replacement for classic BFS spreading activation. Distributes activation proportional to edge weights / out-degree with damping (teleport back to seed set), naturally handling hub dampening. Opt-in via `activation_strategy = "ppr"` or `"hybrid"` (PPR + reflex). Config: `ppr_damping`, `ppr_iterations`, `ppr_epsilon`.
+- **Tag filtering in Query API and MCP** — `POST /query` accepts `tags: list[str]` (AND filter, max 20). `nmem_recall` accepts `tags: list[str]` to scope results to specific tag sets. Filters across `tags`, `auto_tags`, and `agent_tags` columns. Backward compatible — `tags=None` returns all results as before.
+
+### Fixed
+
+- **Marketplace plugin install** — Removed unrecognized `features` key from `marketplace.json` that caused Claude Code `/plugin marketplace add` to fail with schema validation error (#49).
+
+## [2.28.0] - 2026-03-08
+
+### Added
+
+- **`nmem_remember_batch`** — Bulk remember up to 20 memories in a single call. Partial success supported (individual failures don't block others). Added to `standard` tool tier.
+- **Trust score** — First-class `trust_score` (0.0–1.0) and `source` fields on TypedMemory. Source-specific ceiling caps: `user_input=0.9`, `ai_inference=0.7`, `auto_capture=0.5`, `verified=1.0`. Schema v22 migration adds columns + index.
+- **`min_trust` filter** — `nmem_recall` accepts optional `min_trust` parameter to filter out low-confidence memories.
+- **Auto-promote context→fact** — Frequently-recalled context memories (frequency ≥ 5) are automatically promoted to `fact` during consolidation. Audit trail in metadata (`auto_promoted`, `promoted_from`, `promoted_at`).
+- **SEMANTIC alternative path** — Memories can reach SEMANTIC stage via intensive reinforcement (`rehearsal_count ≥ 15` + `5 distinct 2h-windows`) as alternative to the 3-distinct-days spacing requirement. Enables agents with burst usage patterns.
+
+### Fixed
+
+- **FK constraint race condition** — `update_fiber()` no longer raises ValueError when a fiber is deleted between deferred-write enqueue and flush. Gracefully skips with debug log.
+
+### Changed
+
+- **MCP startup 3x faster** — Lazy-import `cli.setup` (defer until first-time init actually needed) and `sync.client`/`sync.sync_engine` (defer aiohttp until first sync call). Cold start: 611ms → 197ms.
+
+## [2.27.3] - 2026-03-08
+
+### Fixed
+
+- **OpenAI-compatible client HTTP 400** — Tool schemas now include `parameters` alias alongside `inputSchema`, fixing "schema must be type object, got type None" errors when MCP tools are forwarded through OpenAI-compatible bridges (Cursor, LiteLLM, etc.)
+
+### Added
+
+- **Cognitive Reasoning Guide** — Full workflow documentation: hypothesize, evidence, predict, verify loop with Bayesian confidence formula, end-to-end examples (`docs/guides/cognitive-reasoning.md`)
+- **Schema v21 Migration Guide** — New tables, auto-migration behavior, rollback instructions (`docs/guides/schema-v21-migration.md`)
+- **Learning Habits Guide** — 3-stage pipeline, thresholds, confidence calculation, suggestion engine (`docs/guides/learning-habits.md`)
+- **Pre-ship smoke tests** — Auto-type classifier (13 cases) and cognitive engine integration test in `scripts/pre_ship.py`
 
 ## [2.27.2] - 2026-03-07
 
