@@ -424,6 +424,31 @@ To regenerate on your hardware:
 python benchmarks/run_benchmarks.py
 ```
 
+### Q: Do I need to manually migrate my database when upgrading?
+
+**No.** NeuralMemory auto-migrates your database schema on startup. When you upgrade to a new version, the first time the brain is opened, `run_migrations()` detects the current schema version and applies all necessary migrations sequentially.
+
+For example, upgrading from v4.0 (schema v22) to v4.2 (schema v26) runs migrations v22→v23→v24→v25→v26 automatically. Each step is logged:
+
+```
+INFO: Migrating schema v22 → v23 (added cognitive_states table)
+INFO: Migrating schema v23 → v24 (added tool_events table)
+...
+```
+
+**Verify after upgrade:**
+
+```bash
+nmem doctor  # Shows current schema version + any issues
+```
+
+**Important notes:**
+
+- Migrations are **forward-only** — downgrading to an older version after migration is not supported
+- Your existing memories, brains, and configurations are preserved
+- If a migration fails mid-way, it halts safely (no partial schema changes)
+- Back up your brain DB before major upgrades: `cp ~/.neuralmemory/brains/default.db ~/.neuralmemory/brains/default.db.bak`
+
 ### Q: Why is my consolidation 0%?
 
 This is **completely normal for new brains**. Consolidation measures how many memories have matured from episodic (raw) to semantic (pattern) stage. A new brain has no matured memories yet.
@@ -504,7 +529,7 @@ NeuralMemory is designed for **AI agent memory** — not as a general-purpose da
 
 | Aspect | Status |
 |--------|--------|
-| **Test suite** | 3778+ tests, 67%+ coverage enforced by CI |
+| **Test suite** | 3810+ tests, 67%+ coverage enforced by CI |
 | **Security** | Input validation, ReDoS protection, activation queue caps, sensitive content detection |
 | **Stability** | 51+ releases, used daily by the maintainers in production AI workflows |
 | **Scalability** | Tested up to 5,000 neurons with sub-ms latency; designed for agent-scale data, not big data |
