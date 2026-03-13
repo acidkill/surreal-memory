@@ -260,6 +260,14 @@ class ReflexPipeline:
         if temporal_result is not None:
             return temporal_result
 
+        # 2.8 Fiber summary tier — lightweight first-pass retrieval
+        if self._config.fiber_summary_tier_enabled and depth != DepthLevel.INSTANT:
+            fiber_result = await self._try_fiber_summary_tier(
+                stimulus, depth, max_tokens, start_time
+            )
+            if fiber_result is not None:
+                return fiber_result
+
         # 3. Find anchor neurons (time-first) with ranked results
         anchor_sets, ranked_lists = await self._find_anchors_ranked(stimulus)
 
@@ -853,6 +861,91 @@ class ReflexPipeline:
             )
 
         return None
+
+    async def _try_fiber_summary_tier(
+        self,
+        stimulus: Stimulus,
+        depth: DepthLevel,
+        max_tokens: int,
+        start_time: float,
+    ) -> RetrievalResult | None:
+        """Step 2.8: Fiber summary first-pass retrieval.
+
+        Searches fiber summaries via FTS5 before the full neuron pipeline.
+        If results have sufficient confidence and enough context tokens,
+        returns early without running the expensive activation pipeline.
+        Returns None to fall through to the standard pipeline otherwise.
+        """
+        # Build search query from stimulus keywords + entities
+        search_terms: list[str] = list(stimulus.keywords)
+        for entity in stimulus.entities:
+            search_terms.append(entity.text)
+        if not search_terms:
+            return None
+
+        query_text = " ".join(search_terms)
+        try:
+            fibers = await self._storage.search_fiber_summaries(query_text, limit=10)
+        except Exception:
+            logger.debug("Fiber summary search failed, falling through", exc_info=True)
+            return None
+
+        if not fibers:
+            return None
+
+        # Build context from fiber summaries
+        context_parts: list[str] = []
+        tokens_used = 0
+        for fiber in fibers:
+            summary = fiber.summary or ""
+            if not summary:
+                continue
+            estimated_tokens = len(summary) // 4
+            if tokens_used + estimated_tokens > max_tokens:
+                break
+            context_parts.append(summary)
+            tokens_used += estimated_tokens
+
+        if not context_parts:
+            return None
+
+        # Compute confidence: based on number of matches and token coverage
+        match_ratio = min(1.0, len(context_parts) / max(len(search_terms), 1))
+        token_ratio = min(1.0, tokens_used / max(max_tokens * 0.3, 1))
+        confidence = match_ratio * 0.6 + token_ratio * 0.4
+
+        # Sufficiency gate: only return early if confidence exceeds threshold
+        if confidence < self._config.sufficiency_threshold:
+            logger.debug(
+                "Fiber summary tier: confidence %.2f < threshold %.2f, continuing to neuron pipeline",
+                confidence,
+                self._config.sufficiency_threshold,
+            )
+            return None
+
+        context = "\n\n".join(context_parts)
+        latency_ms = (time.perf_counter() - start_time) * 1000
+
+        logger.debug(
+            "Fiber summary tier sufficient: confidence=%.2f, fibers=%d, tokens=%d, latency=%.1fms",
+            confidence,
+            len(context_parts),
+            tokens_used,
+            latency_ms,
+        )
+
+        return RetrievalResult(
+            answer=context_parts[0] if context_parts else None,
+            confidence=confidence,
+            depth_used=depth,
+            neurons_activated=0,
+            fibers_matched=[f.id for f in fibers[: len(context_parts)]],
+            subgraph=Subgraph(neuron_ids=[], synapse_ids=[], anchor_ids=[]),
+            context=context,
+            latency_ms=latency_ms,
+            tokens_used=tokens_used,
+            metadata={"fiber_summary_tier": True, "fibers_searched": len(fibers)},
+        )
 
     async def _find_seed_neuron(self, stimulus: Stimulus) -> str | None:
         """Find the best seed neuron for temporal reasoning.

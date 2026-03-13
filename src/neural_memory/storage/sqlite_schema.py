@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Schema version for migrations
-SCHEMA_VERSION = 26
+SCHEMA_VERSION = 27
 
 # â”€â”€ Migrations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Each entry maps (from_version -> to_version) with a list of SQL statements.
@@ -47,6 +47,37 @@ FTS_SETUP_STATEMENTS: list[str] = [
         VALUES ('delete', old.rowid, old.content, old.brain_id);
         INSERT INTO neurons_fts(rowid, content, brain_id)
         VALUES (new.rowid, new.content, new.brain_id);
+    END""",
+]
+
+FIBER_FTS_SETUP_STATEMENTS: list[str] = [
+    # FTS5 virtual table for fiber summaries (external content -> fibers table).
+    """CREATE VIRTUAL TABLE IF NOT EXISTS fibers_fts USING fts5(
+        summary,
+        brain_id UNINDEXED,
+        content='fibers',
+        content_rowid='rowid',
+        tokenize='porter unicode61 remove_diacritics 0'
+    )""",
+    # Auto-sync: insert
+    """CREATE TRIGGER IF NOT EXISTS fibers_ai AFTER INSERT ON fibers
+    WHEN new.summary IS NOT NULL AND new.summary != '' BEGIN
+        INSERT INTO fibers_fts(rowid, summary, brain_id)
+        VALUES (new.rowid, new.summary, new.brain_id);
+    END""",
+    # Auto-sync: delete
+    """CREATE TRIGGER IF NOT EXISTS fibers_ad AFTER DELETE ON fibers
+    WHEN old.summary IS NOT NULL AND old.summary != '' BEGIN
+        INSERT INTO fibers_fts(fibers_fts, rowid, summary, brain_id)
+        VALUES ('delete', old.rowid, old.summary, old.brain_id);
+    END""",
+    # Auto-sync: update
+    """CREATE TRIGGER IF NOT EXISTS fibers_au AFTER UPDATE ON fibers
+    WHEN old.summary IS NOT NULL AND old.summary != '' BEGIN
+        INSERT INTO fibers_fts(fibers_fts, rowid, summary, brain_id)
+        VALUES ('delete', old.rowid, old.summary, old.brain_id);
+        INSERT INTO fibers_fts(rowid, summary, brain_id)
+        VALUES (new.rowid, COALESCE(new.summary, ''), new.brain_id);
     END""",
 ]
 
@@ -497,6 +528,14 @@ MIGRATIONS: dict[tuple[int, int], list[str]] = {
         )""",
         "CREATE INDEX IF NOT EXISTS idx_drift_clusters_status ON drift_clusters(brain_id, status)",
     ],
+    (26, 27): [
+        # Fiber summary FTS5 is created by ensure_fiber_fts_tables() in run_migrations.
+        # Backfill FTS index from existing fiber summaries.
+        (
+            "INSERT OR IGNORE INTO fibers_fts(rowid, summary, brain_id) "
+            "SELECT rowid, summary, brain_id FROM fibers WHERE summary IS NOT NULL AND summary != ''"
+        ),
+    ],
 }
 
 
@@ -507,6 +546,13 @@ async def ensure_fts_tables(conn: aiosqlite.Connection) -> None:
     bodies contain semicolons inside BEGIN...END blocks.
     """
     for sql in FTS_SETUP_STATEMENTS:
+        await conn.execute(sql)
+    await conn.commit()
+
+
+async def ensure_fiber_fts_tables(conn: aiosqlite.Connection) -> None:
+    """Create FTS5 virtual table and sync triggers for fiber summaries."""
+    for sql in FIBER_FTS_SETUP_STATEMENTS:
         await conn.execute(sql)
     await conn.commit()
 
@@ -525,6 +571,10 @@ async def run_migrations(conn: aiosqlite.Connection, current_version: int) -> in
         # FTS tables must exist before the v2->v3 backfill INSERT runs
         if key == (2, 3):
             await ensure_fts_tables(conn)
+
+        # Fiber FTS tables must exist before the v26->v27 backfill INSERT runs
+        if key == (26, 27):
+            await ensure_fiber_fts_tables(conn)
 
         statements = MIGRATIONS.get(key, [])
 

@@ -82,6 +82,9 @@ class BrainConfig:
     ppr_damping: float = 0.15
     ppr_iterations: int = 20
     ppr_epsilon: float = 1e-6
+    # Cascading retrieval: fiber summary tier + sufficiency gate
+    fiber_summary_tier_enabled: bool = True
+    sufficiency_threshold: float = 0.7
 
     def with_updates(self, **kwargs: Any) -> BrainConfig:
         """Create a new config with updated values."""

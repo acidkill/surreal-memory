@@ -31,6 +31,7 @@ from neural_memory.storage.sqlite_reviews import SQLiteReviewsMixin
 from neural_memory.storage.sqlite_schema import (
     SCHEMA,
     SCHEMA_VERSION,
+    ensure_fiber_fts_tables,
     ensure_fts_tables,
     run_migrations,
 )
@@ -122,8 +123,9 @@ class SQLiteStorage(
         # Full schema: CREATE TABLE/INDEX IF NOT EXISTS (safe after migration)
         await self._conn.executescript(SCHEMA)
 
-        # FTS5 virtual table + sync triggers (individual execute, not executescript)
+        # FTS5 virtual tables + sync triggers (individual execute, not executescript)
         await ensure_fts_tables(self._conn)
+        await ensure_fiber_fts_tables(self._conn)
         self._has_fts = await self._check_fts_available()
 
         # Stamp version for brand-new databases

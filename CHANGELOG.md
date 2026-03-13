@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Dashboard: Tool Stats page** — top tools bar chart, usage-over-time line chart, detailed table with success rates and durations (#63)
 - **Background consolidation daemon** — `nmem serve` now runs periodic consolidation using existing `maintenance.scheduled_consolidation_*` config (#65)
 - **HuggingFace Spaces deployment** — chatbot ready for HF Spaces with proper metadata, async Gradio handlers, deploy script, and docs guide (#60)
+- **Cascading retrieval with fiber summary tier** — FTS5 search on fiber summaries as step 2.8 before neuron pipeline, sufficiency gate for early termination, schema v27 (#61, #62)
 
 ### Improved
 

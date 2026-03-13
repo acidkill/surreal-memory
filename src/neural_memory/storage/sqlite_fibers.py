@@ -11,6 +11,15 @@ from typing import TYPE_CHECKING, Any, Literal
 from neural_memory.core.fiber import Fiber
 from neural_memory.storage.sqlite_row_mappers import row_to_fiber
 
+
+def _build_fts_query(search_term: str) -> str:
+    """Build an FTS5 MATCH expression from a user search string."""
+    tokens = search_term.split()
+    if not tokens:
+        return '""'
+    return " ".join(f'"{token.replace(chr(34), chr(34) + chr(34))}"' for token in tokens)
+
+
 if TYPE_CHECKING:
     import aiosqlite
 
@@ -96,6 +105,47 @@ class SQLiteFiberMixin:
             if row is None:
                 return None
             return row_to_fiber(row)
+
+    async def search_fiber_summaries(self, query: str, *, limit: int = 10) -> list[Fiber]:
+        """Search fiber summaries using FTS5 full-text search.
+
+        Returns fibers whose summary matches the query, ranked by BM25.
+        Falls back to LIKE search if FTS5 is not available.
+        """
+        conn = self._ensure_read_conn()
+        brain_id = self._get_brain_id()
+        capped_limit = min(limit, 50)
+
+        # Try FTS5 path first
+        try:
+            fts_terms = _build_fts_query(query)
+            sql = (
+                "SELECT f.* FROM fibers f "
+                "JOIN fibers_fts fts ON f.rowid = fts.rowid "
+                "WHERE fts.fibers_fts MATCH ? AND fts.brain_id = ? "
+                "ORDER BY fts.rank LIMIT ?"
+            )
+            async with conn.execute(sql, (fts_terms, brain_id, capped_limit)) as cursor:
+                rows = await cursor.fetchall()
+                return [row_to_fiber(row) for row in rows]
+        except Exception:
+            logger.debug("Fiber FTS5 unavailable, falling back to LIKE search")
+
+        # Fallback: LIKE search on summary
+        like_terms = [f"%{token}%" for token in query.split() if token]
+        if not like_terms:
+            return []
+
+        where_clauses = " AND ".join("f.summary LIKE ?" for _ in like_terms)
+        sql = (
+            f"SELECT f.* FROM fibers f "
+            f"WHERE f.brain_id = ? AND f.summary IS NOT NULL AND {where_clauses} "
+            f"ORDER BY f.salience DESC LIMIT ?"
+        )
+        params: list[Any] = [brain_id, *like_terms, capped_limit]
+        async with conn.execute(sql, params) as cursor:
+            rows = await cursor.fetchall()
+            return [row_to_fiber(row) for row in rows]
 
     async def find_fibers(
         self,

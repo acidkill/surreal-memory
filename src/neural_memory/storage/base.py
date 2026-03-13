@@ -431,6 +431,13 @@ class NeuralStorage(ABC):
         """
         ...
 
+    async def search_fiber_summaries(self, query: str, *, limit: int = 10) -> list[Fiber]:
+        """Search fiber summaries using full-text search.
+
+        Default implementation returns empty list (opt-in for storage backends).
+        """
+        return []
+
     @abstractmethod
     async def find_fibers(
         self,
