@@ -615,80 +615,83 @@ NeuralMemory is lightweight — it won't slow down your editor.
 
 ## Available Tools
 
-Once configured, these 44 tools are available to your AI assistant:
+**3 tools you need. 41 the agent handles automatically.**
 
-### Core Memory
+44 tools are available, but most users only interact with three:
+
+### Essential (You Use These)
+
+| Tool | What You Do |
+|------|-------------|
+| `nmem_remember` | Tell the agent to remember something — auto-detects type, tags, connections |
+| `nmem_recall` | Ask the agent to recall — spreading activation surfaces related memories |
+| `nmem_health` | Check brain health — purity score, grade (A-F), actionable fix suggestions |
+
+### Agent-Managed (Transparent)
+
+These tools fire automatically via MCP instructions and hooks — you don't need to call them:
+
+| Tool | When It Fires |
+|------|---------------|
+| `nmem_context` | Session start — loads recent context |
+| `nmem_session` | Tracks task/feature/progress throughout session |
+| `nmem_recap` | Session start — restores saved context |
+| `nmem_auto` | Session end — captures remaining insights |
+| `nmem_suggest` | During recall — autocomplete from brain |
+| `nmem_habits` | Periodically — suggests workflow improvements |
+| `nmem_stats` | On demand — brain statistics |
+| `nmem_tool_stats` | On demand — tool usage analytics |
+| `nmem_alerts` | On health check — surfaces warnings |
+
+### Power User (Opt-In)
+
+#### Knowledge Base
 
 | Tool | Description |
 |------|-------------|
-| `nmem_remember` | Store a memory (fact, decision, insight, todo, error, etc.) |
-| `nmem_recall` | Query with spreading activation (depth 0-3) |
-| `nmem_context` | Inject recent context at session start |
-| `nmem_todo` | Quick TODO with 30-day expiry |
-| `nmem_auto` | Auto-capture memories from conversation text |
-| `nmem_suggest` | Autocomplete suggestions from brain neurons |
-| `nmem_edit` | Edit memory type, content, or priority by fiber ID |
-| `nmem_forget` | Soft delete (set expiry) or hard delete (permanent removal) |
-
-### Brain Management
-
-| Tool | Description |
-|------|-------------|
-| `nmem_stats` | Brain statistics and freshness |
-| `nmem_health` | Brain health diagnostics (purity score, grade, top penalties) |
-| `nmem_evolution` | Brain evolution metrics (maturation, plasticity) |
-| `nmem_version` | Brain version control (snapshot, rollback, diff) |
-| `nmem_transplant` | Copy memories between brains |
-| `nmem_conflicts` | View and resolve memory conflicts |
-| `nmem_alerts` | Brain health alerts lifecycle |
-
-### Session & Context
-
-| Tool | Description |
-|------|-------------|
-| `nmem_session` | Track working session state and progress |
-| `nmem_eternal` | Save project context, decisions, instructions |
-| `nmem_recap` | Load saved context at session start |
-
-### Learning & Training
-
-| Tool | Description |
-|------|-------------|
-| `nmem_index` | Index codebase for code-aware recall |
-| `nmem_train` | Train brain from documentation files |
+| `nmem_train` | Train brain from docs (PDF, DOCX, PPTX, HTML, JSON, XLSX, CSV, MD) |
 | `nmem_train_db` | Train brain from database schema |
-| `nmem_habits` | Manage learned workflow habits |
-| `nmem_review` | Spaced repetition review system |
-| `nmem_pin` | Pin/unpin memories (pinned = permanent, skip decay/prune) |
+| `nmem_index` | Index codebase for code-aware recall |
+| `nmem_pin` | Pin/unpin memories (pinned = permanent, skip decay) |
 
-### Cognitive Reasoning
+#### Cognitive Reasoning
 
 | Tool | Description |
 |------|-------------|
-| `nmem_hypothesize` | Create and manage hypotheses with Bayesian confidence tracking |
+| `nmem_hypothesize` | Create hypotheses with Bayesian confidence tracking |
 | `nmem_evidence` | Submit evidence for/against — auto-updates confidence |
-| `nmem_predict` | Falsifiable predictions with deadlines, linked to hypotheses |
+| `nmem_predict` | Falsifiable predictions with deadlines |
 | `nmem_verify` | Verify predictions correct/wrong — propagates to hypotheses |
-| `nmem_cognitive` | Hot index: ranked summary of active hypotheses + predictions |
-| `nmem_gaps` | Knowledge gap metacognition: detect, track, resolve |
+| `nmem_cognitive` | Hot index: ranked active hypotheses + predictions |
+| `nmem_gaps` | Knowledge gap detection and tracking |
 | `nmem_schema` | Schema evolution: evolve hypotheses via SUPERSEDES chain |
 | `nmem_explain` | Trace shortest path between two concepts |
 
-### Utilities
+#### Analytics & Narrative
 
 | Tool | Description |
 |------|-------------|
-| `nmem_import` | Import from ChromaDB, Mem0, Cognee, Graphiti, LlamaIndex |
+| `nmem_evolution` | Brain evolution metrics (maturation, plasticity) |
 | `nmem_narrative` | Generate timeline/topic/causal narratives |
-| `nmem_telegram_backup` | Send brain .db backup to Telegram |
+| `nmem_review` | Spaced repetition reviews (Leitner box system) |
+| `nmem_drift` | Detect and manage semantic drift in tags |
 
-### Sync (Multi-Device)
+### Admin (Maintenance)
 
 | Tool | Description |
 |------|-------------|
-| `nmem_sync` | Trigger manual sync (push/pull/full) |
+| `nmem_edit` | Edit memory type, content, or priority |
+| `nmem_forget` | Soft delete (set expiry) or hard delete |
+| `nmem_todo` | Quick TODO with 30-day expiry |
+| `nmem_eternal` | Save project context, decisions, instructions |
+| `nmem_version` | Brain version control (snapshot, rollback, diff) |
+| `nmem_transplant` | Copy memories between brains |
+| `nmem_conflicts` | View and resolve memory conflicts |
+| `nmem_import` | Import from ChromaDB, Mem0, Cognee, Graphiti, LlamaIndex |
+| `nmem_sync` | Cloud sync: push, pull, full, or seed |
 | `nmem_sync_status` | Show pending changes, devices, last sync |
 | `nmem_sync_config` | Configure hub URL, auto-sync, conflict strategy |
+| `nmem_telegram_backup` | Send brain backup to Telegram |
 
 ---
 

@@ -8,6 +8,7 @@
     "mindmap": "Mindmap",
     "sync": "Cloud Sync",
     "oracle": "Oracle",
+    "toolStats": "Tool Stats",
     "settings": "Settings"
   },
   "common": {
@@ -264,5 +265,19 @@
     "copyCard": "Copy Card",
     "copied": "Copied!",
     "downloadCard": "Download"
+  },
+  "toolStats": {
+    "title": "Tool Stats",
+    "totalEvents": "Total Events",
+    "successRate": "Success Rate",
+    "uniqueTools": "Unique Tools",
+    "topTools": "Top Tools",
+    "usageOverTime": "Usage Over Time",
+    "detailTable": "Tool Details",
+    "tool": "Tool",
+    "calls": "Calls",
+    "avgDuration": "Avg Duration",
+    "server": "Server",
+    "noData": "No tool events recorded yet. Use NeuralMemory tools to start tracking."
   }
 }

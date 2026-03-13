@@ -569,8 +569,8 @@ def brain_health(
         if not brain:
             return {"error": "No brain configured"}
 
-        neurons = await storage.find_neurons(limit=10000)
-        fibers = await storage.get_fibers(limit=10000)
+        neurons = await storage.find_neurons(limit=1000)
+        fibers = await storage.get_fibers(limit=1000)
 
         sensitive_neurons = _scan_sensitive_neurons(neurons)
         freshness_report = analyze_freshness([f.created_at for f in fibers])

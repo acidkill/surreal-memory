@@ -7,6 +7,7 @@
     "evolution": "Tiến hóa",
     "mindmap": "Sơ đồ tư duy",
     "oracle": "Tiên tri",
+    "toolStats": "Thống kê công cụ",
     "sync": "Đồng bộ",
     "settings": "Cài đặt"
   },
@@ -227,5 +228,19 @@
     "copyCard": "Chép ảnh",
     "copied": "Đã chép!",
     "downloadCard": "Tải xuống"
+  },
+  "toolStats": {
+    "title": "Thống kê công cụ",
+    "totalEvents": "Tổng sự kiện",
+    "successRate": "Tỷ lệ thành công",
+    "uniqueTools": "Công cụ đã dùng",
+    "topTools": "Công cụ hàng đầu",
+    "usageOverTime": "Sử dụng theo thời gian",
+    "detailTable": "Chi tiết công cụ",
+    "tool": "Công cụ",
+    "calls": "Lượt gọi",
+    "avgDuration": "Thời gian TB",
+    "server": "Server",
+    "noData": "Chưa có dữ liệu. Sử dụng các công cụ NeuralMemory để bắt đầu theo dõi."
   }
 }

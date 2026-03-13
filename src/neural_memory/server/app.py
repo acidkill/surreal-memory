@@ -33,13 +33,77 @@ STATIC_DIR = Path(__file__).parent / "static"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Application lifespan handler."""
-    from neural_memory.unified_config import get_shared_storage
+    """Application lifespan handler with optional background consolidation."""
+    import asyncio
+    import logging
+
+    from neural_memory.unified_config import get_config, get_shared_storage
+
+    _logger = logging.getLogger(__name__)
 
     storage = await get_shared_storage()
     app.state.storage = storage
+
+    # Start background consolidation daemon if enabled
+    consolidation_task: asyncio.Task[None] | None = None
+    config = get_config()
+    maint = config.maintenance
+    if maint.enabled and maint.scheduled_consolidation_enabled:
+        consolidation_task = asyncio.create_task(
+            _consolidation_loop(storage, maint)
+        )
+        _logger.info(
+            "Background consolidation daemon started: every %dh",
+            maint.scheduled_consolidation_interval_hours,
+        )
+
     yield
+
+    if consolidation_task is not None and not consolidation_task.done():
+        consolidation_task.cancel()
+        try:
+            await consolidation_task
+        except asyncio.CancelledError:
+            pass
     await storage.close()
+
+
+async def _consolidation_loop(
+    storage: NeuralStorage,
+    maint: Any,
+) -> None:
+    """Background loop: run consolidation on a fixed interval.
+
+    First run waits one full interval to avoid triggering on every
+    server restart. Logs each run with summary stats.
+    """
+    import asyncio
+    import logging
+
+    from neural_memory.engine.consolidation import ConsolidationEngine, ConsolidationStrategy
+
+    _logger = logging.getLogger(__name__)
+    interval_seconds = maint.scheduled_consolidation_interval_hours * 3600
+    strategies = [ConsolidationStrategy(s) for s in maint.scheduled_consolidation_strategies]
+
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            brain_id = storage.brain_id
+            if not brain_id:
+                _logger.debug("Consolidation daemon skipped: no brain context set")
+                continue
+
+            engine = ConsolidationEngine(storage)
+            report = await engine.run(strategies=strategies)
+            _logger.info(
+                "Background consolidation complete: %s",
+                report.summary(),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _logger.error("Background consolidation failed", exc_info=True)
 
 
 def create_app(

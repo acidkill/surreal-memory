@@ -281,3 +281,31 @@ export interface TelegramBackupResponse {
   failed: number
   errors?: string[]
 }
+
+// GET /api/dashboard/tool-stats
+export interface ToolStatsSummary {
+  total_events: number
+  success_rate: number
+  top_tools: ToolMetric[]
+}
+
+export interface ToolMetric {
+  tool_name: string
+  server_name: string
+  count: number
+  success_rate: number
+  avg_duration_ms: number
+}
+
+export interface ToolDailyEntry {
+  date: string
+  tool_name: string
+  count: number
+  success_rate: number
+  avg_duration_ms: number
+}
+
+export interface ToolStatsResponse {
+  summary: ToolStatsSummary
+  daily: ToolDailyEntry[]
+}

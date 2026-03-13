@@ -12,7 +12,7 @@
 
 NeuralMemory stores experiences as interconnected neurons and recalls them through spreading activation, mimicking how the human brain works. Instead of searching a database, memories surface through associative recall — activating related concepts until the relevant memory emerges.
 
-**44 MCP tools** · **14 memory types** · **24 synapse types** · **Schema v26** · **3778+ tests** · **Cognitive reasoning layer**
+**44 MCP tools** · **14 memory types** · **24 synapse types** · **Schema v26** · **3810+ tests** · **Cognitive reasoning layer**
 
 ## Why Not RAG / Vector Search?
 
@@ -188,14 +188,27 @@ asyncio.run(main())
 
 ### MCP Tools (Claude Code / Cursor)
 
-Once configured, these 44 tools are available to your AI assistant:
+**3 tools you need. 41 the agent handles automatically.**
 
-**Core Memory:**
+Once configured, 44 tools are available — but you only need to know three:
+
+| Tool | What You Do |
+|------|-------------|
+| `nmem_remember` | Tell the agent to remember something — it auto-detects type, tags, and connections |
+| `nmem_recall` | Ask the agent to recall — spreading activation surfaces related memories |
+| `nmem_health` | Check brain health — purity score, grade (A-F), actionable fix suggestions |
+
+Everything else works transparently. The agent auto-manages sessions, context loading, habit tracking, and memory maintenance through the remaining 41 tools.
+
+<details>
+<summary><b>All 44 tools</b> (click to expand)</summary>
+
+**Core Memory** — Remember, recall, edit, forget
 
 | Tool | Description |
 |------|-------------|
 | `nmem_remember` | Store a memory (auto-detects type: fact, decision, insight, error, etc.) |
-| `nmem_recall` | Query with spreading activation (4 depth levels: instant/context/habit/deep) |
+| `nmem_recall` | Query with spreading activation (4 depth levels: instant → deep) |
 | `nmem_context` | Get recent memories as session context |
 | `nmem_todo` | Quick TODO with 30-day expiry |
 | `nmem_auto` | Auto-capture memories from conversation text |
@@ -203,7 +216,7 @@ Once configured, these 44 tools are available to your AI assistant:
 | `nmem_edit` | Edit memory type, content, or priority (preserves connections) |
 | `nmem_forget` | Soft delete (set expiry) or hard delete (permanent removal) |
 
-**Workflow:**
+**Agent Workflow** — Session management, habits, context loading
 
 | Tool | Description |
 |------|-------------|
@@ -212,8 +225,9 @@ Once configured, these 44 tools are available to your AI assistant:
 | `nmem_recap` | Load saved context at session start |
 | `nmem_stats` | Brain statistics and health metrics |
 | `nmem_habits` | Workflow habit suggestions from usage patterns |
+| `nmem_tool_stats` | Tool usage analytics: summary + daily trends |
 
-**Knowledge Base:**
+**Knowledge Base** — Train from docs, index codebases
 
 | Tool | Description |
 |------|-------------|
@@ -222,7 +236,7 @@ Once configured, these 44 tools are available to your AI assistant:
 | `nmem_index` | Index codebase for code-aware recall |
 | `nmem_pin` | Pin/unpin memories (pinned = permanent, skip decay/prune) |
 
-**Advanced:**
+**Brain Management** — Health, maintenance, version control
 
 | Tool | Description |
 |------|-------------|
@@ -234,23 +248,31 @@ Once configured, these 44 tools are available to your AI assistant:
 | `nmem_version` | Brain version control: snapshot, list, rollback, diff |
 | `nmem_transplant` | Transplant memories between brains by tags/types |
 | `nmem_import` | Import from ChromaDB, Mem0, Cognee, Graphiti, LlamaIndex |
-| `nmem_sync` | Cloud sync: push, pull, full, or seed |
-| `nmem_sync_status` | Sync status, devices, and cloud tier |
-| `nmem_sync_config` | Configure sync — setup, get, or set |
-| `nmem_telegram_backup` | Send brain database backup to Telegram |
+| `nmem_drift` | Detect and manage semantic drift in tags/terminology |
+| `nmem_explain` | Trace shortest path between two concepts |
 
-**Cognitive Reasoning:**
+**Cognitive Reasoning** — Hypotheses, predictions, knowledge gaps
 
 | Tool | Description |
 |------|-------------|
-| `nmem_hypothesize` | Create and manage hypotheses with Bayesian confidence tracking |
-| `nmem_evidence` | Submit evidence for/against hypotheses — auto-updates confidence |
-| `nmem_predict` | Make falsifiable predictions with deadlines, linked to hypotheses |
-| `nmem_verify` | Verify predictions as correct/wrong — propagates to linked hypotheses |
-| `nmem_cognitive` | Hot index: ranked summary of active hypotheses + predictions |
-| `nmem_gaps` | Knowledge gaps: detect, track, and resolve what the brain doesn't know |
-| `nmem_schema` | Schema evolution: evolve hypotheses into new versions with SUPERSEDES links |
-| `nmem_explain` | Trace shortest path between two concepts — debug recall, verify connections |
+| `nmem_hypothesize` | Create hypotheses with Bayesian confidence tracking |
+| `nmem_evidence` | Submit evidence for/against hypotheses |
+| `nmem_predict` | Make falsifiable predictions with deadlines |
+| `nmem_verify` | Verify predictions as correct/wrong |
+| `nmem_cognitive` | Hot index: ranked active hypotheses + predictions |
+| `nmem_gaps` | Knowledge gaps: detect, track, and resolve |
+| `nmem_schema` | Schema evolution: evolve hypotheses with SUPERSEDES links |
+
+**Cloud Sync & Backup**
+
+| Tool | Description |
+|------|-------------|
+| `nmem_sync` | Cloud sync: push, pull, full, or seed |
+| `nmem_sync_status` | Sync status, devices, and cloud tier |
+| `nmem_sync_config` | Configure sync — setup, get, or set |
+| `nmem_telegram_backup` | Send brain backup to Telegram |
+
+</details>
 
 ### VS Code Extension
 

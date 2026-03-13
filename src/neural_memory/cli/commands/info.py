@@ -40,7 +40,7 @@ def stats(
         freshness_report = analyze_freshness(created_dates)
 
         # Get typed memory statistics
-        typed_memories = await storage.find_typed_memories(include_expired=True, limit=10000)
+        typed_memories = await storage.find_typed_memories(include_expired=True, limit=1000)
         expired_memories = await storage.get_expired_memories()
 
         # Count by type

@@ -303,9 +303,19 @@ def serve(
             err=True,
         )
 
+    from neural_memory.unified_config import get_config
+
+    config = get_config()
+    maint = config.maintenance
+
     typer.echo(f"Starting NeuralMemory API server on http://{host}:{port}")
     typer.echo(f"  UI:   http://{host}:{port}/ui")
     typer.echo(f"  Docs: http://{host}:{port}/docs")
+    if maint.enabled and maint.scheduled_consolidation_enabled:
+        typer.echo(
+            f"  Daemon: consolidation every {maint.scheduled_consolidation_interval_hours}h "
+            f"({', '.join(maint.scheduled_consolidation_strategies)})"
+        )
 
     uvicorn.run(
         "neural_memory.server.app:create_app",

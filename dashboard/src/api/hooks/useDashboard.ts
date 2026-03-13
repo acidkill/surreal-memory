@@ -13,6 +13,7 @@ import type {
   FiberDiagramResponse,
   GraphResponse,
   BrainFilesResponse,
+  ToolStatsResponse,
 } from "@/api/types"
 
 // Keys
@@ -21,6 +22,7 @@ const keys = {
   brains: ["dashboard", "brains"] as const,
   health: ["dashboard", "health"] as const,
   healthCheck: ["health"] as const,
+  toolStats: (days: number) => ["dashboard", "tool-stats", days] as const,
   timeline: (limit: number, offset: number) =>
     ["dashboard", "timeline", limit, offset] as const,
   dailyStats: (days: number) => ["dashboard", "timeline", "daily-stats", days] as const,
@@ -145,6 +147,17 @@ export function useDeleteBrain() {
     onSuccess: () => {
       queryClient.invalidateQueries()
     },
+  })
+}
+
+// Tool stats
+export function useToolStats(days = 30) {
+  return useQuery({
+    queryKey: keys.toolStats(days),
+    queryFn: () =>
+      api.get<ToolStatsResponse>(
+        `/api/dashboard/tool-stats?days=${days}`,
+      ),
   })
 }
 
