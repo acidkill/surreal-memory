@@ -219,3 +219,46 @@ class SQLiteToolEventsMixin:
             "success_rate": round(successes / total, 2) if total > 0 else 0,
             "top_tools": top_tools,
         }
+
+    async def get_tool_stats_by_period(
+        self,
+        brain_id: str,
+        days: int = 30,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Get tool usage stats aggregated by day.
+
+        Returns list of dicts with {date, tool_name, count, success_rate, avg_duration_ms}.
+        """
+        conn = self._ensure_read_conn()
+        safe_days = min(max(days, 1), 365)
+        safe_limit = min(limit, 50)
+
+        from datetime import timedelta
+
+        cutoff = (utcnow() - timedelta(days=safe_days)).isoformat()
+
+        results: list[dict[str, Any]] = []
+        async with conn.execute(
+            """SELECT date(created_at) as day, tool_name,
+                      COUNT(*) as cnt,
+                      SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as ok,
+                      AVG(duration_ms) as avg_ms
+               FROM tool_events
+               WHERE brain_id = ? AND created_at >= ?
+               GROUP BY day, tool_name
+               ORDER BY day DESC, cnt DESC
+               LIMIT ?""",
+            (brain_id, cutoff, safe_limit * safe_days),
+        ) as cursor:
+            async for row in cursor:
+                results.append(
+                    {
+                        "date": row["day"],
+                        "tool_name": row["tool_name"],
+                        "count": row["cnt"],
+                        "success_rate": round(row["ok"] / row["cnt"], 2) if row["cnt"] > 0 else 0,
+                        "avg_duration_ms": round(row["avg_ms"] or 0),
+                    }
+                )
+        return results

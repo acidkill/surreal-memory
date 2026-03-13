@@ -1578,4 +1578,31 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
             "required": ["action"],
         },
     },
+    {
+        "name": "nmem_tool_stats",
+        "description": "Tool usage analytics: which tools agents use, frequency, success rates, and daily trends.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["summary", "daily"],
+                    "description": "summary=top tools with success rates, daily=usage breakdown by day",
+                },
+                "days": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 365,
+                    "description": "Time window in days (default: 30)",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 50,
+                    "description": "Max tools to return (default: 20)",
+                },
+            },
+            "required": ["action"],
+        },
+    },
 ]

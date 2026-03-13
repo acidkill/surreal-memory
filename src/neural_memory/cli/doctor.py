@@ -236,9 +236,14 @@ def _check_schema_version() -> dict[str, Any]:
             import aiosqlite
 
             async with aiosqlite.connect(str(db_path)) as db:
-                cursor = await db.execute("PRAGMA user_version")
-                row = await cursor.fetchone()
-                return row[0] if row else 0
+                # NM stores schema version in schema_version table, not PRAGMA
+                try:
+                    cursor = await db.execute("SELECT version FROM schema_version LIMIT 1")
+                    row = await cursor.fetchone()
+                    return row[0] if row else 0
+                except Exception:
+                    # Table may not exist in very old databases
+                    return 0
 
         version = run_async(_get_version())
 

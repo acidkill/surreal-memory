@@ -897,3 +897,22 @@ async def update_sync_config(
         "api_key": api_key_display,
         "conflict_strategy": new_sync.conflict_strategy,
     }
+
+
+@router.get("/tool-stats")
+async def tool_stats(
+    storage: Annotated[NeuralStorage, Depends(get_storage)],
+    days: int = Query(default=30, ge=1, le=365),
+    limit: int = Query(default=20, ge=1, le=50),
+) -> dict[str, Any]:
+    """Tool usage analytics — top tools, success rates, daily trends."""
+    from neural_memory.unified_config import get_config
+
+    brain_name = get_config().current_brain
+    brain = await storage.get_brain(brain_name)
+    if not brain:
+        return {"summary": {"total_events": 0, "success_rate": 0, "top_tools": []}, "daily": []}
+
+    summary = await storage.get_tool_stats(brain.id)  # type: ignore[attr-defined]
+    daily = await storage.get_tool_stats_by_period(brain.id, days=days, limit=limit)  # type: ignore[attr-defined]
+    return {"summary": summary, "daily": daily}

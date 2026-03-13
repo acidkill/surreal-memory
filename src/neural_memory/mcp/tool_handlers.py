@@ -2459,3 +2459,25 @@ class ToolHandler:
         result["dry_run"] = dry_run
         result["summary"] = delta.report.summary()
         return result
+
+    async def _tool_stats(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Get tool usage analytics."""
+        storage = await self.get_storage()
+        brain, err = await _get_brain_or_error(storage)
+        if err:
+            return err
+
+        action = args.get("action", "summary")
+        days = args.get("days", 30)
+        limit = args.get("limit", 20)
+
+        if action == "summary":
+            result: dict[str, Any] = await storage.get_tool_stats(brain.id)  # type: ignore[attr-defined]
+            return result
+        elif action == "daily":
+            daily = await storage.get_tool_stats_by_period(  # type: ignore[attr-defined]
+                brain.id, days=days, limit=limit
+            )
+            return {"daily": daily, "days": days}
+        else:
+            return {"error": f"Unknown action: {action}"}

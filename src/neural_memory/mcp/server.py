@@ -224,6 +224,7 @@ class MCPServer(
             "nmem_forget": self._forget,
             "nmem_consolidate": self._consolidate,
             "nmem_drift": self._drift,
+            "nmem_tool_stats": self._tool_stats,
         }
         handler = dispatch.get(name)
         if handler:

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.2.0] - 2026-03-13
+
+### Added
+
+- **`nmem_tool_stats` MCP tool** — exposes tool usage analytics (summary + daily breakdown) via MCP (#63)
+- **`/api/dashboard/tool-stats` REST endpoint** — tool usage analytics for dashboard integration
+
+### Fixed
+
+- **`nmem doctor` schema version check** — was using `PRAGMA user_version` (always 0) instead of `schema_version` table; now correctly reports v26
+
 ## [4.1.1] - 2026-03-12
 
 ### Fixed
