@@ -206,18 +206,14 @@ class TestAddFiberFK:
             await storage.add_fiber(fiber)
 
     @pytest.mark.asyncio
-    async def test_add_fiber_duplicate_raises_already_exists(
-        self, storage: SQLiteStorage
-    ) -> None:
+    async def test_add_fiber_duplicate_raises_already_exists(self, storage: SQLiteStorage) -> None:
         """Adding duplicate fiber still raises 'already exists' error."""
         from neural_memory.core.fiber import Fiber
 
         n = Neuron.create(type=NeuronType.CONCEPT, content="test")
         await storage.add_neuron(n)
 
-        fiber = Fiber.create(
-            neuron_ids={n.id}, synapse_ids=set(), anchor_neuron_id=n.id
-        )
+        fiber = Fiber.create(neuron_ids={n.id}, synapse_ids=set(), anchor_neuron_id=n.id)
         await storage.add_fiber(fiber)
 
         with pytest.raises(ValueError, match="already exists"):

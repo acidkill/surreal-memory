@@ -49,9 +49,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     config = get_config()
     maint = config.maintenance
     if maint.enabled and maint.scheduled_consolidation_enabled:
-        consolidation_task = asyncio.create_task(
-            _consolidation_loop(storage, maint)
-        )
+        consolidation_task = asyncio.create_task(_consolidation_loop(storage, maint))
         _logger.info(
             "Background consolidation daemon started: every %dh",
             maint.scheduled_consolidation_interval_hours,
