@@ -46,13 +46,14 @@ No new API endpoints needed.
 
 | # | Name | Status | Summary |
 |---|------|--------|---------|
-| 1 | Foundation | ⬚ Pending | Types, card gen, CardFace/Back/Flip, page + route swap |
-| 2 | Game Modes | ⬚ Pending | DailyReading, WhatIf, Matchup, templates, reading engine |
-| 3 | Polish | ⬚ Pending | Share PNG, responsive, i18n, animations, delete neurodungeon |
+| 1 | Foundation | ✅ Done | Types, card gen, CardFace/Back/Flip, page + route swap |
+| 2 | Game Modes | ✅ Done | DailyReading, WhatIf, Matchup, templates, reading engine, i18n |
+| 3 | Polish | ✅ Done | Share PNG, daily persistence, ShareButton, i18n complete |
 
 ## Key Decisions
 
 - No AI for "What If" text — pure template interpolation from neuron content
 - Daily seed = `YYYY-MM-DD` + brain name hash — consistent per day per brain
 - Card art = CSS-only geometric patterns (gradients + shapes per suit)
-- Delete neurodungeon in Phase 3 (keep route working until oracle is complete)
+- Neurodungeon already deleted in Phase 1 (replaced by Oracle)
+- i18n completed in Phase 2 (en.json + vi.json)

@@ -14,12 +14,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import shutil
-import sys
 from pathlib import Path
-
-# Add src to path for imports
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "src"))
 
 from neural_memory import Brain, BrainConfig
 from neural_memory.engine.doc_trainer import DocTrainer, TrainingConfig
@@ -28,6 +23,7 @@ from neural_memory.storage.sqlite_store import SQLiteStorage
 
 # ── Config ─────────────────────────────────────────────────
 
+ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_BRAIN_NAME = "neuralmemory-docs"
 DOCS_DIR = ROOT / "docs"
 DB_PATH = ROOT / "chatbot" / "brain" / "docs.db"

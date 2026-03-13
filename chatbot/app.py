@@ -4,23 +4,17 @@
 A self-answering chatbot that uses NeuralMemory's spreading activation
 to retrieve relevant documentation. No LLM needed — the brain IS the answer.
 
-Usage:
+Usage (local):
     python chatbot/app.py                     # Launch locally
     python chatbot/app.py --port 7861         # Custom port
     python chatbot/app.py --share             # Create public URL
 
-For HuggingFace Spaces: this file is the entry point (sdk: gradio).
+HuggingFace Spaces: set app_file=app.py, sdk=gradio in README.md.
 """
 from __future__ import annotations
 
 import argparse
-import asyncio
-import sys
 from pathlib import Path
-
-# Add src to path for imports
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "src"))
 
 import gradio as gr
 
@@ -140,11 +134,6 @@ async def answer_query(query: str, depth_label: str) -> tuple[str, str, str]:
     return context, badge_html, stats
 
 
-def sync_answer(query: str, depth_label: str) -> tuple[str, str, str]:
-    """Synchronous wrapper for Gradio."""
-    return asyncio.run(answer_query(query, depth_label))
-
-
 # ── Gradio UI ──────────────────────────────────────────────
 
 
@@ -198,12 +187,12 @@ engine that powers `nmem_recall`. No AI hallucinations — only real docs.
 
         # Event handlers
         ask_btn.click(
-            fn=sync_answer,
+            fn=answer_query,
             inputs=[query_input, depth_select],
             outputs=[answer_output, confidence_badge, stats_text],
         )
         query_input.submit(
-            fn=sync_answer,
+            fn=answer_query,
             inputs=[query_input, depth_select],
             outputs=[answer_output, confidence_badge, stats_text],
         )
