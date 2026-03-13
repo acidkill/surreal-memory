@@ -22,7 +22,7 @@
 - [Amazon Q Developer](#amazon-q-developer)
 - [Neovim](#neovim)
 - [Warp Terminal](#warp-terminal)
-- [Custom / Other MCP Clients](#custom--other-mcp-clients)
+- [Custom / Other MCP Clients](#custom-other-mcp-clients)
 - [Alternative: Python Module](#alternative-python-module-directly)
 - [Alternative: Docker](#alternative-docker)
 - [Environment Variables](#environment-variables)
