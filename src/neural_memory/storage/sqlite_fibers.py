@@ -76,8 +76,13 @@ class SQLiteFiberMixin:
 
             await conn.commit()
             return fiber.id
-        except sqlite3.IntegrityError:
-            raise ValueError(f"Fiber {fiber.id} already exists")
+        except sqlite3.IntegrityError as exc:
+            msg = str(exc).lower()
+            if "foreign key" in msg:
+                raise ValueError(
+                    f"Fiber {fiber.id} references non-existent neurons or brain"
+                ) from exc
+            raise ValueError(f"Fiber {fiber.id} already exists") from exc
 
     async def get_fiber(self, fiber_id: str) -> Fiber | None:
         conn = self._ensure_read_conn()

@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`nmem doctor` schema version check** — was using `PRAGMA user_version` (always 0) instead of `schema_version` table; now correctly reports v26
 - **`nmem brain health` crash in shared mode** — hardcoded `limit=10000` exceeded server max (1000), causing 422 errors (#67)
 - **`nmem info` crash in shared mode** — same limit issue for typed memories query
+- **`nmem consolidate` FK crash** — summarize strategy referenced anchor neurons pruned by earlier tier; now validates neuron existence before creating summary fibers (#68)
 
 ## [4.1.1] - 2026-03-12
 

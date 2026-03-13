@@ -178,6 +178,52 @@ class TestSaveMaturationFK:
         await storage.save_maturation(updated)
 
 
+class TestAddFiberFK:
+    """Tests for add_fiber FK handling with pruned neurons."""
+
+    @pytest.mark.asyncio
+    async def test_add_fiber_with_deleted_neuron_raises_fk_error(
+        self, storage: SQLiteStorage
+    ) -> None:
+        """Adding fiber referencing deleted neuron raises FK-specific ValueError."""
+        from neural_memory.core.fiber import Fiber
+
+        n1 = Neuron.create(type=NeuronType.CONCEPT, content="existing")
+        n2 = Neuron.create(type=NeuronType.CONCEPT, content="will be deleted")
+        await storage.add_neuron(n1)
+        await storage.add_neuron(n2)
+
+        # Delete n2 (simulating prune)
+        await storage.delete_neuron(n2.id)
+
+        # Fiber references both — n2 no longer exists
+        fiber = Fiber.create(
+            neuron_ids={n1.id, n2.id},
+            synapse_ids=set(),
+            anchor_neuron_id=n1.id,
+        )
+        with pytest.raises(ValueError, match="non-existent neurons"):
+            await storage.add_fiber(fiber)
+
+    @pytest.mark.asyncio
+    async def test_add_fiber_duplicate_raises_already_exists(
+        self, storage: SQLiteStorage
+    ) -> None:
+        """Adding duplicate fiber still raises 'already exists' error."""
+        from neural_memory.core.fiber import Fiber
+
+        n = Neuron.create(type=NeuronType.CONCEPT, content="test")
+        await storage.add_neuron(n)
+
+        fiber = Fiber.create(
+            neuron_ids={n.id}, synapse_ids=set(), anchor_neuron_id=n.id
+        )
+        await storage.add_fiber(fiber)
+
+        with pytest.raises(ValueError, match="already exists"):
+            await storage.add_fiber(fiber)
+
+
 class TestConsolidationPruneFK:
     """Integration test: consolidation prune + subsequent operations."""
 

@@ -687,6 +687,14 @@ class ConsolidationEngine:
             for fiber in cluster_fibers:
                 anchor_ids.add(fiber.anchor_neuron_id)
 
+            # Filter out anchor neurons that were pruned in earlier tiers
+            valid_anchor_ids: set[str] = set()
+            for aid in anchor_ids:
+                n = await self._storage.get_neuron(aid)
+                if n is not None:
+                    valid_anchor_ids.add(aid)
+            anchor_ids = valid_anchor_ids
+
             synapse_ids: set[str] = set()
             for anchor_id in list(anchor_ids)[:10]:
                 synapse = Synapse.create(
