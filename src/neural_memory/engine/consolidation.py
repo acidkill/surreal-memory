@@ -690,8 +690,8 @@ class ConsolidationEngine:
             # Filter out anchor neurons that were pruned in earlier tiers
             valid_anchor_ids: set[str] = set()
             for aid in anchor_ids:
-                n = await self._storage.get_neuron(aid)
-                if n is not None:
+                anchor_neuron = await self._storage.get_neuron(aid)
+                if anchor_neuron is not None:
                     valid_anchor_ids.add(aid)
             anchor_ids = valid_anchor_ids
 
