@@ -129,7 +129,7 @@ class TestReadStdin:
 class TestIsEnabled:
     def test_no_config_file(self, tmp_path: Path) -> None:
         with patch.dict(os.environ, {"NEURALMEMORY_DIR": str(tmp_path)}):
-            assert _is_enabled() is False
+            assert _is_enabled() is True
 
     def test_enabled_true(self, tmp_path: Path) -> None:
         config = tmp_path / "config.toml"
@@ -147,7 +147,7 @@ class TestIsEnabled:
         config = tmp_path / "config.toml"
         config.write_text("[general]\nbrain = 'default'\n")
         with patch.dict(os.environ, {"NEURALMEMORY_DIR": str(tmp_path)}):
-            assert _is_enabled() is False
+            assert _is_enabled() is True
 
 
 class TestGetBlacklist:

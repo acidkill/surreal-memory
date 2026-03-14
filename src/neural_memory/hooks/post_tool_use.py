@@ -51,21 +51,21 @@ def _is_enabled() -> bool:
     """Quick check if tool memory is enabled via config.
 
     Reads only the [tool_memory] section from config.toml.
-    Falls back to False if config is missing or malformed.
+    Defaults to True if config is missing or section absent.
     """
     data_dir = Path(os.environ.get("NEURALMEMORY_DIR", "")) or (Path.home() / ".neuralmemory")
     config_path = data_dir / "config.toml"
     if not config_path.exists():
-        return False
+        return True
     try:
         import tomllib
 
         with open(config_path, "rb") as f:
             data = tomllib.load(f)
-        return bool(data.get("tool_memory", {}).get("enabled", False))
+        return bool(data.get("tool_memory", {}).get("enabled", True))
     except Exception:
         logger.debug("Failed to read tool_memory.enabled from config", exc_info=True)
-        return False
+        return True
 
 
 def _get_blacklist() -> list[str]:

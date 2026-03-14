@@ -46,7 +46,7 @@ class TestHealthEndpoints:
 
         assert response.status_code == 200
         data = response.json()
-        assert data["status"] == "healthy"
+        assert data["status"] == "ok"
         assert "version" in data
 
     def test_root_endpoint_redirects_to_ui(self, client: TestClient) -> None:

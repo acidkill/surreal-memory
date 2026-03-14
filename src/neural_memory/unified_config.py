@@ -656,7 +656,7 @@ class ToolMemoryConfig:
     and synapses (EFFECTIVE_FOR, USED_WITH).
     """
 
-    enabled: bool = False
+    enabled: bool = True
     min_duration_ms: int = 0  # Ignore tool calls faster than this
     blacklist: tuple[str, ...] = ()  # Tool name prefixes to skip
     cooccurrence_window_s: int = 60  # Seconds for USED_WITH detection
