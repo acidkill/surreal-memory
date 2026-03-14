@@ -669,22 +669,16 @@ class InMemoryStorage(
 
     # ========== Tool Events (stub for protocol compat) ==========
 
-    async def insert_tool_events(
-        self, brain_id: str, events: list[dict[str, Any]]
-    ) -> int:
+    async def insert_tool_events(self, brain_id: str, events: list[dict[str, Any]]) -> int:
         """Store tool events in memory (append to action_events list)."""
         self._action_events[brain_id].extend(events)
         return len(events)
 
-    async def get_unprocessed_events(
-        self, brain_id: str, limit: int = 200
-    ) -> list[dict[str, Any]]:
+    async def get_unprocessed_events(self, brain_id: str, limit: int = 200) -> list[dict[str, Any]]:
         """Return unprocessed tool events (in-memory: always empty)."""
         return []
 
-    async def mark_events_processed(
-        self, brain_id: str, event_ids: list[int]
-    ) -> None:
+    async def mark_events_processed(self, brain_id: str, event_ids: list[int]) -> None:
         """Mark events as processed (no-op for in-memory storage)."""
 
     # ========== Cleanup ==========
