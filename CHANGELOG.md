@@ -7,11 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [4.3.2] - 2026-03-14
+## [4.4.0] - 2026-03-14
+
+### Added
+
+- **Dashboard Quick Actions card** — Overview page now shows configuration status for 6 features (tool memory, cloud sync, embedding, consolidation, review queue, orphan rate) with actionable shortcut commands and copy buttons
+- **`/api/dashboard/config-status` endpoint** — returns per-feature config status with status badges and commands
+- **Source-Aware Brain plan** — 4-phase architecture plan for smart index with exact citations from source documents
 
 ### Fixed
 
 - **Plugin skills path (#71)** — `skills` field in `plugin.json` changed from `"./SKILL.md"` (file) to `"./skills"` (directory) to match Claude Code's expected format. Fixes 2 load errors on plugin install
+- **Tool stats empty** — `tool_memory.enabled` defaulted to `false`, causing dashboard Tool Stats page to show no data. Now defaults to `true` — tool usage tracking works out of the box
+- **E2E health test** — fixed assertion mismatch (`"healthy"` vs `"ok"`)
 
 ### Added
 
