@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.4.1] - 2026-03-14
+
+### Improved
+
+- **Embedding config-status 3-state detection** — Quick Actions card now distinguishes "configured", "installed but disabled", and "not installed" for embedding provider, with actionable enable/disable commands
+
 ## [4.4.0] - 2026-03-14
 
 ### Added
