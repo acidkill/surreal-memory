@@ -998,27 +998,59 @@ async def get_config_status(
     try:
         emb = cfg.embedding
         if emb.enabled and emb.provider:
+            model_info = f"{emb.provider} ({emb.model})" if emb.model else emb.provider
             items.append(
                 ConfigStatusItem(
                     key="embedding",
                     label="Embedding Provider",
                     status="configured",
-                    description="Enables semantic similarity for better recall quality",
+                    description=(
+                        "Semantic similarity active — disable: "
+                        "set [embedding] enabled = false in config.toml"
+                    ),
                     command="",
-                    value=emb.provider,
+                    value=model_info,
                 )
             )
         else:
-            items.append(
-                ConfigStatusItem(
-                    key="embedding",
-                    label="Embedding Provider",
-                    status="not_configured",
-                    description="Enables semantic similarity for better recall quality",
-                    command="pip install neural-memory[embeddings]",
-                    value="",
+            # Check if any provider is importable
+            provider_installed = False
+            try:
+                import importlib
+
+                importlib.import_module("sentence_transformers")
+                provider_installed = True
+            except ImportError:
+                pass
+
+            if provider_installed and not emb.enabled:
+                items.append(
+                    ConfigStatusItem(
+                        key="embedding",
+                        label="Embedding Provider",
+                        status="info",
+                        description=(
+                            "Installed but disabled — enable for cross-language "
+                            "recall and semantic similarity"
+                        ),
+                        command="Set [embedding] enabled = true in config.toml",
+                        value="disabled",
+                    )
                 )
-            )
+            else:
+                items.append(
+                    ConfigStatusItem(
+                        key="embedding",
+                        label="Embedding Provider",
+                        status="not_configured",
+                        description=(
+                            "Optional — enables cross-language recall and "
+                            "semantic similarity for better retrieval"
+                        ),
+                        command="pip install neural-memory[embeddings]",
+                        value="",
+                    )
+                )
     except Exception:
         logger.debug("Could not check embedding config", exc_info=True)
 
