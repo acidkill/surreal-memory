@@ -83,6 +83,7 @@ Store a memory. Auto-detects type if not specified. Error resolution: when a new
 | `event_at` | string | No | — | ISO datetime of when the event originally occurred (e.g. '2026-03-02T08:00:00'). Defaults to current time if not prov... |
 | `trust_score` | number | No | — | Trust level 0.0-1.0. Capped by source ceiling (user_input max 0.9, ai_inference max 0.7). NULL = unscored. |
 | `source_id` | string | No | — | Link this memory to a registered source. Creates a SOURCE_OF synapse for provenance tracking. |
+| `context` | object | No | — | Structured context dict merged into content server-side using type-specific templates. Keys like 'reason', 'alternati... |
 
 ### `nmem_remember_batch`
 

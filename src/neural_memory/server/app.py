@@ -6,7 +6,7 @@ import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends, FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -220,9 +220,14 @@ def create_app(
 
         storage: NeuralStorage | None = getattr(app.state, "storage", None)
         if storage is None:
-            return JSONResponse(  # type: ignore[return-value]
-                status_code=503,
-                content=ReadyResponse(ready=False, detail="storage not initialized").model_dump(),
+            return cast(
+                ReadyResponse,
+                JSONResponse(
+                    status_code=503,
+                    content=ReadyResponse(
+                        ready=False, detail="storage not initialized"
+                    ).model_dump(),
+                ),
             )
         return ReadyResponse(ready=True, detail="ok")
 
