@@ -7,11 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.3.2] - 2026-03-14
+
+### Fixed
+
+- **Plugin skills path (#71)** — `skills` field in `plugin.json` changed from `"./SKILL.md"` (file) to `"./skills"` (directory) to match Claude Code's expected format. Fixes 2 load errors on plugin install
+
+### Added
+
+- **Source-Aware Brain plan** — 4-phase architecture plan for smart index with exact citations from source documents (source locators, `nmem_cite` tool, source refresh, cloud resolvers)
+
 ## [4.3.1] - 2026-03-14
 
 ### Fixed
 
-- **Plugin manifest validation (#70)** — removed invalid `features`, `instructions`, `agents` keys from `plugin.json` that broke Claude Code plugin install. Fixed `skills` path to `./SKILL.md`
+- **Plugin manifest validation (#70)** — removed invalid `features`, `instructions`, `agents` keys from `plugin.json` that broke Claude Code plugin install
 - **Doc trainer orphan neurons** — heading-less chunks now get synthetic heading from filename; added per-file tags for cross-cluster ENRICH linking; increased heading dedup limit 20→100 for common headings like "Overview"
 - **Chatbot brain loading** — use `find_brain_by_name("neuralmemory-docs")` instead of non-existent `list_brains()` method
 - **HF deploy script username** — fixed `nhadaututtheky` typo (double t)
