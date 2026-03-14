@@ -380,6 +380,13 @@ class ToolHandler:
         else:
             mem_type = suggest_memory_type(content)
 
+        # Phase A: Merge structured context into content
+        raw_context = args.get("context")
+        if raw_context and isinstance(raw_context, dict):
+            from neural_memory.engine.context_merger import merge_context
+
+            content = merge_context(content, raw_context, mem_type.value)
+
         priority = Priority.from_int(args.get("priority", 5))
 
         # Build dedup pipeline if enabled
@@ -570,12 +577,24 @@ class ToolHandler:
             },
         )
 
+        # Phase B: Quality scoring (soft gate — always stores, returns hints)
+        from neural_memory.engine.quality_scorer import score_memory
+
+        raw_tags_list = list(tags) if tags else []
+        quality_result = score_memory(
+            content,
+            memory_type=mem_type.value,
+            tags=raw_tags_list,
+            context=raw_context if isinstance(raw_context, dict) else None,
+        )
+
         response: dict[str, Any] = {
             "success": True,
             "fiber_id": result.fiber.id,
             "memory_type": mem_type.value,
             "neurons_created": len(result.neurons_created),
             "message": f"Remembered: {content[:50]}{'...' if len(content) > 50 else ''}",
+            **quality_result.to_dict(),
         }
 
         if source_id and isinstance(source_id, str):

@@ -140,6 +140,15 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "description": "Link this memory to a registered source. "
                     "Creates a SOURCE_OF synapse for provenance tracking.",
                 },
+                "context": {
+                    "type": "object",
+                    "description": "Structured context dict merged into content "
+                    "server-side using type-specific templates. Keys like "
+                    "'reason', 'alternatives', 'cause', 'fix', 'steps' are "
+                    "auto-expanded. Any agent can send structured data "
+                    "instead of crafting perfect prose.",
+                    "additionalProperties": True,
+                },
             },
             "required": ["content"],
         },

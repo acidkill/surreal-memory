@@ -325,7 +325,7 @@ class TestProcessEvents:
 class TestToolMemoryConfig:
     def test_defaults(self) -> None:
         c = ToolMemoryConfig()
-        assert c.enabled is False
+        assert c.enabled is True
         assert c.min_frequency == 3
         assert c.cooccurrence_window_s == 60
 
