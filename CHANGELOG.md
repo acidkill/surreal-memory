@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.3.1] - 2026-03-14
+
+### Fixed
+
+- **Plugin manifest validation (#70)** — removed invalid `features`, `instructions`, `agents` keys from `plugin.json` that broke Claude Code plugin install. Fixed `skills` path to `./SKILL.md`
+- **Doc trainer orphan neurons** — heading-less chunks now get synthetic heading from filename; added per-file tags for cross-cluster ENRICH linking; increased heading dedup limit 20→100 for common headings like "Overview"
+- **Chatbot brain loading** — use `find_brain_by_name("neuralmemory-docs")` instead of non-existent `list_brains()` method
+- **HF deploy script username** — fixed `nhadaututtheky` typo (double t)
+
+### Added
+
+- **`/health` + `/ready` endpoints** — `nmem serve` now exposes health check (brain name, uptime, schema version) and readiness probe (503 when uninitialized) for production monitoring
+- **Cloud sync privacy docs** — privacy model table, encryption details, CF free tier limits in `docs/guides/cloud-sync.md`
+
+### Improved
+
+- **Self-hosted cloud sync** — switched default from shared hub to self-hosted model. Users deploy their own CF Worker + D1 database. Data stays on user's own Cloudflare account
+- **Sync setup instructions** — updated README, FAQ, dashboard SyncPage, and MCP setup flow to guide self-hosted deployment first
+
+### Tests
+
+- 14 new health endpoint tests
+- Total: 3748 passing
+
 ## [4.3.0] - 2026-03-13
 
 ### Added
