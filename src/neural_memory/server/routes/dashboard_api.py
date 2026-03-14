@@ -1106,9 +1106,7 @@ async def get_config_status(
                     key="orphan_rate",
                     label="Orphan Neurons",
                     status="warning",
-                    description=(
-                        f"{orphan_pct}% orphan rate — prune disconnected neurons"
-                    ),
+                    description=(f"{orphan_pct}% orphan rate — prune disconnected neurons"),
                     command="nmem consolidate --strategy prune",
                     value=f"{orphan_pct}%",
                 )
