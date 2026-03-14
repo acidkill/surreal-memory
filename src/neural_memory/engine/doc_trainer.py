@@ -341,6 +341,11 @@ class DocTrainer:
             tags: set[str] = {"doc_train"}
             if tc.domain_tag:
                 tags.add(tc.domain_tag)
+            # Add file-level tag so chunks from same file cluster together,
+            # enabling meaningful cross-cluster ENRICH linking between files
+            if chunk.source_file:
+                file_tag = Path(chunk.source_file).stem.lower().replace(" ", "-")
+                tags.add(f"file:{file_tag}")
 
             metadata: dict[str, object] = {
                 "type": tc.memory_type,
@@ -383,8 +388,13 @@ class DocTrainer:
                 await self._storage.update_fiber(pinned_fiber)
 
             # Record anchor for hierarchy linking
-            if chunk.heading_path:
-                chunk_anchors.append((chunk.heading_path, result.fiber.anchor_neuron_id))
+            # Use synthetic heading from filename for heading-less chunks
+            # so they're not orphaned from the hierarchy
+            effective_path = chunk.heading_path
+            if not effective_path:
+                stem = Path(chunk.source_file).stem.replace("-", " ").replace("_", " ").title()
+                effective_path = (stem,)
+            chunk_anchors.append((effective_path, result.fiber.anchor_neuron_id))
 
         # Build heading hierarchy + temporal topology
         hierarchy_synapses = await self._build_heading_hierarchy(
@@ -439,11 +449,15 @@ class DocTrainer:
         """
         synapse_count = 0
 
-        # Collect all unique heading paths from chunks
+        # Collect all unique heading paths from chunks AND chunk_anchors
+        # (chunk_anchors may contain synthetic headings for heading-less chunks)
         all_paths: set[tuple[str, ...]] = set()
         for chunk in chunks:
             for i in range(1, len(chunk.heading_path) + 1):
                 all_paths.add(chunk.heading_path[:i])
+        for heading_path, _anchor_id in chunk_anchors:
+            for i in range(1, len(heading_path) + 1):
+                all_paths.add(heading_path[:i])
 
         # Create or reuse CONCEPT neuron for each unique heading path
         for path in sorted(all_paths, key=len):
@@ -451,10 +465,12 @@ class DocTrainer:
             heading_path_str = "|".join(path)
 
             # Dedup: check storage for existing heading neuron with same path
+            # Use limit=100 to handle common headings like "Overview", "Usage"
+            # that appear across many files (each with different heading_path)
             existing = await self._storage.find_neurons(
                 type=NeuronType.CONCEPT,
                 content_exact=heading_text,
-                limit=20,
+                limit=100,
             )
             found = False
             for n in existing:

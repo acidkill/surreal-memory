@@ -1,32 +1,69 @@
 # Cloud Sync Setup
 
-Sync your memories across devices with Neural Memory's cloud hub. Your memories stay encrypted in transit and only you can access them with your API key.
+Sync your memories across devices using your own Cloudflare Worker. Your data stays on **your** Cloudflare account — Neural Memory never touches it.
 
-## Quick Start (3 steps)
+## Privacy Model
 
-### 1. Register
+| Aspect | Detail |
+|--------|--------|
+| **Where is data stored?** | Your own Cloudflare D1 database, on your own account |
+| **Who can access it?** | Only you (via your API key) |
+| **Encrypted in transit?** | Yes — HTTPS enforced for all cloud connections |
+| **Encrypted at rest?** | Memories with `encrypted=true` use Fernet encryption (key stays local). Default memories are plaintext in D1 |
+| **Is the hub open source?** | Yes — full source in `sync-hub/` directory |
+| **Shared infrastructure?** | None — you deploy your own Worker |
+
+For sensitive memories, enable encryption before syncing:
+
+```python
+nmem_remember("sensitive content", encrypted=True)
+```
+
+The Fernet key stays at `~/.neuralmemory/keys/{brain_id}.key` — never uploaded to the cloud.
+
+---
+
+## Quick Start (4 steps)
+
+### 1. Deploy Your Sync Hub
+
+You need a free [Cloudflare account](https://dash.cloudflare.com/sign-up).
 
 ```bash
-curl -X POST https://neural-memory-sync-hub.vietnam11399.workers.dev/v1/auth/register \
+cd sync-hub
+npm install
+npx wrangler login           # Login to your CF account
+npx wrangler d1 create nmem  # Create your D1 database
+npx wrangler deploy           # Deploy the Worker
+```
+
+After deploy, you'll see your Worker URL: `https://your-worker-name.your-subdomain.workers.dev`
+
+Update `wrangler.toml` with the D1 database ID from the `d1 create` output.
+
+### 2. Register
+
+```bash
+curl -X POST https://YOUR-WORKER.workers.dev/v1/auth/register \
   -H "Content-Type: application/json" \
   -d '{"email": "you@example.com"}'
 ```
 
 You'll receive an API key starting with `nmk_`. **Save it immediately** — it's shown only once.
 
-### 2. Connect
+### 3. Connect
 
 ```python
 nmem_sync_config(
     action="set",
-    hub_url="https://neural-memory-sync-hub.vietnam11399.workers.dev",
+    hub_url="https://YOUR-WORKER.workers.dev",
     api_key="nmk_YOUR_KEY"
 )
 ```
 
 Sync is automatically enabled when both `hub_url` and `api_key` are set.
 
-### 3. Sync
+### 4. Sync
 
 ```python
 # First time: prepare existing memories for sync
@@ -42,7 +79,7 @@ nmem_sync(action="pull")
 nmem_sync(action="full")
 ```
 
-That's it. Your memories are now synced across devices.
+That's it. Your memories are now synced across devices — on your own infrastructure.
 
 ---
 
@@ -98,17 +135,19 @@ nmem_sync_status()  # Shows device list with last sync time
 
 ## Security
 
-- **API keys** are masked in all outputs (`nmk_a1b2c3d4****`) and never logged
+- **Self-hosted** — your data stays on your Cloudflare account
+- **API keys** are SHA-256 hashed in D1 (raw key never stored server-side)
+- **API keys** are masked in all client outputs (`nmk_a1b2c3d4****`) and never logged
 - **HTTPS enforced** for cloud connections (HTTP only allowed for localhost)
 - **Brain ownership** — the first device to sync a brain claims it; other devices must use the same account
-- **API key stored** in `config.toml` — treat it like any other API key in your environment
+- **API key stored** locally in `config.toml` — treat it like any other API key
 
 ## Managing API Keys
 
 Create additional keys (e.g., one per device):
 
 ```bash
-curl -X POST https://neural-memory-sync-hub.vietnam11399.workers.dev/v1/auth/keys \
+curl -X POST https://YOUR-WORKER.workers.dev/v1/auth/keys \
   -H "Authorization: Bearer nmk_YOUR_KEY" \
   -H "Content-Type: application/json" \
   -d '{"name": "work-laptop"}'
@@ -117,14 +156,14 @@ curl -X POST https://neural-memory-sync-hub.vietnam11399.workers.dev/v1/auth/key
 List your keys:
 
 ```bash
-curl https://neural-memory-sync-hub.vietnam11399.workers.dev/v1/auth/keys \
+curl https://YOUR-WORKER.workers.dev/v1/auth/keys \
   -H "Authorization: Bearer nmk_YOUR_KEY"
 ```
 
 Revoke a compromised key:
 
 ```bash
-curl -X DELETE https://neural-memory-sync-hub.vietnam11399.workers.dev/v1/auth/keys/KEY_ID \
+curl -X DELETE https://YOUR-WORKER.workers.dev/v1/auth/keys/KEY_ID \
   -H "Authorization: Bearer nmk_YOUR_KEY"
 ```
 
@@ -138,9 +177,9 @@ curl -X DELETE https://neural-memory-sync-hub.vietnam11399.workers.dev/v1/auth/k
 | "Rate limited" | Too many requests | Wait a few seconds and retry |
 | "Cloud hub requires HTTPS" | Using `http://` for cloud | Change to `https://` in hub_url |
 
-## Local Hub (Advanced)
+## Local Hub (LAN Sync)
 
-For self-hosted sync without the cloud:
+For syncing between machines on the same network without any cloud:
 
 ```bash
 # Run a local hub
@@ -152,3 +191,14 @@ nmem_sync(action="full")
 ```
 
 Local hubs don't require API keys or HTTPS.
+
+## Cloudflare Free Tier Limits
+
+The sync hub runs well within Cloudflare's free tier:
+
+| Resource | Free Limit | Typical Usage |
+|----------|-----------|---------------|
+| Worker requests | 100K/day | ~100-500/day for personal use |
+| D1 storage | 5 GB | Brain with 10K neurons ≈ 50 MB |
+| D1 reads | 5M/day | Well within limits |
+| D1 writes | 100K/day | Well within limits |

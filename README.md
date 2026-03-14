@@ -477,15 +477,17 @@ nmem_telegram_backup(brain_name="work")
 
 ### Cloud Sync (Multi-Device)
 
-Sync memories across all your devices with one command:
+Sync memories across devices using your own Cloudflare Worker (free tier). Your data stays on **your** account:
+
+```bash
+# 1. Deploy your sync hub (one-time)
+cd sync-hub && npx wrangler deploy    # Requires free CF account
+```
 
 ```python
-# 1. Get your API key (one-time)
-nmem_sync_config(action="setup")       # Shows registration steps
-
-# 2. Connect
+# 2. Register & connect
 nmem_sync_config(action="set",
-    hub_url="https://neural-memory-sync-hub.vietnam11399.workers.dev",
+    hub_url="https://YOUR-WORKER.workers.dev",
     api_key="nmk_YOUR_KEY")
 
 # 3. Sync

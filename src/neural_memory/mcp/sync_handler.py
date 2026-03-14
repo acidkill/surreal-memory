@@ -11,7 +11,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_HUB_URL = "https://neural-memory-sync-hub.vietnam11399.workers.dev"
+# No default shared hub — users deploy their own Cloudflare Worker
+# See docs/guides/cloud-sync.md for self-hosted setup
+DEFAULT_HUB_URL = ""
 
 
 def _mask_key(api_key: str) -> str:
@@ -311,13 +313,14 @@ class SyncToolHandler:
                 return {
                     "status": "setup_needed",
                     "steps": [
-                        f"1. Register: curl -X POST {DEFAULT_HUB_URL}/v1/auth/register -H 'Content-Type: application/json' -d '{{\"email\":\"you@example.com\"}}'",
-                        "2. Save the API key from the response (shown once, starts with nmk_)",
-                        f"3. Run: nmem_sync_config(action='set', hub_url='{DEFAULT_HUB_URL}', api_key='nmk_YOUR_KEY')",
-                        "4. Run: nmem_sync(action='seed') to prepare existing memories",
-                        "5. Run: nmem_sync(action='push') to upload to cloud",
+                        "1. Deploy your own sync hub: cd sync-hub && npx wrangler deploy (requires free Cloudflare account)",
+                        "2. Register: curl -X POST https://YOUR-WORKER.workers.dev/v1/auth/register -H 'Content-Type: application/json' -d '{\"email\":\"you@example.com\"}'",
+                        "3. Save the API key from the response (shown once, starts with nmk_)",
+                        "4. Run: nmem_sync_config(action='set', hub_url='https://YOUR-WORKER.workers.dev', api_key='nmk_YOUR_KEY')",
+                        "5. Run: nmem_sync(action='seed') to prepare existing memories",
+                        "6. Run: nmem_sync(action='push') to upload to cloud",
                     ],
-                    "default_hub_url": DEFAULT_HUB_URL,
+                    "note": "Your data stays on YOUR Cloudflare account. See docs/guides/cloud-sync.md for details.",
                 }
 
             if action == "set":

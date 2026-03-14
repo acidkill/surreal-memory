@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -13,7 +14,7 @@ from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from neural_memory import __version__
-from neural_memory.server.models import HealthResponse
+from neural_memory.server.models import HealthResponse, ReadyResponse
 from neural_memory.server.routes import (
     brain_router,
     consolidation_router,
@@ -26,6 +27,7 @@ from neural_memory.server.routes import (
     sync_router,
 )
 from neural_memory.storage.base import NeuralStorage
+from neural_memory.storage.sqlite_schema import SCHEMA_VERSION
 
 # Static files directory
 STATIC_DIR = Path(__file__).parent / "static"
@@ -43,6 +45,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     storage = await get_shared_storage()
     app.state.storage = storage
+    app.state.startup_time = time.monotonic()
 
     # Start background consolidation daemon if enabled
     consolidation_task: asyncio.Task[None] | None = None
@@ -196,8 +199,32 @@ def create_app(
     # Health check endpoint
     @app.get("/health", response_model=HealthResponse, tags=["health"])
     async def health_check() -> HealthResponse:
-        """Health check endpoint."""
-        return HealthResponse(status="healthy", version=__version__)
+        """Return server status, current brain name, uptime, and schema version."""
+        storage: NeuralStorage = app.state.storage
+        brain_name: str | None = getattr(storage, "brain_name", None)
+        startup_time: float = getattr(app.state, "startup_time", time.monotonic())
+        uptime = time.monotonic() - startup_time
+        return HealthResponse(
+            status="ok",
+            version=__version__,
+            brain_name=brain_name,
+            uptime_seconds=round(uptime, 3),
+            schema_version=SCHEMA_VERSION,
+        )
+
+    # Readiness check endpoint
+    @app.get("/ready", response_model=ReadyResponse, tags=["health"])
+    async def ready_check() -> ReadyResponse:
+        """Return 200 when storage is initialized, 503 otherwise."""
+        from fastapi.responses import JSONResponse
+
+        storage: NeuralStorage | None = getattr(app.state, "storage", None)
+        if storage is None:
+            return JSONResponse(  # type: ignore[return-value]
+                status_code=503,
+                content=ReadyResponse(ready=False, detail="storage not initialized").model_dump(),
+            )
+        return ReadyResponse(ready=True, detail="ok")
 
     # Root endpoint
     @app.get("/", tags=["dashboard"])

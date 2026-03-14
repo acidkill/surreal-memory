@@ -171,8 +171,18 @@ class StatsResponse(BaseModel):
 class HealthResponse(BaseModel):
     """Health check response."""
 
-    status: str = "healthy"
+    status: str = "ok"
     version: str
+    brain_name: str | None = None
+    uptime_seconds: float = 0.0
+    schema_version: int | None = None
+
+
+class ReadyResponse(BaseModel):
+    """Readiness check response."""
+
+    ready: bool
+    detail: str = ""
 
 
 class ImportBrainRequest(BaseModel):

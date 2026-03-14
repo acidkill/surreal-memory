@@ -20,26 +20,7 @@
     "persistence",
     "associative"
   ],
-  "features": [
-    "44 MCP tools for persistent AI memory + cognitive reasoning",
-    "Knowledge base training from PDF/DOCX/PPTX/HTML/JSON/XLSX/CSV",
-    "Spreading activation recall (not keyword search)",
-    "Pinned KB memories — permanent, skip decay/prune",
-    "Tool memory — learns which tools work for which tasks",
-    "Multi-device sync with conflict resolution",
-    "Spaced repetition (Leitner boxes)",
-    "Brain versioning, snapshots, rollback",
-    "Fernet encryption for sensitive content",
-    "React dashboard (7 pages, warm cream theme, Recharts, Sigma.js)",
-    "Telegram backup — send brain .db to chat/group/channel",
-    "VS Code extension for visual brain exploration",
-    "Cognitive reasoning: hypotheses, evidence, predictions, schema evolution",
-    "Knowledge gap detection and metacognition"
-  ],
-  "instructions": "CRITICAL: Use Neural Memory proactively in EVERY session.\n\nSESSION START: nmem_recall('current project context') + nmem_recap().\nAFTER EVERY TASK: nmem_remember() with rich language ('Chose X over Y because Z', not just 'X').\nSESSION END: nmem_auto(action='process', text='<summary>').\n\nSTORE 3-5 MEMORIES PER TASK using diverse types (decision, insight, error, workflow, preference — not just fact).\nPRIORITY: 7+ for decisions/errors you'll need again. TAGS: always include project name.\nRICH LANGUAGE: Use causal ('X because Y'), temporal ('after A then B'), relational ('X depends on Y').\n\nCORRECT MISTAKES: nmem_edit(memory_id, type/content/priority) to fix wrong memories.\nREMOVE OUTDATED: nmem_forget(memory_id) for soft delete, nmem_forget(memory_id, hard=true) for permanent.\nHEALTH: nmem_health() weekly, fix highest penalty first.\n\n44 tools available. Sessions start fresh — without saves, ALL context is lost forever.",
-  "skills": "./skills",
-  "commands": "./commands",
-  "agents": "./agents",
+  "skills": "./SKILL.md",
   "hooks": "./hooks/hooks.json",
   "mcpServers": {
     "neural-memory": {

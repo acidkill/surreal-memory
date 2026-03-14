@@ -8,7 +8,7 @@ sdk_version: "5.23.0"
 app_file: app.py
 pinned: false
 license: mit
-short_description: Ask questions about NeuralMemory — no LLM, pure neural activation
+short_description: NeuralMemory docs — pure neural activation
 ---
 
 # NeuralMemory Documentation Assistant

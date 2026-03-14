@@ -67,11 +67,10 @@ async def get_pipeline() -> ReflexPipeline:
     await _storage.initialize()
 
     # Load brain config from DB
-    brains = await _storage.list_brains()
-    if not brains:
-        raise ValueError("No brains found in database.")
+    brain = await _storage.find_brain_by_name("neuralmemory-docs")
+    if brain is None:
+        raise ValueError("Brain 'neuralmemory-docs' not found in database.")
 
-    brain = brains[0]
     _storage.set_brain(brain.id)
     _config = brain.config or BrainConfig()
 

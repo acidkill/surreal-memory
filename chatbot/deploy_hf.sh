@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-SPACE_ID="${1:-nhadaututtheky/neuralmemory-docs}"
+SPACE_ID="${1:-nhadaututheky/neuralmemory-docs}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "Deploying chatbot to HuggingFace Space: $SPACE_ID"

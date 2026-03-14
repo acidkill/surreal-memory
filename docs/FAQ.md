@@ -290,7 +290,7 @@ nmem_sync_config(action="setup")  # Shows registration steps
 
 # Connect (after getting your API key)
 nmem_sync_config(action="set",
-    hub_url="https://neural-memory-sync-hub.vietnam11399.workers.dev",
+    hub_url="https://YOUR-WORKER.workers.dev",
     api_key="nmk_YOUR_KEY")
 
 # Sync

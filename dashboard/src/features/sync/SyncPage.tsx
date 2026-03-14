@@ -14,8 +14,9 @@ import {
   Wifi,
 } from "lucide-react"
 
-const DEFAULT_HUB_URL =
-  "https://neural-memory-sync-hub.vietnam11399.workers.dev"
+// No shared hub — users deploy their own Cloudflare Worker
+const DEFAULT_HUB_URL = ""
+const HUB_URL_PLACEHOLDER = "https://your-worker.your-subdomain.workers.dev"
 
 const STRATEGY_LABELS: Record<string, string> = {
   prefer_recent: "Prefer Recent",
@@ -193,7 +194,7 @@ export default function SyncPage() {
                   type="url"
                   value={hubUrl}
                   onChange={(e) => setHubUrl(e.target.value)}
-                  placeholder={DEFAULT_HUB_URL}
+                  placeholder={HUB_URL_PLACEHOLDER}
                   className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-ring"
                 />
               </div>
