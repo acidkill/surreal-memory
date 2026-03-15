@@ -140,7 +140,7 @@ class TestMaturationRehearsalOnReinforce:
 
         # Neuron was still reinforced despite maturation failure
         assert result == 1
-        storage.update_neuron_state.assert_called_once()
+        storage.update_neuron_states_batch.assert_called_once()
 
 
 class TestMatureOrphanedRecords:

@@ -7,6 +7,119 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **PostgreSQL + pgvector backend** — Full async storage backend via `asyncpg` with vector similarity search. Supports neurons, synapses, fibers, brains, typed queries. Docker Compose included. Contributed by @zsecducna (#56)
+- **NeuralMemory vs Mem0 benchmark** — Head-to-head comparison: 121x faster writes, equal accuracy, 0 API calls vs 70. Script at `scripts/benchmark_mem0_vs_nm.py`
+- **Chatbot v2** — Upgraded HF Spaces chatbot with conversation memory, cognitive reasoning for low-confidence answers, source citations, and retrieval stats panel
+
+### Fixed
+
+- `ReinforcementManager.reinforce()` test — updated assertion to match batch API (`update_neuron_states_batch`)
+- `check_distribution.py` — Fixed ClawHub JSON parser, Windows shell compat, independent version channels
+
+## [4.6.0] - 2026-03-14
+
+### Added
+
+- **`nmem setup rules`** — IDE rules file generator for multi-agent adoption. Generates `.cursorrules`, `.windsurfrules`, `.clinerules`, `GEMINI.md`, and `AGENTS.md` with NM usage instructions. Supports `--all`, `--ide <name>`, `--force`, and interactive selection
+- **17 new tests** for IDE rules generator
+
+## [4.5.0] - 2026-03-14
+
+### Added
+
+- **Context merger (Phase A)** — `nmem_remember` accepts optional `context` dict (e.g. `{reason, alternatives, cause, fix, steps}`) that gets merged into content server-side using type-specific templates. Works with any agent — no need to craft perfect prose
+- **Quality scorer (Phase B)** — Every `nmem_remember` response now includes `quality` ("low"/"medium"/"high"), `score` (0-10), and `hints` (actionable improvement suggestions). Soft gate: always stores, never rejects
+- **36 new tests** for quality scorer (20) and context merger (16)
+
+### Fixed
+
+- **Tool memory config default** — test assertion updated to match `enabled=True` default
+
+## [4.4.1] - 2026-03-14
+
+### Improved
+
+- **Embedding config-status 3-state detection** — Quick Actions card now distinguishes "configured", "installed but disabled", and "not installed" for embedding provider, with actionable enable/disable commands
+
+## [4.4.0] - 2026-03-14
+
+### Added
+
+- **Dashboard Quick Actions card** — Overview page now shows configuration status for 6 features (tool memory, cloud sync, embedding, consolidation, review queue, orphan rate) with actionable shortcut commands and copy buttons
+- **`/api/dashboard/config-status` endpoint** — returns per-feature config status with status badges and commands
+- **Source-Aware Brain plan** — 4-phase architecture plan for smart index with exact citations from source documents
+
+### Fixed
+
+- **Plugin skills path (#71)** — `skills` field in `plugin.json` changed from `"./SKILL.md"` (file) to `"./skills"` (directory) to match Claude Code's expected format. Fixes 2 load errors on plugin install
+- **Tool stats empty** — `tool_memory.enabled` defaulted to `false`, causing dashboard Tool Stats page to show no data. Now defaults to `true` — tool usage tracking works out of the box
+- **E2E health test** — fixed assertion mismatch (`"healthy"` vs `"ok"`)
+
+### Added
+
+- **Source-Aware Brain plan** — 4-phase architecture plan for smart index with exact citations from source documents (source locators, `nmem_cite` tool, source refresh, cloud resolvers)
+
+## [4.3.1] - 2026-03-14
+
+### Fixed
+
+- **Plugin manifest validation (#70)** — removed invalid `features`, `instructions`, `agents` keys from `plugin.json` that broke Claude Code plugin install
+- **Doc trainer orphan neurons** — heading-less chunks now get synthetic heading from filename; added per-file tags for cross-cluster ENRICH linking; increased heading dedup limit 20→100 for common headings like "Overview"
+- **Chatbot brain loading** — use `find_brain_by_name("neuralmemory-docs")` instead of non-existent `list_brains()` method
+- **HF deploy script username** — fixed `nhadaututtheky` typo (double t)
+
+### Added
+
+- **`/health` + `/ready` endpoints** — `nmem serve` now exposes health check (brain name, uptime, schema version) and readiness probe (503 when uninitialized) for production monitoring
+- **Cloud sync privacy docs** — privacy model table, encryption details, CF free tier limits in `docs/guides/cloud-sync.md`
+
+### Improved
+
+- **Self-hosted cloud sync** — switched default from shared hub to self-hosted model. Users deploy their own CF Worker + D1 database. Data stays on user's own Cloudflare account
+- **Sync setup instructions** — updated README, FAQ, dashboard SyncPage, and MCP setup flow to guide self-hosted deployment first
+
+### Tests
+
+- 14 new health endpoint tests
+- Total: 3748 passing
+
+## [4.3.0] - 2026-03-13
+
+### Added
+
+- **`nmem_tool_stats` MCP tool** — exposes tool usage analytics (summary + daily breakdown) via MCP (#63)
+- **`/api/dashboard/tool-stats` REST endpoint** — tool usage analytics for dashboard integration
+- **Dashboard: Tool Stats page** — top tools bar chart, usage-over-time line chart, detailed table with success rates and durations (#63)
+- **Background consolidation daemon** — `nmem serve` now runs periodic consolidation using existing `maintenance.scheduled_consolidation_*` config (#65)
+- **HuggingFace Spaces deployment** — chatbot ready for HF Spaces with proper metadata, async Gradio handlers, deploy script, and docs guide (#60)
+- **Cascading retrieval with fiber summary tier** — FTS5 search on fiber summaries as step 2.8 before neuron pipeline, sufficiency gate for early termination, schema v27 (#61, #62)
+
+### Improved
+
+- **Docs messaging** — restructured README and mcp-server.md with "3 tools you need, 41 the agent handles" hierarchy (#59)
+
+### Fixed
+
+- **`nmem doctor` schema version check** — was using `PRAGMA user_version` (always 0) instead of `schema_version` table; now correctly reports v26
+- **`nmem brain health` crash in shared mode** — hardcoded `limit=10000` exceeded server max (1000), causing 422 errors (#67)
+- **`nmem info` crash in shared mode** — same limit issue for typed memories query
+- **`nmem consolidate` FK crash** — summarize strategy referenced anchor neurons pruned by earlier tier; now validates neuron existence before creating summary fibers (#68)
+
+## [4.1.1] - 2026-03-12
+
+### Fixed
+
+- **`nmem doctor` crash** — fixed `No module named 'neural_memory.storage.sqlite'` caused by stale import after storage restructuring (now imports from `sqlite_schema`)
+- **`nmem_pin action=list`** — new `list` action to query pinned fibers (#57)
+
+### Improved
+
+- **Stale references audit** — updated tool counts (39→44), schema version (v22→v26), test counts across README, ROADMAP, plugin.json, mcp-server.md
+- **FAQ** — added "Why is my consolidation 0%?" entry
+- **Regenerated docs** — MCP tools + CLI reference refreshed for v4.1.x
+
 ## [4.1.0] - 2026-03-12
 
 ### Added

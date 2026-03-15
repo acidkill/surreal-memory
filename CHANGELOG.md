@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **PostgreSQL + pgvector backend** — Full async storage backend via `asyncpg` with vector similarity search. Supports neurons, synapses, fibers, brains, typed queries. Docker Compose included. Contributed by @zsecducna (#56)
+- **NeuralMemory vs Mem0 benchmark** — Head-to-head comparison: 121x faster writes, equal accuracy, 0 API calls vs 70. Script at `scripts/benchmark_mem0_vs_nm.py`
+- **Chatbot v2** — Upgraded HF Spaces chatbot with conversation memory, cognitive reasoning for low-confidence answers, source citations, and retrieval stats panel
+
+### Fixed
+
+- `ReinforcementManager.reinforce()` test — updated assertion to match batch API (`update_neuron_states_batch`)
+- `check_distribution.py` — Fixed ClawHub JSON parser, Windows shell compat, independent version channels
+
 ## [4.6.0] - 2026-03-14
 
 ### Added
