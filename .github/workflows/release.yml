@@ -164,3 +164,83 @@ jobs:
               --generate-notes \
               dist/*
           fi
+
+  # ── Publish npm (OpenClaw plugin) ──────────────────────────────
+  publish-npm:
+    name: Publish to npm
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Build and publish OpenClaw plugin
+        working-directory: integrations/neuralmemory
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          npm ci || npm install
+          npm run build
+          npm publish --access public || echo "Version already published — skipping"
+
+  # ── Publish to ClawHub ─────────────────────────────────────────
+  publish-clawhub:
+    name: Publish to ClawHub
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ClawHub CLI
+        run: npm install -g clawdhub 2>/dev/null || pip install clawdhub 2>/dev/null || true
+
+      - name: Publish to ClawHub
+        env:
+          CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          clawdhub publish --slug neural-memory --version "$VERSION" --token "$CLAWHUB_TOKEN" \
+            || echo "::warning::ClawHub publish failed — update manually"
+
+  # ── Publish VS Code Extension ──────────────────────────────────
+  publish-vscode:
+    name: Publish VS Code Extension
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build and publish extension
+        working-directory: vscode-extension
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: |
+          npm ci || npm install
+          npm run compile 2>/dev/null || npm run build 2>/dev/null || true
+
+          # VS Code Marketplace
+          if [ -n "$VSCE_PAT" ]; then
+            npx @vscode/vsce publish --pat "$VSCE_PAT" \
+              || echo "::warning::VS Code Marketplace publish failed"
+          else
+            echo "::warning::VSCE_PAT not set — skipping VS Code Marketplace"
+          fi
+
+          # Open VSX Registry
+          if [ -n "$OVSX_PAT" ]; then
+            npx ovsx publish --pat "$OVSX_PAT" \
+              || echo "::warning::Open VSX publish failed"
+          else
+            echo "::warning::OVSX_PAT not set — skipping Open VSX"
+          fi
