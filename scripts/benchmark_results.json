@@ -1,0 +1,79 @@
+{
+  "mem0_available": true,
+  "nm_total_api_calls": 0,
+  "mem0_total_api_calls": 70,
+  "results": [
+    {
+      "operation": "Write Speed (50 memories)",
+      "nm_time_s": 1.2245488000044134,
+      "mem0_time_s": 148.156985300011,
+      "nm_error": null,
+      "mem0_error": null,
+      "nm_api_calls": 0,
+      "mem0_api_calls": 50,
+      "nm_accuracy": null,
+      "mem0_accuracy": null,
+      "notes": ""
+    },
+    {
+      "operation": "Read Speed (20 queries)",
+      "nm_time_s": 1.8038765999954194,
+      "mem0_time_s": 2.891548799991142,
+      "nm_error": null,
+      "mem0_error": null,
+      "nm_api_calls": 0,
+      "mem0_api_calls": 20,
+      "nm_accuracy": null,
+      "mem0_accuracy": null,
+      "notes": ""
+    },
+    {
+      "operation": "Accuracy (Jaccard vs expected)",
+      "nm_time_s": null,
+      "mem0_time_s": null,
+      "nm_error": null,
+      "mem0_error": null,
+      "nm_api_calls": 0,
+      "mem0_api_calls": 0,
+      "nm_accuracy": 0.14145828608096409,
+      "mem0_accuracy": 0.14145828608096409,
+      "notes": ""
+    },
+    {
+      "operation": "Multi-hop Reasoning (5 queries)",
+      "nm_time_s": null,
+      "mem0_time_s": null,
+      "nm_error": null,
+      "mem0_error": null,
+      "nm_api_calls": 0,
+      "mem0_api_calls": 0,
+      "nm_accuracy": 0.41666666666666663,
+      "mem0_accuracy": 0.3833333333333333,
+      "notes": ""
+    },
+    {
+      "operation": "Memory Cost (API calls)",
+      "nm_time_s": null,
+      "mem0_time_s": null,
+      "nm_error": null,
+      "mem0_error": null,
+      "nm_api_calls": 0,
+      "mem0_api_calls": 70,
+      "nm_accuracy": null,
+      "mem0_accuracy": null,
+      "notes": "Mem0 calls LLM for every add()+search(). NM uses zero LLM calls."
+    },
+    {
+      "operation": "Conversation Context (10 turns + 5 recalls)",
+      "nm_time_s": 1.2546038999862503,
+      "mem0_time_s": 11.990627699997276,
+      "nm_error": null,
+      "mem0_error": null,
+      "nm_api_calls": 0,
+      "mem0_api_calls": 0,
+      "nm_accuracy": 0.17406593406593407,
+      "mem0_accuracy": 0.17406593406593407,
+      "notes": ""
+    }
+  ]
+}

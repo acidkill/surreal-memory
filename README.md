@@ -33,6 +33,20 @@ NeuralMemory stores experiences as interconnected neurons and recalls them throu
 - **RAG**: Returns "JWT caused outage" (missing *why* we used JWT)
 - **NeuralMemory**: Traces `outage ← CAUSED_BY ← JWT ← SUGGESTED_BY ← Alice` → full causal chain
 
+### Benchmarks: NeuralMemory vs Mem0
+
+Real-world benchmark on 50 AI agent memories (decisions, errors, workflows, preferences):
+
+| Metric | NeuralMemory | Mem0 | |
+|--------|:---:|:---:|---|
+| **Write 50 memories** | 1.2s | 148.2s | **121x faster** |
+| **Read 20 queries** | 1.8s | 2.9s | **1.6x faster** |
+| **Multi-hop reasoning** | 0.42 | 0.38 | NM wins |
+| **Accuracy** | 0.14 | 0.14 | Tie |
+| **API calls** | **0** | **70** | **$0 cost** |
+
+> NeuralMemory: zero LLM calls, zero API cost, 121x faster writes. [Full benchmarks →](docs/benchmarks.md)
+
 ---
 
 ## Installation
