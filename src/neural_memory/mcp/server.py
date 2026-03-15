@@ -444,5 +444,29 @@ async def run_mcp_server() -> None:
 
 
 def main() -> None:
-    """Entry point for the MCP server."""
-    asyncio.run(run_mcp_server())
+    """Entry point for the MCP server.
+
+    Supports two transports:
+        nmem-mcp              → stdio (default, 1 process per client)
+        nmem-mcp --http       → HTTP (single shared server, multi-client)
+        nmem-mcp --http 9000  → HTTP on custom port
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(description="NeuralMemory MCP server")
+    parser.add_argument(
+        "--http",
+        nargs="?",
+        const=8765,
+        type=int,
+        metavar="PORT",
+        help="Run HTTP transport on PORT (default: 8765) instead of stdio",
+    )
+    args = parser.parse_args()
+
+    if args.http is not None:
+        from neural_memory.mcp.http_transport import run_http_server
+
+        asyncio.run(run_http_server(port=args.http))
+    else:
+        asyncio.run(run_mcp_server())
