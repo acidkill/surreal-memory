@@ -669,14 +669,11 @@ class PostgresConfig:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> PostgresConfig:
-        host = str(
-            os.environ.get("NEURAL_MEMORY_POSTGRES_HOST")
-            or data.get("host", "localhost")
-        )[:256]
+        host = str(os.environ.get("NEURAL_MEMORY_POSTGRES_HOST") or data.get("host", "localhost"))[
+            :256
+        ]
         try:
-            port_raw = (
-                os.environ.get("NEURAL_MEMORY_POSTGRES_PORT") or data.get("port", 5432)
-            )
+            port_raw = os.environ.get("NEURAL_MEMORY_POSTGRES_PORT") or data.get("port", 5432)
             port = max(1, min(int(port_raw), 65535))
         except (ValueError, TypeError):
             port = 5432
@@ -684,10 +681,9 @@ class PostgresConfig:
             os.environ.get("NEURAL_MEMORY_POSTGRES_DATABASE")
             or data.get("database", "neuralmemory")
         )[:128]
-        user = str(
-            os.environ.get("NEURAL_MEMORY_POSTGRES_USER")
-            or data.get("user", "postgres")
-        )[:128]
+        user = str(os.environ.get("NEURAL_MEMORY_POSTGRES_USER") or data.get("user", "postgres"))[
+            :128
+        ]
         password_env = os.environ.get("NEURAL_MEMORY_POSTGRES_PASSWORD")
         password_file = data.get("password", "")
         if not password_env and password_file:
@@ -699,7 +695,14 @@ class PostgresConfig:
             embedding_dim = max(1, int(data.get("embedding_dim", 384)))
         except (ValueError, TypeError):
             embedding_dim = 384
-        return cls(host=host, port=port, database=database, user=user, password=password, embedding_dim=embedding_dim)
+        return cls(
+            host=host,
+            port=port,
+            database=database,
+            user=user,
+            password=password,
+            embedding_dim=embedding_dim,
+        )
 
 
 @dataclass(frozen=True)
