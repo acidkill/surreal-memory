@@ -1,4 +1,4 @@
-import { PanelLeftClose, PanelLeft, Sun, Moon, Monitor, Globe } from "lucide-react"
+import { PanelLeftClose, PanelLeft, Sun, Moon, Monitor, Globe, HelpCircle } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useLayoutStore } from "@/stores/useLayoutStore"
 import { useStats, useHealthCheck } from "@/api/hooks/useDashboard"
@@ -59,6 +59,23 @@ export function TopBar() {
 
       {/* Spacer */}
       <div className="flex-1" />
+
+      {/* Help / Guide link */}
+      <Button
+        variant="ghost"
+        size="icon"
+        asChild
+        aria-label="Quickstart Guide"
+        title="Quickstart Guide"
+      >
+        <a
+          href="https://nhadaututtheky.github.io/neural-memory/guides/quickstart-guide/"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          <HelpCircle className="size-4" />
+        </a>
+      </Button>
 
       {/* Language toggle */}
       <Button

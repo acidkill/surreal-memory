@@ -9,6 +9,7 @@ import { Brain, Zap, Link2, Layers, Trash2 } from "lucide-react"
 import { toast } from "sonner"
 import { useTranslation } from "react-i18next"
 import QuickActionsCard from "./QuickActionsCard"
+import GuideCard from "./GuideCard"
 
 function KpiCard({
   label,
@@ -74,6 +75,9 @@ export default function OverviewPage() {
   return (
     <div className="space-y-6 p-6">
       <h1 className="font-display text-2xl font-bold">{t("overview.title")}</h1>
+
+      {/* Guide card for new users */}
+      <GuideCard />
 
       {/* KPI Cards */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">

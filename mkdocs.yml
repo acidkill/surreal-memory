@@ -89,6 +89,7 @@ nav:
     - Memory Types: concepts/memory-types.md
     - Spreading Activation: concepts/spreading-activation.md
   - Guides:
+    - Quickstart Guide: guides/quickstart-guide.md
     - Integration: guides/integration.md
     - MCP Server: guides/mcp-server.md
     - Embedding Setup: guides/embedding-setup.md
@@ -119,6 +120,12 @@ nav:
     - Why I Built NeuralMemory: blog/why-i-built-neuralmemory.md
     - Honest Comparison 2026: blog/honest-comparison-2026.md
     - OpenClaw Integration: blog/neural-memory-openclaw.md
+
+extra_css:
+  - assets/css/quickstart.css
+
+extra_javascript:
+  - assets/js/quickstart.js
 
 extra:
   social:

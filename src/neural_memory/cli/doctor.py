@@ -1,13 +1,15 @@
 """System health diagnostic — nmem doctor.
 
 Checks Python version, dependencies, config validity, brain accessibility,
-embedding provider, storage integrity, and schema version. Produces
-green/yellow/red status per check with actionable fix suggestions.
+embedding provider, storage integrity, schema version, hooks, dedup,
+and knowledge surface. Produces green/yellow/red status per check
+with actionable fix suggestions. Supports --fix for auto-remediation.
 """
 
 from __future__ import annotations
 
 import importlib
+import json
 import shutil
 import sys
 from pathlib import Path
@@ -23,9 +25,16 @@ WARN = "warn"
 FAIL = "fail"
 SKIP = "skip"
 
+QUICKSTART_URL = "https://nhadaututtheky.github.io/neural-memory/guides/quickstart/"
 
-def run_doctor(*, json_output: bool = False) -> dict[str, Any]:
-    """Run all diagnostic checks and return results."""
+
+def run_doctor(*, json_output: bool = False, fix: bool = False) -> dict[str, Any]:
+    """Run all diagnostic checks and return results.
+
+    Args:
+        json_output: Return machine-readable output.
+        fix: Auto-fix what's possible (enable config flags, install hooks).
+    """
     checks: list[dict[str, Any]] = []
 
     checks.append(_check_python_version())
@@ -35,7 +44,14 @@ def run_doctor(*, json_output: bool = False) -> dict[str, Any]:
     checks.append(_check_embedding_provider())
     checks.append(_check_schema_version())
     checks.append(_check_mcp_config())
+    checks.append(_check_hooks())
+    checks.append(_check_dedup())
+    checks.append(_check_surface())
     checks.append(_check_cli_tools())
+
+    # Auto-fix pass
+    if fix:
+        checks = _auto_fix(checks)
 
     result = {
         "checks": checks,
@@ -277,8 +293,6 @@ def _check_schema_version() -> dict[str, Any]:
 
 def _check_mcp_config() -> dict[str, Any]:
     """Check MCP server is configured in Claude Code."""
-    import json
-
     claude_json = Path.home() / ".claude.json"
     if not claude_json.exists():
         return {
@@ -340,6 +354,214 @@ def _check_cli_tools() -> dict[str, Any]:
     }
 
 
+def _check_hooks() -> dict[str, Any]:
+    """Check Claude Code hooks are installed."""
+    claude_dir = Path.home() / ".claude"
+    settings_path = claude_dir / "settings.json"
+
+    if not settings_path.exists():
+        return {
+            "name": "Hooks",
+            "status": WARN,
+            "detail": "~/.claude/settings.json not found",
+            "fix": "Run: nmem init",
+            "fixable": True,
+        }
+
+    try:
+        data = json.loads(settings_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {
+            "name": "Hooks",
+            "status": WARN,
+            "detail": "could not parse settings.json",
+        }
+
+    hooks_section = data.get("hooks", {})
+    expected = ["PreCompact", "Stop", "PostToolUse"]
+    found: list[str] = []
+
+    for event in expected:
+        entries = hooks_section.get(event, [])
+        for entry in entries:
+            for hook in entry.get("hooks", []):
+                cmd = hook.get("command", "")
+                if "neural_memory" in cmd or "nmem" in cmd:
+                    found.append(event)
+                    break
+
+    if len(found) == len(expected):
+        return {
+            "name": "Hooks",
+            "status": OK,
+            "detail": f"{len(found)}/{len(expected)} installed ({', '.join(found)})",
+        }
+
+    missing = [e for e in expected if e not in found]
+    return {
+        "name": "Hooks",
+        "status": WARN,
+        "detail": f"{len(found)}/{len(expected)} — missing: {', '.join(missing)}",
+        "fix": "Run: nmem init",
+        "fixable": True,
+    }
+
+
+def _check_dedup() -> dict[str, Any]:
+    """Check dedup is enabled in config."""
+    try:
+        from neural_memory.unified_config import get_config
+
+        config = get_config(reload=True)
+    except Exception:
+        return {"name": "Dedup", "status": SKIP, "detail": "config not loaded"}
+
+    if config.dedup.enabled:
+        return {"name": "Dedup", "status": OK, "detail": "enabled"}
+
+    return {
+        "name": "Dedup",
+        "status": WARN,
+        "detail": "disabled (duplicate memories not caught)",
+        "fix": "Run: nmem init --full",
+        "fixable": True,
+    }
+
+
+def _check_surface() -> dict[str, Any]:
+    """Check knowledge surface (.nm file) exists."""
+    try:
+        from neural_memory.surface.resolver import get_surface_path
+        from neural_memory.unified_config import get_config
+
+        config = get_config(reload=True)
+        surface_path = get_surface_path(config.current_brain)
+
+        if surface_path.exists():
+            size_kb = surface_path.stat().st_size / 1024
+            return {
+                "name": "Knowledge surface",
+                "status": OK,
+                "detail": f"{surface_path.name} ({size_kb:.1f} KB)",
+            }
+
+        return {
+            "name": "Knowledge surface",
+            "status": WARN,
+            "detail": "not generated yet",
+            "fix": "Run: nmem surface generate (via MCP or after first session)",
+        }
+    except Exception:
+        return {
+            "name": "Knowledge surface",
+            "status": SKIP,
+            "detail": "surface module not available",
+        }
+
+
+# ---------------------------------------------------------------------------
+# Auto-fix
+# ---------------------------------------------------------------------------
+
+
+def _auto_fix(checks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Attempt to auto-fix fixable issues. Returns updated checks."""
+    fixed_checks: list[dict[str, Any]] = []
+
+    for check in checks:
+        if check.get("fixable") and check["status"] in (WARN, FAIL):
+            fixed = _try_fix(check)
+            if fixed:
+                fixed_checks.append(fixed)
+                continue
+        fixed_checks.append(check)
+
+    return fixed_checks
+
+
+def _try_fix(check: dict[str, Any]) -> dict[str, Any] | None:
+    """Try to fix a single check. Returns updated check or None."""
+    name = check["name"]
+
+    if name == "Hooks":
+        return _fix_hooks()
+    if name == "Dedup":
+        return _fix_dedup()
+    if name == "Embedding provider" and "disabled" in check.get("detail", ""):
+        return _fix_embedding()
+
+    return None
+
+
+def _fix_hooks() -> dict[str, Any]:
+    """Auto-fix: install missing hooks."""
+    try:
+        from neural_memory.cli.setup import setup_hooks_claude
+
+        status = setup_hooks_claude()
+        if status in ("added", "exists"):
+            return {
+                "name": "Hooks",
+                "status": OK,
+                "detail": "auto-fixed: hooks installed",
+            }
+    except Exception:
+        pass
+    return {
+        "name": "Hooks",
+        "status": WARN,
+        "detail": "auto-fix failed",
+        "fix": "Run: nmem init",
+    }
+
+
+def _fix_dedup() -> dict[str, Any]:
+    """Auto-fix: enable dedup in config."""
+    try:
+        from dataclasses import replace
+
+        from neural_memory.unified_config import get_config
+
+        config = get_config(reload=True)
+        updated = replace(config, dedup=replace(config.dedup, enabled=True))
+        updated.save()
+        return {
+            "name": "Dedup",
+            "status": OK,
+            "detail": "auto-fixed: enabled",
+        }
+    except Exception:
+        pass
+    return {
+        "name": "Dedup",
+        "status": WARN,
+        "detail": "auto-fix failed",
+    }
+
+
+def _fix_embedding() -> dict[str, Any]:
+    """Auto-fix: detect and enable embedding provider."""
+    try:
+        from neural_memory.cli.full_setup import detect_embedding_provider, enable_config_defaults
+
+        provider = detect_embedding_provider()
+        if provider:
+            enable_config_defaults(embedding_provider=provider)
+            return {
+                "name": "Embedding provider",
+                "status": OK,
+                "detail": f"auto-fixed: {provider['key']} enabled",
+            }
+    except Exception:
+        pass
+    return {
+        "name": "Embedding provider",
+        "status": WARN,
+        "detail": "no provider available to auto-enable",
+        "fix": "Run: nmem setup embeddings",
+    }
+
+
 def _render_results(result: dict[str, Any]) -> None:
     """Render diagnostic results to terminal."""
     typer.echo()
@@ -374,4 +596,12 @@ def _render_results(result: dict[str, Any]) -> None:
 
     color = typer.colors.GREEN if fails == 0 else typer.colors.RED
     typer.secho(f"  {', '.join(summary_parts)}", fg=color, bold=True)
+
+    # Suggest guide if there are issues
+    if warns > 0 or fails > 0:
+        typer.echo()
+        typer.secho(f"  See full setup guide: {QUICKSTART_URL}", dim=True)
+        if not any(c.get("_fixed") for c in result["checks"]):
+            typer.secho("  Auto-fix available issues: nmem doctor --fix", dim=True)
+
     typer.echo()

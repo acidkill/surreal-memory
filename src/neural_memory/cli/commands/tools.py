@@ -178,14 +178,22 @@ def init(
         bool,
         typer.Option("--defaults", help="Non-interactive with all defaults"),
     ] = False,
+    full: Annotated[
+        bool,
+        typer.Option("--full", help="Extended setup: embeddings, dedup, maintenance script"),
+    ] = False,
 ) -> None:
     """Set up NeuralMemory in one command.
 
     Creates config, default brain, auto-configures MCP for
     Claude Code and Cursor, and installs agent skills.
 
+    Use --full for extended setup: auto-detect embeddings,
+    enable dedup, and generate a maintenance script.
+
     Examples:
-        nmem init                # Full setup
+        nmem init                # Standard setup
+        nmem init --full         # Everything in one command
         nmem init --wizard       # Interactive wizard
         nmem init --defaults     # Non-interactive defaults
         nmem init --force        # Overwrite existing config
@@ -196,6 +204,12 @@ def init(
         from neural_memory.cli.wizard import run_wizard
 
         run_wizard(force=force)
+        return
+
+    if full:
+        from neural_memory.cli.full_setup import run_full_setup
+
+        run_full_setup(force=force, skip_mcp=skip_mcp, skip_skills=skip_skills)
         return
 
     from neural_memory.cli.setup import (
@@ -243,16 +257,16 @@ def init(
         }
         results["Cursor"] = cursor_labels.get(cursor_status, cursor_status)
 
-    # 4. PreCompact hook (Claude Code only)
+    # 4. Hooks (Claude Code only)
     if not skip_mcp:
         hook_status = setup_hooks_claude()
         hook_labels = {
-            "added": "~/.claude/settings.json (added PreCompact hook)",
-            "exists": "~/.claude/settings.json (hook already configured)",
+            "added": "3 hooks installed (PreCompact, Stop, PostToolUse)",
+            "exists": "already configured",
             "not_found": "not detected (~/.claude/ not found)",
             "failed": "failed to write settings.json",
         }
-        results["PreCompact Hook"] = hook_labels.get(hook_status, hook_status)
+        results["Hooks"] = hook_labels.get(hook_status, hook_status)
 
     # 5. Skills
     if skip_skills:
@@ -272,6 +286,7 @@ def init(
     print_summary(results)
 
     typer.echo("  Restart your AI tool to activate memory.")
+    typer.echo("  For extended setup (embeddings, dedup): nmem init --full")
     typer.echo()
 
 
@@ -845,21 +860,25 @@ def flush(
 
 def doctor(
     json_output: Annotated[bool, typer.Option("--json", "-j", help="Output as JSON")] = False,
+    fix: Annotated[bool, typer.Option("--fix", help="Auto-fix available issues")] = False,
 ) -> None:
     """Run system health diagnostics.
 
     Checks Python version, config, brain, dependencies, embedding provider,
-    schema version, MCP config, and CLI tools. Shows actionable fixes.
+    schema version, MCP config, hooks, dedup, surface, and CLI tools.
+
+    Use --fix to automatically remediate fixable issues.
 
     Examples:
         nmem doctor          # Run all checks
+        nmem doctor --fix    # Auto-fix what's possible
         nmem doctor --json   # Machine-readable output
     """
     import json as json_mod
 
     from neural_memory.cli.doctor import run_doctor
 
-    result = run_doctor(json_output=json_output)
+    result = run_doctor(json_output=json_output, fix=fix)
 
     if json_output:
         typer.echo(json_mod.dumps(result, indent=2, default=str))
