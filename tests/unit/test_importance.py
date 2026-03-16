@@ -106,7 +106,9 @@ class TestAutoImportanceScore:
 
     def test_unknown_type_no_bonus(self) -> None:
         """Unknown memory type gets no type bonus."""
-        score = auto_importance_score("Some text about an unknown memory type here", "unknown_type", [])
+        score = auto_importance_score(
+            "Some text about an unknown memory type here", "unknown_type", []
+        )
         assert score == 5  # Just base, no bonus
 
     def test_tags_dont_affect_score(self) -> None:

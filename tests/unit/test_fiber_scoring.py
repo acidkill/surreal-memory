@@ -193,9 +193,7 @@ def _compute_fiber_score(
     if activated:
         coverage = len(activated) / max(len(fiber.neuron_ids), 1)
         max_act = max(activations[nid].activation_level for nid in activated)
-        mean_act = sum(
-            activations[nid].activation_level for nid in activated
-        ) / len(activated)
+        mean_act = sum(activations[nid].activation_level for nid in activated) / len(activated)
         activation_signal = max_act * 0.5 + coverage * 0.3 + mean_act * 0.2
         activation_signal = max(0.05, activation_signal)
     else:

@@ -11,9 +11,21 @@ class TestDetectPatterns:
     def test_repeated_entity_detected(self) -> None:
         """Entity appearing in 3+ memories triggers a pattern."""
         memories = [
-            {"content": "PostgreSQL handles ACID transactions well", "type": "fact", "tags": ["db"]},
-            {"content": "PostgreSQL requires proper indexing for performance", "type": "insight", "tags": ["db"]},
-            {"content": "Chose PostgreSQL over MongoDB for payments", "type": "decision", "tags": ["db"]},
+            {
+                "content": "PostgreSQL handles ACID transactions well",
+                "type": "fact",
+                "tags": ["db"],
+            },
+            {
+                "content": "PostgreSQL requires proper indexing for performance",
+                "type": "insight",
+                "tags": ["db"],
+            },
+            {
+                "content": "Chose PostgreSQL over MongoDB for payments",
+                "type": "decision",
+                "tags": ["db"],
+            },
         ]
         patterns = detect_patterns(memories)
         assert len(patterns) >= 1
@@ -47,7 +59,11 @@ class TestDetectPatterns:
         """Contradictory statements are flagged."""
         memories = [
             {"content": "Redis is the best choice for caching", "type": "decision", "tags": []},
-            {"content": "Redis is not suitable for our caching needs", "type": "decision", "tags": []},
+            {
+                "content": "Redis is not suitable for our caching needs",
+                "type": "decision",
+                "tags": [],
+            },
         ]
         patterns = detect_patterns(memories)
         # Should detect contradiction
@@ -67,7 +83,11 @@ class TestDetectPatterns:
         memories = [
             {"content": "React component renders slowly", "type": "error", "tags": ["react"]},
             {"content": "React hooks cause re-render loop", "type": "error", "tags": ["react"]},
-            {"content": "React performance needs memoization", "type": "insight", "tags": ["react"]},
+            {
+                "content": "React performance needs memoization",
+                "type": "insight",
+                "tags": ["react"],
+            },
         ]
         patterns = detect_patterns(memories)
         if patterns:

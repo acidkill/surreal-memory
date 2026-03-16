@@ -43,7 +43,9 @@ def migrate(
     ] = "postgres",
     pg_password: Annotated[
         str,
-        typer.Option("--pg-password", help="PostgreSQL password (or use NEURAL_MEMORY_POSTGRES_PASSWORD env)"),
+        typer.Option(
+            "--pg-password", help="PostgreSQL password (or use NEURAL_MEMORY_POSTGRES_PASSWORD env)"
+        ),
     ] = "",
 ) -> None:
     """Migrate brain data between storage backends.
