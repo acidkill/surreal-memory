@@ -107,11 +107,11 @@ def _check_config() -> dict[str, Any]:
             "status": OK,
             "detail": f"{config_path} (brain: {config.current_brain})",
         }
-    except Exception as exc:
+    except Exception:
         return {
             "name": "Configuration",
             "status": FAIL,
-            "detail": f"Invalid config: {exc}",
+            "detail": "parse error — run: nmem init --force",
             "fix": "Run: nmem init --force",
         }
 
@@ -283,11 +283,11 @@ def _check_schema_version() -> dict[str, Any]:
             "status": WARN,
             "detail": f"v{version} (newer than expected v{CURRENT_VERSION})",
         }
-    except Exception as exc:
+    except Exception:
         return {
             "name": "Schema version",
             "status": WARN,
-            "detail": f"could not check: {exc}",
+            "detail": "could not check — ensure brain is accessible",
         }
 
 
@@ -483,14 +483,22 @@ def _try_fix(check: dict[str, Any]) -> dict[str, Any] | None:
     """Try to fix a single check. Returns updated check or None."""
     name = check["name"]
 
-    if name == "Hooks":
-        return _fix_hooks()
-    if name == "Dedup":
-        return _fix_dedup()
-    if name == "Embedding provider" and "disabled" in check.get("detail", ""):
-        return _fix_embedding()
+    handler = _FIX_HANDLERS.get(name)
+    if handler is None:
+        return None
+    if name == "Embedding provider" and "disabled" not in check.get("detail", ""):
+        return None
+    result = handler()
+    if result:
+        result["_fixed"] = True
+    return result
 
-    return None
+
+_FIX_HANDLERS: dict[str, Any] = {
+    "Hooks": lambda: _fix_hooks(),
+    "Dedup": lambda: _fix_dedup(),
+    "Embedding provider": lambda: _fix_embedding(),
+}
 
 
 def _fix_hooks() -> dict[str, Any]:
@@ -594,7 +602,11 @@ def _render_results(result: dict[str, Any]) -> None:
     if fails:
         summary_parts.append(f"{fails} failed")
 
-    color = typer.colors.GREEN if fails == 0 else typer.colors.RED
+    color = (
+        typer.colors.RED
+        if fails > 0
+        else (typer.colors.YELLOW if warns > 0 else typer.colors.GREEN)
+    )
     typer.secho(f"  {', '.join(summary_parts)}", fg=color, bold=True)
 
     # Suggest guide if there are issues

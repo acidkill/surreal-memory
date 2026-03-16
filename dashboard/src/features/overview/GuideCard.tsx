@@ -10,10 +10,17 @@ const STORAGE_KEY = "nmem-guide-card-dismissed"
 const NEW_USER_THRESHOLD = 50
 
 export default function GuideCard() {
-  const { data: stats } = useStats()
-  const [dismissed, setDismissed] = useState(
-    () => localStorage.getItem(STORAGE_KEY) === "1",
-  )
+  const { data: stats, isLoading } = useStats()
+  const [dismissed, setDismissed] = useState(() => {
+    try {
+      return localStorage.getItem(STORAGE_KEY) === "1"
+    } catch {
+      return false
+    }
+  })
+
+  // Hide while loading to prevent flash for returning users
+  if (isLoading) return null
 
   // Only show for new users (<50 neurons) who haven't dismissed
   const neuronCount = stats?.total_neurons ?? 0
@@ -59,7 +66,7 @@ export default function GuideCard() {
           onClick={handleDismiss}
           aria-label="Dismiss guide card"
         >
-          <X className="size-3.5" />
+          <X className="size-3.5" aria-hidden="true" />
         </Button>
       </CardContent>
     </Card>

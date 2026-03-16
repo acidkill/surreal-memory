@@ -200,6 +200,12 @@ def init(
         nmem init --skip-mcp     # Skip MCP auto-config
         nmem init --skip-skills  # Skip skills installation
     """
+    if wizard and full:
+        typer.secho(
+            "Error: --wizard and --full are mutually exclusive.", fg=typer.colors.RED, err=True
+        )
+        raise typer.Exit(1)
+
     if wizard:
         from neural_memory.cli.wizard import run_wizard
 

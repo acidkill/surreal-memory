@@ -16,7 +16,6 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "npm run build",
-    "postinstall": "node -e \"try{require('child_process').execSync('npm run build',{stdio:'ignore'})}catch{}\"",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"

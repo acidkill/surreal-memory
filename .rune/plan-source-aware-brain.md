@@ -30,6 +30,70 @@ Refresh:   scan sources → hash compare → mark stale → optional retrain
 - Only `LocalResolver` for MVP — add cloud when customer needs it
 - Do NOT build: OCR, document editor, version diffing, real-time sync
 
+## Embedding & Business Strategy
+
+### Current State
+- Default model: `all-MiniLM-L6-v2` (~80MB, English, 384D)
+- Multilingual: `paraphrase-multilingual-MiniLM-L12-v2` (~440MB, 50+ langs)
+- Embedding disabled by default (`enabled = false`), lazy-load on first embed call
+- No download progress/warning — first recall after enabling can lag minutes silently
+
+### TODO: UX Improvements Needed
+- [ ] Show download progress or warning in dashboard when embedding first enabled
+- [ ] `nmem_setup embedding` wizard should warn about model size before download
+- [ ] Config-status card already shows 3 states (v4.4.1) — may need "downloading..." state
+- [ ] Consider Ollama/Gemini as zero-download alternatives for SMB demos
+
+### Business Tiering (Path B: Open Core + Cloud)
+- **Free (OSS)**: Keyword recall only (no model download, zero friction onboarding)
+- **Pro (Cloud)**: Cloud-hosted embedding API (no local download, fast setup for SMB chatbots)
+- **Enterprise**: Custom models, on-prem embedding (legal compliance, air-gapped)
+
+### Impact on Source-Aware Brain
+- Phase 1-2 (source locators, citation) work WITHOUT embedding — keyword recall sufficient
+- Embedding amplifies Phase 1-2 quality: semantic search finds related law clauses even with different wording
+- Phase 3 (refresh) benefits from embedding: detect semantic drift, not just hash change
+- **Priority**: Ship Phase 1-2 first (keyword-only works), then embedding enhances quality
+
+## Multi-Agent Enrichment Strategy
+
+### Problem
+NM has no internal LLM. Memory quality depends entirely on the calling agent.
+Claude follows MCP instructions well → rich memories. Other agents (GPT, Gemini,
+local LLMs) may send flat, context-free text → orphan neurons with zero connections.
+
+### Solution: Structured Context + Template Merge (Approach C)
+Instead of requiring agents to craft perfect prose, accept structured `context` dict
+and merge server-side into rich content using templates.
+
+```
+nmem_remember(
+    content="Chose PostgreSQL over MongoDB",
+    context={"reason": "ACID for payments", "alternatives": ["MongoDB"]},
+    type="decision"
+)
+→ NM merges: "Chose PostgreSQL over MongoDB because ACID for payments.
+   Alternatives considered: MongoDB."
+```
+
+### Implementation Phases
+- [ ] **Phase A**: `context` field on `nmem_remember` — optional dict, merged via templates
+- [ ] **Phase B**: Quality scoring — soft gate, always stores, returns score + hints
+      - Score 0-10 from: content length (min 10 chars), has context dict (+3), has tags (+1),
+        type diversity (+1), cognitive richness (causal/temporal/comparative words, +1 each)
+      - Response includes `quality: "low"|"medium"|"high"`, `score: int`, `hints: [str]`
+      - NEVER hard reject — global system can't gatekeep per-user preferences
+      - Dashboard shows quality distribution chart (% low/medium/high)
+- [ ] **Phase C**: Optional LLM enrichment — if `[enrichment] provider` configured in config.toml,
+      NM calls LLM API to rephrase flat content into rich causal/temporal language
+- [ ] **Phase D**: Agent SDK — thin wrapper libraries (Python/JS) that guide agents to provide
+      structured context, with `.remember_decision()`, `.remember_error()` helper methods
+
+### Business Impact
+- Phase A-B = free tier (template enrichment, no LLM needed)
+- Phase C = Pro tier (cloud-hosted enrichment API, no agent-side work)
+- Phase D = Enterprise SDK (white-label, custom templates per domain)
+
 ## What Already Exists (70% done)
 - `Source` dataclass with `SourceType`, `SourceStatus`, `file_hash`, `metadata`
 - `SOURCE_OF` synapse type (defined, used in `nmem_remember`, but NOT in `nmem_train`)

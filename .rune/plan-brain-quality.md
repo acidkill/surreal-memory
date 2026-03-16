@@ -48,8 +48,7 @@ For EVERY phase:
 | # | Name | Status | Plan File | Summary |
 |---|------|--------|-----------|---------|
 | A1 | Smart Instructions | ✅ Done | plan-brain-quality-a1.md | Decision framework in MCP instructions |
-| A2 | Layered Brain Architecture | ⬚ Pending | plan-brain-quality-a2.md | Global + Project + Session layers |
-| A3 | Auto-Recall Injection | ⬚ Pending | plan-brain-quality-a3.md | MCP auto-injects related memories |
+| A2+A3 | .nm Knowledge Surface | ⬚ Pending | plan-knowledge-surface.md | Two-tier: .nm flat file (working memory) + brain.db (long-term). Replaces layered brain + auto-recall with unified approach |
 | A4 | Background Memory Processing | ✅ Done | plan-brain-quality-a4.md | Auto-importance scoring + reflection engine (pattern detection + threshold trigger) |
 
 ### Track B: Brain Quality (graph/retrieval improvements)
@@ -80,15 +79,17 @@ Sprint 1: A1 (instructions) → B1 (auto-consolidation) ✅
 Sprint 2: B2 (Hebbian) → B3 (cross-memory link) ✅
 Sprint 3: B4 (IDF) → B5 (fiber scoring) ✅
 Sprint 4: B6 (compression) → B8 (adaptive decay) ✅
-Sprint 5: B7 (lazy entity, 3d) → A4 (background processing, 5d)
-Sprint 7: C1 (domain entities, 3d) → C2 (structured data, 5d)
-Sprint 8: C3 (reranking, 3d) → C4 (visualization, 5d)
+Sprint 5: B7 (lazy entity, 3d) → A4 (background processing, 5d) ✅
+Sprint 6: A2+A3 Knowledge Surface P1 (format, 2d) → P2 (generator, 3d)
+Sprint 7: A2+A3 Knowledge Surface P3 (MCP, 3d) → P4 (lifecycle, 2d)
+Sprint 8: C1 (domain entities, 3d) → C2 (structured data, 5d)
+Sprint 9: C3 (reranking, 3d) → C4 (visualization, 5d)
 ```
 
 ## Key Decisions
 - Zero LLM calls — all improvements are algorithmic/graph-structural
-- Layered brain: Global (~/.neuralmemory) + Project (.neuralmemory/) + Session (ephemeral)
-- Layer routing is automatic — agent uses same API
+- Two-tier memory: .nm flat file (working memory, ~1000 tokens) + brain.db (long-term, on-demand)
+- .nm Knowledge Surface: GRAPH + CLUSTERS + SIGNALS + DEPTH MAP — agent-navigable
 - VISION.md brain-test mandatory for every phase
 - Sub-agent review mandatory for every implementation
 - Common pitfalls documented per phase to prevent recurrence
@@ -106,8 +107,8 @@ Sprint 8: C3 (reranking, 3d) → C4 (visualization, 5d)
 ## Dependency Graph
 ```
 Track A (Proactive):
-A1 (Instructions) ──→ A2 (Layered Brain) ──→ A3 (Auto-Recall)
-                                           ──→ A4 (Background)
+A1 (Instructions) ──→ A2+A3 (.nm Knowledge Surface, 4 phases)
+                   ──→ A4 (Background)
 
 Track B (Quality):
 B1 (Auto-Consolidation) ──→ B2 (Hebbian) ──→ B3 (Cross-Memory)

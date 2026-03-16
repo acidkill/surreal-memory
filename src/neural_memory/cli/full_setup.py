@@ -228,7 +228,7 @@ def generate_maintenance_script(data_dir: Path) -> Path | None:
         import stat
 
         st = script_path.stat()
-        script_path.chmod(st.st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        script_path.chmod(st.st_mode | stat.S_IEXEC | stat.S_IXGRP)
 
     return script_path
 
