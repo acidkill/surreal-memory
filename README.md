@@ -10,6 +10,10 @@
 
 **Reflex-based memory system for AI agents** — retrieval through activation, not search.
 
+<p align="center">
+  <img src="docs/assets/images/hero-brain.svg" alt="Neural Memory — spreading activation visualization" width="720"/>
+</p>
+
 NeuralMemory stores experiences as interconnected neurons and recalls them through spreading activation, mimicking how the human brain works. Instead of searching a database, memories surface through associative recall — activating related concepts until the relevant memory emerges.
 
 **45 MCP tools** · **14 memory types** · **24 synapse types** · **Schema v28** · **3963+ tests** · **Cognitive reasoning layer**
@@ -61,13 +65,43 @@ Real-world benchmarks on 50 AI agent memories (decisions, errors, workflows, pre
 
 ---
 
-## Installation
+## Get Started in 60 Seconds
 
 ```bash
 pip install neural-memory
+nmem init --full
 ```
 
-With optional features:
+That's it. One command sets up **everything**: config, brain, MCP server, hooks, embeddings auto-detection, dedup, and a maintenance script.
+
+Then restart your AI tool (Claude Code, Cursor, etc.) — your brain is live.
+
+> **New?** See the [Interactive Quickstart Guide](https://nhadaututtheky.github.io/neural-memory/guides/quickstart-guide/) with animated demos.
+
+<details>
+<summary><b>What <code>--full</code> configures</b></summary>
+
+| Step | What | Why |
+|------|------|-----|
+| Config | `~/.neuralmemory/config.toml` | Central settings |
+| Brain | `default.db` SQLite database | Your memory graph |
+| MCP | Claude Code + Cursor auto-config | AI tools use your brain |
+| Hooks | PreCompact, Stop, PostToolUse | Auto-capture memories |
+| Embeddings | Auto-detects best provider | Semantic cross-language search |
+| Dedup | Duplicate detection | Prevents memory bloat |
+| Maintenance | `maintenance.sh` / `.ps1` | Scheduled decay + consolidation |
+
+</details>
+
+### Verify Setup
+
+```bash
+nmem doctor        # 11 diagnostic checks
+nmem doctor --fix  # Auto-fix issues
+```
+
+### Installation Options
+
 ```bash
 pip install neural-memory[server]       # FastAPI server + dashboard
 pip install neural-memory[extract]      # PDF/DOCX/PPTX/HTML/XLSX extraction
@@ -76,18 +110,7 @@ pip install neural-memory[embeddings]   # Local embedding (cross-language recall
 pip install neural-memory[all]          # All features
 ```
 
-### Optional: Embedding for Cross-Language Recall
-
-Core recall works without embeddings. Enable embeddings to recall memories across languages (e.g., search in Vietnamese, find English memories):
-
-```toml
-# ~/.neuralmemory/config.toml
-[embedding]
-enabled = true
-provider = "auto"    # Auto-detects: Ollama → sentence-transformers → Gemini → OpenAI
-```
-
-Or pick a specific provider: **sentence_transformer** (free/local), **ollama** (local via Ollama API), **gemini** (Google free tier), **openai** (paid). See the [Embedding Setup Guide](docs/guides/embedding-setup.md) for details.
+Embeddings are optional — core recall is pure graph traversal with zero API cost. `nmem init --full` auto-detects the best provider. See the [Embedding Setup Guide](docs/guides/embedding-setup.md) for manual configuration.
 
 ## Quick Setup
 
