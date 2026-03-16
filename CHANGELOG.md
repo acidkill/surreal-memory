@@ -7,22 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.8.0] - 2026-03-16
+
 ### Added
 
-- **B1: Auto-Consolidation Loop** — Session-end consolidation (MATURE+INFER+ENRICH) fires on MCP shutdown; health pulse monitors consolidation ratio
-- **B2: Retrieval-Time Hebbian** — INFER strategy added to default consolidation strategies for co-activation binding
-- **B3: Cross-Memory Entity Linking** — New `CrossMemoryLinkStep` in encoding pipeline creates `RELATED_TO` synapses between neurons sharing entity anchors
-- **B4: IDF-Weighted Keywords** — `keyword_document_frequency` table (schema v28), IDF scoring in `CreateSynapsesStep`, cold-start guard (<5 fibers)
-- **B5: Fiber-Level Recall Scoring** — Activation-aware scoring: `base_quality × activation_signal × stage_multiplier`; activation_signal = `max_act×0.5 + coverage×0.3 + mean_act×0.2`
-- **B6: Contextual Compression** — `compress_for_recall()` in `retrieval_context.py`: <7d full text, 7-30d 3-sentence summary, 30-90d 2 sentences, 90d+ 1 sentence
-- **B8: Adaptive Synapse Decay** — `time_decay()` uses reinforcement-modulated half-life: `effective_half_life = base × (1 + reinforced_count × 0.5)`, adaptive floor `0.3 + min(0.5, count × 0.05)`
+- **B7: Lazy Entity Promotion** — Entities need 2+ mentions before becoming neurons; `entity_refs` table (schema v29), retroactive synapses on promotion, high-confidence/user-tagged exceptions
+- **A4: Auto-Importance Scoring** — Heuristic priority when user doesn't set explicit priority; type bonus, causal/comparative language signals, entity richness
+- **A4: Reflection Engine** — Accumulates importance from saved memories, detects patterns (recurring entities, temporal sequences, contradictions) at threshold
+- **PostgreSQL Migration** — `nmem migrate postgres` CLI command with full connection params (#80)
+- **B1-B6, B8: Brain Quality Track B** — Auto-consolidation, Hebbian retrieval, cross-memory linking, IDF keywords, fiber scoring, contextual compression, adaptive decay
 - **A1: Smart Instructions** — Decision framework injected into MCP `instructions` to guide proactive memory saving
-- **Schema v28** — New `keyword_document_frequency` table for IDF scoring
-- **46 new tests**: `test_cross_memory_link.py` (9), `test_idf_keywords.py` (7), `test_fiber_scoring.py` (8), `test_recall_compression.py` (12), `test_adaptive_decay.py` (11)
+- **Schema v29** — `entity_refs` table for lazy entity promotion + `keyword_document_frequency` for IDF scoring
+- **73 new tests**: lazy entity (11), importance (16), reflection (12), compression (12), adaptive decay (11), postgres migration (5), cross-memory link (9), IDF (7), fiber scoring (8)
 
 ### Improved
 
 - All quality improvements are purely algorithmic — zero LLM calls added
+- Pipeline steps use `getattr` for backward compat with SimpleNamespace contexts
+- Entity ref operations gracefully degrade when table doesn't exist
 
 ## [4.7.0] - 2026-03-16
 
