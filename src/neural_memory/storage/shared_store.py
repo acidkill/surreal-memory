@@ -422,3 +422,20 @@ class SharedStorage(SharedFiberBrainMixin, NeuralStorage):
     async def clear(self, brain_id: str) -> None:
         """Clear all data for a brain."""
         await self._request("DELETE", f"/brain/{brain_id}")
+
+    # ========== Local-Only Methods (no-op for remote storage) ==========
+
+    async def get_fiber_stage_counts(self, brain_id: str) -> dict[str, int]:
+        """Return empty counts — stage tracking is local-only."""
+        return {}
+
+    async def get_total_fiber_count(self) -> int:
+        """Return 0 — IDF skips gracefully on cold start."""
+        return 0
+
+    async def get_keyword_df_batch(self, keywords: list[str]) -> dict[str, int]:
+        """Return empty — IDF falls back to position weights."""
+        return {}
+
+    async def increment_keyword_df(self, keywords: list[str]) -> None:
+        """No-op — keyword DF tracking is local-only."""

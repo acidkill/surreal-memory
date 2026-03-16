@@ -2,13 +2,89 @@
 
 from __future__ import annotations
 
+import re
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from neural_memory.core.neuron import NeuronType
 from neural_memory.engine.activation import ActivationResult
+from neural_memory.utils.timeutils import utcnow
 
 # Average tokens per whitespace-separated word (accounts for subword tokenization)
 _TOKEN_RATIO = 1.3
+
+# Compression tier thresholds (days)
+_FULL_CONTENT_DAYS = 7
+_SUMMARY_DAYS = 30
+_MINIMAL_DAYS = 90
+
+# Sentence splitting regex — handles ". ", "! ", "? " followed by uppercase or end
+_SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def compress_for_recall(
+    content: str,
+    summary: str | None,
+    created_at: datetime | None,
+    max_sentences_medium: int = 3,
+    max_sentences_old: int = 2,
+) -> str:
+    """Compress memory content based on age for context-efficient recall.
+
+    Tiers:
+        < 7 days: full content
+        7-30 days: summary (if available) or first N sentences
+        30-90 days: summary (if available) or first 2 sentences
+        90+ days: summary (if available) or first sentence only
+
+    Args:
+        content: Raw memory content.
+        summary: Fiber summary (from consolidation), may be None.
+        created_at: When the memory was created.
+        max_sentences_medium: Max sentences for 7-30 day tier.
+        max_sentences_old: Max sentences for 30-90 day tier.
+
+    Returns:
+        Compressed content string.
+    """
+    if not content:
+        return ""
+
+    # Safe fallback: no timestamp = treat as recent
+    if created_at is None:
+        return content
+
+    now = utcnow()
+    age_days = (now - created_at).total_seconds() / 86400
+
+    # Tier 1: Recent — full content
+    if age_days < _FULL_CONTENT_DAYS:
+        return content
+
+    # Tier 2: Medium age — summary or truncated sentences
+    if age_days < _SUMMARY_DAYS:
+        if summary:
+            return summary
+        return _truncate_to_sentences(content, max_sentences_medium)
+
+    # Tier 3: Old — summary or key sentences
+    if age_days < _MINIMAL_DAYS:
+        if summary:
+            return summary
+        return _truncate_to_sentences(content, max_sentences_old)
+
+    # Tier 4: Very old — summary or first sentence only
+    if summary:
+        return summary
+    return _truncate_to_sentences(content, 1)
+
+
+def _truncate_to_sentences(text: str, max_sentences: int) -> str:
+    """Extract first N sentences from text."""
+    sentences = _SENTENCE_RE.split(text)
+    if len(sentences) <= max_sentences:
+        return text
+    return ". ".join(s.rstrip(".") for s in sentences[:max_sentences]) + "."
 
 
 def _estimate_tokens(text: str) -> int:
@@ -61,6 +137,13 @@ async def format_context(
                     content = _maybe_decrypt(anchor.content, fiber.metadata)
                 else:
                     continue
+
+            # Age-based compression: older memories get compressed
+            content = compress_for_recall(
+                content,
+                summary=fiber.summary,
+                created_at=fiber.created_at,
+            )
 
             # Format structured content if metadata has _structure
             content = _format_if_structured(content, fiber.metadata)

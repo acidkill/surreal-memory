@@ -271,16 +271,18 @@ class Synapse:
     def time_decay(self, reference_time: datetime | None = None) -> Synapse:
         """Decay weight based on time since last activation.
 
-        Uses sigmoid: recent synapses barely decay, old ones decay more.
-        Synapses that were never activated decay fastest.
+        Uses sigmoid with reinforcement-modulated half-life: reinforced
+        connections decay slower and have a higher floor.
 
-        ~0.98 at 1 day, ~0.90 at 7 days, ~0.70 at 30 days, ~0.50 at 60 days.
+        Unreinforced (count=0): ~0.98 at 1d, ~0.50 at 60d, floor 0.30
+        Reinforced 5x: half-life 210d, floor 0.55
+        Reinforced 10x: half-life 360d, floor 0.80
 
         Args:
             reference_time: Reference time for age calculation (default: now)
 
         Returns:
-            New Synapse with time-decayed weight (floor at 30% of original)
+            New Synapse with time-decayed weight
         """
         if reference_time is None:
             reference_time = utcnow()
@@ -292,11 +294,20 @@ class Synapse:
 
         hours_since = max(0, hours_since)
 
-        # Sigmoid decay: center at 1440h (60 days), spread 720h
-        exponent = (hours_since - 1440) / 720
+        # Adaptive half-life: reinforced connections last longer
+        base_half_life = 1440.0  # 60 days in hours
+        reinforcement_factor = 1.0 + self.reinforced_count * 0.5
+        effective_half_life = base_half_life * reinforcement_factor
+        spread = effective_half_life / 2.0
+
+        # Sigmoid decay centered at effective half-life
+        exponent = (hours_since - effective_half_life) / spread
         exponent = max(-100.0, min(100.0, exponent))
         factor = 1.0 / (1.0 + math.exp(exponent))
-        factor = max(0.3, factor)  # Floor: never decay below 30% of original
+
+        # Adaptive floor: reinforced connections have higher minimum
+        floor = 0.3 + min(0.5, self.reinforced_count * 0.05)
+        factor = max(floor, factor)
 
         new_weight = self.weight * factor
         return Synapse(
