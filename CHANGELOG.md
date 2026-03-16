@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.11.0] - 2026-03-17
+
+### Added
+
+- **Diminishing returns gate (v4.0 Phase 5)** — Stop spreading activation early when new hops add insufficient signal
+  - `ActivationTrace` dataclass: per-hop tracking of new neurons and activation gain
+  - `should_stop_spreading()`: absolute (< min neurons) + relative (gain ratio < threshold) criteria
+  - Wired into all 3 activation engines: BFS, PPR, Reflex
+  - 4 new `BrainConfig` fields: `diminishing_returns_enabled/threshold/min_neurons/grace_hops`
+  - 25 new tests (`test_diminishing_returns.py`)
+
+### Improved
+
+- **Roadmap cleanup** — Removed 45 completed/obsolete plan files, consolidated remaining plans
+  - File watcher plan added (3 phases, Issue #66)
+  - Brain Quality Track C1+C2 merged
+  - v4.0 master plan: all 5 phases complete
+
+### Tests
+
+- 4140 passed, 92 skipped, 1 xfailed
+
 ## [4.10.0] - 2026-03-16
 
 ### Added
