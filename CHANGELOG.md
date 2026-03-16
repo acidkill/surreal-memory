@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.9.0] - 2026-03-16
+
+### Added
+
+- **Knowledge Surface (.nm format)** — Two-tier memory architecture: Tier 1 = `.nm` flat file (~1000 tokens, loaded every session), Tier 2 = `brain.db` SQLite graph (queried on-demand)
+  - `.nm` format with 5 sections: GRAPH (causal edges), CLUSTERS (topic groups), SIGNALS (urgent/watching/uncertain), DEPTH MAP (self-routing hints), META (brain stats)
+  - `SurfaceGenerator` — algorithmic extraction from brain.db using composite scoring (activation + recency + connections + priority)
+  - Depth-aware recall routing: SUFFICIENT entities answered from surface (0 latency), NEEDS_DEEP triggers depth=2 recall
+  - Auto-injected into MCP `instructions` on session init for immediate agent context
+  - `nmem_surface` MCP tool — generate (rebuild from brain.db) and show (inspect current surface)
+  - Auto-regeneration on `nmem_auto(action="process")` session-end
+  - Atomic file writes (tmp + rename), project-level and global surface resolution
+  - Surface reload on brain switch, cached by brain name
+  - 73 new tests across 4 test files
+
+### Fixed
+
+- **CI fixes**: doc_trainer mock using real `BrainConfig` instead of `MagicMock` (lazy entity promotion attrs), auto_tags tests accept bigrams from keyword extractor
+- **Docs freshness**: regenerated CLI reference (new PostgreSQL migrate options)
+
 ## [4.8.0] - 2026-03-16
 
 ### Added

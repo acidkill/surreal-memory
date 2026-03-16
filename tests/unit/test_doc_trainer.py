@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from neural_memory.core.brain import BrainConfig
 from neural_memory.engine.doc_trainer import DocTrainer, TrainingConfig, TrainingResult
 
 
@@ -17,9 +18,12 @@ def mock_storage() -> AsyncMock:
     storage.add_neuron = AsyncMock()
     storage.add_synapse = AsyncMock()
     storage.add_fiber = AsyncMock()
+    storage.update_fiber = AsyncMock()
     storage.save_maturation = AsyncMock()
     storage.find_neurons = AsyncMock(return_value=[])
     storage.find_fibers = AsyncMock(return_value=[])
+    storage.count_entity_refs = AsyncMock(return_value=0)
+    storage.mark_entity_refs_promoted = AsyncMock()
     storage.disable_auto_save = MagicMock()
     storage.enable_auto_save = MagicMock()
     storage.batch_save = AsyncMock()
@@ -28,9 +32,9 @@ def mock_storage() -> AsyncMock:
 
 
 @pytest.fixture
-def mock_config() -> MagicMock:
-    """Create a mock BrainConfig."""
-    return MagicMock()
+def mock_config() -> BrainConfig:
+    """Create a real BrainConfig with defaults (avoids MagicMock attr type issues)."""
+    return BrainConfig()
 
 
 class TestTrainingConfig:

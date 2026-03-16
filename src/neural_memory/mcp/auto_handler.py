@@ -120,13 +120,42 @@ class AutoHandler:
             return {"saved": 0, "message": "No memorable content detected"}
 
         saved = await self._save_detected_memories(detected)
+
+        # Regenerate Knowledge Surface after processing session summary
+        surface_regenerated = False
+        try:
+            await self._regenerate_surface_if_available()
+            surface_regenerated = True
+        except Exception:
+            logger.debug("Surface regeneration skipped (non-critical)", exc_info=True)
+
         return {
             "saved": len(saved),
             "memories": saved,
+            "surface_regenerated": surface_regenerated,
             "message": f"Auto-captured {len(saved)} memories"
             if saved
             else "No memories met confidence threshold",
         }
+
+    async def _regenerate_surface_if_available(self) -> None:
+        """Regenerate Knowledge Surface if the feature is available."""
+        from neural_memory.surface.lifecycle import regenerate_surface
+
+        storage = await self.get_storage()
+        brain_id = getattr(storage, "brain_id", None)
+        if not brain_id:
+            return
+
+        brain = await storage.get_brain(brain_id)
+        brain_name = brain.name if brain else "default"
+
+        await regenerate_surface(storage=storage, brain_name=brain_name)
+
+        # Invalidate cached surface so next session picks up changes
+        if hasattr(self, "_surface_text"):
+            self._surface_text = ""
+            self._surface_brain = ""
 
     async def _auto_flush(self, args: dict[str, Any]) -> dict[str, Any]:
         """Emergency flush: aggressive capture before context is lost.

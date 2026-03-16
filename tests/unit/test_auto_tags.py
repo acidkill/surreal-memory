@@ -62,8 +62,8 @@ class TestAutoTagGeneration:
         )
 
         tags_lower = {t.lower() for t in result.fiber.tags}
-        # Core keywords should be present
-        keyword_candidates = {"redis", "caching", "memcached"}
+        # Core keywords should be present as unigrams or bigrams
+        keyword_candidates = {"redis", "caching", "memcached", "redis caching", "use redis"}
         assert tags_lower & keyword_candidates, (
             f"Expected at least one of {keyword_candidates} in tags, got {tags_lower}"
         )
@@ -85,9 +85,9 @@ class TestAutoTagGeneration:
         # Agent tags preserved (may be normalized: "infrastructure" → "infra")
         assert "architecture-decision" in tags or "infra" in tags
         assert "infra" in tags  # "infrastructure" normalized to "infra"
-        # Auto-tags also present
+        # Auto-tags also present (as unigrams or bigrams)
         tags_lower = {t.lower() for t in tags}
-        assert tags_lower & {"redis", "caching"}, (
+        assert tags_lower & {"redis", "caching", "redis caching", "use redis"}, (
             f"Auto-tags missing: expected redis/caching in {tags_lower}"
         )
 

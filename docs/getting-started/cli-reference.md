@@ -972,6 +972,11 @@ nmem migrate [OPTIONS]
 | `--brain / -b` | text | No | — | Specific brain to migrate (default: current) |
 | `--falkordb-host` | text | No | `localhost` | FalkorDB host |
 | `--falkordb-port` | integer | No | `6379` | FalkorDB port |
+| `--pg-host` | text | No | `localhost` | PostgreSQL host |
+| `--pg-port` | integer | No | `5432` | PostgreSQL port |
+| `--pg-database` | text | No | `neuralmemory` | PostgreSQL database name |
+| `--pg-user` | text | No | `postgres` | PostgreSQL user |
+| `--pg-password` | text | No | `` | PostgreSQL password (or use NEURAL_MEMORY_POSTGRES_PASSWORD env) |
 
 ### `nmem update`
 

@@ -1588,6 +1588,35 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "nmem_surface",
+        "description": "Knowledge Surface management — generate or inspect the .nm surface file. "
+        "The surface is a compact knowledge graph (~1000 tokens) loaded every session. "
+        "Actions: generate (rebuild from brain.db), show (display current surface info).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["generate", "show"],
+                    "description": "generate=rebuild surface from brain.db, show=display current surface info",
+                },
+                "token_budget": {
+                    "type": "integer",
+                    "minimum": 200,
+                    "maximum": 5000,
+                    "description": "Token budget for surface (default: 1200). Only used with generate action.",
+                },
+                "max_graph_nodes": {
+                    "type": "integer",
+                    "minimum": 5,
+                    "maximum": 100,
+                    "description": "Max graph nodes to include (default: 30). Only used with generate action.",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "nmem_tool_stats",
         "description": "Tool usage analytics: which tools agents use, frequency, success rates, and daily trends.",
         "inputSchema": {

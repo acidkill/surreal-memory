@@ -166,6 +166,8 @@ class ToolHandler:
     if TYPE_CHECKING:
         config: UnifiedConfig
         hooks: HookRegistry
+        _surface_text: str
+        _surface_brain: str
 
         async def get_storage(self) -> NeuralStorage:
             raise NotImplementedError
@@ -190,6 +192,76 @@ class ToolHandler:
 
         def get_update_hint(self) -> dict[str, Any] | None:
             raise NotImplementedError
+
+    # ──────────────────── Surface Depth Routing ────────────────────
+
+    def _check_surface_depth(
+        self,
+        query: str,
+    ) -> tuple[dict[str, Any] | None, int | None]:
+        """Check the Knowledge Surface DEPTH MAP for recall routing.
+
+        If the query matches a SUFFICIENT entity, returns surface context
+        directly (no brain.db query needed). For NEEDS_DETAIL or NEEDS_DEEP,
+        returns a suggested depth override.
+
+        Args:
+            query: The recall query string.
+
+        Returns:
+            Tuple of (surface_response_or_None, depth_override_or_None).
+            If surface_response is not None, caller should return it immediately.
+        """
+        if not hasattr(self, "_surface_text") or not self._surface_text:
+            return None, None
+
+        try:
+            from neural_memory.surface.models import DepthLevel
+            from neural_memory.surface.parser import parse
+
+            surface = parse(self._surface_text)
+        except Exception:
+            return None, None
+
+        # Normalize query for matching
+        query_lower = query.lower().strip()
+
+        # Find matching entity in graph nodes
+        for entry in surface.graph:
+            node = entry.node
+            if query_lower in node.content.lower() or node.content.lower() in query_lower:
+                depth_level = surface.get_depth_hint(node.id)
+                if depth_level == DepthLevel.SUFFICIENT:
+                    # Build context from surface graph
+                    context_parts = [f"[{node.id}] {node.content} ({node.node_type})"]
+                    for edge in entry.edges:
+                        if edge.target_id:
+                            context_parts.append(
+                                f"  →{edge.edge_type}→ [{edge.target_id}] {edge.target_text}"
+                            )
+                        else:
+                            context_parts.append(f"  →{edge.edge_type}→ {edge.target_text}")
+
+                    # Add cluster context if available
+                    for cluster in surface.clusters:
+                        if node.id in cluster.node_ids:
+                            context_parts.append(f"  @{cluster.name}: {cluster.description}")
+
+                    return {
+                        "answer": "\n".join(context_parts),
+                        "confidence": 0.8,
+                        "source": "knowledge_surface",
+                        "depth_hint": "SUFFICIENT",
+                        "message": "Answered from Knowledge Surface (no brain.db query needed)",
+                    }, None
+
+                elif depth_level == DepthLevel.NEEDS_DEEP:
+                    return None, 2
+
+                elif depth_level == DepthLevel.NEEDS_DETAIL:
+                    return None, 1
+
+        return None, None
 
     # ──────────────────── Helpers ────────────────────
 
@@ -895,6 +967,17 @@ class ToolHandler:
                 return {"error": f"Invalid valid_at datetime: {args['valid_at']}"}
 
         await self.hooks.emit(HookEvent.PRE_RECALL, {"query": query, "depth": depth.value})
+
+        # Surface depth routing: SUFFICIENT → answer from surface, skip brain.db
+        if not args.get("depth"):  # Only route when user didn't specify depth
+            surface_response, depth_override = self._check_surface_depth(query)
+            if surface_response is not None:
+                return surface_response
+            if depth_override is not None:
+                try:
+                    depth = DepthLevel(depth_override)
+                except ValueError:
+                    pass
 
         pipeline = ReflexPipeline(storage, brain.config)
         result = await pipeline.query(

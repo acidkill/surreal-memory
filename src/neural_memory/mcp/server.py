@@ -46,6 +46,7 @@ from neural_memory.mcp.prompt import get_mcp_instructions, get_system_prompt
 from neural_memory.mcp.review_handler import ReviewHandler
 from neural_memory.mcp.scheduled_consolidation_handler import ScheduledConsolidationHandler
 from neural_memory.mcp.session_handler import SessionHandler
+from neural_memory.mcp.surface_handler import SurfaceHandler
 from neural_memory.mcp.sync_handler import SyncToolHandler
 from neural_memory.mcp.telegram_handler import TelegramHandler
 from neural_memory.mcp.tool_handlers import ToolHandler
@@ -96,6 +97,7 @@ class MCPServer(
     ExpiryCleanupHandler,
     ScheduledConsolidationHandler,
     VersionCheckHandler,
+    SurfaceHandler,
     SyncToolHandler,
     TelegramHandler,
     DriftHandler,
@@ -126,6 +128,7 @@ class MCPServer(
         VersionCheckHandler  — background PyPI version check + update hints
         SyncToolHandler      — _sync, _sync_status, _sync_config (multi-device sync)
         TelegramHandler      — _telegram_backup (send brain to Telegram)
+        SurfaceHandler       — _surface (knowledge surface generate/show)
         DriftHandler         — _drift (semantic drift detection + resolution)
     """
 
@@ -134,6 +137,8 @@ class MCPServer(
         self._storage: NeuralStorage | None = None
         self._eternal_ctx = None
         self.hooks: HookRegistry = HookRegistry()
+        self._surface_text: str = ""
+        self._surface_brain: str = ""
 
     async def get_storage(self) -> NeuralStorage:
         """Get or create shared storage instance.
@@ -145,7 +150,38 @@ class MCPServer(
         # get_shared_storage() handles brain-change detection internally
         # and returns the correct (possibly cached) storage instance.
         self._storage = await get_shared_storage()
+
+        # Reload surface if brain changed
+        current_brain = self.config.current_brain or "default"
+        if current_brain != self._surface_brain:
+            self.load_surface(current_brain)
+
         return self._storage
+
+    def load_surface(self, brain_name: str = "") -> str:
+        """Load the Knowledge Surface for the current brain.
+
+        Caches the result — only re-reads from disk when brain changes.
+
+        Args:
+            brain_name: Brain to load surface for. If empty, uses current brain.
+
+        Returns:
+            Surface text (empty string if not found).
+        """
+        if not brain_name:
+            brain_name = self.config.current_brain or "default"
+
+        # Cache hit: same brain, already loaded
+        if brain_name == self._surface_brain and self._surface_text:
+            return self._surface_text
+
+        from neural_memory.surface.resolver import load_surface_text
+
+        text = load_surface_text(brain_name)
+        self._surface_text = text or ""
+        self._surface_brain = brain_name
+        return self._surface_text
 
     def get_resources(self) -> list[dict[str, Any]]:
         """Return list of available MCP resources."""
@@ -224,6 +260,7 @@ class MCPServer(
             "nmem_forget": self._forget,
             "nmem_consolidate": self._consolidate,
             "nmem_drift": self._drift,
+            "nmem_surface": self._surface,
             "nmem_tool_stats": self._tool_stats,
         }
         handler = dispatch.get(name)
@@ -247,6 +284,13 @@ async def handle_message(server: MCPServer, message: dict[str, Any]) -> dict[str
     params = message.get("params", {})
 
     if method == "initialize":
+        instructions = get_mcp_instructions()
+
+        # Inject Knowledge Surface if available
+        surface_text = server.load_surface()
+        if surface_text:
+            instructions = f"{instructions}\n\n## Knowledge Surface\n{surface_text}"
+
         return {
             "jsonrpc": "2.0",
             "id": msg_id,
@@ -254,7 +298,7 @@ async def handle_message(server: MCPServer, message: dict[str, Any]) -> dict[str
                 "protocolVersion": "2024-11-05",
                 "serverInfo": {"name": "neural-memory", "version": __version__},
                 "capabilities": {"tools": {}, "resources": {}},
-                "instructions": get_mcp_instructions(),
+                "instructions": instructions,
             },
         }
 
