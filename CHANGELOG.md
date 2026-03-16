@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.10.0] - 2026-03-16
+
+### Added
+
+- **Onboarding overhaul (Issue #82)** — Reduce 26 manual setup steps to 1 command
+  - `nmem init --full`: auto-detect embeddings, enable dedup, generate maintenance script, print guide URL
+  - `nmem doctor` enhanced: 11 checks (was 8), `--fix` flag for auto-remediation (hooks, dedup, embedding)
+  - Interactive quickstart guide page (MkDocs + animated terminal demos, scroll reveals, feature cards)
+  - Dashboard `GuideCard` for new users (<50 neurons) — dismissible, persisted via localStorage
+  - Help button (?) in dashboard TopBar linking to quickstart guide
+  - CLI banners link to guide URL after init and doctor
+  - 35 new tests (test_full_setup + test_doctor_enhanced)
+
+### Fixed
+
+- **Windows npm install**: OpenClaw plugin postinstall uses cross-platform Node.js instead of Unix shell syntax
+
 ## [4.9.0] - 2026-03-16
 
 ### Added

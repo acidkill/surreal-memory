@@ -380,6 +380,7 @@ nmem doctor [OPTIONS]
 | Option | Type | Required | Default | Description |
 |--------|------|----------|---------|-------------|
 | `--json / -j` | boolean | No | `False` | Output as JSON |
+| `--fix` | boolean | No | `False` | Auto-fix available issues |
 
 ### `nmem dashboard`
 
@@ -497,6 +498,7 @@ nmem init [OPTIONS]
 | `--skip-skills` | boolean | No | `False` | Skip skills installation |
 | `--wizard / -w` | boolean | No | `False` | Interactive setup wizard |
 | `--defaults` | boolean | No | `False` | Non-interactive with all defaults |
+| `--full` | boolean | No | `False` | Extended setup: embeddings, dedup, maintenance script |
 
 ### `nmem setup`
 
