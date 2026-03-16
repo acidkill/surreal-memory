@@ -176,3 +176,4 @@ en_core_web_md/
 en_core_web_lg/
 # Gemini CLI settings (contains user-specific config)
 .gemini/
+.gitnexus
