@@ -12,7 +12,7 @@
 
 NeuralMemory stores experiences as interconnected neurons and recalls them through spreading activation, mimicking how the human brain works. Instead of searching a database, memories surface through associative recall — activating related concepts until the relevant memory emerges.
 
-**45 MCP tools** · **14 memory types** · **24 synapse types** · **Schema v27** · **3976+ tests** · **Cognitive reasoning layer**
+**45 MCP tools** · **14 memory types** · **24 synapse types** · **Schema v28** · **3963+ tests** · **Cognitive reasoning layer**
 
 ## Why Not RAG / Vector Search?
 

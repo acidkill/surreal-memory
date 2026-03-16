@@ -70,7 +70,7 @@ Specialized pipelines for training brains from external sources:
 - **DBTrainer** - Train from database schemas (introspection → knowledge extraction → encoding)
 - **SchemaIntrospector** - Database schema metadata extraction (SQLite dialect)
 - **KnowledgeExtractor** - Transform schema snapshots into confidence-scored teachable knowledge
-- **ConsolidationEngine** - ENRICH, DREAM, LEARN_HABITS, MATURE, INFER, PRUNE strategies
+- **ConsolidationEngine** - ENRICH, DREAM, LEARN_HABITS, MATURE, INFER, PRUNE strategies; auto-runs MATURE+INFER+ENRICH on MCP shutdown (B1)
 - **ContextOptimizer** - Composite scoring, SimHash dedup, token budget allocation for `nmem_context`
 - **QueryPatternMining** - Topic co-occurrence mining from recall events, pattern materialization
 - **AlertHandler** - Persistent alert lifecycle (active → seen → acknowledged → resolved)
@@ -116,11 +116,13 @@ Input Text
          ▼
 ┌─────────────────┐
 │  MemoryEncoder  │  Create neurons and synapses
+│                 │  · CreateSynapsesStep: IDF-weighted keywords (B4)
+│                 │  · CrossMemoryLinkStep: RELATED_TO via shared entities (B3)
 └────────┬────────┘
          │
          ▼
 ┌─────────────────┐
-│  Storage        │  Persist to graph
+│  Storage        │  Persist to graph (schema v28)
 └─────────────────┘
 ```
 
@@ -173,14 +175,20 @@ Query
          │
          ▼
 ┌─────────────────┐
+│  Score Fibers   │  Fiber-level recall scoring (B5)
+│                 │  base_quality × activation_signal × stage_multiplier
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
 │  Extract        │  Build response context
-│  Subgraph       │
+│  Subgraph       │  · Contextual compression by age (B6)
 └────────┬────────┘
          │
          ▼
 ┌─────────────────┐
 │  Reinforce      │  Update fiber conductivity
-│  Fibers         │
+│  Fibers         │  · Adaptive synapse decay (B8)
 └─────────────────┘
 ```
 
