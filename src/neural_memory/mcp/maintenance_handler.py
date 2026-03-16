@@ -64,10 +64,11 @@ class HealthPulse:
     synapse_count: int
     connectivity: float
     orphan_ratio: float
-    expired_memory_count: int
-    stale_fiber_ratio: float
-    hints: tuple[HealthHint, ...]
-    should_consolidate: bool
+    expired_memory_count: int = 0
+    stale_fiber_ratio: float = 0.0
+    consolidation_ratio: float = 0.0
+    hints: tuple[HealthHint, ...] = ()
+    should_consolidate: bool = False
 
     @property
     def hint_messages(self) -> tuple[str, ...]:
@@ -154,12 +155,22 @@ class MaintenanceHandler:
 
         stale_fiber_ratio = stale_fiber_count / fiber_count if fiber_count > 0 else 0.0
 
+        # Consolidation ratio: semantic fibers / total fibers
+        consolidation_ratio = 0.0
+        try:
+            stage_counts = await storage.get_fiber_stage_counts(brain_id)
+            semantic_count = stage_counts.get("semantic", 0)
+            consolidation_ratio = semantic_count / fiber_count if fiber_count > 0 else 0.0
+        except Exception:
+            logger.debug("Health pulse: get_fiber_stage_counts failed", exc_info=True)
+
         hints = _evaluate_thresholds(
             fiber_count=fiber_count,
             neuron_count=neuron_count,
             synapse_count=synapse_count,
             connectivity=connectivity,
             orphan_ratio=orphan_ratio,
+            consolidation_ratio=consolidation_ratio,
             expired_memory_count=expired_memory_count,
             expiring_soon_count=expiring_soon_count,
             stale_fiber_ratio=stale_fiber_ratio,
@@ -174,6 +185,7 @@ class MaintenanceHandler:
             synapse_count=synapse_count,
             connectivity=round(connectivity, 2),
             orphan_ratio=round(orphan_ratio, 2),
+            consolidation_ratio=round(consolidation_ratio, 4),
             expired_memory_count=expired_memory_count,
             stale_fiber_ratio=round(stale_fiber_ratio, 2),
             hints=tuple(hints),
@@ -256,6 +268,37 @@ class MaintenanceHandler:
             pulse.neuron_count,
         )
         return (*strategies, "dream")
+
+    async def run_session_end_consolidation(self) -> None:
+        """Run consolidation at session end (MCP server shutdown).
+
+        Runs MATURE + INFER strategies synchronously before storage closes.
+        This is the primary mechanism for advancing fibers from episodic to
+        semantic stage, addressing the #1 brain health penalty.
+        """
+        cfg: MaintenanceConfig = self.config.maintenance  # type: ignore[attr-defined]
+        if not cfg.enabled or not cfg.auto_consolidate:
+            return
+
+        try:
+            from neural_memory.engine.consolidation import ConsolidationStrategy
+            from neural_memory.engine.consolidation_delta import run_with_delta
+
+            storage = await self.get_storage()  # type: ignore[attr-defined]
+            brain_id = _require_brain_id(storage)
+            strategies = [
+                ConsolidationStrategy.MATURE,
+                ConsolidationStrategy.INFER,
+                ConsolidationStrategy.ENRICH,
+            ]
+            delta = await run_with_delta(storage, brain_id, strategies=strategies)
+            logger.info(
+                "Session-end consolidation complete: %s | purity delta: %+.1f",
+                delta.report.summary(),
+                delta.purity_delta,
+            )
+        except Exception:
+            logger.error("Session-end consolidation failed", exc_info=True)
 
     async def _run_auto_consolidation_dynamic(self, strategy_names: tuple[str, ...]) -> None:
         """Background task: run dynamically selected consolidation strategies."""
@@ -350,6 +393,7 @@ def _evaluate_thresholds(
     synapse_count: int,
     connectivity: float,
     orphan_ratio: float,
+    consolidation_ratio: float = 0.0,
     expired_memory_count: int = 0,
     expiring_soon_count: int = 0,
     stale_fiber_ratio: float = 0.0,
@@ -395,6 +439,18 @@ def _evaluate_thresholds(
                 "Consider running consolidation with enrich strategy.",
                 severity=HintSeverity.LOW,
                 recommended_strategy="enrich",
+            )
+        )
+
+    if fiber_count >= 20 and consolidation_ratio < cfg.consolidation_ratio_threshold:
+        pct = round(consolidation_ratio * 100, 1)
+        severity = HintSeverity.HIGH if consolidation_ratio < 0.02 else HintSeverity.MEDIUM
+        hints.append(
+            HealthHint(
+                message=f"Low consolidation ratio ({pct}% semantic). "
+                "Running mature strategy to advance memory stages.",
+                severity=severity,
+                recommended_strategy="mature",
             )
         )
 

@@ -1505,12 +1505,13 @@ class ReflexPipeline:
         if valid_at is not None:
             fibers = [f for f in fibers if _fiber_valid_at(f, valid_at)]
 
-        # Sort by composite score: salience * freshness * conductivity
+        # Sort by composite score: base quality * activation relevance * stage bonus
         # Doc-trained fibers start at lower salience (ceiling 0.5) and EPISODIC stage,
         # so lifecycle naturally handles ranking without retrieval-time hacks.
         fw = self._config.freshness_weight
 
         def _fiber_score(fiber: Fiber) -> float:
+            # --- Base quality: salience * recency * conductivity ---
             recency = 0.5
             if fiber.last_conducted:
                 hours_ago = (utcnow() - fiber.last_conducted).total_seconds() / 3600
@@ -1523,10 +1524,26 @@ class ReflexPipeline:
                 from neural_memory.safety.freshness import evaluate_freshness
 
                 age_result = evaluate_freshness(fiber.created_at)
-                # fw=0: 1.0x | fw=0.5: 0.55x-1.0x | fw=1.0: 0.1x-1.0x
                 base_score *= (1.0 - fw) + fw * age_result.score
 
-            return base_score
+            # --- Activation relevance: how well does this fiber match the query? ---
+            activated = [nid for nid in fiber.neuron_ids if nid in activations]
+            if activated:
+                coverage = len(activated) / max(len(fiber.neuron_ids), 1)
+                max_act = max(activations[nid].activation_level for nid in activated)
+                mean_act = sum(activations[nid].activation_level for nid in activated) / len(
+                    activated
+                )
+                activation_signal = max_act * 0.5 + coverage * 0.3 + mean_act * 0.2
+                activation_signal = max(0.05, activation_signal)
+            else:
+                activation_signal = 0.05
+
+            # --- Stage bonus: semantic memories are more consolidated/reliable ---
+            stage = getattr(fiber, "stage", None)
+            stage_multiplier = 1.1 if stage == "semantic" else 1.0
+
+            return base_score * activation_signal * stage_multiplier
 
         fibers.sort(key=_fiber_score, reverse=True)
 

@@ -473,75 +473,54 @@ def get_system_prompt(compact: bool = False) -> str:
 
 
 MCP_INSTRUCTIONS = """\
-CRITICAL BEHAVIOR: You MUST use Neural Memory proactively in EVERY session.
+Neural Memory gives you persistent memory across sessions. Use it proactively — \
+each session starts fresh, so without explicit saves ALL discoveries are lost.
 
-MANDATORY ACTIONS:
-1. SESSION START: Call nmem_recall("current project context") to load past context.
-2. AFTER EVERY TASK: Call nmem_remember() to save what you learned/decided/fixed.
-3. SESSION END: Call nmem_auto(action="process", text="<summary>") to capture remaining context.
+## WHEN TO RECALL (before responding)
 
-WHAT TO REMEMBER (after each completed task):
-- Decisions: "Chose X over Y because Z" → type="decision", priority=7
-- Bug fixes: "Root cause was X, fixed by Y" → type="error", priority=7
-- Patterns: "This codebase uses X pattern for Y" → type="insight", priority=6
-- User preferences: "User prefers X" → type="preference", priority=8
-- Workflows: "Deploy process: build → test → push" → type="workflow", priority=6
-- Facts: "API endpoint is /v2/users" → type="fact", priority=5
-- Instructions: "Always run linter before commit" → type="instruction", priority=8
+| Trigger | Action |
+|---------|--------|
+| New session starts | nmem_recall("current project context") |
+| User references past event/decision | nmem_recall("<that topic>") |
+| Task involves tech/pattern discussed before | nmem_recall("<project> <tech>") |
+| Purely new, self-contained question | Skip recall |
 
-USE RICH LANGUAGE (creates better neural connections):
-- BAD: "PostgreSQL" (flat, no context — creates orphan neuron with zero connections)
-- GOOD: "Chose PostgreSQL over MongoDB because ACID needed for payments" (causal, linked)
-- GOOD: "After upgrading to v3, the auth middleware broke because of new cookie format" (temporal + causal)
-- GOOD: "Redis replaced Memcached for session store — 3x faster for our read pattern" (comparative + decisional)
+Query tips: Be specific ("auth bug fix March 2026"), prefix with project name, \
+avoid vague queries ("stuff", "what happened").
 
-REMEMBER PATTERNS (mix these for maximum brain connectivity):
-- Causal: "X caused Y", "Because of A, B happened", "Root cause was X which led to Y"
-- Temporal: "After A, then B", "Before doing X, must complete Y"
-- Relational: "X depends on Y", "X replaced Y", "X connects to Y through Z"
-- Decisional: "Chose X over Y because Z", "Rejected X due to Y"
-- Comparative: "X is faster than Y for Z scenario"
+## WHEN TO SAVE (after completing work)
 
-PRIORITY SCALE: 0-3=routine notes, 5=normal, 7-8=important decisions, 9-10=critical errors/security.
-TAGS: Always include project name + topic. Keep lowercase: "react", "auth", "bug-fix".
+After each task, check: did I just...
 
-BRAIN GROWTH TIPS:
-- Store 3-5 memories per task (not just 1). A bug fix has: root cause, fix, insight, prevention.
-- Use diverse types: don't just store "fact" — use decision, insight, error, workflow, preference.
-- Link memories: mention the same entities across memories to build neural connections.
-- High-priority memories (7+) get boosted in retrieval — use them for things you'll need again.
-- After storing, call nmem_recall on the topic to reinforce the new connections.
+| Signal | Type | Priority |
+|--------|------|----------|
+| Choose between alternatives | decision | 7 |
+| Fix a bug (root cause + fix) | error | 7 |
+| Discover a pattern/insight | insight | 6 |
+| Learn a user preference | preference | 8 |
+| Establish a workflow | workflow | 6 |
+| Find a reusable fact | fact | 5 |
+| Receive explicit instruction | instruction | 8 |
 
-MEMORY CORRECTION:
-- Wrong type? → nmem_edit(memory_id="...", type="correct_type")
-- Wrong content? → nmem_edit(memory_id="...", content="corrected text")
-- Outdated? → nmem_forget(memory_id="...", reason="outdated")
-- Sensitive/garbage? → nmem_forget(memory_id="...", hard=true)
+Priority scale: 9-10 critical (security, data loss), 7-8 important (decisions, preferences), \
+5-6 normal (patterns, facts), 1-4 minor.
 
-BRAIN HEALTH: Run nmem_health() weekly. Fix the highest top_penalty first:
-- Consolidation 0% → nmem consolidate (normal for new brains, run after 1 week)
-- Orphans > 20% → nmem consolidate --strategy prune
-- Low activation → Recall 5+ different topics with nmem_recall
-- Low connectivity → Store with context: "X because Y", "after A then B"
-- Low diversity → Use varied memory types (not just facts)
+## DO NOT SAVE
 
-CONNECTION TRACING: Use nmem_explain(entity_a, entity_b) to trace paths between concepts.
+- Routine file reads/writes (ephemeral, no lasting value)
+- Things already in code or git history (derivable)
+- Temporary debugging steps (transient)
+- Content already stored (check with nmem_recall first)
 
-COGNITIVE REASONING: Use nmem_hypothesize to form hypotheses, nmem_evidence to update them,
-nmem_predict for falsifiable predictions, nmem_verify to check outcomes.
-Use nmem_schema(action="evolve") when a hypothesis needs updating.
-Use nmem_gaps(action="detect") when you notice the brain doesn't know something.
+## CONTENT QUALITY
 
-ALL 45 TOOLS: nmem_remember, nmem_remember_batch, nmem_recall, nmem_context, nmem_todo, nmem_auto,
-nmem_suggest, nmem_session, nmem_eternal, nmem_recap, nmem_stats, nmem_health, nmem_evolution,
-nmem_habits, nmem_version, nmem_transplant, nmem_conflicts, nmem_alerts, nmem_index, nmem_train,
-nmem_train_db, nmem_pin, nmem_review, nmem_narrative, nmem_import, nmem_explain, nmem_hypothesize,
-nmem_evidence, nmem_predict, nmem_verify, nmem_cognitive, nmem_gaps, nmem_schema, nmem_edit,
-nmem_forget, nmem_consolidate, nmem_show, nmem_source, nmem_provenance, nmem_tool_stats,
-nmem_sync, nmem_sync_status, nmem_sync_config, nmem_telegram_backup, nmem_drift.
+1. Max 1-3 sentences. Never dump file structures or full implementation details.
+2. Use causal language: "Chose X over Y because Z", "Root cause was X, fixed by Y".
+3. Always include project name + topic in tags (lowercase).
 
-NEVER skip remembering after completing a feature, fixing a bug, or making a decision.
-Each session starts fresh — without explicit saves, ALL discoveries are lost forever.\
+## SESSION END
+
+Call nmem_auto(action="process", text="<brief session summary>") to capture remaining context.\
 """
 
 

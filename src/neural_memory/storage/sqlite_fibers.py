@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from neural_memory.core.fiber import Fiber
 from neural_memory.storage.sqlite_row_mappers import row_to_fiber
+from neural_memory.utils.timeutils import utcnow
 
 
 def _build_fts_query(search_term: str) -> str:
@@ -407,6 +408,59 @@ class SQLiteFiberMixin:
         ) as cursor:
             row = await cursor.fetchone()
             return row[0] if row else 0
+
+    async def get_fiber_stage_counts(self, brain_id: str) -> dict[str, int]:
+        conn = self._ensure_read_conn()
+        async with conn.execute(
+            "SELECT stage, COUNT(*) FROM fibers WHERE brain_id = ? GROUP BY stage",
+            (brain_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return {row[0]: row[1] for row in rows}
+
+    async def get_total_fiber_count(self) -> int:
+        """Get total number of fibers for the current brain."""
+        conn = self._ensure_read_conn()
+        brain_id = self._get_brain_id()
+        async with conn.execute(
+            "SELECT COUNT(*) FROM fibers WHERE brain_id = ?",
+            (brain_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else 0
+
+    async def get_keyword_df_batch(self, keywords: list[str]) -> dict[str, int]:
+        """Get document frequency for a batch of keywords."""
+        if not keywords:
+            return {}
+        conn = self._ensure_read_conn()
+        brain_id = self._get_brain_id()
+        placeholders = ",".join("?" for _ in keywords)
+        async with conn.execute(
+            f"SELECT keyword, fiber_count FROM keyword_document_frequency"
+            f" WHERE brain_id = ? AND keyword IN ({placeholders})",
+            [brain_id, *keywords],
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return {row[0]: row[1] for row in rows}
+
+    async def increment_keyword_df(self, keywords: list[str]) -> None:
+        """Increment document frequency for each keyword (UPSERT)."""
+        if not keywords:
+            return
+        conn = self._ensure_conn()
+        brain_id = self._get_brain_id()
+        now_iso = utcnow().isoformat()
+        # Deduplicate keywords (one fiber = one count per keyword)
+        unique_keywords = set(keywords)
+        await conn.executemany(
+            "INSERT INTO keyword_document_frequency (brain_id, keyword, fiber_count, last_updated)"
+            " VALUES (?, ?, 1, ?)"
+            " ON CONFLICT(brain_id, keyword) DO UPDATE SET"
+            " fiber_count = fiber_count + 1, last_updated = ?",
+            [(brain_id, kw, now_iso, now_iso) for kw in unique_keywords],
+        )
+        await conn.commit()
 
     async def get_fibers(
         self,

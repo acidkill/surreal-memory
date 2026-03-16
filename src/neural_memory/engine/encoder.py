@@ -18,6 +18,7 @@ from neural_memory.engine.pipeline_steps import (
     CoOccurrenceStep,
     CreateAnchorStep,
     CreateSynapsesStep,
+    CrossMemoryLinkStep,
     DedupCheckStep,
     EmotionStep,
     ExtractActionNeuronsStep,
@@ -73,7 +74,7 @@ def build_default_pipeline(
     tag_normalizer: TagNormalizer,
     dedup_pipeline: DedupPipeline | None = None,
 ) -> Pipeline:
-    """Build the default encoding pipeline with all 14 steps.
+    """Build the default encoding pipeline with all 15 steps.
 
     This is the standard pipeline that reproduces the original monolithic
     ``encode()`` behavior. Users can customize by removing, replacing,
@@ -109,6 +110,7 @@ def build_default_pipeline(
             ConflictDetectionStep(),
             TemporalLinkingStep(),
             SemanticLinkingStep(),
+            CrossMemoryLinkStep(),
             BuildFiberStep(),
         ]
     )

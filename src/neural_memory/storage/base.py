@@ -844,6 +844,38 @@ class NeuralStorage(ABC):
         """
         raise NotImplementedError
 
+    async def get_fiber_stage_counts(self, brain_id: str) -> dict[str, int]:
+        """Get count of fibers grouped by maturation stage.
+
+        Returns:
+            Dict mapping stage names to counts, e.g.
+            {"stm": 10, "working": 5, "episodic": 80, "semantic": 5}
+        """
+        raise NotImplementedError
+
+    async def get_total_fiber_count(self) -> int:
+        """Get total number of fibers for the current brain."""
+        raise NotImplementedError
+
+    async def get_keyword_df_batch(self, keywords: list[str]) -> dict[str, int]:
+        """Get document frequency (fiber count) for a batch of keywords.
+
+        Args:
+            keywords: List of keyword strings (lowercased).
+
+        Returns:
+            Dict mapping keyword to its fiber_count. Missing keywords omitted.
+        """
+        raise NotImplementedError
+
+    async def increment_keyword_df(self, keywords: list[str]) -> None:
+        """Increment document frequency for each keyword by 1 (UPSERT).
+
+        Args:
+            keywords: List of keyword strings (lowercased) from the encoded memory.
+        """
+        raise NotImplementedError
+
     # ========== Maturation Operations ==========
 
     async def save_maturation(self, record: MaturationRecord) -> None:  # noqa: B027

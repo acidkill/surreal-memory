@@ -84,8 +84,9 @@ class TestMaintenanceConfig:
         assert cfg.stale_fiber_ratio_threshold == 0.3
         assert cfg.stale_fiber_days == 90
         assert cfg.auto_consolidate is True
-        assert cfg.auto_consolidate_strategies == ("prune", "merge")
-        assert cfg.consolidate_cooldown_minutes == 60
+        assert cfg.auto_consolidate_strategies == ("prune", "merge", "mature", "infer")
+        assert cfg.consolidate_cooldown_minutes == 30
+        assert cfg.consolidation_ratio_threshold == 0.1
 
     def test_immutability(self) -> None:
         cfg = MaintenanceConfig()
@@ -102,6 +103,7 @@ class TestMaintenanceConfig:
             neuron_warn_threshold=500,
             synapse_warn_threshold=1000,
             orphan_ratio_threshold=0.5,
+            consolidation_ratio_threshold=0.15,
             expired_memory_warn_threshold=5,
             stale_fiber_ratio_threshold=0.5,
             stale_fiber_days=60,
@@ -135,6 +137,7 @@ class TestHealthPulse:
             synapse_count=800,
             connectivity=1.6,
             orphan_ratio=0.0,
+            consolidation_ratio=0.0,
             expired_memory_count=0,
             stale_fiber_ratio=0.0,
             hints=(),
@@ -154,6 +157,7 @@ class TestHealthPulse:
             synapse_count=0,
             connectivity=0.0,
             orphan_ratio=0.0,
+            consolidation_ratio=0.0,
             expired_memory_count=0,
             stale_fiber_ratio=0.0,
             hints=(),
@@ -175,6 +179,7 @@ class TestEvaluateThresholds:
             synapse_count=400,
             connectivity=2.0,
             orphan_ratio=0.1,
+            consolidation_ratio=0.2,  # healthy: above 0.1 threshold
             cfg=cfg,
         )
         assert hints == []
@@ -187,6 +192,7 @@ class TestEvaluateThresholds:
             synapse_count=300,
             connectivity=2.0,
             orphan_ratio=0.0,
+            consolidation_ratio=0.2,
             cfg=cfg,
         )
         assert len(hints) == 1
@@ -201,6 +207,7 @@ class TestEvaluateThresholds:
             synapse_count=100,
             connectivity=2.0,
             orphan_ratio=0.0,
+            consolidation_ratio=0.2,
             cfg=cfg,
         )
         assert len(hints) == 1
@@ -267,9 +274,10 @@ class TestEvaluateThresholds:
             synapse_count=100,
             connectivity=0.5,
             orphan_ratio=0.0,
+            consolidation_ratio=0.0,  # will trigger too
             cfg=cfg,
         )
-        assert len(hints) >= 3  # neuron + fiber + connectivity
+        assert len(hints) >= 3  # neuron + fiber + connectivity + consolidation
 
 
 # ========== Operation counter and interval tests ==========
@@ -743,3 +751,132 @@ class TestStaleFiberHint:
         assert pulse is not None
         assert pulse.stale_fiber_ratio == 0.5
         assert any("stale" in h.message.lower() for h in pulse.hints)
+
+
+# ========== Consolidation Ratio Tests ==========
+
+
+class TestConsolidationRatioThreshold:
+    def test_healthy_ratio_no_hint(self) -> None:
+        cfg = MaintenanceConfig(consolidation_ratio_threshold=0.1)
+        hints = _evaluate_thresholds(
+            fiber_count=100,
+            neuron_count=200,
+            synapse_count=400,
+            connectivity=2.0,
+            orphan_ratio=0.1,
+            consolidation_ratio=0.15,  # above 0.1 threshold
+            cfg=cfg,
+        )
+        assert not any("consolidation" in h.message.lower() for h in hints)
+
+    def test_low_ratio_triggers_mature_hint(self) -> None:
+        cfg = MaintenanceConfig(consolidation_ratio_threshold=0.1)
+        hints = _evaluate_thresholds(
+            fiber_count=100,
+            neuron_count=200,
+            synapse_count=400,
+            connectivity=2.0,
+            orphan_ratio=0.1,
+            consolidation_ratio=0.005,  # 0.5% — very low
+            cfg=cfg,
+        )
+        mature_hints = [h for h in hints if h.recommended_strategy == "mature"]
+        assert len(mature_hints) == 1
+        assert mature_hints[0].severity == HintSeverity.HIGH  # < 2%
+        assert "consolidation ratio" in mature_hints[0].message.lower()
+
+    def test_medium_ratio_medium_severity(self) -> None:
+        cfg = MaintenanceConfig(consolidation_ratio_threshold=0.1)
+        hints = _evaluate_thresholds(
+            fiber_count=100,
+            neuron_count=200,
+            synapse_count=400,
+            connectivity=2.0,
+            orphan_ratio=0.1,
+            consolidation_ratio=0.05,  # 5% — below 10% but above 2%
+            cfg=cfg,
+        )
+        mature_hints = [h for h in hints if h.recommended_strategy == "mature"]
+        assert len(mature_hints) == 1
+        assert mature_hints[0].severity == HintSeverity.MEDIUM
+
+    def test_skipped_for_small_brain(self) -> None:
+        cfg = MaintenanceConfig(consolidation_ratio_threshold=0.1)
+        hints = _evaluate_thresholds(
+            fiber_count=5,  # too few fibers
+            neuron_count=10,
+            synapse_count=20,
+            connectivity=2.0,
+            orphan_ratio=0.0,
+            consolidation_ratio=0.0,
+            cfg=cfg,
+        )
+        assert not any(h.recommended_strategy == "mature" for h in hints)
+
+    @pytest.mark.asyncio
+    async def test_pulse_includes_consolidation_ratio(self) -> None:
+        storage = _make_storage()
+        cfg = MaintenanceConfig(check_interval=1)
+        server = _FakeServer(storage, cfg)
+
+        async def _stats(brain_id: str) -> dict[str, int]:
+            return {"neuron_count": 50, "synapse_count": 100, "fiber_count": 30, "project_count": 0}
+
+        async def _stage_counts(brain_id: str) -> dict[str, int]:
+            return {"stm": 5, "episodic": 20, "semantic": 5}
+
+        storage.get_stats = _stats  # type: ignore[assignment]
+        storage.get_fiber_stage_counts = _stage_counts  # type: ignore[attr-defined]
+
+        pulse = await server._health_pulse()
+        assert pulse is not None
+        # 5 semantic / 30 total ≈ 0.1667
+        assert pulse.consolidation_ratio == pytest.approx(0.1667, abs=0.001)
+
+
+class TestSessionEndConsolidation:
+    @pytest.mark.asyncio
+    async def test_session_end_runs_when_enabled(self) -> None:
+        storage = _make_storage()
+        cfg = MaintenanceConfig(auto_consolidate=True)
+        server = _FakeServer(storage, cfg)
+
+        with patch(
+            "neural_memory.mcp.maintenance_handler.MaintenanceHandler.run_session_end_consolidation",
+            new_callable=AsyncMock,
+        ) as mock_consol:
+            await mock_consol()
+            mock_consol.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_session_end_skips_when_disabled(self) -> None:
+        storage = _make_storage()
+        cfg = MaintenanceConfig(auto_consolidate=False)
+        server = _FakeServer(storage, cfg)
+
+        # Should return immediately without error
+        await server.run_session_end_consolidation()
+
+
+class TestDefaultStrategiesIncludeMature:
+    def test_default_strategies(self) -> None:
+        cfg = MaintenanceConfig()
+        assert "mature" in cfg.auto_consolidate_strategies
+        assert "prune" in cfg.auto_consolidate_strategies
+        assert "merge" in cfg.auto_consolidate_strategies
+        assert "infer" in cfg.auto_consolidate_strategies
+
+    def test_from_dict_preserves_mature(self) -> None:
+        data = {"auto_consolidate_strategies": ["prune", "merge", "mature", "infer"]}
+        cfg = MaintenanceConfig.from_dict(data)
+        assert "mature" in cfg.auto_consolidate_strategies
+        assert "infer" in cfg.auto_consolidate_strategies
+
+    def test_consolidation_ratio_threshold_default(self) -> None:
+        cfg = MaintenanceConfig()
+        assert cfg.consolidation_ratio_threshold == 0.1
+
+    def test_cooldown_default_reduced(self) -> None:
+        cfg = MaintenanceConfig()
+        assert cfg.consolidate_cooldown_minutes == 30

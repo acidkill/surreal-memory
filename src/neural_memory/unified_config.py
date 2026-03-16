@@ -236,9 +236,10 @@ class MaintenanceConfig:
     expired_memory_warn_threshold: int = 10
     stale_fiber_ratio_threshold: float = 0.3
     stale_fiber_days: int = 90
+    consolidation_ratio_threshold: float = 0.1
     auto_consolidate: bool = True
-    auto_consolidate_strategies: tuple[str, ...] = ("prune", "merge")
-    consolidate_cooldown_minutes: int = 60
+    auto_consolidate_strategies: tuple[str, ...] = ("prune", "merge", "mature", "infer")
+    consolidate_cooldown_minutes: int = 30
     dream_cooldown_hours: int = 24
     expiry_cleanup_enabled: bool = True
     expiry_cleanup_interval_hours: int = 12
@@ -260,6 +261,7 @@ class MaintenanceConfig:
             "expired_memory_warn_threshold": self.expired_memory_warn_threshold,
             "stale_fiber_ratio_threshold": self.stale_fiber_ratio_threshold,
             "stale_fiber_days": self.stale_fiber_days,
+            "consolidation_ratio_threshold": self.consolidation_ratio_threshold,
             "auto_consolidate": self.auto_consolidate,
             "auto_consolidate_strategies": list(self.auto_consolidate_strategies),
             "consolidate_cooldown_minutes": self.consolidate_cooldown_minutes,
@@ -276,7 +278,7 @@ class MaintenanceConfig:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> MaintenanceConfig:
-        strategies = data.get("auto_consolidate_strategies", ("prune", "merge"))
+        strategies = data.get("auto_consolidate_strategies", ("prune", "merge", "mature", "infer"))
         if isinstance(strategies, list):
             strategies = tuple(strategies)
         sched_strategies = data.get(
@@ -294,9 +296,10 @@ class MaintenanceConfig:
             expired_memory_warn_threshold=data.get("expired_memory_warn_threshold", 10),
             stale_fiber_ratio_threshold=data.get("stale_fiber_ratio_threshold", 0.3),
             stale_fiber_days=data.get("stale_fiber_days", 90),
+            consolidation_ratio_threshold=data.get("consolidation_ratio_threshold", 0.1),
             auto_consolidate=data.get("auto_consolidate", True),
             auto_consolidate_strategies=strategies,
-            consolidate_cooldown_minutes=data.get("consolidate_cooldown_minutes", 60),
+            consolidate_cooldown_minutes=data.get("consolidate_cooldown_minutes", 30),
             dream_cooldown_hours=data.get("dream_cooldown_hours", 24),
             expiry_cleanup_enabled=data.get("expiry_cleanup_enabled", True),
             expiry_cleanup_interval_hours=data.get("expiry_cleanup_interval_hours", 12),

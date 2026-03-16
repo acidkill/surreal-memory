@@ -54,8 +54,8 @@ BALANCED: dict[str, dict[str, Any]] = {
     "maintenance": {
         "auto_consolidate": True,
         "check_interval": 25,
-        "auto_consolidate_strategies": ["prune", "merge"],
-        "consolidate_cooldown_minutes": 60,
+        "auto_consolidate_strategies": ["prune", "merge", "mature", "infer"],
+        "consolidate_cooldown_minutes": 30,
     },
     "eternal": {
         "max_context_tokens": 128_000,

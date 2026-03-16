@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
 from dataclasses import dataclass
 from dataclasses import replace as dc_replace
@@ -619,11 +620,41 @@ class CreateSynapsesStep:
                 )
             )
 
-        # Anchor → concept neurons (weight by keyword importance)
-        kw_weight_map = {
-            kw.text: kw.weight
-            for kw in extract_weighted_keywords(ctx.content, language=ctx.language)
-        }
+        # Anchor -> concept neurons (weight by keyword importance * IDF)
+        weighted_keywords = extract_weighted_keywords(ctx.content, language=ctx.language)
+        kw_weight_map: dict[str, float] = {}
+        if weighted_keywords:
+            kw_texts = [kw.text.lower() for kw in weighted_keywords]
+            try:
+                total_fibers = await storage.get_total_fiber_count()
+                if not isinstance(total_fibers, (int, float)):
+                    total_fibers = 0
+            except Exception:
+                total_fibers = 0
+            if total_fibers >= 5:
+                try:
+                    df_map = await storage.get_keyword_df_batch(kw_texts)
+                    if not isinstance(df_map, dict):
+                        df_map = {}
+                    idf_max = math.log(total_fibers + 1)
+                    for kw in weighted_keywords:
+                        df = df_map.get(kw.text.lower(), 0)
+                        if not isinstance(df, (int, float)):
+                            df = 0
+                        idf_raw = math.log((total_fibers + 1) / (1 + df))
+                        idf_factor = max(0.2, idf_raw / idf_max) if idf_max > 0 else 1.0
+                        kw_weight_map[kw.text.lower()] = kw.weight * idf_factor
+                except Exception:
+                    kw_weight_map = {kw.text.lower(): kw.weight for kw in weighted_keywords}
+            else:
+                # Cold start: not enough corpus for meaningful IDF
+                kw_weight_map = {kw.text.lower(): kw.weight for kw in weighted_keywords}
+            # Update DF table for this memory's keywords
+            try:
+                await storage.increment_keyword_df(kw_texts)
+            except Exception:
+                pass  # Non-critical: DF update failure doesn't block encoding
+
         for concept_neuron in ctx.concept_neurons:
             kw_weight = kw_weight_map.get(concept_neuron.content.lower(), 0.5)
             concept_weight = min(0.8, 0.4 + 0.3 * kw_weight)
@@ -1089,7 +1120,122 @@ class SemanticLinkingStep:
         return ctx
 
 
-# ── Step 14: Build Fiber ──
+# ── Step 14: Cross-Memory Linking ──
+
+
+class CrossMemoryLinkStep:
+    """Link new anchor to existing anchors that share entity neurons.
+
+    When a new memory mentions entities that appear in older memories,
+    creates RELATED_TO synapses between anchors. This enables multi-hop
+    reasoning: Memory A → shared entity → Memory B.
+
+    Brain test alignment:
+    - Activation: anchor-to-anchor paths improve spreading activation reach
+    - SA center: creates graph edges, not a search index
+    - No-embedding: entity content match is keyword-based
+    - Detail→Speed: specific entities = fewer, stronger links
+    - Source traceable: metadata tracks which entity caused the link
+    - Brain analogy: hippocampal memory binding via shared representations
+    - Lifecycle: weak initial weight (0.3), survives only if reinforced
+    """
+
+    MAX_LINKS_PER_ENTITY: int = 5
+    MAX_LINKS_PER_ENCODE: int = 15
+    ENTITY_FREQUENCY_CAP: int = 50
+    BASE_WEIGHT: float = 0.3
+    WEIGHT_BONUS_PER_ENTITY: float = 0.1
+    WEIGHT_CAP: float = 0.7
+
+    @property
+    def name(self) -> str:
+        return "cross_memory_link"
+
+    async def execute(
+        self,
+        ctx: PipelineContext,
+        storage: NeuralStorage,
+        config: BrainConfig,
+    ) -> PipelineContext:
+        if ctx.anchor_neuron is None or not ctx.entity_neurons:
+            return ctx
+
+        anchor_id = ctx.anchor_neuron.id
+        new_ids = {n.id for n in ctx.neurons_created}
+        new_ids.add(anchor_id)
+
+        # Track which old anchors we've already linked to + shared entity count
+        linked_anchors: dict[str, int] = {}  # old_anchor_id → shared_entity_count
+        total_links = 0
+
+        for entity_neuron in ctx.entity_neurons:
+            if len(linked_anchors) >= self.MAX_LINKS_PER_ENCODE:
+                break
+
+            # Find existing INVOLVES synapses pointing to this entity
+            try:
+                existing_synapses = await storage.get_synapses(
+                    target_id=entity_neuron.id,
+                    type=SynapseType.INVOLVES,
+                )
+            except Exception:
+                logger.debug(
+                    "Cross-memory link: lookup failed for entity %s",
+                    entity_neuron.id,
+                )
+                continue
+
+            # Skip "stop entities" that are too common (prevent hub explosion)
+            if len(existing_synapses) > self.ENTITY_FREQUENCY_CAP:
+                continue
+
+            links_for_entity = 0
+            for syn in existing_synapses:
+                if links_for_entity >= self.MAX_LINKS_PER_ENTITY:
+                    break
+                if len(linked_anchors) >= self.MAX_LINKS_PER_ENCODE:
+                    break
+
+                old_anchor_id = syn.source_id
+                # Skip self-links and links to neurons from this encode
+                if old_anchor_id == anchor_id or old_anchor_id in new_ids:
+                    continue
+
+                # Count shared entities for weight calculation
+                linked_anchors[old_anchor_id] = linked_anchors.get(old_anchor_id, 0) + 1
+                links_for_entity += 1
+
+        # Create synapses for accumulated anchor pairs
+        for old_anchor_id, shared_count in linked_anchors.items():
+            if total_links >= self.MAX_LINKS_PER_ENCODE:
+                break
+
+            weight = min(
+                self.WEIGHT_CAP,
+                self.BASE_WEIGHT + self.WEIGHT_BONUS_PER_ENTITY * (shared_count - 1),
+            )
+            synapse = Synapse.create(
+                source_id=anchor_id,
+                target_id=old_anchor_id,
+                type=SynapseType.RELATED_TO,
+                weight=weight,
+                metadata={
+                    "_cross_memory": True,
+                    "_shared_entity_count": shared_count,
+                },
+            )
+            try:
+                await storage.add_synapse(synapse)
+                ctx.synapses_created.append(synapse)
+                ctx.neurons_linked.append(old_anchor_id)
+                total_links += 1
+            except ValueError:
+                logger.debug("Cross-memory synapse already exists, skipping")
+
+        return ctx
+
+
+# ── Step 15: Build Fiber ──
 
 
 class BuildFiberStep:

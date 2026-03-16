@@ -431,6 +431,12 @@ async def run_mcp_server() -> None:
             except KeyboardInterrupt:
                 break
     finally:
+        # Run session-end consolidation before shutdown (MATURE + INFER + ENRICH)
+        try:
+            await server.run_session_end_consolidation()
+        except Exception:
+            logger.debug("Session-end consolidation skipped", exc_info=True)
+
         # Cancel background tasks
         server.cancel_mem0_sync()
         server.cancel_expiry_cleanup()

@@ -44,6 +44,7 @@ class InMemoryStorage(
         self._action_events: dict[str, list[dict[str, Any]]] = defaultdict(list)
         self._versions: dict[str, dict[str, tuple[BrainVersion, str]]] = defaultdict(dict)
         self._review_schedules: dict[str, dict[str, Any]] = defaultdict(dict)
+        self._keyword_df: dict[str, dict[str, int]] = defaultdict(dict)
         self._current_brain_id: str | None = None
 
     @property
@@ -498,6 +499,28 @@ class InMemoryStorage(
             elif fiber.last_conducted <= cutoff:
                 count += 1
         return count
+
+    async def get_fiber_stage_counts(self, brain_id: str) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for fiber in self._fibers[brain_id].values():
+            stage = fiber.stage if hasattr(fiber, "stage") else "stm"
+            counts[stage] = counts.get(stage, 0) + 1
+        return counts
+
+    async def get_total_fiber_count(self) -> int:
+        brain_id = self._get_brain_id()
+        return len(self._fibers.get(brain_id, {}))
+
+    async def get_keyword_df_batch(self, keywords: list[str]) -> dict[str, int]:
+        brain_id = self._get_brain_id()
+        kdf = self._keyword_df.get(brain_id, {})
+        return {kw: kdf[kw] for kw in keywords if kw in kdf}
+
+    async def increment_keyword_df(self, keywords: list[str]) -> None:
+        brain_id = self._get_brain_id()
+        kdf = self._keyword_df[brain_id]
+        for kw in set(keywords):
+            kdf[kw] = kdf.get(kw, 0) + 1
 
     # ========== Co-Activation Operations ==========
 

@@ -64,6 +64,8 @@ Toàn bộ phản xạ và liên tưởng được chuyển giao nguyên vẹn.
 
 ### 4. Source-Aware Memory (Nhớ Nguồn, Không Chỉ Nhớ Nội Dung)
 
+> *Đã ship v3.1.0 — Source Registry, Exact Recall, Structured Encoding, Citation Engine*
+
 ```
 Luật sư không nhớ nguyên văn 10,000 điều luật.
 Luật sư nhớ: "lãi suất" → Điều 468 BLDS → mở sách ra đọc.
@@ -103,6 +105,74 @@ Source (e.g. "Bộ luật Dân sự 2015")
 - Source tracking không phải metadata tùy chọn — nó là **thuộc tính cốt lõi**
 - Agent cite source thay vì bịa → trustworthy, verifiable
 - **Brain test**: Não biết "tôi đọc cái này ở đâu" (source memory) → Yes ✅
+
+### 5. Proactive Memory (Não Tự Nhớ, Tự Nhớ Lại)
+
+```
+Bạn không phải "ra lệnh" não nhớ.
+Não tự biết: cái này quan trọng → lưu. Gặp tình huống quen → tự nhớ lại.
+Agent cũng phải vậy.
+```
+
+Hiện tại NeuralMemory cần agent chủ động gọi `nmem_remember` / `nmem_recall`.
+Não thật **không hoạt động như vậy**.
+
+Não thật có **3 cơ chế tự động**:
+
+#### Cơ chế 1: Implicit Encoding (Tự động ghi nhận)
+- Não không cần "lệnh lưu" — trải nghiệm đáng nhớ tự khắc vào hippocampus
+- Cảm xúc mạnh (sợ, vui, bất ngờ) → ưu tiên lưu (amygdala boost)
+- NM tương đương: **Auto-save** dựa trên importance signals (causal language, user corrections, errors)
+- Agent không cần gọi `nmem_remember` — system tự detect và save
+
+#### Cơ chế 2: Priming (Kích hoạt ngầm)
+- Khi nghe "cà phê", não tự kích hoạt "quán quen", "sáng nay", "bạn A"
+- Không cần "tìm kiếm" — context tự nổi lên
+- NM tương đương: **Auto-recall injection** — khi agent nhận query, related memories tự inject vào context
+- Agent không cần gọi `nmem_recall` — system tự inject relevant memories
+
+#### Cơ chế 3: Sleep Consolidation (Ngủ để ghi nhớ)
+- Não replay ký ức khi ngủ → gom episodic → semantic → schema
+- Hippocampus → Neocortex transfer xảy ra tự động
+- NM tương đương: **Background processing** — session end reflection, auto-consolidation, reflection triggers
+
+**Brain test**: Agent dùng NM phải cảm thấy "memory tự nhiên" — không phải "memory cần ra lệnh".
+
+### 6. Layered Consciousness (Ý Thức Phân Tầng)
+
+```
+Bạn nhớ "mình thích cà phê đen" (global, mọi lúc mọi nơi)
+Bạn nhớ "project này dùng PostgreSQL" (local, chỉ project này)
+Bạn nhớ "đang debug cái bug auth" (session, quên sau khi xong)
+Não phân tầng ký ức — AI cũng phải vậy.
+```
+
+Não thật có **nhiều tầng bộ nhớ** hoạt động đồng thời:
+
+#### Tầng 0: Working Memory (Bộ nhớ làm việc)
+- Chứa ~7 items, mất khi chuyển task
+- NM tương đương: **Session layer** — ephemeral, in-memory, destroyed after session
+
+#### Tầng 1: Episodic Memory cục bộ (Ký ức sự kiện ngữ cảnh)
+- Nhớ "hôm qua ở văn phòng tôi fix bug X" — gắn với không gian/bối cảnh
+- NM tương đương: **Project layer** (.neuralmemory/ trong project) — project-specific knowledge
+
+#### Tầng 2: Semantic Memory toàn cục (Tri thức chung)
+- Nhớ "tôi thích dark mode" — đúng mọi nơi, mọi lúc
+- NM tương đương: **Global layer** (~/.neuralmemory/) — user preferences, cross-project patterns
+
+#### Layer Resolution (giống DNS)
+```
+Recall query → Search Project Brain → Search Global Brain → Merge (project priority)
+Save routing → Detect layer from content/type/tags → Route to correct brain
+```
+
+- Agent dùng cùng API — system tự phân tầng
+- Preferences/instructions → always global
+- Decisions/errors/facts → project (when project context exists)
+- Optional `layer=` override cho explicit routing
+
+**Brain test**: Khi agent chuyển project, knowledge project cũ KHÔNG nên xuất hiện. Nhưng user preferences thì CÓ.
 
 ---
 
@@ -165,6 +235,14 @@ Ngoài 4 câu trên, luôn hỏi thêm:
 | Full-text search engine | Não không grep | **No** |
 | Vector similarity ranking | Não không tính cosine | **Careful** |
 | AI-generated summaries | Não tự tóm tắt | Yes |
+| Proactive save (implicit encoding) | Não tự lưu, không cần lệnh | Yes |
+| Proactive recall (priming) | Context tự nổi lên khi liên quan | Yes |
+| Layered memory (working/episodic/semantic) | Não phân tầng ký ức | Yes |
+| Project isolation (context-dependent) | Nhớ khác nhau ở nơi khác nhau | Yes |
+| Sleep-time reflection | Não replay khi ngủ | Yes |
+| Domain entity types (financial, legal) | Kế toán nhớ "ROE" khác "Paris" | Yes |
+| Structured data (tables, graphs) | Não hiểu cấu trúc dữ liệu | Yes |
+| Cross-encoder reranking | Attention filter (prefrontal cortex) | **Careful** |
 
 ---
 
@@ -192,7 +270,7 @@ Create → Reinforce → Decay → Consolidate → Forget
 > **Chi tiết đầy đủ xem [ROADMAP.md](ROADMAP.md)** — versioned roadmap v0.14.0 → v1.0.0
 > với gap coverage matrix, expert feedback mapping, và VISION.md checklist per phase.
 
-### Đã có (v2.29.0)
+### Đã có (v4.7.0)
 
 - [x] Spreading activation retrieval (4 depth levels + RRF score fusion)
 - [x] Hebbian learning (reinforcement through use)
@@ -201,7 +279,7 @@ Create → Reinforce → Decay → Consolidate → Forget
 - [x] Typed memories (14 types) with priorities and expiry
 - [x] Brain export/import/merge (portable consciousness)
 - [x] Conflict resolution (4 strategies)
-- [x] MCP protocol (40 tools, standard memory layer)
+- [x] MCP protocol (45 tools, standard memory layer)
 - [x] VS Code extension
 - [x] REST API + WebSocket sync + Multi-device hub
 - [x] Cognitive layer (hypothesize/evidence/predict/verify/gaps/schema)
@@ -211,28 +289,35 @@ Create → Reinforce → Decay → Consolidate → Forget
 - [x] Personalized PageRank activation (opt-in)
 - [x] Multi-format KB training (PDF/DOCX/PPTX/HTML/JSON/XLSX/CSV)
 - [x] Fernet encryption + sensitive content auto-detect
+- [x] Source Registry + Exact Recall + Structured Encoding (Pillar 4 — v3.1.0)
+- [x] Citation Engine + Audit Synapse + Source Resolution (Pillar 4 — v3.1.0)
 
-### Chưa có — Cần cho Pillar 4 (Source-Aware Memory)
+### Chưa có — Cần cho Pillar 5 & 6
 
-| Feature | Why | Brain Analogy |
-|---------|-----|---------------|
-| **Source Registry** | Mọi neuron trả lời "từ đâu ra?" | Não nhớ "tôi đọc ở sách X" |
-| **Exact Recall Mode** | Trả raw content, không summarize | Não đọc lại nguyên văn khi cần |
-| **Structured Encoding** | Schema-aware (tabular data, key-value) | Não hiểu cấu trúc, không chỉ text |
-| **Citation Engine** | Built-in `[cite:source/article]` output | Não trích dẫn có nguồn |
-| **Audit Synapse** | STORED_BY, VERIFIED_AT, APPROVED_BY | Não nhớ ai nói, khi nào |
-| **Source Resolution** | Pointer → external DB/file lookup | Não biết "mở sách ra trang X" |
+| Feature | Pillar | Brain Analogy | Plan |
+|---------|--------|---------------|------|
+| **Smart Instructions** | 5 | Não biết "khi nào nên nhớ" | A1 |
+| **Layered Brain** | 6 | Não phân tầng: working/episodic/semantic | A2 |
+| **Auto-Recall Injection** | 5 | Priming — context tự nổi lên | A3 |
+| **Background Processing** | 5 | Sleep consolidation | A4 |
+| **Auto-Consolidation** | 5 | Não tự gom ký ức khi ngủ | B1 |
+| **Retrieval-Time Learning** | 5 | Neurons fire together → wire together | B2 |
+| **Domain Entity Types** | 4+ | Kế toán nhớ "ROE" khác "Paris" | C1 |
+| **Structured Data Neurons** | 4+ | Não hiểu bảng, không chỉ text | C2 |
+| **Cross-Encoder Reranking** | — | Attention filter (prefrontal cortex) | C3 |
+| **Agent Visualization** | — | Não tạo mô hình mental, hình ảnh | C4 |
 
 ### Hướng phát triển tiếp theo
 
 | Version | Theme | Key Deliverable |
 |---------|-------|-----------------|
-| v3.0 | Source-Aware Memory | Source registry, exact recall, structured encoding |
-| v3.x | Brain Intelligence | Adaptive retrieval, predictive priming, drift detection |
-| v4.0 | Scale & Performance | Tiered storage, ANN index, brain sharding |
-| v5.0 | Platform & Ecosystem | Brain Protocol spec, plugin architecture, federation |
+| v5.0 | Proactive Memory | Smart instructions, auto-recall, background processing |
+| v5.x | Layered Brain | Global + Project layers, auto-routing, team sharing |
+| v6.0 | Brain Intelligence | Retrieval learning, IDF keywords, fiber scoring |
+| v6.x | Vertical Intelligence | Domain entities, structured data, visualization |
+| v7.0 | Scale & Platform | Brain Protocol spec, federation, sharding |
 
-See [ROADMAP.md](ROADMAP.md) for full details.
+Full plan: `.rune/plan-brain-quality.md` (3 tracks, 16 phases)
 
 ---
 
@@ -286,4 +371,4 @@ Cả hai chế độ đều dùng **spreading activation** — khác nhau ở:
 
 ---
 
-*Last updated: 2026-03-11*
+*Last updated: 2026-03-16*

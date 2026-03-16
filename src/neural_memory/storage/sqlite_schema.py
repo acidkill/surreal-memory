@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Schema version for migrations
-SCHEMA_VERSION = 27
+SCHEMA_VERSION = 28
 
 # â”€â”€ Migrations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Each entry maps (from_version -> to_version) with a list of SQL statements.
@@ -535,6 +535,18 @@ MIGRATIONS: dict[tuple[int, int], list[str]] = {
             "INSERT OR IGNORE INTO fibers_fts(rowid, summary, brain_id) "
             "SELECT rowid, summary, brain_id FROM fibers WHERE summary IS NOT NULL AND summary != ''"
         ),
+    ],
+    (27, 28): [
+        # Keyword document frequency for IDF-weighted synapse creation
+        """CREATE TABLE IF NOT EXISTS keyword_document_frequency (
+            brain_id TEXT NOT NULL,
+            keyword TEXT NOT NULL,
+            fiber_count INTEGER NOT NULL DEFAULT 1,
+            last_updated TEXT NOT NULL,
+            PRIMARY KEY (brain_id, keyword),
+            FOREIGN KEY (brain_id) REFERENCES brains(id) ON DELETE CASCADE
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_keyword_df_brain ON keyword_document_frequency(brain_id)",
     ],
 }
 
