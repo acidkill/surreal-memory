@@ -119,9 +119,7 @@ class TestShouldStopSpreading:
     def test_grace_hops_zero(self) -> None:
         """With grace_hops=0, gating starts at hop 1."""
         trace = self._make_trace({0: 10})
-        stop, reason = should_stop_spreading(
-            trace, current_hop=1, min_new_neurons=2, grace_hops=0
-        )
+        stop, reason = should_stop_spreading(trace, current_hop=1, min_new_neurons=2, grace_hops=0)
         # hop 0 had 10 neurons, checking at hop 1 should not stop
         assert stop is False  # 10 >= 2
 
@@ -160,7 +158,9 @@ def _make_storage_mock(
     storage.get_neurons_batch = mock_get_neurons_batch
 
     # get_neighbors: returns list of (neuron, synapse) tuples
-    async def mock_get_neighbors(neuron_id: str, direction: str = "both", min_weight: float = 0.1) -> list:
+    async def mock_get_neighbors(
+        neuron_id: str, direction: str = "both", min_weight: float = 0.1
+    ) -> list:
         result = []
         for target_id, weight in neighbors.get(neuron_id, []):
             neuron_obj = SimpleNamespace(id=target_id)
@@ -218,7 +218,9 @@ class TestBFSDiminishingReturns:
             "b1": [("c1", 0.8)],
             "b2": [("c2", 0.8)],
             "b3": [("c3", 0.8)],
-            "c1": [], "c2": [], "c3": [],
+            "c1": [],
+            "c2": [],
+            "c3": [],
         }
         storage = _make_storage_mock(neurons, neighbors)
         config = BrainConfig(
