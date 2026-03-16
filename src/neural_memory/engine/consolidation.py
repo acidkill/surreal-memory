@@ -319,6 +319,8 @@ class ConsolidationEngine:
         dry_run: bool,
     ) -> None:
         """Prune weak synapses and orphan neurons."""
+        logger = logging.getLogger(__name__)
+
         # Ensure brain context is set
         if not self._storage.current_brain_id:
             return
@@ -470,6 +472,16 @@ class ConsolidationEngine:
             else:
                 for nid in orphan_ids:
                     await self._storage.delete_neuron(nid)
+
+        # Prune old unpromoted entity refs (lazy entity promotion cleanup)
+        if not dry_run and hasattr(self._storage, "prune_old_entity_refs"):
+            prune_days = getattr(self._config, "lazy_entity_prune_days", 90)
+            try:
+                pruned_refs = await self._storage.prune_old_entity_refs(prune_days)
+                if pruned_refs > 0:
+                    logger.info("Pruned %d old unpromoted entity refs", pruned_refs)
+            except Exception:
+                logger.debug("Entity ref pruning skipped (table may not exist)")
 
     async def _merge(
         self,

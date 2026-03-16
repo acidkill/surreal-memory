@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Schema version for migrations
-SCHEMA_VERSION = 28
+SCHEMA_VERSION = 29
 
 # â”€â”€ Migrations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Each entry maps (from_version -> to_version) with a list of SQL statements.
@@ -547,6 +547,20 @@ MIGRATIONS: dict[tuple[int, int], list[str]] = {
             FOREIGN KEY (brain_id) REFERENCES brains(id) ON DELETE CASCADE
         )""",
         "CREATE INDEX IF NOT EXISTS idx_keyword_df_brain ON keyword_document_frequency(brain_id)",
+    ],
+    (28, 29): [
+        # Entity reference tracking for lazy entity promotion (B7)
+        # Entities need 2+ mentions before being promoted to full neurons
+        """CREATE TABLE IF NOT EXISTS entity_refs (
+            brain_id TEXT NOT NULL,
+            entity_text TEXT NOT NULL,
+            fiber_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            promoted INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (brain_id, entity_text, fiber_id),
+            FOREIGN KEY (brain_id) REFERENCES brains(id) ON DELETE CASCADE
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_entity_refs_text ON entity_refs(brain_id, entity_text)",
     ],
 }
 

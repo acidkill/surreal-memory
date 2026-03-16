@@ -62,7 +62,7 @@ For EVERY phase:
 | B4 | IDF-Weighted Keywords | ✅ Done | plan-brain-quality-b4.md | IDF scoring in CreateSynapsesStep + keyword_document_frequency table (schema v28) |
 | B5 | Fiber-Level Recall Scoring | ✅ Done | plan-brain-quality-b5.md | Activation-aware scoring: coverage + max_act + mean_act + stage bonus |
 | B6 | Contextual Compression | ✅ Done | plan-brain-quality-b6.md | Age-based recall compression: <7d full, 7-30d summary/3 sentences, 30-90d summary/2 sentences, 90+ summary/1 sentence |
-| B7 | Lazy Entity Promotion | ⬚ Pending | plan-brain-quality-b7.md | Entities need 2+ mentions to become neurons |
+| B7 | Lazy Entity Promotion | ✅ Done | plan-brain-quality-b7.md | Entities need 2+ mentions to become neurons; entity_refs table (schema v29) |
 | B8 | Adaptive Synapse Decay | ✅ Done | plan-brain-quality-b8.md | Reinforcement-modulated half-life + adaptive floor in time_decay() |
 
 ### Track C: Vertical Intelligence (domain-specific capabilities)
@@ -138,3 +138,6 @@ Document here as phases are implemented:
 | B5 | Fiber.stage is a DB column but NOT on Fiber dataclass | Use `getattr(fiber, "stage", None)` not `fiber.stage` |
 | B6 | compress_for_recall must handle None created_at | Safe fallback: no timestamp = return full content |
 | B8 | Sigmoid threshold assertions sensitive to spread formula | Calculate exact sigmoid values, don't assume "close to 1.0" |
+| B7 | Tests using SimpleNamespace for ctx lack new fields | Use `getattr(ctx, "field", default)` in steps that access new context fields |
+| B7 | Appending existing entities to ctx.entity_neurons breaks CreateSynapsesStep | Don't re-add existing entities — they already have synapses from prior encoding |
+| B7 | entity_refs table may not exist on old schema DBs | Wrap count_entity_refs/mark_promoted in try/except with fallback |

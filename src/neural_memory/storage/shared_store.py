@@ -439,3 +439,24 @@ class SharedStorage(SharedFiberBrainMixin, NeuralStorage):
 
     async def increment_keyword_df(self, keywords: list[str]) -> None:
         """No-op — keyword DF tracking is local-only."""
+
+    async def add_entity_ref(
+        self, entity_text: str, fiber_id: str, created_at: datetime | None = None
+    ) -> None:
+        """No-op — entity ref tracking is local-only."""
+
+    async def count_entity_refs(self, entity_text: str) -> int:
+        """Return 0 — lazy entity promotion is local-only."""
+        return 0
+
+    async def get_entity_ref_fiber_ids(self, entity_text: str) -> list[str]:
+        """Return empty — lazy entity promotion is local-only."""
+        return []
+
+    async def mark_entity_refs_promoted(self, entity_text: str) -> int:
+        """No-op — lazy entity promotion is local-only."""
+        return 0
+
+    async def prune_old_entity_refs(self, max_age_days: int = 90) -> int:
+        """No-op — lazy entity promotion is local-only."""
+        return 0

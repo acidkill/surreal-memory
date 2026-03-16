@@ -45,6 +45,7 @@ class InMemoryStorage(
         self._versions: dict[str, dict[str, tuple[BrainVersion, str]]] = defaultdict(dict)
         self._review_schedules: dict[str, dict[str, Any]] = defaultdict(dict)
         self._keyword_df: dict[str, dict[str, int]] = defaultdict(dict)
+        self._entity_refs: dict[str, dict[str, list[str]]] = defaultdict(dict)
         self._current_brain_id: str | None = None
 
     @property
@@ -521,6 +522,34 @@ class InMemoryStorage(
         kdf = self._keyword_df[brain_id]
         for kw in set(keywords):
             kdf[kw] = kdf.get(kw, 0) + 1
+
+    # ========== Entity Ref Operations (Lazy Entity Promotion) ==========
+
+    async def add_entity_ref(
+        self, entity_text: str, fiber_id: str, created_at: datetime | None = None
+    ) -> None:
+        brain_id = self._get_brain_id()
+        refs = self._entity_refs.setdefault(brain_id, {})
+        refs.setdefault(entity_text, []).append(fiber_id)
+
+    async def count_entity_refs(self, entity_text: str) -> int:
+        brain_id = self._get_brain_id()
+        refs = self._entity_refs.get(brain_id, {})
+        return len(refs.get(entity_text, []))
+
+    async def get_entity_ref_fiber_ids(self, entity_text: str) -> list[str]:
+        brain_id = self._get_brain_id()
+        refs = self._entity_refs.get(brain_id, {})
+        return list(refs.get(entity_text, []))
+
+    async def mark_entity_refs_promoted(self, entity_text: str) -> int:
+        brain_id = self._get_brain_id()
+        refs = self._entity_refs.get(brain_id, {})
+        count = len(refs.pop(entity_text, []))
+        return count
+
+    async def prune_old_entity_refs(self, max_age_days: int = 90) -> int:
+        return 0  # InMemory doesn't track timestamps for refs
 
     # ========== Co-Activation Operations ==========
 

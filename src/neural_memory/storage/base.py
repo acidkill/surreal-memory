@@ -876,6 +876,30 @@ class NeuralStorage(ABC):
         """
         raise NotImplementedError
 
+    # ========== Entity Ref Operations (Lazy Entity Promotion) ==========
+
+    async def add_entity_ref(
+        self, entity_text: str, fiber_id: str, created_at: datetime | None = None
+    ) -> None:
+        """Record an entity mention for lazy promotion tracking."""
+        raise NotImplementedError
+
+    async def count_entity_refs(self, entity_text: str) -> int:
+        """Count unpromoted mentions of an entity."""
+        raise NotImplementedError
+
+    async def get_entity_ref_fiber_ids(self, entity_text: str) -> list[str]:
+        """Get fiber/anchor IDs that reference this entity."""
+        raise NotImplementedError
+
+    async def mark_entity_refs_promoted(self, entity_text: str) -> int:
+        """Mark all refs for an entity as promoted."""
+        raise NotImplementedError
+
+    async def prune_old_entity_refs(self, max_age_days: int = 90) -> int:
+        """Remove unpromoted entity refs older than max_age_days."""
+        raise NotImplementedError
+
     # ========== Maturation Operations ==========
 
     async def save_maturation(self, record: MaturationRecord) -> None:  # noqa: B027

@@ -85,6 +85,10 @@ class BrainConfig:
     # Cascading retrieval: fiber summary tier + sufficiency gate
     fiber_summary_tier_enabled: bool = True
     sufficiency_threshold: float = 0.7
+    # Lazy entity promotion: entities need N mentions to become neurons
+    lazy_entity_enabled: bool = True
+    lazy_entity_promotion_threshold: int = 2
+    lazy_entity_prune_days: int = 90
 
     def with_updates(self, **kwargs: Any) -> BrainConfig:
         """Create a new config with updated values."""

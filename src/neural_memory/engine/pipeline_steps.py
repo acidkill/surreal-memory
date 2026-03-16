@@ -178,11 +178,32 @@ class ExtractEntityNeuronsStep:
         config: BrainConfig,
     ) -> PipelineContext:
         entities = self.entity_extractor.extract(ctx.content, language=ctx.language)
+        lazy_enabled = getattr(config, "lazy_entity_enabled", True)
+        promotion_threshold = getattr(config, "lazy_entity_promotion_threshold", 2)
+
         for entity in entities:
             neuron_type = _entity_type_to_neuron_type(entity.type)
             existing = await _find_similar_entity(storage, entity.text)
             if existing:
                 continue
+
+            # Exceptions: always promote high-confidence or user-tagged entities
+            is_exception = entity.confidence >= 0.9 or entity.text.lower() in {
+                t.lower() for t in ctx.tags
+            }
+
+            if lazy_enabled and not is_exception:
+                # Check mention count from entity_refs
+                try:
+                    ref_count = await storage.count_entity_refs(entity.text)
+                except Exception:
+                    ref_count = promotion_threshold  # Fallback: promote immediately
+                if ref_count < promotion_threshold - 1:
+                    # Not enough mentions yet — defer as ref
+                    ctx.deferred_entity_refs.append(entity.text)
+                    continue
+                # Reached threshold — promote! (fall through to neuron creation)
+
             neuron = Neuron.create(
                 type=neuron_type,
                 content=entity.text,
@@ -195,6 +216,13 @@ class ExtractEntityNeuronsStep:
             await storage.add_neuron(neuron)
             ctx.entity_neurons.append(neuron)
             ctx.neurons_created.append(neuron)
+
+            # If promoted via lazy path, mark refs and do retroactive linking
+            if lazy_enabled and not is_exception:
+                try:
+                    await storage.mark_entity_refs_promoted(entity.text)
+                except Exception:
+                    pass  # Non-critical: ref table may not exist yet
         return ctx
 
 
@@ -701,7 +729,60 @@ class CreateSynapsesStep:
                 else:
                     ctx.synapses_created.append(synapse)
 
+        # Record deferred entity refs (lazy promotion B7)
+        deferred_refs = getattr(ctx, "deferred_entity_refs", [])
+        if deferred_refs:
+            for entity_text in deferred_refs:
+                try:
+                    await storage.add_entity_ref(entity_text, anchor.id)
+                except Exception:
+                    logger.debug("Failed to add entity ref for %s", entity_text)
+
+        # Retroactive linking: connect previous anchors to newly promoted entities
+        neurons_created = getattr(ctx, "neurons_created", [])
+        if getattr(config, "lazy_entity_enabled", True) and neurons_created:
+            await _retroactive_entity_link(ctx, storage)
+
         return ctx
+
+
+async def _retroactive_entity_link(
+    ctx: PipelineContext,
+    storage: NeuralStorage,
+) -> None:
+    """Link previous anchors to newly promoted entity neurons.
+
+    When an entity reaches the promotion threshold, find all previous
+    anchors that mentioned it (via entity_refs table) and create
+    INVOLVES synapses retroactively.
+    """
+    for entity_neuron in ctx.entity_neurons:
+        # Only retroactive-link neurons that were just created (not pre-existing)
+        if entity_neuron not in ctx.neurons_created:
+            continue
+        try:
+            prev_anchor_ids = await storage.get_entity_ref_fiber_ids(entity_neuron.content)
+        except Exception:
+            continue
+        for anchor_id in prev_anchor_ids:
+            # Skip current anchor (already linked above)
+            if ctx.anchor_neuron and anchor_id == ctx.anchor_neuron.id:
+                continue
+            try:
+                synapse = Synapse.create(
+                    source_id=anchor_id,
+                    target_id=entity_neuron.id,
+                    type=SynapseType.INVOLVES,
+                    weight=0.6,  # Lower weight for retroactive links
+                )
+                await storage.add_synapse(synapse)
+                ctx.synapses_created.append(synapse)
+            except Exception:
+                logger.debug(
+                    "Retroactive link failed: %s -> %s",
+                    anchor_id,
+                    entity_neuron.id,
+                )
 
 
 # ── Step 8: Co-Occurrence Synapses ──
