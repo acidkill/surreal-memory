@@ -50,7 +50,7 @@ For EVERY phase:
 | A1 | Smart Instructions | ✅ Done | plan-brain-quality-a1.md | Decision framework in MCP instructions |
 | A2 | Layered Brain Architecture | ⬚ Pending | plan-brain-quality-a2.md | Global + Project + Session layers |
 | A3 | Auto-Recall Injection | ⬚ Pending | plan-brain-quality-a3.md | MCP auto-injects related memories |
-| A4 | Background Memory Processing | ⬚ Pending | plan-brain-quality-a4.md | Session reflection + importance scoring |
+| A4 | Background Memory Processing | ✅ Done | plan-brain-quality-a4.md | Auto-importance scoring + reflection engine (pattern detection + threshold trigger) |
 
 ### Track B: Brain Quality (graph/retrieval improvements)
 

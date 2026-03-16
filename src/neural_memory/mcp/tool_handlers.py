@@ -387,7 +387,15 @@ class ToolHandler:
 
             content = merge_context(content, raw_context, mem_type.value)
 
-        priority = Priority.from_int(args.get("priority", 5))
+        # Auto-importance scoring when priority not explicitly set
+        raw_priority = args.get("priority")
+        if raw_priority is not None:
+            priority = Priority.from_int(raw_priority)
+        else:
+            from neural_memory.engine.importance import auto_importance_score
+
+            auto_score = auto_importance_score(content, mem_type.value, args.get("tags", []))
+            priority = Priority.from_int(auto_score)
 
         # Build dedup pipeline if enabled
         dedup_pipeline = None
@@ -560,6 +568,16 @@ class ToolHandler:
             except Exception:
                 logger.debug("Auto-schedule for review failed (non-critical)", exc_info=True)
 
+        # Accumulate importance for reflection trigger
+        try:
+            from neural_memory.engine.reflection import ReflectionEngine
+
+            if not hasattr(self, "_reflection_engine"):
+                self._reflection_engine = ReflectionEngine(threshold=50.0)
+            self._reflection_engine.accumulate(float(priority.value))
+        except Exception:
+            pass  # Non-critical
+
         self._fire_eternal_trigger(content)
 
         await self._record_tool_action("remember", content[:100])
@@ -592,6 +610,8 @@ class ToolHandler:
             "success": True,
             "fiber_id": result.fiber.id,
             "memory_type": mem_type.value,
+            "priority": priority.value,
+            "auto_importance": raw_priority is None,
             "neurons_created": len(result.neurons_created),
             "message": f"Remembered: {content[:50]}{'...' if len(content) > 50 else ''}",
             **quality_result.to_dict(),
