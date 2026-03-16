@@ -65,7 +65,7 @@ class TestIDFWeighting:
         storage.get_total_fiber_count.return_value = 3
         storage.get_keyword_df_batch.return_value = {}
 
-        result = await step.execute(ctx, storage, config)
+        await step.execute(ctx, storage, config)
 
         # Should NOT query DF (cold start skip)
         storage.get_keyword_df_batch.assert_not_called()
@@ -89,14 +89,13 @@ class TestIDFWeighting:
         storage.get_total_fiber_count.return_value = 100
         storage.get_keyword_df_batch.return_value = {"postgresql": 2}
 
-        result = await step.execute(ctx, storage, config)
+        await step.execute(ctx, storage, config)
 
         # Find the concept synapse
         concept_synapses = [
             call[0][0]
             for call in storage.add_synapse.call_args_list
-            if call[0][0].type == SynapseType.RELATED_TO
-            and call[0][0].target_id == "c1"
+            if call[0][0].type == SynapseType.RELATED_TO and call[0][0].target_id == "c1"
         ]
         assert len(concept_synapses) == 1
         # Rare keyword → IDF close to 1.0 → high final weight
@@ -119,13 +118,12 @@ class TestIDFWeighting:
         storage.get_total_fiber_count.return_value = 100
         storage.get_keyword_df_batch.return_value = {"code": 90}
 
-        result = await step.execute(ctx, storage, config)
+        await step.execute(ctx, storage, config)
 
         concept_synapses = [
             call[0][0]
             for call in storage.add_synapse.call_args_list
-            if call[0][0].type == SynapseType.RELATED_TO
-            and call[0][0].target_id == "c1"
+            if call[0][0].type == SynapseType.RELATED_TO and call[0][0].target_id == "c1"
         ]
         assert len(concept_synapses) == 1
         # Common keyword → low IDF → lower weight
@@ -149,13 +147,12 @@ class TestIDFWeighting:
         storage.get_total_fiber_count.return_value = 100
         storage.get_keyword_df_batch.return_value = {"code": 100}
 
-        result = await step.execute(ctx, storage, config)
+        await step.execute(ctx, storage, config)
 
         concept_synapses = [
             call[0][0]
             for call in storage.add_synapse.call_args_list
-            if call[0][0].type == SynapseType.RELATED_TO
-            and call[0][0].target_id == "c1"
+            if call[0][0].type == SynapseType.RELATED_TO and call[0][0].target_id == "c1"
         ]
         assert len(concept_synapses) == 1
         # Even with max DF, weight should be > 0 (floor=0.2)

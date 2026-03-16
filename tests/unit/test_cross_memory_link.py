@@ -92,7 +92,7 @@ class TestCrossMemoryLinkStep:
             [_involves_synapse("anchor-old", "entity-fastapi")],
         ]
 
-        result = await step.execute(ctx, storage, config)
+        await step.execute(ctx, storage, config)
 
         storage.add_synapse.assert_called_once()
         synapse = storage.add_synapse.call_args[0][0]
@@ -152,7 +152,7 @@ class TestCrossMemoryLinkStep:
             _involves_synapse(f"anchor-old-{i}", "entity-python") for i in range(10)
         ]
 
-        result = await step.execute(ctx, storage, config)
+        await step.execute(ctx, storage, config)
         assert storage.add_synapse.call_count == 3
 
     @pytest.mark.asyncio
@@ -178,7 +178,7 @@ class TestCrossMemoryLinkStep:
             anchor_neuron=None,
             entity_neurons=[_make_neuron("e1", "Python")],
         )
-        result = await step.execute(ctx, storage, config)
+        await step.execute(ctx, storage, config)
         storage.get_synapses.assert_not_called()
 
     @pytest.mark.asyncio

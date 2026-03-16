@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import math
 from dataclasses import replace
 from datetime import timedelta
-
-import pytest
 
 from neural_memory.core.synapse import Synapse, SynapseType
 from neural_memory.utils.timeutils import utcnow

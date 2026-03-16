@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-import pytest
-
 from neural_memory.engine.retrieval_context import compress_for_recall
 from neural_memory.utils.timeutils import utcnow
 

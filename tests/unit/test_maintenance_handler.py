@@ -840,7 +840,7 @@ class TestSessionEndConsolidation:
     async def test_session_end_runs_when_enabled(self) -> None:
         storage = _make_storage()
         cfg = MaintenanceConfig(auto_consolidate=True)
-        server = _FakeServer(storage, cfg)
+        _FakeServer(storage, cfg)
 
         with patch(
             "neural_memory.mcp.maintenance_handler.MaintenanceHandler.run_session_end_consolidation",

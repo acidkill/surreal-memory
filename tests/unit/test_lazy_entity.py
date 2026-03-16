@@ -7,9 +7,7 @@ First mention → entity_ref only. Second mention → promote + retroactive link
 from __future__ import annotations
 
 from dataclasses import dataclass
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
+from unittest.mock import AsyncMock, MagicMock
 
 from neural_memory.core.brain import BrainConfig
 from neural_memory.core.neuron import Neuron, NeuronType
@@ -227,7 +225,7 @@ async def test_mixed_entities():
     storage = _make_storage()
 
     async def mock_find(
-        content_exact: str = None, content_contains: str = None, **kw: object
+        content_exact: str | None = None, content_contains: str | None = None, **kw: object
     ) -> list[Neuron]:
         if content_exact == "PostgreSQL":
             return [existing_pg]

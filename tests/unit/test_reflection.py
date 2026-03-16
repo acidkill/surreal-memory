@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from neural_memory.engine.reflection import ReflectionEngine, detect_patterns
 
 
