@@ -507,6 +507,28 @@ class CompressionEngine:
                 skip_reason="full_tier_no_compression",
             )
 
+        # Size guard: skip if compressed content is not smaller than original.
+        # Graph-only tier (empty string) always passes.
+        if target_tier != CompressionTier.GRAPH_ONLY and compressed_token_count >= original_token_count:
+            logger.info(
+                "Skipping compression for fiber %s — summary (%d tokens) "
+                "not smaller than original (%d tokens)",
+                fiber.id,
+                compressed_token_count,
+                original_token_count,
+            )
+            return CompressionResult(
+                fiber_id=fiber.id,
+                original_tier=fiber.compression_tier,
+                new_tier=fiber.compression_tier,
+                original_token_count=original_token_count,
+                compressed_token_count=original_token_count,
+                entities_preserved=len(neuron_contents),
+                backup_created=False,
+                skipped=True,
+                skip_reason="summary_not_smaller",
+            )
+
         if dry_run:
             return CompressionResult(
                 fiber_id=fiber.id,
