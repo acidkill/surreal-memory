@@ -211,7 +211,11 @@ class PostgresFiberMixin(PostgresBaseMixin):
         for row in rows:
             neuron_ids_raw = row["neuron_ids"]
             if neuron_ids_raw:
-                parsed = json.loads(neuron_ids_raw) if isinstance(neuron_ids_raw, str) else neuron_ids_raw
+                parsed = (
+                    json.loads(neuron_ids_raw)
+                    if isinstance(neuron_ids_raw, str)
+                    else neuron_ids_raw
+                )
                 result.update(parsed)
         return result
 
@@ -233,12 +237,14 @@ class PostgresFiberMixin(PostgresBaseMixin):
         for r in rows:
             tags_raw = r["tags"]
             tags = json.loads(tags_raw) if isinstance(tags_raw, str) else (tags_raw or [])
-            results.append({
-                "fiber_id": str(r["id"]),
-                "summary": r["summary"] or "",
-                "type": r["memory_type"] or "unknown",
-                "priority": r["priority"] or 5,
-                "tags": tags,
-                "created_at": str(r["created_at"] or ""),
-            })
+            results.append(
+                {
+                    "fiber_id": str(r["id"]),
+                    "summary": r["summary"] or "",
+                    "type": r["memory_type"] or "unknown",
+                    "priority": r["priority"] or 5,
+                    "tags": tags,
+                    "created_at": str(r["created_at"] or ""),
+                }
+            )
         return results

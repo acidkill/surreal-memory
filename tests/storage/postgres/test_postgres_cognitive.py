@@ -99,7 +99,9 @@ async def test_list_predictions(storage: Any, sample_neurons: list[Any]) -> None
         sample_neurons[0].id, confidence=0.6, status="pending", predicted_at="2026-04-01"
     )
     await storage.upsert_cognitive_state(
-        sample_neurons[1].id, confidence=0.7, status="active"  # not a prediction
+        sample_neurons[1].id,
+        confidence=0.7,
+        status="active",  # not a prediction
     )
 
     preds = await storage.list_predictions()
@@ -134,8 +136,22 @@ async def test_calibration_stats(storage: Any, sample_neurons: list[Any]) -> Non
 async def test_hot_index_refresh_and_get(storage: Any) -> None:
     """Refresh hot index and retrieve items."""
     items = [
-        {"slot": 0, "category": "hypothesis", "neuron_id": "n1", "summary": "Test H1", "confidence": 0.8, "score": 9.5},
-        {"slot": 1, "category": "prediction", "neuron_id": "n2", "summary": "Test P1", "confidence": 0.6, "score": 7.0},
+        {
+            "slot": 0,
+            "category": "hypothesis",
+            "neuron_id": "n1",
+            "summary": "Test H1",
+            "confidence": 0.8,
+            "score": 9.5,
+        },
+        {
+            "slot": 1,
+            "category": "prediction",
+            "neuron_id": "n2",
+            "summary": "Test P1",
+            "confidence": 0.6,
+            "score": 7.0,
+        },
     ]
 
     count = await storage.refresh_hot_index(items)
