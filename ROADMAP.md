@@ -4,205 +4,233 @@
 > Every item passes the VISION.md 4-question test + brain test.
 > ZERO LLM dependency — pure algorithmic, regex, graph-based.
 
-**Current state**: v4.1.0 — 44 MCP tools, 3778+ tests, schema v26, SQLite + FalkorDB backends, cognitive reasoning layer.
+**Current state**: v4.11.0 — 44 MCP tools, 4140+ tests, schema v29, SQLite + PostgreSQL backends, cognitive reasoning layer.
 **Architecture**: Spreading activation reflex engine, biological memory model, MCP standard.
 
 ---
 
-## Where We Are Now
+## What We've Built (v1.0 → v4.11)
 
-| Capability | Status |
-|------------|--------|
-| Spreading activation (4 depth levels) | Shipped |
-| 14 memory types, 24 synapse types | Shipped |
-| Hebbian learning + memory decay | Shipped |
-| Sleep consolidation (ENRICH/DREAM/PRUNE) | Shipped |
-| Multi-format KB training (PDF/DOCX/PPTX/HTML/JSON/XLSX/CSV) | Shipped |
-| Pinned KB memories (skip decay/prune/compress) | Shipped |
-| Tool memory (PostToolUse → neuron clusters) | Shipped |
-| Error resolution learning (RESOLVED_BY synapses) | Shipped |
-| Multi-device sync (hub-spoke, 4 conflict strategies) | Shipped |
-| Fernet encryption + sensitive content auto-detect | Shipped |
-| FalkorDB graph backend (opt-in) | Shipped |
-| VS Code extension (preview) | Shipped |
-| REST API + WebSocket dashboard | Shipped |
-| React dashboard (7 pages, warm cream theme) | Shipped |
-| Telegram backup integration | Shipped |
-| Brain versioning + transplant + merge | Shipped |
-| Algorithmic sufficiency gate (8-gate retrieval validator) | Shipped |
-| Codebase indexing + code-aware recall | Shipped |
-
----
-
-## Phase 1: Brain Intelligence (v2.18–v2.20)
-
-> Make the brain smarter without adding LLM dependency.
-
-### 1.1 Adaptive Retrieval
-
-**Problem**: Fixed depth levels (instant/context/habit/deep) don't adapt to query complexity. User asks simple question → wastes cycles on deep traversal.
-
-**Vision**: Brain learns optimal depth per query pattern. Track which depth level produces useful results for each query type → auto-select depth.
-
-- EMA-calibrated depth selection from `retrieval_calibration` table (foundation exists)
-- Per-query-type thresholds (fact queries → shallow, "why" queries → deep)
-- Diminishing returns gate — stop traversal when new hops add no new signal
-- **Brain test**: Não thật không duyệt toàn bộ ký ức cho mỗi câu hỏi → Yes ✅
-
-### 1.2 Predictive Activation (Priming)
-
-**Problem**: Brain only activates when queried. Real brains prime related memories before they're needed.
-
-**Vision**: Based on session context + habits, pre-activate likely-needed memories. When agent starts working on "auth" → KB memories about auth are already warm.
-
-- Session topic detection from recent `nmem_remember` / `nmem_recall` calls
-- Habit-based priming: "after recall('deployment'), user usually recalls('env vars')"
-- Pre-warm activation levels for predicted queries
-- Reduces recall latency for anticipated needs
-- **Brain test**: Não thật prime ký ức liên quan trước khi cần → Yes ✅
-
-### 1.3 Semantic Drift Detection
-
-**Problem**: Over time, same concept gets different tags: "API" vs "REST" vs "endpoint" vs "route". Brain fragments.
-
-**Vision**: Detect tag clusters that refer to the same concept → auto-merge or suggest merge.
-
-- Tag co-occurrence matrix from fiber metadata
-- Cluster detection (tags that always appear together = likely synonyms)
-- Auto-normalize or prompt user: "API, REST, endpoint appear to mean the same thing. Merge?"
-- Prevents brain fragmentation without LLM
-- **Brain test**: Não thật gom khái niệm tương tự → Yes ✅
+| Capability | Version | Brain Test |
+|------------|---------|------------|
+| Spreading activation (4 depth levels + RRF score fusion) | v1.0–v2.29 | Associative reflex |
+| 14 memory types, 24 synapse types | v1.0 | Typed memory |
+| Hebbian learning + memory decay (type-aware) | v1.0 | Use it or lose it |
+| Sleep consolidation (13 strategies: prune/merge/dream/mature/infer/...) | v1.0 | Sleep replay |
+| Multi-format KB training (PDF/DOCX/PPTX/HTML/JSON/XLSX/CSV) | v2.0 | Learning from documents |
+| Pinned KB memories (skip decay/prune/compress) | v2.0 | Core knowledge |
+| Tool memory (PostToolUse → neuron clusters) | v2.25 | Procedural memory |
+| Error resolution learning (RESOLVED_BY synapses) | v2.0 | Learning from mistakes |
+| Multi-device sync (hub-spoke, 4 conflict strategies) | v2.0 | — |
+| Fernet encryption + sensitive content auto-detect | v2.0 | — |
+| VS Code extension (status bar, graph explorer, CodeLens) | v2.10 | — |
+| REST API + WebSocket dashboard (7 pages) | v2.0 | — |
+| Telegram backup integration | v2.0 | — |
+| Brain versioning + transplant + merge | v2.0 | Portable consciousness |
+| Algorithmic sufficiency gate (8-gate retrieval validator) | v2.0 | Attention filter |
+| Codebase indexing + code-aware recall | v2.0 | — |
+| SimHash deduplication + graph query expansion | v2.29 | — |
+| Personalized PageRank activation (opt-in) | v2.29 | Hub dampening |
+| RRF multi-retriever score fusion | v2.29 | — |
+| Cognitive reasoning (hypothesize/evidence/predict/verify/gaps/schema) | v2.27 | Scientific reasoning |
+| Source-Aware Memory (registry, exact recall, citations, audit) | v3.1 | Source memory |
+| Structured encoding (tables, CSV, JSON arrays) | v3.1 | Structured recall |
+| Cloud Sync Hub (Cloudflare Workers + D1, API key auth) | v3.3 | — |
+| Session intelligence (topic EMA, auto-expiry, SQLite persist) | v3.2 | Working memory |
+| Adaptive depth selection (calibration-driven, session-aware) | v3.4 | Efficient recall |
+| Predictive priming (4-source: cache, topic, habit, co-activation) | v3.5 | Priming |
+| Semantic drift detection (tag co-occurrence, Union-Find clustering) | v4.0 | Concept merging |
+| Diminishing returns gate (stop traversal when no new signal) | v4.11 | Attention economy |
+| Brain Quality Track A: Smart instructions, Knowledge Surface (.nm), reflection engine | v4.8–v4.9 | Proactive memory |
+| Brain Quality Track B: Auto-consolidation, Hebbian retrieval, IDF keywords, adaptive decay | v4.8 | Graph quality |
+| Lazy entity promotion (2+ mentions before neuron creation) | v4.8 | Selective encoding |
+| Auto-importance scoring (heuristic priority from content signals) | v4.8 | Salience detection |
+| PostgreSQL + pgvector backend | v4.7 | — |
+| Context merger (structured `context` dict in remember) | v4.5 | — |
+| Quality scorer (per-memory quality hints) | v4.5 | — |
+| Onboarding overhaul (`nmem init --full`, `nmem doctor`) | v4.10 | — |
+| IDE rules generator (Cursor, Windsurf, Cline, Gemini, AGENTS.md) | v4.6 | — |
+| Cascading retrieval with fiber summary tier | v4.3 | — |
+| HuggingFace Spaces chatbot (ReflexPipeline, no LLM) | v4.3 | — |
 
 ---
 
-## Phase 2: Scale & Performance (v2.21–v2.25)
+## Phase A: Production Hardening (v5.0)
+
+> Ship quality. Fix gaps. Make existing features bulletproof.
+
+### A1. PostgreSQL Backend Parity — Issues #83, #84, #86
+
+**Problem**: PostgreSQL backend missing cognitive layer tables, `nmem_edit` persistence, and `pin_fibers` method. Users who chose PostgreSQL hit runtime errors.
+
+**Scope**:
+- [ ] Cognitive tables in PostgreSQL schema (cognitive_state, hot_index, knowledge_gaps)
+- [ ] `pin_fibers()` implementation for PostgreSQL storage
+- [ ] `nmem_edit` type/priority changes persisted in PostgreSQL
+- [ ] Parity test suite: run SQLite test matrix against PostgreSQL
+
+### A2. File Watcher Ingestion — Issue #66
+
+**Problem**: Users manually run `nmem train` on files. Should be automatic: drop file → auto-memorize.
+
+**Scope**: 3 phases (plan: `.rune/plan-file-watcher.md`)
+- [ ] Phase 1: Core FileWatcher class, watchdog integration, state tracking (mtime + simhash)
+- [ ] Phase 2: `nmem watch` CLI + `nmem_watch` MCP tool + config
+- [ ] Phase 3: `nmem serve` integration, debounce (2s), metrics
+- **Brain test**: Não tự hấp thụ thông tin từ môi trường → Yes
+
+### A3. Brain Quality Track C — Vertical Intelligence
+
+**Problem**: Brain treats all content the same. Domain-specific entities (financial amounts, legal references) deserve specialized extraction and encoding.
+
+**Scope**: 3 sub-phases (plan: `.rune/plan-brain-quality.md`)
+- [ ] C1+C2: Domain entity types + structured data encoding (regex-based, no LLM)
+- [ ] C3: Cross-encoder reranking (optional `bge-reranker` post-SA refinement)
+- [ ] C4: Agent visualization (`nmem_visualize` → Vega-Lite/markdown/ASCII charts)
+- **Brain test**: Kế toán nhớ "ROE" khác "Paris" → Yes
+
+### A4. Stability & Polish
+
+- [ ] Pre-ship smoke test automation (`scripts/pre_ship.py` → CI)
+- [ ] E2E test coverage for dashboard (Playwright)
+- [ ] Schema migration rollback testing (v29 → v28 → v27)
+- [ ] Performance benchmarks: recall latency at 10K/50K/100K neurons
+
+**Target**: v5.0 = "production-ready for teams" release.
+
+---
+
+## Phase B: Monetization & Growth (v5.x → v6.0)
+
+> From open-source tool to sustainable product. Revenue enables long-term development.
+
+### B1. Sync Hub: Landing + Payment (plan: `.rune/plan-sync-hub-phase3.md`)
+
+**Problem**: Cloud sync works but has no billing. Need landing page + payment flow.
+
+**Scope**:
+- [ ] Landing page (Cloudflare Pages) — features, pricing, signup
+- [ ] SePay integration (Vietnam, 0% fee) for domestic users
+- [ ] Stripe integration for global users
+- [ ] Free tier (100 neurons synced) → Pro tier ($5/mo, unlimited)
+- [ ] Usage dashboard: sync history, storage used, device count
+
+### B2. Sync Hub: Team Sharing (plan: `.rune/plan-sync-hub-phase4.md`)
+
+**Problem**: Each agent has its own brain. Knowledge doesn't flow between team members.
+
+**Scope**:
+- [ ] Team brain: shared namespace with per-user attribution
+- [ ] Roles: owner, editor, viewer
+- [ ] Activity feed: "Agent B learned about React hooks 2 hours ago"
+- [ ] Audit log: who changed what, when
+- **Brain test**: Collective memory (team knowledge) → Yes
+
+### B3. Distribution & Discoverability
+
+**Problem**: Users don't know NeuralMemory exists. Need to be where they search.
+
+**Scope**:
+- [ ] MCP Registry listing (modelcontextprotocol.io)
+- [ ] awesome-mcp-servers PR (punkpeye/awesome-mcp-servers)
+- [ ] PyPI package optimization (description, classifiers, keywords)
+- [ ] npm package for OpenClaw plugin
+- [ ] Blog posts: "NeuralMemory vs Mem0", "Why spreading activation beats RAG"
+- [ ] HuggingFace Spaces demo polished + promoted
+
+### B4. Brain Marketplace v1
+
+**Problem**: Expert knowledge is siloed. A React expert's brain could help thousands of developers.
+
+**Scope**:
+- [ ] `nmem brain publish --name "react-19-patterns" --tags react,hooks,rsc`
+- [ ] `nmem brain install react-19-patterns --merge`
+- [ ] Brain packages: versioned, with metadata (description, tags, size, neuron count)
+- [ ] Discovery: browse/search on sync hub landing page
+- [ ] Free tier: publish up to 3 brains. Premium: unlimited + featured listing
+- **Brain test**: Humans learn from books/teachers (external knowledge) → Yes
+
+**Target**: v6.0 = "NeuralMemory as a service" with revenue stream.
+
+---
+
+## Phase C: Scale & Enterprise (v6.x → v7.0)
 
 > From laptop brain to production brain. Handle millions of neurons.
 
-### 2.1 Tiered Storage Architecture
+### C1. Tiered Storage Architecture
 
-**Problem**: SQLite great for <500K neurons. Beyond that, graph queries slow down. FalkorDB exists but is all-or-nothing switch.
+**Problem**: SQLite great for <500K neurons. Beyond that, graph queries slow down.
 
-**Vision**: Hybrid storage — hot data in FalkorDB (fast graph traversal), cold data in SQLite (cheap storage), automatic tiering.
+**Vision**: Hybrid storage — hot data in memory/FalkorDB, warm in SQLite WAL, cold in compressed archives.
 
 ```
-Hot tier (FalkorDB/Redis)     — recent + frequently activated neurons
+Hot tier (in-memory + optional FalkorDB) — recent + frequently activated
   ↕ auto-promote/demote
-Warm tier (SQLite WAL)        — moderate activity, still queryable
+Warm tier (SQLite WAL)                   — moderate activity, queryable
   ↕ auto-archive
-Cold tier (SQLite read-only)  — archived, compressed, rarely accessed
+Cold tier (SQLite read-only, compressed) — archived, rarely accessed
 ```
 
 - Access frequency drives tier placement (already tracked in NeuronState)
 - KB (pinned) memories stay in hot tier permanently
-- Organic memories flow naturally: hot → warm → cold → pruned
 - Single query interface — storage layer handles tier routing transparently
 - **Target**: Sub-100ms recall at 1M+ neurons
+- **Brain test**: Não có vùng nhớ nhanh (working memory) vs nhớ dài hạn → Yes
 
-### 2.2 Approximate Nearest Neighbor Index
+### C2. Approximate Nearest Neighbor Index
 
-**Problem**: SimHash dedup is O(n) scan. At 500K+ neurons, embedding-based recall becomes bottleneck.
+**Problem**: SimHash dedup is O(n) scan. At 500K+ neurons, embedding-based recall bottlenecks.
 
-**Vision**: Add optional ANN index (HNSW or IVF) for embedding-based pre-filtering, while keeping spreading activation as the core mechanism.
+**Vision**: ANN index (sqlite-vec or HNSW) for embedding pre-filtering, spreading activation refines within candidate set.
 
-- ANN narrows candidates from 500K → 500
-- Spreading activation refines within candidate set
+- ANN narrows 500K → 500 candidates, SA refines final ranking
 - Index rebuilds async during consolidation (not on hot path)
-- **Important**: This is acceleration, not replacement. Spreading activation remains central.
-- **Brain test**: Não có vùng chuyên lọc nhanh trước khi phản xạ sâu → Yes ✅ (thalamus)
+- **Important**: Acceleration, not replacement. Spreading activation remains central.
+- **Brain test**: Não có vùng chuyên lọc nhanh trước khi phản xạ sâu (thalamus) → Yes
 
-### 2.3 Partitioned Brain Sharding
+### C3. Partitioned Brain Sharding
 
-**Problem**: Single brain file grows unbounded. At GB scale, even SQLite VACUUM takes minutes.
+**Problem**: Single brain file grows unbounded. At GB scale, VACUUM takes minutes.
 
-**Vision**: Auto-shard brain by domain_tag or time window. Each shard is independent SQLite file, cross-shard synapses use lightweight references.
+**Vision**: Auto-shard by domain_tag or time window. Each shard is independent SQLite file.
 
 - Domain shards: `brain-kb-react.db`, `brain-kb-python.db`, `brain-organic-2026-Q1.db`
 - Query router fans out to relevant shards only
 - Cross-shard synapses: `(shard_id, neuron_id)` tuple reference
-- Merge shards when needed (transplant already supports this)
 - **Target**: Individual shard stays <200MB, total brain can be 10GB+
 
----
+### C4. Self-Hosted Brain Hub (Production Docker)
 
-## Phase 3: Cloud & Collaboration (v2.26–v3.0)
+**Problem**: Current sync is Cloudflare-hosted. Enterprises need self-hosted option.
 
-> From local brain to shared brain. Multi-agent, multi-device, multi-user.
+**Scope**:
+- [ ] Docker one-liner: `docker run -p 8080:8080 neuralmemory/hub`
+- [ ] Admin dashboard: connected devices, sync status, brain health
+- [ ] Backup: automatic daily snapshots to configurable storage (S3/GCS/local)
+- [ ] Rate limiting + connection pooling
+- **Deployment targets**: Docker, Kubernetes, Railway, Fly.io
 
-### 3.1 Brain Hub Server (Production-Ready)
-
-**Problem**: Current sync is basic hub-spoke. Need production-grade deployment for teams.
-
-**Vision**: Self-hostable Brain Hub that multiple agents/devices connect to. Real-time sync with conflict resolution.
-
-- Docker one-liner: `docker run -p 8080:8080 neuralmemory/hub`
-- WebSocket real-time sync (not polling)
-- Auth: API key per device/agent
-- Rate limiting + connection pooling
-- Admin dashboard: see connected devices, sync status, brain health
-- Backup: automatic daily snapshots to configurable storage (S3/GCS/local)
-- **Deployment targets**: VPS, Docker, Kubernetes, Railway, Fly.io
-
-### 3.2 Collaborative Brain
-
-**Problem**: Each agent has its own brain. Knowledge doesn't flow between team members' agents.
-
-**Vision**: Shared brain with namespaced contributions. Agent A's memories visible to Agent B, with attribution.
-
-- Namespace per contributor: `agent-a/`, `agent-b/`, `shared/`
-- Visibility rules: private (only me), team (my team), public (all agents)
-- Merge strategies when knowledge conflicts across contributors
-- Activity feed: "Agent B learned about React hooks 2 hours ago"
-- **Brain test**: Collective memory (team knowledge) → Yes ✅
-
-### 3.3 Brain Marketplace v2
-
-**Problem**: Expert knowledge is siloed. A React expert's brain could help thousands of developers.
-
-**Vision**: Publish & subscribe to brain packages. Install a "React 19" brain, merge into yours, get expert-level recall.
-
-- Publish: `nmem brain publish --name "react-19-patterns" --tag react,hooks,rsc`
-- Install: `nmem brain install react-19-patterns --merge`
-- Versioned: brain packages have semver, changelog, compatibility matrix
-- Revenue share: premium brains with subscription model
-- Quality: community ratings, download counts, verified authors
-- **Brain test**: Humans learn from books/teachers (external knowledge) → Yes ✅
-
-### 3.4 Automated Backup & Disaster Recovery
-
-**Problem**: Brain is precious data. Loss = catastrophic. No automated backup story.
-
-**Vision**: Built-in backup with zero configuration.
-
-- Local: automatic daily snapshots in `~/.neuralmemory/backups/` (rolling 7 days)
-- Cloud: optional push to S3/GCS/Backblaze B2 (encrypted at rest)
-- Point-in-time recovery: restore brain to any snapshot
-- Integrity check: SHA-256 verification on restore
-- CLI: `nmem backup create`, `nmem backup restore 2026-03-01`, `nmem backup list`
+**Target**: v7.0 = "enterprise-ready" with million-neuron scale.
 
 ---
 
-## Phase 4: Platform & Ecosystem (v3.0+)
+## Phase D: Platform & Ecosystem (v7.0+)
 
 > From tool to platform. NeuralMemory as the memory standard for AI.
 
-### 4.1 Brain Protocol Specification
+### D1. Brain Protocol Specification
 
-**Problem**: NeuralMemory is the only implementation. Need open spec for interoperability.
-
-**Vision**: Publish "Brain Protocol" — formal spec for how AI memory systems should work. Any vendor can implement it.
+**Vision**: Publish formal spec for how AI memory systems should work. Any vendor can implement it.
 
 - Core spec: neuron/synapse/fiber model, spreading activation algorithm, consolidation rules
 - Transport: MCP (primary), REST, gRPC
 - Serialization: brain export format (JSON + binary embeddings)
-- Compliance test suite: "Does your memory system pass the Brain Protocol tests?"
-- Submit to standardization body (or de facto standard via adoption)
+- Compliance test suite: "Does your memory system pass Brain Protocol tests?"
 
-### 4.2 Plugin Architecture
+### D2. Plugin Architecture
 
-**Problem**: Adding new features requires core changes. Community can't extend NM easily.
-
-**Vision**: Plugin hooks at every lifecycle stage. Community builds extensions without forking.
+**Vision**: Plugin hooks at every lifecycle stage. Community extends NM without forking.
 
 ```
 Lifecycle hooks:
@@ -214,85 +242,68 @@ Lifecycle hooks:
 ```
 
 - Plugin registry: `nmem plugin install sentiment-boost`
-- Plugin API: typed interfaces, versioned contracts
 - Sandboxed execution: plugins can't break core
 
-### 4.3 Multi-Modal Memory
+### D3. Multi-Modal Memory
 
-**Problem**: NM only stores text. Real brains store images, sounds, spatial relationships.
-
-**Vision**: Extend neuron types to support multi-modal content with cross-modal synapses.
+**Vision**: Extend neuron types beyond text — images, code AST, audio.
 
 - Image neurons: store image embeddings, activate on visual similarity
 - Code neurons: AST-aware storage, activate on structural similarity
 - Audio neurons: voice memo → transcription + audio embedding
-- Cross-modal synapses: "this code screenshot" → "this error message" → "this fix"
-- **Brain test**: Não lưu đa phương thức (hình ảnh, âm thanh, cảm giác) → Yes ✅
+- Cross-modal synapses: screenshot → error message → fix
+- **Brain test**: Não lưu đa phương thức → Yes
 
-### 4.4 Federation Protocol
+### D4. Federation Protocol
 
-**Problem**: Brain Hubs are isolated. Knowledge doesn't flow between organizations.
-
-**Vision**: Brain Hubs can peer with each other. Selective knowledge sharing across organizations.
+**Vision**: Brain Hubs peer with each other. Selective knowledge sharing across organizations.
 
 - Federation handshake: Hub A ↔ Hub B establish trust
-- Selective sync: only share neurons tagged with specific domains
-- Privacy: encrypted transit, no plaintext on wire
+- Selective sync: share only neurons tagged with specific domains
 - Discovery: brain directory service (like DNS for brains)
-- **Use case**: Company A's "kubernetes-ops" brain peers with Company B's "cloud-infra" brain
 
 ---
 
-## Phase 5: Intelligence Frontier (v4.0+)
+## Phase E: Intelligence Frontier (v8.0+)
 
 > Where NeuralMemory goes beyond current AI memory paradigms.
 
-### 5.1 Dream Engine v2 (Insight Generation)
-
-**Problem**: Current DREAM consolidation creates associative synapses. But doesn't generate novel insights.
+### E1. Dream Engine v2 (Insight Generation)
 
 **Vision**: During consolidation, detect patterns across unrelated memories → surface non-obvious connections.
 
-- Cross-domain pattern detection: "auth tokens expire" + "memory decay" → "use token expiry pattern for memory cleanup"
+- Cross-domain pattern detection: "auth tokens expire" + "memory decay" → pattern
 - Anomaly detection: memories that should be connected but aren't
 - Weekly "dream report": "Your brain discovered 3 new connections this week"
-- **Brain test**: Dreams create unexpected associations → Yes ✅
+- **Brain test**: Dreams create unexpected associations → Yes
 
-### 5.2 Forgetting Curves & Spaced Repetition
+### E2. Forgetting Curves & Spaced Repetition
 
-**Problem**: Current decay is time-based. Real forgetting follows Ebbinghaus curves — memories need reinforcement at increasing intervals to become permanent.
-
-**Vision**: Integrate spaced repetition into the recall loop. Foundation exists (`nmem_review` with Leitner boxes).
+**Vision**: Integrate Ebbinghaus curves into recall loop. Foundation exists (`nmem_review` with Leitner boxes).
 
 - Auto-schedule review for important memories approaching decay threshold
-- Agent receives hints: "You haven't recalled 'deployment checklist' in 14 days. Review?"
-- Memories that survive multiple review cycles → lower decay rate automatically
-- KB memories (pinned) skip this — they're already permanent
-- **Brain test**: Não cần ôn lại để nhớ lâu → Yes ✅
+- Agent hints: "You haven't recalled 'deployment checklist' in 14 days. Review?"
+- Memories surviving multiple reviews → lower decay rate automatically
+- **Brain test**: Não cần ôn lại để nhớ lâu → Yes
 
-### 5.3 Contextual Personality
+### E3. Contextual Personality
 
-**Problem**: Brain is static — same retrieval behavior regardless of who's asking or what context.
+**Vision**: Brain adapts retrieval based on agent persona, task context, user preferences.
 
-**Vision**: Brain adapts retrieval behavior based on agent persona, task context, and user preferences.
+- "Security expert" persona → boost security-related synapses
+- "Quick chat" context → shallow depth; "code review" → deep
+- Personality profiles stored as brain metadata
+- **Brain test**: Context ảnh hưởng cách não nhớ → Yes
 
-- Agent persona affects activation weights: "security expert" → boost security-related synapses
-- Task context affects depth: "quick chat" → shallow, "code review" → deep
-- User preferences: some users want brief recall, others want comprehensive
-- Personality profiles stored as brain metadata, not hardcoded
-- **Brain test**: Context ảnh hưởng cách não nhớ → Yes ✅
-
-### 5.4 Causal Reasoning Engine
-
-**Problem**: Current causal traversal follows existing CAUSED_BY/LEADS_TO synapses. Can't infer new causal relationships.
+### E4. Causal Reasoning Engine
 
 **Vision**: Detect implicit causality from temporal patterns. "X always happens before Y" → auto-create causal synapse.
 
 - Temporal co-occurrence mining (existing sequence_mining foundation)
-- Confidence scoring for inferred causality (correlation ≠ causation guard)
-- "Counterfactual" queries: "What would have happened if X didn't occur?"
+- Confidence scoring (correlation ≠ causation guard)
+- Counterfactual queries: "What would have happened if X didn't occur?"
 - Causal graph visualization in dashboard
-- **Brain test**: Não suy luận nhân quả từ kinh nghiệm → Yes ✅
+- **Brain test**: Não suy luận nhân quả từ kinh nghiệm → Yes
 
 ---
 
@@ -302,14 +313,13 @@ Lifecycle hooks:
 
 | Idea | Brain Test | Feasibility | Impact |
 |------|-----------|-------------|--------|
-| **Voice interface** — speak memories, hear recalls | Yes (auditory memory) | Medium | High UX |
+| **Voice interface** — speak memories, hear recalls | Yes (auditory) | Medium | High UX |
 | **Spatial memory** — memories tied to locations/projects | Yes (hippocampus) | Medium | Medium |
-| **Sleep mode** — agent idle → trigger deep consolidation | Yes (sleep cycle) | Easy | High quality |
-| **Brain aging** — long-lived brains develop "wisdom" (meta-patterns) | Yes (wisdom) | Hard | High value |
-| **Memory palace** — spatial organization of knowledge domains | Yes (method of loci) | Hard | Novel |
-| **Neuroplasticity** — brain structure adapts to usage patterns | Yes (plasticity) | Medium | High |
-| **Mirror neurons** — learn by observing other agents' actions | Yes (mirror system) | Hard | Team AI |
-| **Emotional context** — mood affects recall (already partial) | Yes (affect) | Easy | Medium |
+| **Sleep mode** — agent idle → deep consolidation | Yes (sleep cycle) | Easy | High quality |
+| **Brain aging** — long-lived brains develop "wisdom" | Yes (wisdom) | Hard | High value |
+| **Memory palace** — spatial organization of knowledge | Yes (method of loci) | Hard | Novel |
+| **Neuroplasticity** — brain structure adapts to usage | Yes (plasticity) | Medium | High |
+| **Mirror neurons** — learn by observing other agents | Yes (mirror system) | Hard | Team AI |
 
 ---
 
@@ -330,13 +340,13 @@ Every roadmap item must pass:
 
 | Phase | Timeline | Risk | Value |
 |-------|----------|------|-------|
-| Phase 1: Brain Intelligence | Next | Low | High — smarter recall without complexity |
-| Phase 2: Scale & Performance | Medium | Medium | Critical — unlocks enterprise use |
-| Phase 3: Cloud & Collaboration | Medium-Long | Medium | High — multi-agent is the future |
-| Phase 4: Platform & Ecosystem | Long | High | Transformative — memory standard for AI |
-| Phase 5: Intelligence Frontier | Exploratory | High | Moonshot — novel AI memory paradigm |
+| Phase A: Production Hardening | Now → v5.0 | Low | High — stability unlocks adoption |
+| Phase B: Monetization & Growth | v5.x → v6.0 | Medium | Critical — revenue sustains development |
+| Phase C: Scale & Enterprise | v6.x → v7.0 | Medium | High — unlocks enterprise use cases |
+| Phase D: Platform & Ecosystem | v7.0+ | High | Transformative — memory standard for AI |
+| Phase E: Intelligence Frontier | v8.0+ | High | Moonshot — novel AI memory paradigm |
 
 ---
 
 *See [VISION.md](VISION.md) for the north star guiding all decisions.*
-*Last updated: 2026-03-02*
+*Last updated: 2026-03-17*

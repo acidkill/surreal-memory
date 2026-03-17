@@ -270,54 +270,56 @@ Create → Reinforce → Decay → Consolidate → Forget
 > **Chi tiết đầy đủ xem [ROADMAP.md](ROADMAP.md)** — versioned roadmap v0.14.0 → v1.0.0
 > với gap coverage matrix, expert feedback mapping, và VISION.md checklist per phase.
 
-### Đã có (v4.7.0)
+### Đã có (v4.11.0)
 
 - [x] Spreading activation retrieval (4 depth levels + RRF score fusion)
 - [x] Hebbian learning (reinforcement through use)
-- [x] Memory decay over time (type-aware)
+- [x] Memory decay over time (type-aware, adaptive)
 - [x] Sleep & Consolidate (13 strategies: prune/merge/summarize/mature/infer/dream/...)
 - [x] Typed memories (14 types) with priorities and expiry
 - [x] Brain export/import/merge (portable consciousness)
 - [x] Conflict resolution (4 strategies)
-- [x] MCP protocol (45 tools, standard memory layer)
-- [x] VS Code extension
-- [x] REST API + WebSocket sync + Multi-device hub
+- [x] MCP protocol (44 tools, standard memory layer)
+- [x] VS Code extension (status bar, graph explorer, CodeLens)
+- [x] REST API + WebSocket sync + Cloud Sync Hub (Cloudflare)
 - [x] Cognitive layer (hypothesize/evidence/predict/verify/gaps/schema)
 - [x] SimHash deduplication + graph query expansion
-- [x] Score breakdown (activation, freshness, frequency, intersection)
-- [x] Auto-tags (entity + keyword extraction, Vietnamese NLP)
-- [x] Personalized PageRank activation (opt-in)
+- [x] Personalized PageRank + diminishing returns gate
+- [x] Auto-tags (entity + keyword extraction, Vietnamese NLP, IDF scoring)
 - [x] Multi-format KB training (PDF/DOCX/PPTX/HTML/JSON/XLSX/CSV)
 - [x] Fernet encryption + sensitive content auto-detect
-- [x] Source Registry + Exact Recall + Structured Encoding (Pillar 4 — v3.1.0)
-- [x] Citation Engine + Audit Synapse + Source Resolution (Pillar 4 — v3.1.0)
+- [x] Source Registry + Exact Recall + Structured Encoding + Citation Engine (Pillar 4)
+- [x] Smart Instructions + Knowledge Surface (.nm format) (Pillar 5)
+- [x] Predictive Priming (4-source: cache, topic, habit, co-activation) (Pillar 5)
+- [x] Session Intelligence + Adaptive Depth + Semantic Drift Detection (Pillar 5)
+- [x] Brain Quality Track A (proactive) + Track B (graph quality) — all shipped
+- [x] Lazy Entity Promotion + Auto-Importance Scoring + Reflection Engine
+- [x] PostgreSQL + pgvector backend
+- [x] Onboarding (`nmem init --full`, `nmem doctor`, IDE rules generator)
+- [x] Quality scorer + context merger for structured remember
 
-### Chưa có — Cần cho Pillar 5 & 6
+### Chưa có — Tiếp theo
 
-| Feature | Pillar | Brain Analogy | Plan |
-|---------|--------|---------------|------|
-| **Smart Instructions** | 5 | Não biết "khi nào nên nhớ" | A1 |
-| **Layered Brain** | 6 | Não phân tầng: working/episodic/semantic | A2 |
-| **Auto-Recall Injection** | 5 | Priming — context tự nổi lên | A3 |
-| **Background Processing** | 5 | Sleep consolidation | A4 |
-| **Auto-Consolidation** | 5 | Não tự gom ký ức khi ngủ | B1 |
-| **Retrieval-Time Learning** | 5 | Neurons fire together → wire together | B2 |
-| **Domain Entity Types** | 4+ | Kế toán nhớ "ROE" khác "Paris" | C1 |
-| **Structured Data Neurons** | 4+ | Não hiểu bảng, không chỉ text | C2 |
-| **Cross-Encoder Reranking** | — | Attention filter (prefrontal cortex) | C3 |
-| **Agent Visualization** | — | Não tạo mô hình mental, hình ảnh | C4 |
+| Feature | Pillar | Brain Analogy | Status |
+|---------|--------|---------------|--------|
+| **Domain Entity Types** | 4+ | Kế toán nhớ "ROE" khác "Paris" | Track C — pending |
+| **Structured Data Neurons** | 4+ | Não hiểu bảng, không chỉ text | Track C — pending |
+| **Cross-Encoder Reranking** | — | Attention filter (prefrontal cortex) | Track C — pending |
+| **Agent Visualization** | — | Não tạo mô hình mental, hình ảnh | Track C — pending |
+| **File Watcher Ingestion** | 5 | Não tự hấp thụ từ môi trường | Issue #66 — pending |
+| **Team Brain Sharing** | 3 | Collective memory | Sync Hub Phase 4 — pending |
+| **Brain Marketplace** | 3 | Học từ sách/thầy | Planned |
 
 ### Hướng phát triển tiếp theo
 
 | Version | Theme | Key Deliverable |
 |---------|-------|-----------------|
-| v5.0 | Proactive Memory | Smart instructions, auto-recall, background processing |
-| v5.x | Layered Brain | Global + Project layers, auto-routing, team sharing |
-| v6.0 | Brain Intelligence | Retrieval learning, IDF keywords, fiber scoring |
-| v6.x | Vertical Intelligence | Domain entities, structured data, visualization |
-| v7.0 | Scale & Platform | Brain Protocol spec, federation, sharding |
+| v5.0 | Production Hardening | PostgreSQL parity, file watcher, Track C, stability |
+| v6.0 | Monetization & Growth | Sync hub billing, team sharing, brain marketplace, distribution |
+| v7.0 | Scale & Enterprise | Tiered storage, ANN index, sharding, self-hosted Docker hub |
+| v8.0 | Platform & Ecosystem | Brain Protocol spec, plugin architecture, multi-modal, federation |
 
-Full plan: `.rune/plan-brain-quality.md` (3 tracks, 16 phases)
+Full roadmap: [ROADMAP.md](ROADMAP.md)
 
 ---
 

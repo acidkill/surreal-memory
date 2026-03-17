@@ -113,7 +113,6 @@ nav:
     - Scalability: architecture/scalability.md
   - Benchmarks: benchmarks.md
   - FAQ: FAQ.md
-  - Lessons Learned: lessons-learned.md
   - Contributing: contributing.md
   - Changelog: changelog.md
   - Blog:

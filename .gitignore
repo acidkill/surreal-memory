@@ -159,6 +159,18 @@ logs/
 .neural_memory/
 .claude/
 
+# Temp/debug artifacts
+.tmp_*
+.tmp.*
+nonexistent_path_*
+MagicMock/
+companion-setup-brain.json
+.venv-*/
+
+# Root-level screenshots (use docs/assets/images/ instead)
+/*.png
+/*.jpg
+
 # Secrets / runtime config (defence-in-depth)
 config.toml
 *.key
