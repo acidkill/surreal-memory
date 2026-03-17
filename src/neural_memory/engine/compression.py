@@ -509,7 +509,10 @@ class CompressionEngine:
 
         # Size guard: skip if compressed content is not smaller than original.
         # Graph-only tier (empty string) always passes.
-        if target_tier != CompressionTier.GRAPH_ONLY and compressed_token_count >= original_token_count:
+        if (
+            target_tier != CompressionTier.GRAPH_ONLY
+            and compressed_token_count >= original_token_count
+        ):
             logger.info(
                 "Skipping compression for fiber %s — summary (%d tokens) "
                 "not smaller than original (%d tokens)",
