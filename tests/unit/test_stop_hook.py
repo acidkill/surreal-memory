@@ -235,7 +235,7 @@ class TestEmbeddingDedup:
         )
 
         async def mock_similarity(a: list[float], b: list[float]) -> float:
-            dot = sum(x * y for x, y in zip(a, b))
+            dot = sum(x * y for x, y in zip(a, b, strict=False))
             na = sum(x * x for x in a) ** 0.5
             nb = sum(x * x for x in b) ** 0.5
             if na == 0 or nb == 0:
@@ -277,7 +277,7 @@ class TestEmbeddingDedup:
         )
 
         async def mock_similarity(a: list[float], b: list[float]) -> float:
-            dot = sum(x * y for x, y in zip(a, b))
+            dot = sum(x * y for x, y in zip(a, b, strict=False))
             na = sum(x * x for x in a) ** 0.5
             nb = sum(x * x for x in b) ** 0.5
             if na == 0 or nb == 0:
