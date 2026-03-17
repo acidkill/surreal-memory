@@ -304,7 +304,15 @@ class AutoHandler:
             if len(truncated_result) >= 50:
                 texts_to_analyze.append(truncated_result)
 
+            from neural_memory.safety.input_firewall import check_content
+
             for text in texts_to_analyze:
+                fw = check_content(text)
+                if fw.blocked:
+                    logger.debug("Passive capture: firewall blocked — %s", fw.reason)
+                    continue
+                if fw.sanitized:
+                    text = fw.sanitized
                 detected = self._run_detection(text)
                 if not detected:
                     continue

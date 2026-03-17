@@ -312,6 +312,15 @@ async def capture_text(text: str) -> dict[str, Any]:
     from neural_memory.core.memory_types import MemoryType, Priority, TypedMemory
     from neural_memory.engine.encoder import MemoryEncoder
     from neural_memory.mcp.auto_capture import analyze_text_for_memories
+    from neural_memory.safety.input_firewall import check_content
+
+    # Gate 1: Input firewall — block garbage/adversarial content
+    fw = check_content(text)
+    if fw.blocked:
+        logger.debug("Stop hook: input firewall blocked — %s", fw.reason)
+        return {"saved": 0, "message": f"Input blocked: {fw.reason}"}
+    if fw.sanitized:
+        text = fw.sanitized
     from neural_memory.safety.sensitive import auto_redact_content
     from neural_memory.unified_config import get_config, get_shared_storage
     from neural_memory.utils.timeutils import utcnow
