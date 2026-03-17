@@ -212,12 +212,16 @@ def _get_stop_words(language: str, text: str) -> frozenset[str]:
     return STOP_WORDS
 
 
+_PYVI_WARNED = False
+
+
 def _tokenize_vietnamese(text: str) -> str | None:
     """Try to tokenize Vietnamese text using pyvi.
 
     Returns tokenized text with compound words joined by underscores,
     or None if pyvi is not available.
     """
+    global _PYVI_WARNED
     try:
         import warnings
 
@@ -228,6 +232,13 @@ def _tokenize_vietnamese(text: str) -> str | None:
 
             return ViTokenizer.tokenize(text)  # type: ignore[no-any-return]
     except ImportError:
+        if not _PYVI_WARNED:
+            logger.warning(
+                "Vietnamese text detected but pyvi is not installed — "
+                "keyword extraction will produce low-quality bigrams. "
+                "Install with: pip install pyvi"
+            )
+            _PYVI_WARNED = True
         return None
 
 

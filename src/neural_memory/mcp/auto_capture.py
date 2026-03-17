@@ -14,6 +14,15 @@ _MIN_TEXT_LENGTH = 20
 # Maximum text length for regex processing — prevents ReDoS on huge inputs
 _MAX_REGEX_TEXT_LENGTH = 50_000
 
+# Vietnamese diacritical characters — used for language detection
+_VI_DIACRITICS = re.compile(r"[ăâđêôơưắằẳẵặấầẩẫậếềểễệốồổỗộớờởỡợứừửữự]")
+
+# Confidence penalty for Vietnamese auto-captures (regex is less reliable)
+_VI_CONFIDENCE_PENALTY = 0.7
+
+# Minimum captured content length for Vietnamese patterns
+_VI_MIN_CAPTURE_LEN = 15
+
 # Type prefixes used for deduplication
 _TYPE_PREFIXES = ("decision: ", "error: ", "todo: ", "insight: ", "preference: ")
 
@@ -48,8 +57,8 @@ TODO_PATTERNS = [
     r"(?:we |I )?(?:need to|should|must|have to)[:\s]+(.{5,80}?)(?:\.|,| but | or | and |$)",
     r"(?:remember to|don\'t forget to)[:\s]+(.+?)(?:\.|$)",
     r"(?:later|next)[:\s]+(.+?)(?:\.|$)",
-    # Vietnamese
-    r"(?:cần phải|cần|phải|nên)[:\s]+(.+?)(?:\.|$)",
+    # Vietnamese — require compound forms or verb+object (avoid bare cần/phải/nên)
+    r"(?:cần phải|bắt buộc phải|nhất định phải)[:\s]+(.+?)(?:\.|$)",
     r"(?:nhớ|đừng quên)[:\s]+(.+?)(?:\.|$)",
 ]
 
@@ -103,6 +112,11 @@ INSIGHT_PATTERNS = [
 ]
 
 
+def _is_vietnamese_pattern(pattern: str) -> bool:
+    """Check if a regex pattern targets Vietnamese text."""
+    return bool(_VI_DIACRITICS.search(pattern))
+
+
 def _detect_patterns(
     text: str,
     patterns: list[str],
@@ -115,17 +129,22 @@ def _detect_patterns(
     """Run a list of regex patterns and return detected memories."""
     detected: list[dict[str, Any]] = []
     for pattern in patterns:
+        is_vi = _is_vietnamese_pattern(pattern)
+        effective_min_len = max(min_match_len, _VI_MIN_CAPTURE_LEN) if is_vi else min_match_len
+
         matches = re.findall(pattern, text, re.IGNORECASE)
         for match in matches:
             # Handle tuple matches from patterns with multiple groups
             if isinstance(match, tuple):
                 match = " ".join(part for part in match if part)
             captured = match.strip()
-            if len(captured) < min_match_len:
+            if len(captured) < effective_min_len:
                 continue
 
             # Adjust confidence based on capture quality
             adjusted_confidence = confidence
+            if is_vi:
+                adjusted_confidence *= _VI_CONFIDENCE_PENALTY
             if len(captured) > 200:
                 adjusted_confidence *= 0.7  # Penalize truly excessive captures
             elif len(captured) < 10:

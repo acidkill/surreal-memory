@@ -269,6 +269,62 @@ class MCPServer(
         return {"error": f"Unknown tool: {name}"}
 
 
+# ──────────────────── Tool event recording ────────────────────
+
+# Tools that should NOT be recorded (meta/analytics tools → avoid recursion)
+_SKIP_EVENT_TOOLS = frozenset({"nmem_tool_stats", "nmem_version", "nmem_stats"})
+
+
+async def _record_tool_event(
+    server: MCPServer,
+    tool_name: str,
+    tool_args: dict[str, Any],
+    start_time: Any,
+    *,
+    success: bool,
+) -> None:
+    """Record a tool call event for analytics (fire-and-forget)."""
+    if tool_name in _SKIP_EVENT_TOOLS:
+        return
+
+    from neural_memory.utils.timeutils import utcnow
+
+    duration_ms = int((utcnow() - start_time).total_seconds() * 1000)
+
+    # Build a short args summary (first 200 chars of key params)
+    summary_parts: list[str] = []
+    for key in ("query", "content", "action", "strategy", "topic"):
+        val = tool_args.get(key)
+        if val is not None:
+            summary_parts.append(f"{key}={str(val)[:60]}")
+    args_summary = ", ".join(summary_parts)[:200]
+
+    try:
+        storage = await server.get_storage()
+        brain_name = server.config.current_brain
+        brain = await storage.get_brain(brain_name)
+        if not brain:
+            return
+
+        await storage.insert_tool_events(  # type: ignore[attr-defined]
+            brain.id,
+            [
+                {
+                    "tool_name": tool_name,
+                    "server_name": "neural-memory",
+                    "args_summary": args_summary,
+                    "success": success,
+                    "duration_ms": duration_ms,
+                    "session_id": "",
+                    "task_context": "",
+                    "created_at": utcnow().isoformat(),
+                }
+            ],
+        )
+    except Exception:
+        logger.debug("Failed to insert tool event for %s", tool_name, exc_info=True)
+
+
 # ──────────────────── Module-level functions ────────────────────
 
 
@@ -346,6 +402,10 @@ async def handle_message(server: MCPServer, message: dict[str, Any]) -> dict[str
         use_compact = should_compact(tool_args=tool_args, config=server.config.response)
         token_budget = tool_args.pop("token_budget", None)
 
+        from neural_memory.utils.timeutils import utcnow
+
+        t0 = utcnow()
+        success = True
         try:
             result = await asyncio.wait_for(
                 server.call_tool(tool_name, tool_args),
@@ -365,6 +425,10 @@ async def handle_message(server: MCPServer, message: dict[str, Any]) -> dict[str
                 if token_budget is not None:
                     result = apply_token_budget(result, int(token_budget))
 
+                # Check if tool returned an error
+                if result.get("error"):
+                    success = False
+
             result_text = json.dumps(result)
 
             # Post-tool passive capture (fire-and-forget, never blocks response)
@@ -373,12 +437,22 @@ async def handle_message(server: MCPServer, message: dict[str, Any]) -> dict[str
             except Exception:
                 logger.debug("Post-tool passive capture failed", exc_info=True)
 
+            # Record tool event for analytics (fire-and-forget)
+            try:
+                await _record_tool_event(server, tool_name, tool_args, t0, success=success)
+            except Exception:
+                logger.debug("Tool event recording failed", exc_info=True)
+
             return {
                 "jsonrpc": "2.0",
                 "id": msg_id,
                 "result": {"content": [{"type": "text", "text": result_text}]},
             }
         except TimeoutError:
+            try:
+                await _record_tool_event(server, tool_name, tool_args, t0, success=False)
+            except Exception:
+                logger.debug("Tool event recording failed", exc_info=True)
             return {
                 "jsonrpc": "2.0",
                 "id": msg_id,
@@ -389,6 +463,10 @@ async def handle_message(server: MCPServer, message: dict[str, Any]) -> dict[str
             }
         except Exception:
             logger.error("Tool '%s' raised an exception", tool_name, exc_info=True)
+            try:
+                await _record_tool_event(server, tool_name, tool_args, t0, success=False)
+            except Exception:
+                logger.debug("Tool event recording failed", exc_info=True)
             return {
                 "jsonrpc": "2.0",
                 "id": msg_id,
