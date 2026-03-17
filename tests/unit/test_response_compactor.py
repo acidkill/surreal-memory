@@ -362,7 +362,7 @@ class TestSimulatedToolResponses:
             "memories": [
                 {
                     "fiber_id": f"f{i}",
-                    "content": f"Memory content that is quite long " * 10,
+                    "content": "Memory content that is quite long " * 10,
                     "memory_type": "fact",
                     "priority": 5,
                     "tags": ["test"],

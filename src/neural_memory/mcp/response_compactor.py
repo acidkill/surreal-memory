@@ -194,9 +194,7 @@ def needs_auto_compact(result: dict[str, Any], threshold: int) -> bool:
     """
     if threshold <= 0:
         return False
-    return any(
-        isinstance(value, list) and len(value) > threshold for value in result.values()
-    )
+    return any(isinstance(value, list) and len(value) > threshold for value in result.values())
 
 
 def apply_token_budget(result: dict[str, Any], budget: int) -> dict[str, Any]:
