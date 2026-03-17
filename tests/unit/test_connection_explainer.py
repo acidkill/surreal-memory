@@ -10,7 +10,7 @@ from neural_memory.core.neuron import Neuron, NeuronType
 from neural_memory.core.synapse import Synapse, SynapseType
 from neural_memory.engine.connection_explainer import explain_connection
 from neural_memory.mcp.server import MCPServer, handle_message
-from neural_memory.unified_config import ToolTierConfig
+from neural_memory.unified_config import ResponseConfig, ToolTierConfig
 
 
 def _make_neuron(neuron_id: str, content: str, type: NeuronType = NeuronType.CONCEPT) -> Neuron:
@@ -226,6 +226,9 @@ class TestConnectionMCPHandler:
                 current_brain="test-brain",
                 get_brain_db_path=MagicMock(return_value="/tmp/test-brain.db"),
                 tool_tier=ToolTierConfig(tier="full"),
+                response=ResponseConfig(),
+                encryption=MagicMock(enabled=False, auto_encrypt_sensitive=False),
+                safety=MagicMock(auto_redact_min_severity=3),
             )
             return MCPServer()
 

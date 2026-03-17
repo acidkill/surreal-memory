@@ -71,6 +71,7 @@ class TestNmemEdit:
 
     @pytest.mark.asyncio
     async def test_edit_typed_memory_success(self) -> None:
+        from neural_memory.core.fiber import Fiber
         from neural_memory.core.memory_types import MemoryType, Priority, TypedMemory
 
         server = _make_server()
@@ -83,8 +84,12 @@ class TestNmemEdit:
             priority=Priority.NORMAL,
             source="test",
         )
-        fiber = MagicMock()
-        fiber.anchor_neuron_id = "neuron-1"
+        fiber = Fiber.create(
+            neuron_ids={"neuron-1"},
+            synapse_ids=set(),
+            anchor_neuron_id="neuron-1",
+            fiber_id="fiber-1",
+        )
 
         storage.get_typed_memory = AsyncMock(return_value=typed_mem)
         storage.get_fiber = AsyncMock(return_value=fiber)

@@ -484,9 +484,15 @@ class TestMCPTimeout:
         """Timed-out tool calls should return JSON-RPC error."""
 
         class FakeServer:
+            def __init__(self):
+                self.config = MagicMock()
+
             async def call_tool(self, name, args):
                 await asyncio.sleep(60)
                 return {}
+
+            async def get_storage(self):
+                return AsyncMock()
 
         server = FakeServer()
 
