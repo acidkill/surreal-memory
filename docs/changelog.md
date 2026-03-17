@@ -9,20 +9,107 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **B1: Auto-Consolidation Loop** — Session-end consolidation (MATURE+INFER+ENRICH) fires on MCP shutdown; health pulse monitors consolidation ratio
-- **B2: Retrieval-Time Hebbian** — INFER strategy added to default consolidation strategies for co-activation binding
-- **B3: Cross-Memory Entity Linking** — New `CrossMemoryLinkStep` in encoding pipeline creates `RELATED_TO` synapses between neurons sharing entity anchors
-- **B4: IDF-Weighted Keywords** — `keyword_document_frequency` table (schema v28), IDF scoring in `CreateSynapsesStep`, cold-start guard (<5 fibers)
-- **B5: Fiber-Level Recall Scoring** — Activation-aware scoring: `base_quality × activation_signal × stage_multiplier`; activation_signal = `max_act×0.5 + coverage×0.3 + mean_act×0.2`
-- **B6: Contextual Compression** — `compress_for_recall()` in `retrieval_context.py`: <7d full text, 7-30d 3-sentence summary, 30-90d 2 sentences, 90d+ 1 sentence
-- **B8: Adaptive Synapse Decay** — `time_decay()` uses reinforcement-modulated half-life: `effective_half_life = base × (1 + reinforced_count × 0.5)`, adaptive floor `0.3 + min(0.5, count × 0.05)`
+- **Input firewall (Gate 1)** — Security gate blocking garbage/adversarial content from auto-capture pipeline
+  - Blocks: oversized content (>10KB), control sequences (`<ctrl*>`, fake role tags), JSON metadata injection, base64/binary blocks, repetitive content, low-entropy data
+  - `FirewallResult` dataclass with `blocked`, `reason`, `sanitized` fields
+  - Integrated into all 3 auto-capture entry points: stop hook, precompact hook, post-tool passive capture
+  - 30 new tests (`test_input_firewall.py`)
+- **Stop hook role filtering** — JSONL transcript entries classified by role; tool results skipped, assistant messages filtered by memory markers
+- **Embedding semantic dedup** — Removes near-duplicate auto-captures using local embedding cosine similarity (sentence_transformer/ollama only)
+- **Compact response mode** — Reduce MCP tool response tokens by 60-80%
+  - `compact=true` param on all 46 MCP tools to strip metadata hints and truncate lists
+  - `token_budget=N` param for progressive response size enforcement
+  - Auto-compact: responses with >20 list items are compacted automatically
+  - Content preview: list items show truncated content with `_content_truncated` flag
+  - Count-replace: `fibers_matched`, `conflicts`, `expiry_warnings` → count only
+  - Long string truncation: `markdown` field capped at 500 chars
+  - `ResponseConfig` in config.toml: `compact_mode`, `max_list_items`, `strip_hints`, `content_preview_length`, `auto_compact_threshold`
+  - 47 new tests (`test_response_compactor.py`)
+
+### Fixed
+
+- **Memory poisoning prevention** — Garbage content (chat control sequences, fake role injection, 270KB payloads) no longer enters brain through hooks (#94)
+- **PreCompact emergency threshold** — Raised from 0.5 to 0.65 to reduce false positive captures
+- **fiber.metadata type sync** — `nmem_edit` now syncs type changes into `fiber.metadata` (cherry-picked from PR #85)
+- **Compression size guard** — Skip compression when summary is not smaller than original (#92)
+
+## [4.11.0] - 2026-03-17
+
+### Added
+
+- **Diminishing returns gate (v4.0 Phase 5)** — Stop spreading activation early when new hops add insufficient signal
+  - `ActivationTrace` dataclass: per-hop tracking of new neurons and activation gain
+  - `should_stop_spreading()`: absolute (< min neurons) + relative (gain ratio < threshold) criteria
+  - Wired into all 3 activation engines: BFS, PPR, Reflex
+  - 4 new `BrainConfig` fields: `diminishing_returns_enabled/threshold/min_neurons/grace_hops`
+  - 25 new tests (`test_diminishing_returns.py`)
+
+### Improved
+
+- **Roadmap cleanup** — Removed 45 completed/obsolete plan files, consolidated remaining plans
+  - File watcher plan added (3 phases, Issue #66)
+  - Brain Quality Track C1+C2 merged
+  - v4.0 master plan: all 5 phases complete
+
+### Tests
+
+- 4140 passed, 92 skipped, 1 xfailed
+
+## [4.10.0] - 2026-03-16
+
+### Added
+
+- **Onboarding overhaul (Issue #82)** — Reduce 26 manual setup steps to 1 command
+  - `nmem init --full`: auto-detect embeddings, enable dedup, generate maintenance script, print guide URL
+  - `nmem doctor` enhanced: 11 checks (was 8), `--fix` flag for auto-remediation (hooks, dedup, embedding)
+  - Interactive quickstart guide page (MkDocs + animated terminal demos, scroll reveals, feature cards)
+  - Dashboard `GuideCard` for new users (<50 neurons) — dismissible, persisted via localStorage
+  - Help button (?) in dashboard TopBar linking to quickstart guide
+  - CLI banners link to guide URL after init and doctor
+  - 35 new tests (test_full_setup + test_doctor_enhanced)
+
+### Fixed
+
+- **Windows npm install**: OpenClaw plugin postinstall uses cross-platform Node.js instead of Unix shell syntax
+
+## [4.9.0] - 2026-03-16
+
+### Added
+
+- **Knowledge Surface (.nm format)** — Two-tier memory architecture: Tier 1 = `.nm` flat file (~1000 tokens, loaded every session), Tier 2 = `brain.db` SQLite graph (queried on-demand)
+  - `.nm` format with 5 sections: GRAPH (causal edges), CLUSTERS (topic groups), SIGNALS (urgent/watching/uncertain), DEPTH MAP (self-routing hints), META (brain stats)
+  - `SurfaceGenerator` — algorithmic extraction from brain.db using composite scoring (activation + recency + connections + priority)
+  - Depth-aware recall routing: SUFFICIENT entities answered from surface (0 latency), NEEDS_DEEP triggers depth=2 recall
+  - Auto-injected into MCP `instructions` on session init for immediate agent context
+  - `nmem_surface` MCP tool — generate (rebuild from brain.db) and show (inspect current surface)
+  - Auto-regeneration on `nmem_auto(action="process")` session-end
+  - Atomic file writes (tmp + rename), project-level and global surface resolution
+  - Surface reload on brain switch, cached by brain name
+  - 73 new tests across 4 test files
+
+### Fixed
+
+- **CI fixes**: doc_trainer mock using real `BrainConfig` instead of `MagicMock` (lazy entity promotion attrs), auto_tags tests accept bigrams from keyword extractor
+- **Docs freshness**: regenerated CLI reference (new PostgreSQL migrate options)
+
+## [4.8.0] - 2026-03-16
+
+### Added
+
+- **B7: Lazy Entity Promotion** — Entities need 2+ mentions before becoming neurons; `entity_refs` table (schema v29), retroactive synapses on promotion, high-confidence/user-tagged exceptions
+- **A4: Auto-Importance Scoring** — Heuristic priority when user doesn't set explicit priority; type bonus, causal/comparative language signals, entity richness
+- **A4: Reflection Engine** — Accumulates importance from saved memories, detects patterns (recurring entities, temporal sequences, contradictions) at threshold
+- **PostgreSQL Migration** — `nmem migrate postgres` CLI command with full connection params (#80)
+- **B1-B6, B8: Brain Quality Track B** — Auto-consolidation, Hebbian retrieval, cross-memory linking, IDF keywords, fiber scoring, contextual compression, adaptive decay
 - **A1: Smart Instructions** — Decision framework injected into MCP `instructions` to guide proactive memory saving
-- **Schema v28** — New `keyword_document_frequency` table for IDF scoring
-- **46 new tests**: `test_cross_memory_link.py` (9), `test_idf_keywords.py` (7), `test_fiber_scoring.py` (8), `test_recall_compression.py` (12), `test_adaptive_decay.py` (11)
+- **Schema v29** — `entity_refs` table for lazy entity promotion + `keyword_document_frequency` for IDF scoring
+- **73 new tests**: lazy entity (11), importance (16), reflection (12), compression (12), adaptive decay (11), postgres migration (5), cross-memory link (9), IDF (7), fiber scoring (8)
 
 ### Improved
 
 - All quality improvements are purely algorithmic — zero LLM calls added
+- Pipeline steps use `getattr` for backward compat with SimpleNamespace contexts
+- Entity ref operations gracefully degrade when table doesn't exist
 
 ## [4.7.0] - 2026-03-16
 

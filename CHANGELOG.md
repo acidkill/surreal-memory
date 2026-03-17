@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Input firewall (Gate 1)** — Security gate blocking garbage/adversarial content from auto-capture pipeline
+  - Blocks: oversized content (>10KB), control sequences (`<ctrl*>`, fake role tags), JSON metadata injection, base64/binary blocks, repetitive content, low-entropy data
+  - `FirewallResult` dataclass with `blocked`, `reason`, `sanitized` fields
+  - Integrated into all 3 auto-capture entry points: stop hook, precompact hook, post-tool passive capture
+  - 30 new tests (`test_input_firewall.py`)
+- **Stop hook role filtering** — JSONL transcript entries classified by role; tool results skipped, assistant messages filtered by memory markers
+- **Embedding semantic dedup** — Removes near-duplicate auto-captures using local embedding cosine similarity (sentence_transformer/ollama only)
 - **Compact response mode** — Reduce MCP tool response tokens by 60-80%
   - `compact=true` param on all 46 MCP tools to strip metadata hints and truncate lists
   - `token_budget=N` param for progressive response size enforcement
@@ -21,6 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Memory poisoning prevention** — Garbage content (chat control sequences, fake role injection, 270KB payloads) no longer enters brain through hooks (#94)
+- **PreCompact emergency threshold** — Raised from 0.5 to 0.65 to reduce false positive captures
 - **fiber.metadata type sync** — `nmem_edit` now syncs type changes into `fiber.metadata` (cherry-picked from PR #85)
 - **Compression size guard** — Skip compression when summary is not smaller than original (#92)
 
