@@ -190,6 +190,57 @@ _INIT_SQL_TEMPLATE = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_projects_name ON projects(brain_id, name)",
+    # Cognitive state (hypothesis/prediction tracking)
+    """
+    CREATE TABLE IF NOT EXISTS cognitive_state (
+        neuron_id TEXT NOT NULL,
+        brain_id TEXT NOT NULL,
+        confidence DOUBLE PRECISION DEFAULT 0.5,
+        evidence_for_count INTEGER DEFAULT 0,
+        evidence_against_count INTEGER DEFAULT 0,
+        status TEXT DEFAULT 'active'
+            CHECK (status IN ('active', 'confirmed', 'refuted', 'superseded', 'pending', 'expired')),
+        predicted_at TEXT,
+        resolved_at TEXT,
+        schema_version INTEGER DEFAULT 1,
+        parent_schema_id TEXT,
+        last_evidence_at TEXT,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (brain_id, neuron_id)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_cognitive_confidence ON cognitive_state(brain_id, confidence)",
+    "CREATE INDEX IF NOT EXISTS idx_cognitive_status ON cognitive_state(brain_id, status)",
+    # Hot index (ranked cognitive summary)
+    """
+    CREATE TABLE IF NOT EXISTS hot_index (
+        brain_id TEXT NOT NULL,
+        slot INTEGER NOT NULL,
+        category TEXT NOT NULL,
+        neuron_id TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        confidence DOUBLE PRECISION,
+        score DOUBLE PRECISION NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (brain_id, slot)
+    )
+    """,
+    # Knowledge gaps (metacognition)
+    """
+    CREATE TABLE IF NOT EXISTS knowledge_gaps (
+        id TEXT PRIMARY KEY,
+        brain_id TEXT NOT NULL,
+        topic TEXT NOT NULL,
+        detected_at TEXT NOT NULL,
+        detection_source TEXT NOT NULL,
+        related_neuron_ids TEXT DEFAULT '[]',
+        resolved_at TEXT,
+        resolved_by_neuron_id TEXT,
+        priority DOUBLE PRECISION DEFAULT 0.5
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_gaps_brain ON knowledge_gaps(brain_id)",
+    "CREATE INDEX IF NOT EXISTS idx_gaps_priority ON knowledge_gaps(brain_id, priority)",
 ]
 
 

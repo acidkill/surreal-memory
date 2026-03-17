@@ -8,6 +8,7 @@ from typing import Any
 from neural_memory.storage.base import NeuralStorage
 from neural_memory.storage.postgres.postgres_base import PostgresBaseMixin
 from neural_memory.storage.postgres.postgres_brains import PostgresBrainMixin
+from neural_memory.storage.postgres.postgres_cognitive import PostgresCognitiveMixin
 from neural_memory.storage.postgres.postgres_fibers import PostgresFiberMixin
 from neural_memory.storage.postgres.postgres_neurons import PostgresNeuronMixin
 from neural_memory.storage.postgres.postgres_schema import ensure_schema
@@ -18,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 class PostgreSQLStorage(
+    PostgresCognitiveMixin,
     PostgresTypedMemoryMixin,
     PostgresNeuronMixin,
     PostgresSynapseMixin,
@@ -30,13 +32,14 @@ class PostgreSQLStorage(
 
     Supported operations:
         Core CRUD — neurons, synapses, fibers, brains, typed memories
+        Cognitive — hypothesize, evidence, predict, verify, gaps, schema history
+        Pinning — pin/unpin fibers, list pinned, get pinned neuron IDs
         Vector search — pgvector cosine similarity via find_neurons_by_embedding()
         Full-text search — tsvector via find_neurons(content_contains=...)
         Graph traversal — get_neighbors(), get_path()
         Import/export — export_brain(), import_brain()
 
     Not yet implemented (requires SQLite backend):
-        Cognitive tools (nmem_hypothesize, nmem_schema, nmem_reflect)
         Sync engine (nmem_sync, incremental merge)
         Review & source registry (nmem_review, nmem_source)
         Hooks (pre_compact, post_tool_use)

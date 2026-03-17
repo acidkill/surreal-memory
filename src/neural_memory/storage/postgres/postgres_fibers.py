@@ -177,3 +177,68 @@ class PostgresFiberMixin(PostgresBaseMixin):
         query = f"SELECT * FROM fibers WHERE brain_id = $1 ORDER BY {order_by} {order_dir} LIMIT $2"  # noqa: S608
         rows = await self._query_ro(query, brain_id, limit)
         return [row_to_fiber(r) for r in rows]
+
+    # ──────────────────── Pinning ────────────────────
+
+    async def pin_fibers(self, fiber_ids: list[str], pinned: bool = True) -> int:
+        """Pin or unpin fibers by ID."""
+        if not fiber_ids:
+            return 0
+        brain_id = self._get_brain_id()
+        pin_val = 1 if pinned else 0
+        result = await self._query(
+            "UPDATE fibers SET pinned = $1 WHERE brain_id = $2 AND id = ANY($3::text[])",
+            pin_val,
+            brain_id,
+            fiber_ids,
+        )
+        # asyncpg returns "UPDATE N"
+        if result and "UPDATE" in str(result):
+            try:
+                return int(str(result).split()[-1])
+            except (ValueError, IndexError):
+                pass
+        return 0
+
+    async def get_pinned_neuron_ids(self) -> set[str]:
+        """Get all neuron IDs that belong to pinned fibers."""
+        brain_id = self._get_brain_id()
+        rows = await self._query_ro(
+            "SELECT neuron_ids FROM fibers WHERE brain_id = $1 AND pinned = 1",
+            brain_id,
+        )
+        result: set[str] = set()
+        for row in rows:
+            neuron_ids_raw = row["neuron_ids"]
+            if neuron_ids_raw:
+                parsed = json.loads(neuron_ids_raw) if isinstance(neuron_ids_raw, str) else neuron_ids_raw
+                result.update(parsed)
+        return result
+
+    async def list_pinned_fibers(self, limit: int = 50) -> list[dict[str, Any]]:
+        """List all pinned fibers for the current brain."""
+        brain_id = self._get_brain_id()
+        safe_limit = min(limit, 200)
+        rows = await self._query_ro(
+            """SELECT f.id, f.summary, f.tags, f.created_at,
+                      tm.memory_type, tm.priority
+               FROM fibers f
+               LEFT JOIN typed_memories tm ON tm.fiber_id = f.id AND tm.brain_id = f.brain_id
+               WHERE f.brain_id = $1 AND f.pinned = 1
+               ORDER BY f.created_at DESC LIMIT $2""",
+            brain_id,
+            safe_limit,
+        )
+        results: list[dict[str, Any]] = []
+        for r in rows:
+            tags_raw = r["tags"]
+            tags = json.loads(tags_raw) if isinstance(tags_raw, str) else (tags_raw or [])
+            results.append({
+                "fiber_id": str(r["id"]),
+                "summary": r["summary"] or "",
+                "type": r["memory_type"] or "unknown",
+                "priority": r["priority"] or 5,
+                "tags": tags,
+                "created_at": str(r["created_at"] or ""),
+            })
+        return results
