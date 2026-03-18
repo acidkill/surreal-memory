@@ -81,10 +81,20 @@ async def get_storage() -> NeuralStorage:
 
 
 async def get_brain(
-    brain_id: Annotated[str, Header(alias="X-Brain-ID")],
     storage: Annotated[NeuralStorage, Depends(get_storage)],
+    brain_id: Annotated[str | None, Header(alias="X-Brain-ID")] = None,
 ) -> Brain:
-    """Dependency to get and validate brain from header."""
+    """Dependency to get and validate brain from header.
+
+    When X-Brain-ID header is omitted, falls back to the active brain
+    from config (current_brain).  This makes the header optional for
+    simple REST clients while still allowing explicit brain selection.
+    """
+    if brain_id is None:
+        from neural_memory.unified_config import get_config
+
+        brain_id = get_config().current_brain
+
     brain = await storage.get_brain(brain_id)
     if brain is None:
         # Fallback: brain_id might be a name, not a UUID

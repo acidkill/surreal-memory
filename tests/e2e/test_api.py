@@ -160,14 +160,17 @@ class TestMemoryEndpoints:
         assert "fiber_id" in data
         assert data["neurons_created"] > 0
 
-    def test_encode_memory_without_brain(self, client: TestClient) -> None:
-        """Test encoding without brain ID returns error."""
+    def test_encode_memory_without_brain_falls_back_to_default(self, client: TestClient) -> None:
+        """Test encoding without X-Brain-ID header falls back to active brain."""
         response = client.post(
             "/memory/encode",
-            json={"content": "Test memory"},
+            json={"content": "Test memory without explicit brain"},
         )
 
-        assert response.status_code == 422  # Missing header
+        # Should succeed using the default/active brain from config
+        assert response.status_code == 200
+        data = response.json()
+        assert "fiber_id" in data
 
     def test_query_memory(self, client: TestClient, brain_id: str) -> None:
         """Test querying memories."""
