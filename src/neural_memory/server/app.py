@@ -6,9 +6,9 @@ import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, cast
+from typing import Annotated, Any, cast
 
-from fastapi import APIRouter, Depends, FastAPI, Query
+from fastapi import APIRouter, Depends, FastAPI, Header, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -168,9 +168,39 @@ def create_app(
     # Override storage dependency using the shared module
     from neural_memory.server.dependencies import get_storage as shared_get_storage
 
-    async def get_storage() -> NeuralStorage:
-        storage: NeuralStorage = app.state.storage
-        return storage
+    async def get_storage(
+        x_brain_id: Annotated[str | None, Header(alias="X-Brain-ID")] = None,
+    ) -> NeuralStorage:
+        """Return brain-specific storage when X-Brain-ID header is set.
+
+        Per-brain DB layout: each brain has its own SQLite file.
+        When X-Brain-ID differs from the default brain, resolve a
+        storage connected to that brain's DB.  If the brain exists
+        in the default storage (single-DB / test mode), use it as-is.
+        """
+        default_storage: NeuralStorage = app.state.storage
+
+        if x_brain_id is not None:
+            # Check if the brain exists in the default storage first
+            # (covers single-DB mode and test fixtures)
+            brain = await default_storage.get_brain(x_brain_id)
+            if brain is None:
+                brain = await default_storage.find_brain_by_name(x_brain_id)
+
+            if brain is not None:
+                # Brain exists in default storage — use it
+                return default_storage
+
+            # Brain not in default storage — try per-brain DB
+            from neural_memory.unified_config import get_shared_storage
+
+            try:
+                return await get_shared_storage(brain_name=x_brain_id)
+            except Exception:
+                # Brain DB doesn't exist either — fall through
+                pass
+
+        return default_storage
 
     app.dependency_overrides[shared_get_storage] = get_storage
 

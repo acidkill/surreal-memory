@@ -71,9 +71,14 @@ async def require_local_request(request: Request) -> None:
         raise HTTPException(status_code=403, detail="Forbidden")
 
 
-async def get_storage() -> NeuralStorage:
-    """
-    Dependency to get storage instance.
+async def get_storage(
+    x_brain_id: Annotated[str | None, Header(alias="X-Brain-ID")] = None,
+) -> NeuralStorage:
+    """Dependency to get storage instance for the requested brain.
+
+    When X-Brain-ID header is provided, resolves a storage instance
+    connected to that brain's DB file. When omitted, returns the
+    default storage.
 
     This is overridden by the application at startup.
     """
@@ -89,6 +94,10 @@ async def get_brain(
     When X-Brain-ID header is omitted, falls back to the active brain
     from config (current_brain).  This makes the header optional for
     simple REST clients while still allowing explicit brain selection.
+
+    The ``get_storage`` dependency already resolves the correct
+    brain-specific storage instance based on the same header, so
+    ``storage`` here is connected to the right DB file.
     """
     if brain_id is None:
         from neural_memory.unified_config import get_config
