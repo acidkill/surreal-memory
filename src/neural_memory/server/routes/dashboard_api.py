@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from neural_memory.server.dependencies import get_storage, require_local_request
@@ -79,20 +79,19 @@ class SwitchBrainRequest(BaseModel):
     response_model=DashboardStats,
     summary="Get dashboard overview stats",
 )
-async def get_stats(
-    storage: Annotated[NeuralStorage, Depends(get_storage)],
-) -> DashboardStats:
+async def get_stats() -> DashboardStats:
     """Get overall dashboard statistics across all brains."""
-    from neural_memory.unified_config import get_config
+    from neural_memory.unified_config import get_config, get_shared_storage
 
     cfg = get_config()
     brain_names = cfg.list_brains()
     active_name = cfg.current_brain
 
     async def _analyze_brain(name: str) -> BrainSummary:
-        """Analyze a single brain and return its summary."""
+        """Analyze a single brain using its own per-brain storage."""
         try:
-            stats = await storage.get_stats(name)
+            brain_storage = await get_shared_storage(brain_name=name)
+            stats = await brain_storage.get_stats(name)
             nc = stats.get("neuron_count", 0)
             sc = stats.get("synapse_count", 0)
             fc = stats.get("fiber_count", 0)
@@ -102,7 +101,7 @@ async def get_stats(
             try:
                 from neural_memory.engine.diagnostics import DiagnosticsEngine
 
-                diag = DiagnosticsEngine(storage)
+                diag = DiagnosticsEngine(brain_storage)
                 report = await diag.analyze(name)
                 grade = report.grade
                 purity = report.purity_score
@@ -153,11 +152,9 @@ async def get_stats(
     response_model=list[BrainSummary],
     summary="List all brains",
 )
-async def list_brains_api(
-    storage: Annotated[NeuralStorage, Depends(get_storage)],
-) -> list[BrainSummary]:
+async def list_brains_api() -> list[BrainSummary]:
     """List all available brains with summary stats."""
-    from neural_memory.unified_config import get_config
+    from neural_memory.unified_config import get_config, get_shared_storage
 
     cfg = get_config()
     brain_names = cfg.list_brains()
@@ -166,7 +163,8 @@ async def list_brains_api(
 
     for name in brain_names:
         try:
-            stats = await storage.get_stats(name)
+            brain_storage = await get_shared_storage(brain_name=name)
+            stats = await brain_storage.get_stats(name)
             results.append(
                 BrainSummary(
                     id=name,
@@ -188,9 +186,16 @@ async def list_brains_api(
     "/brains/switch",
     summary="Switch active brain",
 )
-async def switch_brain(request: SwitchBrainRequest) -> dict[str, str]:
-    """Switch the active brain."""
-    from neural_memory.unified_config import get_config
+async def switch_brain(
+    request: SwitchBrainRequest,
+    http_request: Request,
+) -> dict[str, str]:
+    """Switch the active brain.
+
+    Updates config.toml (persistent) AND app.state.storage so that
+    all endpoints immediately use the new brain's DB without restart.
+    """
+    from neural_memory.unified_config import get_config, get_shared_storage
 
     cfg = get_config()
     available = cfg.list_brains()
@@ -201,6 +206,19 @@ async def switch_brain(request: SwitchBrainRequest) -> dict[str, str]:
         )
 
     cfg.switch_brain(request.brain_name)
+
+    # Update the live storage so all Depends(get_storage) endpoints
+    # immediately use the new brain's DB (not just after restart).
+    try:
+        new_storage = await get_shared_storage(brain_name=request.brain_name)
+        http_request.app.state.storage = new_storage
+    except Exception:
+        logger.warning(
+            "Failed to update live storage after brain switch to %s",
+            request.brain_name,
+            exc_info=True,
+        )
+
     return {"status": "switched", "active_brain": request.brain_name}
 
 
