@@ -68,6 +68,9 @@ class NarrativeHandler:
             start_date = datetime.fromisoformat(start_str)
             end_date = datetime.fromisoformat(end_str)
         except ValueError:
+            logger.error(
+                "Invalid date format for narrative timeline: start=%s end=%s", start_str, end_str
+            )
             return {"error": "Invalid date format. Use ISO format (e.g., 2026-02-01)"}
 
         if end_date < start_date:

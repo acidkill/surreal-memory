@@ -50,9 +50,6 @@ server = [
     "python-multipart>=0.0.22",
     "httpx>=0.24",
 ]
-neo4j = [
-    "neo4j>=5.0",
-]
 falkordb = [
     "falkordb>=1.0.0,<2.0",
 ]
@@ -109,7 +106,7 @@ integration = [
     "neural-memory[chromadb,mem0]",
 ]
 all = [
-    "neural-memory[server,neo4j,falkordb,nlp,integration]",
+    "neural-memory[server,falkordb,nlp,integration]",
 ]
 dev = [
     "pytest>=7.0",

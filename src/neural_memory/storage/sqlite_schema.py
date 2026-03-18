@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Schema version for migrations
-SCHEMA_VERSION = 29
+SCHEMA_VERSION = 30
 
 # â”€â”€ Migrations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Each entry maps (from_version -> to_version) with a list of SQL statements.
@@ -562,6 +562,10 @@ MIGRATIONS: dict[tuple[int, int], list[str]] = {
         )""",
         "CREATE INDEX IF NOT EXISTS idx_entity_refs_text ON entity_refs(brain_id, entity_text)",
     ],
+    (29, 30): [
+        # Performance: index on neurons(brain_id, content) for exact-match lookups
+        "CREATE INDEX IF NOT EXISTS idx_neurons_content ON neurons(brain_id, content)",
+    ],
 }
 
 
@@ -673,6 +677,7 @@ CREATE INDEX IF NOT EXISTS idx_neurons_type ON neurons(brain_id, type);
 CREATE INDEX IF NOT EXISTS idx_neurons_created ON neurons(brain_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_neurons_hash ON neurons(brain_id, content_hash);
 CREATE INDEX IF NOT EXISTS idx_neurons_updated ON neurons(brain_id, updated_at);
+CREATE INDEX IF NOT EXISTS idx_neurons_content ON neurons(brain_id, content);
 
 -- Neuron states table
 CREATE TABLE IF NOT EXISTS neuron_states (

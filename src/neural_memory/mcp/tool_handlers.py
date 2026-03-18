@@ -909,6 +909,7 @@ class ToolHandler:
         try:
             brain_id = _require_brain_id(storage)
         except ValueError:
+            logger.error("No brain configured for recall")
             return {"error": "No brain configured"}
         brain = await storage.get_brain(brain_id)
         if not brain:
@@ -1865,6 +1866,7 @@ class ToolHandler:
             try:
                 version = await engine.create_version(brain.id, name, description)
             except ValueError:
+                logger.error("Version create failed for brain '%s' name '%s'", brain.id, name)
                 return {"error": "Failed to create version: invalid parameters"}
             return {
                 "success": True,
@@ -1904,6 +1906,9 @@ class ToolHandler:
             try:
                 rollback_v = await engine.rollback(brain.id, version_id)
             except ValueError:
+                logger.error(
+                    "Version rollback failed for brain '%s' version '%s'", brain.id, version_id
+                )
                 return {"error": "Rollback failed: version not found or invalid"}
             return {
                 "success": True,
@@ -1923,6 +1928,9 @@ class ToolHandler:
             try:
                 diff = await engine.diff(brain.id, from_id, to_id)
             except ValueError:
+                logger.error(
+                    "Version diff failed for brain '%s' from '%s' to '%s'", brain.id, from_id, to_id
+                )
                 return {"error": "Diff failed: one or both versions not found"}
             return {
                 "summary": diff.summary,
@@ -2042,6 +2050,7 @@ class ToolHandler:
         try:
             brain_id = _require_brain_id(storage)
         except ValueError:
+            logger.error("No brain configured for source action '%s'", action)
             return {"error": "No brain configured"}
 
         if action == "register":
@@ -2273,6 +2282,7 @@ class ToolHandler:
         try:
             _require_brain_id(storage)
         except ValueError:
+            logger.error("No brain configured for show")
             return {"error": "No brain configured"}
 
         # Try as fiber_id first (typed memory), then as neuron_id
@@ -2385,6 +2395,7 @@ class ToolHandler:
         try:
             _require_brain_id(storage)
         except ValueError:
+            logger.error("No brain configured for edit")
             return {"error": "No brain configured"}
 
         # Try as fiber_id first, then as neuron_id
@@ -2467,6 +2478,7 @@ class ToolHandler:
         try:
             _require_brain_id(storage)
         except ValueError:
+            logger.error("No brain configured for forget")
             return {"error": "No brain configured"}
 
         # Look up the memory
@@ -2538,6 +2550,7 @@ class ToolHandler:
         try:
             brain_id = _require_brain_id(storage)
         except ValueError:
+            logger.error("No brain configured for consolidate")
             return {"error": "No brain configured"}
 
         # Parse strategy

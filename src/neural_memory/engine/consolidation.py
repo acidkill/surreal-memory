@@ -407,8 +407,14 @@ class ConsolidationEngine:
 
                 pruned_synapse_ids.add(synapse.id)
                 report.synapses_pruned += 1
-                if not dry_run:
-                    await self._storage.delete_synapse(synapse.id)
+
+        # Batch delete all pruned synapses at once
+        if pruned_synapse_ids and not dry_run:
+            if hasattr(self._storage, "delete_synapses_batch"):
+                await self._storage.delete_synapses_batch(pruned_synapse_ids)
+            else:
+                for sid in pruned_synapse_ids:
+                    await self._storage.delete_synapse(sid)
 
         # Update fiber synapse_ids to remove pruned refs (only if synapses were pruned)
         fibers = fibers_for_salience

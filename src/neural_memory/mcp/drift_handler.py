@@ -38,6 +38,7 @@ class DriftHandler:
         try:
             _require_brain_id(storage)
         except ValueError:
+            logger.error("No brain configured for drift action '%s'", action)
             return {"error": "No brain configured"}
 
         if action == "detect":

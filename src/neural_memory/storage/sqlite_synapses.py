@@ -196,6 +196,33 @@ class SQLiteSynapseMixin:
 
         return cursor.rowcount > 0
 
+    async def delete_synapses_batch(self, synapse_ids: set[str]) -> int:
+        """Delete multiple synapses in batched SQL statements.
+
+        Uses chunked DELETE ... WHERE id IN (...) for efficiency.
+        Returns total number of deleted rows.
+        """
+        if not synapse_ids:
+            return 0
+
+        conn = self._ensure_conn()
+        brain_id = self._get_brain_id()
+        deleted = 0
+        chunk_size = 500
+        ids_list = list(synapse_ids)
+
+        for start in range(0, len(ids_list), chunk_size):
+            chunk = ids_list[start : start + chunk_size]
+            placeholders = ",".join("?" for _ in chunk)
+            cursor = await conn.execute(
+                f"DELETE FROM synapses WHERE brain_id = ? AND id IN ({placeholders})",
+                [brain_id, *chunk],
+            )
+            deleted += cursor.rowcount
+
+        await conn.commit()
+        return deleted
+
     async def get_synapses_for_neurons(
         self,
         neuron_ids: list[str],

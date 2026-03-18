@@ -484,9 +484,10 @@ class SQLiteNeuronMixin:
                 " FROM neurons n"
                 " LEFT JOIN neuron_states ns"
                 "   ON ns.brain_id = n.brain_id AND ns.neuron_id = n.id"
-                " WHERE n.brain_id = ? AND n.content LIKE ?"
+                " WHERE n.brain_id = ? AND n.content LIKE ? ESCAPE '\\'"
             )
-            params = [brain_id, f"{prefix}%"]
+            escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            params = [brain_id, f"{escaped}%"]
 
             if type_filter is not None:
                 query += " AND n.type = ?"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import heapq
 import logging
 import math
@@ -150,9 +151,10 @@ class ReflexPipeline:
         self._query_router = QueryRouter()
         self._cached_encryptor: Any = _UNSET
 
-        # Predictive priming caches (per-session, keyed by session_id)
-        self._activation_caches: dict[str, Any] = {}  # session_id → ActivationCache
-        self._priming_metrics: dict[str, Any] = {}  # session_id → PrimingMetrics
+        # Predictive priming caches (per-session, keyed by session_id, LRU-bounded)
+        self._activation_caches: collections.OrderedDict[str, Any] = collections.OrderedDict()
+        self._priming_metrics: collections.OrderedDict[str, Any] = collections.OrderedDict()
+        self._max_session_cache = 256
 
         # Adaptive depth selection (Bayesian priors)
         self._adaptive_selector: AdaptiveDepthSelector | None = None
@@ -301,11 +303,19 @@ class ReflexPipeline:
                     merge_priming_into_activations,
                 )
 
-                # Get or create per-session cache and metrics
+                # Get or create per-session cache and metrics (LRU-bounded)
                 if session_id not in self._activation_caches:
                     self._activation_caches[session_id] = ActivationCache()
+                    if len(self._activation_caches) > self._max_session_cache:
+                        self._activation_caches.popitem(last=False)
+                else:
+                    self._activation_caches.move_to_end(session_id)
                 if session_id not in self._priming_metrics:
                     self._priming_metrics[session_id] = PrimingMetrics()
+                    if len(self._priming_metrics) > self._max_session_cache:
+                        self._priming_metrics.popitem(last=False)
+                else:
+                    self._priming_metrics.move_to_end(session_id)
 
                 _act_cache = self._activation_caches[session_id]
                 _prim_metrics = self._priming_metrics[session_id]

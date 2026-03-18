@@ -40,6 +40,7 @@ class CognitiveHandler:
         try:
             _require_brain_id(storage)
         except ValueError:
+            logger.error("No brain configured for hypothesize action '%s'", action)
             return {"error": "No brain configured"}
 
         if action == "create":
@@ -290,6 +291,7 @@ class CognitiveHandler:
         try:
             _require_brain_id(storage)
         except ValueError:
+            logger.error("No brain configured for evidence action")
             return {"error": "No brain configured"}
 
         # Verify hypothesis exists
@@ -428,6 +430,7 @@ class CognitiveHandler:
         try:
             _require_brain_id(storage)
         except ValueError:
+            logger.error("No brain configured for predict action '%s'", action)
             return {"error": "No brain configured"}
 
         if action == "create":
@@ -728,6 +731,7 @@ class CognitiveHandler:
         try:
             _require_brain_id(storage)
         except ValueError:
+            logger.error("No brain configured for verify action")
             return {"error": "No brain configured"}
 
         # Verify prediction exists and is pending
@@ -907,6 +911,7 @@ class CognitiveHandler:
         try:
             _require_brain_id(storage)
         except ValueError:
+            logger.error("No brain configured for cognitive action '%s'", action)
             return {"error": "No brain configured"}
 
         if action == "summary":
@@ -1068,6 +1073,7 @@ class CognitiveHandler:
         try:
             _require_brain_id(storage)
         except ValueError:
+            logger.error("No brain configured for gaps action '%s'", action)
             return {"error": "No brain configured"}
 
         if action == "detect":
@@ -1207,6 +1213,7 @@ class CognitiveHandler:
         try:
             _require_brain_id(storage)
         except ValueError:
+            logger.error("No brain configured for schema action '%s'", action)
             return {"error": "No brain configured"}
 
         if action == "evolve":

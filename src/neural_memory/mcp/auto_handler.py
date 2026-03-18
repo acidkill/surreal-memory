@@ -85,6 +85,15 @@ class AutoHandler:
         if len(text) > MAX_CONTENT_LENGTH:
             return {"error": f"Text too long ({len(text)} chars). Max: {MAX_CONTENT_LENGTH}."}
 
+        from neural_memory.safety.input_firewall import check_content
+
+        fw = check_content(text)
+        if fw.blocked:
+            logger.debug("Auto-analyze: input firewall blocked — %s", fw.reason)
+            return {"detected": [], "message": f"Input blocked: {fw.reason}"}
+        if fw.sanitized:
+            text = fw.sanitized
+
         detected = self._run_detection(text)
         if not detected:
             return {"detected": [], "message": "No memorable content detected"}
@@ -114,6 +123,15 @@ class AutoHandler:
             return {"error": "Text required for process action"}
         if len(text) > MAX_CONTENT_LENGTH:
             return {"error": f"Text too long ({len(text)} chars). Max: {MAX_CONTENT_LENGTH}."}
+
+        from neural_memory.safety.input_firewall import check_content
+
+        fw = check_content(text)
+        if fw.blocked:
+            logger.debug("Auto-process: input firewall blocked — %s", fw.reason)
+            return {"saved": 0, "message": f"Input blocked: {fw.reason}"}
+        if fw.sanitized:
+            text = fw.sanitized
 
         detected = self._run_detection(text)
         if not detected:
@@ -168,6 +186,15 @@ class AutoHandler:
             return {"error": "Text required for flush action"}
         if len(text) > MAX_CONTENT_LENGTH:
             return {"error": f"Text too long ({len(text)} chars). Max: {MAX_CONTENT_LENGTH}."}
+
+        from neural_memory.safety.input_firewall import check_content
+
+        fw = check_content(text)
+        if fw.blocked:
+            logger.debug("Auto-flush: input firewall blocked — %s", fw.reason)
+            return {"saved": 0, "message": f"Input blocked: {fw.reason}"}
+        if fw.sanitized:
+            text = fw.sanitized
 
         # Run detection with ALL types enabled regardless of config
         detected = analyze_text_for_memories(

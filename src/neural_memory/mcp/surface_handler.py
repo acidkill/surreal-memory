@@ -61,6 +61,7 @@ class SurfaceHandler:
         try:
             brain_id = _require_brain_id(storage)
         except ValueError:
+            logger.error("No brain configured for surface generate")
             return {"error": "No brain configured"}
 
         brain = await storage.get_brain(brain_id)
@@ -106,6 +107,7 @@ class SurfaceHandler:
         try:
             brain_id = _require_brain_id(storage)
         except ValueError:
+            logger.error("No brain configured for surface show")
             return {"error": "No brain configured"}
 
         brain = await storage.get_brain(brain_id)

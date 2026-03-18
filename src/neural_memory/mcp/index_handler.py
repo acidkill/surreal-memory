@@ -102,6 +102,7 @@ class IndexHandler:
         try:
             adapter = get_adapter(source, **adapter_kwargs)
         except ValueError:
+            logger.error("Unsupported or misconfigured import source: %s", source)
             return {"error": f"Unsupported or misconfigured source: {source}"}
 
         engine = SyncEngine(storage, brain.config)

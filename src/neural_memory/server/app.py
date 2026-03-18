@@ -199,15 +199,13 @@ def create_app(
     # Health check endpoint
     @app.get("/health", response_model=HealthResponse, tags=["health"])
     async def health_check() -> HealthResponse:
-        """Return server status, current brain name, uptime, and schema version."""
-        storage: NeuralStorage = app.state.storage
-        brain_name: str | None = getattr(storage, "brain_name", None)
+        """Return server status, uptime, and schema version."""
         startup_time: float = getattr(app.state, "startup_time", time.monotonic())
         uptime = time.monotonic() - startup_time
         return HealthResponse(
             status="ok",
             version=__version__,
-            brain_name=brain_name,
+            brain_name="***",
             uptime_seconds=round(uptime, 3),
             schema_version=SCHEMA_VERSION,
         )
