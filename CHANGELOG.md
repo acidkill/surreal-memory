@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.13.0] — 2026-03-20
+
+### Added
+
+- **Memory Lifecycle Engine** — Heat-based compression resistance inspired by TEMM1E
+  - Heat score: weighted combination of access recency, frequency, priority (exponential decay)
+  - Lifecycle states: ACTIVE → WARM → COOL → COMPRESSED → ARCHIVED
+  - Hot memories resist compression by 1 tier; frozen memories never compress
+  - Neuron snapshots: recoverable content even after destructive Tier 3-4 compression
+  - Access tracking: batch update `last_accessed_at` on every recall
+  - `nmem_lifecycle` tool: status/recover/freeze/thaw actions
+  - Schema v32: `lifecycle_state`, `frozen`, `last_accessed_at` columns + `neuron_snapshots` table
+- **Adaptive Instructions** — Self-improving procedural memory
+  - Auto-populate instruction metadata: version, execution_count, success_rate, trigger_patterns
+  - `nmem_refine` tool: version instructions with refinement history, add failure modes/triggers
+  - `nmem_report_outcome` tool: track execution success/failure, recompute success_rate
+  - Recall boost: proven instructions (high success_rate) rank higher via activation bonus
+  - Trigger pattern matching: instruction keywords boost relevance when query overlaps
+- **Budget-Aware Retrieval** — Token cost management for context-efficient recall
+  - Token cost estimator: estimate fiber tokens from content length
+  - Greedy value-per-token allocation within context budget
+  - `nmem_budget` tool: estimate/analyze/optimize token usage
+  - `recall_token_budget` param on `nmem_recall` for opt-in budget-aware formatting
+- 4 new MCP tools (47→50): `nmem_lifecycle`, `nmem_refine`, `nmem_report_outcome`, `nmem_budget`
+- 133 new tests across 3 test files
+
 ## [Unreleased]
 
 ### Added
