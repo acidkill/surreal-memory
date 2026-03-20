@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.14.0] — 2026-03-21
+
+### Fixed
+
+- **Vietnamese auto-capture quality** (#94) — dramatically reduce low-quality Vietnamese memories
+  - Quality gate: reject captures where >60% of words are Vietnamese stop words
+  - TODO patterns: require compound forms (`cần phải`, `nhớ là`) — bare `cần`/`phải`/`nên` no longer match
+  - Preference patterns: require explicit subject (`tôi`/`mình`/`em`/`anh`) + minimum content length
+  - Correction patterns: require minimum 10-char capture content
+  - Confidence penalty increased (0.7 → 0.55) for all Vietnamese regex captures
+  - Minimum capture length raised (15 → 25 chars) for Vietnamese patterns
+  - One-time pyvi missing warning when Vietnamese text detected in auto-capture
+
+### Tests
+
+- 22 new tests for Vietnamese capture quality (`test_vietnamese_capture.py`)
+- Updated existing Vietnamese preference test for tighter pattern
+
 ## [4.13.0] — 2026-03-20
 
 ### Added
