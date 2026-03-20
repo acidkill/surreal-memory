@@ -1350,8 +1350,8 @@ class TestAutoCapture:
         assert "preference" in types
 
     def test_preference_pattern_vietnamese_dung(self) -> None:
-        """Test Vietnamese negative preference 'đừng dùng'."""
-        text = "Đừng dùng var trong JavaScript, luôn dùng const hoặc let."
+        """Test Vietnamese negative preference 'đừng bao giờ dùng'."""
+        text = "Đừng bao giờ dùng var trong JavaScript, luôn dùng const hoặc let."
         detected = analyze_text_for_memories(text, capture_preferences=True)
         types = [d["type"] for d in detected]
         assert "preference" in types

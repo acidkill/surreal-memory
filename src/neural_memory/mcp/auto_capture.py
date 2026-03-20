@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 from typing import Any
 
+from neural_memory.extraction.keywords import STOP_WORDS_VI
 from neural_memory.utils.simhash import is_near_duplicate, simhash
+
+logger = logging.getLogger(__name__)
 
 # Minimum text length to avoid false positives on tiny inputs
 _MIN_TEXT_LENGTH = 20
@@ -18,10 +22,16 @@ _MAX_REGEX_TEXT_LENGTH = 50_000
 _VI_DIACRITICS = re.compile(r"[ăâđêôơưắằẳẵặấầẩẫậếềểễệốồổỗộớờởỡợứừửữự]")
 
 # Confidence penalty for Vietnamese auto-captures (regex is less reliable)
-_VI_CONFIDENCE_PENALTY = 0.7
+_VI_CONFIDENCE_PENALTY = 0.55
 
 # Minimum captured content length for Vietnamese patterns
-_VI_MIN_CAPTURE_LEN = 15
+_VI_MIN_CAPTURE_LEN = 25
+
+# Maximum ratio of stop words allowed in a Vietnamese capture
+_VI_MAX_STOP_WORD_RATIO = 0.6
+
+# One-time warning flag for pyvi in auto-capture
+_PYVI_AC_WARNED = False
 
 # Type prefixes used for deduplication
 _TYPE_PREFIXES = ("decision: ", "error: ", "todo: ", "insight: ", "preference: ")
@@ -57,9 +67,9 @@ TODO_PATTERNS = [
     r"(?:we |I )?(?:need to|should|must|have to)[:\s]+(.{5,80}?)(?:\.|,| but | or | and |$)",
     r"(?:remember to|don\'t forget to)[:\s]+(.+?)(?:\.|$)",
     r"(?:later|next)[:\s]+(.+?)(?:\.|$)",
-    # Vietnamese — require compound forms or verb+object (avoid bare cần/phải/nên)
-    r"(?:cần phải|bắt buộc phải|nhất định phải)[:\s]+(.+?)(?:\.|$)",
-    r"(?:nhớ|đừng quên)[:\s]+(.+?)(?:\.|$)",
+    # Vietnamese — require compound verb+action (avoid bare cần/phải/nên)
+    r"(?:cần phải|bắt buộc phải|nhất định phải) (\S+ .{10,80}?)(?:\.|$)",
+    r"(?:nhớ là|đừng quên) (\S+ .{10,80}?)(?:\.|$)",
 ]
 
 FACT_PATTERNS = [
@@ -84,15 +94,15 @@ PREFERENCE_PATTERNS = [
     r"(?:actually|no)[,:\s]+(?:it |that )?should (?:be|have)[:\s]+(.+?)(?:\.|$)",
     r"(?:change|update|fix|correct) (?:it |that |this )?(?:to|from .+? to)[:\s]+(.+?)(?:\.|$)",
     r"(?:instead of .+?)[,:\s]+(?:use|do|try)[:\s]+(.+?)(?:\.|$)",
-    # Vietnamese — preferences
-    r"(?:tôi |mình |em |anh )?(?:thích|muốn|ưu tiên|prefer)[:\s]+(.+?)(?:\.|$)",
-    r"(?:tôi |mình |em |anh )?(?:không thích|ghét|không muốn|tránh)[:\s]+(.+?)(?:\.|$)",
-    r"(?:luôn luôn|luôn|lúc nào cũng) (?:dùng|làm|viết|thêm)[:\s]+(.+?)(?:\.|$)",
-    r"(?:đừng|không được|cấm|không nên) (?:dùng|làm|viết|thêm)[:\s]+(.+?)(?:\.|$)",
-    # Vietnamese — corrections
-    r"(?:sai rồi|không đúng|chưa đúng)[,:\s]+(.+?)(?:\.|$)",
-    r"(?:phải là|nên là|đúng ra là)[:\s]+(.+?)(?:\.|$)",
-    r"(?:sửa|đổi|chuyển) (?:lại |thành )[:\s]*(.+?)(?:\.|$)",
+    # Vietnamese — preferences (require subject + verb + object for specificity)
+    r"(?:tôi |mình |em |anh )(?:thích|muốn|ưu tiên) (?:dùng |xài |viết |code )?(.{10,}?)(?:\.|$)",
+    r"(?:tôi |mình |em |anh )(?:không thích|ghét|không muốn|tránh) (.{10,}?)(?:\.|$)",
+    r"(?:luôn luôn|lúc nào cũng) (?:dùng|làm|viết|thêm)[:\s]+(.+?)(?:\.|$)",
+    r"(?:đừng bao giờ|cấm|không được) (?:dùng|làm|viết|thêm)[:\s]+(.+?)(?:\.|$)",
+    # Vietnamese — corrections (require specific correction content)
+    r"(?:sai rồi|không đúng|chưa đúng)[,:\s]+(.{10,}?)(?:\.|$)",
+    r"(?:phải là|nên là|đúng ra là)[:\s]+(.{10,}?)(?:\.|$)",
+    r"(?:sửa|đổi|chuyển) (?:lại |thành )(.{10,}?)(?:\.|$)",
 ]
 
 INSIGHT_PATTERNS = [
@@ -112,9 +122,55 @@ INSIGHT_PATTERNS = [
 ]
 
 
+def _is_vietnamese_text(text: str) -> bool:
+    """Check if text contains Vietnamese diacritical characters."""
+    return bool(_VI_DIACRITICS.search(text))
+
+
 def _is_vietnamese_pattern(pattern: str) -> bool:
     """Check if a regex pattern targets Vietnamese text."""
     return bool(_VI_DIACRITICS.search(pattern))
+
+
+def _vi_quality_gate(captured: str) -> bool:
+    """Check if a Vietnamese capture has enough meaningful content.
+
+    Rejects captures where most words are stop words (no real content),
+    or where the text is just a fragment without actionable information.
+
+    Returns True if the capture passes quality checks.
+    """
+    words = re.findall(r"[a-zA-ZÀ-ỹ]+", captured.lower())
+    if len(words) < 3:
+        return False
+
+    stop_count = sum(1 for w in words if w in STOP_WORDS_VI)
+    ratio = stop_count / len(words)
+    if ratio > _VI_MAX_STOP_WORD_RATIO:
+        return False
+
+    return True
+
+
+def _warn_pyvi_missing() -> None:
+    """Log a one-time warning when Vietnamese text is detected but pyvi is not installed."""
+    global _PYVI_AC_WARNED
+    if _PYVI_AC_WARNED:
+        return
+    try:
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=DeprecationWarning, module="pyvi")
+            warnings.filterwarnings("ignore", category=DeprecationWarning, module="numpy")
+            from pyvi import ViTokenizer  # noqa: F401
+    except ImportError:
+        logger.warning(
+            "Vietnamese text detected in auto-capture but pyvi is not installed — "
+            "keyword tags will be low-quality bigrams. "
+            "Install with: pip install pyvi"
+        )
+        _PYVI_AC_WARNED = True
 
 
 def _detect_patterns(
@@ -139,6 +195,10 @@ def _detect_patterns(
                 match = " ".join(part for part in match if part)
             captured = match.strip()
             if len(captured) < effective_min_len:
+                continue
+
+            # Vietnamese quality gate — reject fragments with no real content
+            if is_vi and not _vi_quality_gate(captured):
                 continue
 
             # Adjust confidence based on capture quality
@@ -203,6 +263,10 @@ def analyze_text_for_memories(
 
     detected: list[dict[str, Any]] = []
     text_lower = text.lower()
+
+    # Warn once if Vietnamese text detected but pyvi not installed
+    if _is_vietnamese_text(text_lower):
+        _warn_pyvi_missing()
 
     if capture_decisions:
         detected.extend(
