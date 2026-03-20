@@ -1,7 +1,7 @@
 # MCP Tools Reference
 
 Complete reference for all NeuralMemory MCP tools.
-**46 tools** available via MCP stdio transport.
+**50 tools** available via MCP stdio transport.
 
 !!! tip
     Tools are called as MCP tool calls, not CLI commands. In Claude Code, call `nmem_recall` directly — do not run `nmem recall` in terminal.
@@ -64,6 +64,10 @@ Complete reference for all NeuralMemory MCP tools.
 - [Other](#other)
   - [`nmem_surface`](#nmem_surface)
   - [`nmem_tool_stats`](#nmem_tool_stats)
+  - [`nmem_lifecycle`](#nmem_lifecycle)
+  - [`nmem_refine`](#nmem_refine)
+  - [`nmem_report_outcome`](#nmem_report_outcome)
+  - [`nmem_budget`](#nmem_budget)
 
 ---
 
@@ -116,6 +120,7 @@ Query memories by semantic search with confidence ranking.
 | `tags` | array[string] | No | — | Filter by tags (AND — all must match). Checks tags, auto_tags, and agent_tags columns. |
 | `mode` | string (`associative`, `exact`) | No | — | Recall mode: 'associative' (default) returns formatted context, 'exact' returns raw neuron contents verbatim without ... |
 | `include_citations` | boolean | No | default: true | Include citation and audit trail in exact recall results (default: true). |
+| `recall_token_budget` | integer | No | — | When set, activates budget-aware fiber selection: ranks fibers by value-per-token and selects the most efficient ones... |
 | `compact` | boolean | No | — | Return compact response (strip metadata hints, truncate lists). Saves 60-80% tokens. |
 | `token_budget` | integer | No | — | Max tokens for response. Progressively strips content to fit budget. |
 
@@ -698,6 +703,56 @@ Tool usage analytics: which tools agents use, frequency, success rates, and dail
 | `compact` | boolean | No | — | Return compact response (strip metadata hints, truncate lists). Saves 60-80% tokens. |
 | `token_budget` | integer | No | — | Max tokens for response. Progressively strips content to fit budget. |
 
+### `nmem_lifecycle`
+
+Memory lifecycle management — view lifecycle states and manage compression resistance. Hot memories (accessed recently or high priority) resist compression automatically. Actions: status (distribution of lifecycle states), recover (rehydrate a compressed memory), freeze (prevent a memory from compressing), thaw (resume normal lifecycle).
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `action` | string (`status`, `recover`, `freeze`, `thaw`) | Yes | — | status=show lifecycle distribution, recover=rehydrate compressed memory, freeze=prevent compression, thaw=resume norm... |
+| `id` | string | No | — | Neuron ID (required for recover/freeze/thaw). For recover, fiber_id is also accepted. |
+| `compact` | boolean | No | — | Return compact response (strip metadata hints, truncate lists). Saves 60-80% tokens. |
+| `token_budget` | integer | No | — | Max tokens for response. Progressively strips content to fit budget. |
+
+### `nmem_refine`
+
+Refine an instruction or workflow memory — update its content, record a failure mode, or add a trigger pattern. Each refinement increments the version counter and stores a snapshot in refinement_history. Use this to improve instructions based on real-world usage: update text when the instruction needs correction, add failure_mode when something went wrong, add trigger to improve recall.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `neuron_id` | string | Yes | — | ID of the instruction or workflow memory to refine (use the fiber_id returned by nmem_remember or nmem_recall). |
+| `new_content` | string | No | — | Updated instruction text. Replaces current content and increments version. |
+| `reason` | string | No | — | Why this refinement was made (stored in refinement_history for auditability). |
+| `add_failure_mode` | string | No | — | Description of a failure mode to append to the failure_modes list (deduped, capped at 20). |
+| `add_trigger` | string | No | — | Keyword or phrase to append to trigger_patterns (boosts recall when query overlaps, deduped, capped at 10). |
+| `compact` | boolean | No | — | Return compact response (strip metadata hints, truncate lists). Saves 60-80% tokens. |
+| `token_budget` | integer | No | — | Max tokens for response. Progressively strips content to fit budget. |
+
+### `nmem_report_outcome`
+
+Report execution outcome for an instruction or workflow memory. Increments execution_count, updates success_rate, and optionally records failure modes. Instructions with high success_rate + many executions are boosted during recall. Call this after executing an instruction to build up its track record.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `neuron_id` | string | Yes | — | ID of the instruction or workflow memory that was executed. |
+| `success` | boolean | Yes | — | Whether execution succeeded. |
+| `failure_description` | string | No | — | If failed, brief description of what went wrong (appended to failure_modes, deduped, capped at 20). |
+| `context` | string | No | — | Optional context about the execution (stored for auditability). |
+| `compact` | boolean | No | — | Return compact response (strip metadata hints, truncate lists). Saves 60-80% tokens. |
+| `token_budget` | integer | No | — | Max tokens for response. Progressively strips content to fit budget. |
+
+### `nmem_budget`
+
+Token budget analysis for recall — estimate, analyze, or optimize context window usage. Use 'estimate' to dry-run a query and see token cost breakdown. Use 'analyze' to profile the brain's average fiber token costs by memory type. Use 'optimize' to find low-value-per-token fibers that are candidates for compression.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `action` | string (`estimate`, `analyze`, `optimize`) | Yes | — | Action: 'estimate' (dry-run recall cost), 'analyze' (brain token profile), 'optimize' (find compression candidates). |
+| `query` | string | No | — | Query to estimate recall cost for (used with action='estimate'). |
+| `max_tokens` | integer | No | default: 4000 | Token budget to estimate against (default: 4000). |
+| `compact` | boolean | No | — | Return compact response (strip metadata hints, truncate lists). Saves 60-80% tokens. |
+| `token_budget` | integer | No | — | Max tokens for response. Progressively strips content to fit budget. |
+
 ---
 
-*Auto-generated by `scripts/gen_mcp_docs.py` from `tool_schemas.py` — 46 tools.*
+*Auto-generated by `scripts/gen_mcp_docs.py` from `tool_schemas.py` — 50 tools.*
