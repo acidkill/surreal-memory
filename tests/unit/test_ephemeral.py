@@ -13,10 +13,9 @@ import pytest
 
 from neural_memory.core.brain import Brain
 from neural_memory.core.neuron import Neuron, NeuronType
-from neural_memory.storage.sqlite_store import SQLiteStorage
 from neural_memory.storage.sqlite_schema import SCHEMA_VERSION
+from neural_memory.storage.sqlite_store import SQLiteStorage
 from neural_memory.utils.timeutils import utcnow
-
 
 # ── Schema ──────────────────────────────────────────────────────────
 
