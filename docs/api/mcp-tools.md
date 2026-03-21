@@ -145,6 +145,7 @@ Get recent memories as context.
 | `limit` | integer | No | default: 10 | Number of recent memories (default: 10) |
 | `fresh_only` | boolean | No | — | Only include memories < 30 days old |
 | `warn_expiry_days` | integer | No | — | If set, warn about memories expiring within this many days. Adds expiry_warnings to response. |
+| `include_ghosts` | boolean | No | default: true | Include faded ghost memories at bottom of context with recall keys (default: true). Set false to suppress. |
 | `compact` | boolean | No | — | Return compact response (strip metadata hints, truncate lists). Saves 60-80% tokens. |
 | `token_budget` | integer | No | — | Max tokens for response. Progressively strips content to fit budget. |
 

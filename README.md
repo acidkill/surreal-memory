@@ -16,7 +16,7 @@
 
 NeuralMemory stores experiences as interconnected neurons and recalls them through spreading activation — like the human brain. Instead of searching a database, memories surface through association.
 
-**44 MCP tools** · **14 memory types** · **24 synapse types** · **4140+ tests** · **Cognitive reasoning layer**
+**50 MCP tools** · **14 memory types** · **24 synapse types** · **4700+ tests** · **Cognitive reasoning layer**
 
 ---
 
@@ -127,7 +127,7 @@ pip install neural-memory[all]          # Everything
 
 ## 3 Tools You Need
 
-Once configured, **44 tools** are available — but you only need three:
+Once configured, **50 tools** are available — but you only need three:
 
 | Tool | What it does |
 |------|-------------|
@@ -137,7 +137,7 @@ Once configured, **44 tools** are available — but you only need three:
 
 Everything else works transparently: sessions, context loading, habit tracking, maintenance.
 
-> [All 44 tools →](https://nhadaututtheky.github.io/neural-memory/api/mcp-tools/)
+> [All 50 tools →](https://nhadaututtheky.github.io/neural-memory/api/mcp-tools/)
 
 ---
 
@@ -242,7 +242,7 @@ asyncio.run(main())
 |-------|-------------|
 | [Quickstart Guide](https://nhadaututtheky.github.io/neural-memory/guides/quickstart-guide/) | Interactive guide with animated demos |
 | [CLI Reference](https://nhadaututtheky.github.io/neural-memory/getting-started/cli-reference/) | All 66 CLI commands |
-| [MCP Tools Reference](https://nhadaututtheky.github.io/neural-memory/api/mcp-tools/) | All 44 MCP tools with parameters |
+| [MCP Tools Reference](https://nhadaututtheky.github.io/neural-memory/api/mcp-tools/) | All 50 MCP tools with parameters |
 | [Brain Health Guide](https://nhadaututtheky.github.io/neural-memory/guides/brain-health/) | Understanding and improving brain health |
 | [Embedding Setup](https://nhadaututtheky.github.io/neural-memory/guides/embedding-setup/) | Configure embedding providers |
 | [Cloud Sync](https://nhadaututtheky.github.io/neural-memory/guides/cloud-sync/) | Multi-device sync setup |
@@ -254,7 +254,7 @@ asyncio.run(main())
 git clone https://github.com/nhadaututtheky/neural-memory
 cd neural-memory
 pip install -e ".[dev]"
-pytest tests/ -v          # 4140+ tests
+pytest tests/ -v          # 4700+ tests
 ruff check src/ tests/    # Lint
 ```
 

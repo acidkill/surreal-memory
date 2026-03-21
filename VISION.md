@@ -279,7 +279,7 @@ Create → Reinforce → Decay → Consolidate → Forget
 - [x] Typed memories (14 types) with priorities and expiry
 - [x] Brain export/import/merge (portable consciousness)
 - [x] Conflict resolution (4 strategies)
-- [x] MCP protocol (44 tools, standard memory layer)
+- [x] MCP protocol (50 tools, standard memory layer)
 - [x] VS Code extension (status bar, graph explorer, CodeLens)
 - [x] REST API + WebSocket sync + Cloud Sync Hub (Cloudflare)
 - [x] Cognitive layer (hypothesize/evidence/predict/verify/gaps/schema)

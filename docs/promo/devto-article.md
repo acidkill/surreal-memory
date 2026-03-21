@@ -64,9 +64,9 @@ Memories have a lifecycle:
 - **Pruning**: orphan neurons (no connections) get cleaned up
 - **Merging**: duplicate information gets consolidated
 
-## 45 MCP Tools
+## 50 MCP Tools
 
-Neural Memory exposes 45 tools via the [Model Context Protocol](https://modelcontextprotocol.io/):
+Neural Memory exposes 50 tools via the [Model Context Protocol](https://modelcontextprotocol.io/):
 
 | Tool | What it does |
 |------|-------------|
