@@ -12,23 +12,29 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
-def get_surface_path(brain_name: str = "default") -> Path:
+def get_surface_path(brain_name: str = "default", *, for_write: bool = False) -> Path:
     """Resolve the surface.nm file path for a given brain.
 
     Priority:
     1. Project-level: ``<project_root>/.neuralmemory/surface.nm``
     2. Global: ``~/.neuralmemory/surfaces/<brain_name>.nm``
 
+    For reads, project-level is returned only if the file exists.
+    For writes (``for_write=True``), project-level is returned whenever
+    a project root is detected — this ensures the first save creates
+    the file at project level instead of always falling through to global.
+
     Args:
         brain_name: Brain to resolve surface for.
+        for_write: If True, prefer project path even when file doesn't exist yet.
 
     Returns:
-        Path to the surface file (may not exist yet).
+        Path to the surface file (may not exist yet for writes).
     """
     project_root = detect_project_root()
     if project_root is not None:
         project_surface = project_root / ".neuralmemory" / "surface.nm"
-        if project_surface.exists():
+        if for_write or project_surface.exists():
             return project_surface
 
     return _global_surface_path(brain_name)
@@ -118,8 +124,17 @@ def save_surface_text(text: str, brain_name: str = "default") -> Path:
     Returns:
         Path where the file was written.
     """
-    path = get_surface_path(brain_name)
+    path = get_surface_path(brain_name, for_write=True)
     path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Warn once if both project and global surfaces exist (stale global copy)
+    global_path = _global_surface_path(brain_name)
+    if path != global_path and global_path.exists():
+        logger.info(
+            "Project surface at %s takes priority; global copy at %s is now stale",
+            path,
+            global_path,
+        )
 
     # Atomic write: write to temp, then rename
     tmp_path = path.with_suffix(".nm.tmp")

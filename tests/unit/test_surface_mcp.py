@@ -107,6 +107,34 @@ class TestResolver:
             path = get_surface_path("default")
             assert path == surface_file
 
+    def test_project_surface_for_write_creates_at_project_level(self, tmp_path: Path) -> None:
+        """for_write=True returns project path even when file doesn't exist yet."""
+        project_dir = tmp_path / "myproject"
+        nm_dir = project_dir / ".neuralmemory"
+        nm_dir.mkdir(parents=True)
+        # Note: surface.nm does NOT exist yet
+
+        with (
+            patch("neural_memory.surface.resolver.detect_project_root", return_value=project_dir),
+            patch("neural_memory.unified_config.get_neuralmemory_dir", return_value=tmp_path),
+        ):
+            path = get_surface_path("default", for_write=True)
+            assert path == nm_dir / "surface.nm"
+
+    def test_project_surface_read_falls_back_to_global(self, tmp_path: Path) -> None:
+        """Read mode falls back to global when project surface doesn't exist."""
+        project_dir = tmp_path / "myproject"
+        nm_dir = project_dir / ".neuralmemory"
+        nm_dir.mkdir(parents=True)
+        # Note: surface.nm does NOT exist
+
+        with (
+            patch("neural_memory.surface.resolver.detect_project_root", return_value=project_dir),
+            patch("neural_memory.unified_config.get_neuralmemory_dir", return_value=tmp_path),
+        ):
+            path = get_surface_path("default")
+            assert path == tmp_path / "surfaces" / "default.nm"
+
     def test_load_surface_text_returns_none_when_missing(self, tmp_path: Path) -> None:
         """load_surface_text returns None when file doesn't exist."""
         with patch(
