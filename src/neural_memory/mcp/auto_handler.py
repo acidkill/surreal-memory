@@ -139,6 +139,17 @@ class AutoHandler:
 
         saved = await self._save_detected_memories(detected)
 
+        # Cleanup expired ephemeral neurons at session end
+        ephemeral_cleaned = 0
+        try:
+            storage = await self.get_storage()
+            result = await storage.cleanup_ephemeral_neurons(max_age_hours=24.0)
+            ephemeral_cleaned = int(result) if isinstance(result, (int, float)) else 0
+            if ephemeral_cleaned > 0:
+                logger.info("Cleaned up %d expired ephemeral neurons", ephemeral_cleaned)
+        except Exception:
+            logger.debug("Ephemeral cleanup skipped (non-critical)", exc_info=True)
+
         # Regenerate Knowledge Surface after processing session summary
         surface_regenerated = False
         try:
@@ -147,7 +158,7 @@ class AutoHandler:
         except Exception:
             logger.debug("Surface regeneration skipped (non-critical)", exc_info=True)
 
-        return {
+        response: dict[str, Any] = {
             "saved": len(saved),
             "memories": saved,
             "surface_regenerated": surface_regenerated,
@@ -155,6 +166,9 @@ class AutoHandler:
             if saved
             else "No memories met confidence threshold",
         }
+        if ephemeral_cleaned > 0:
+            response["ephemeral_cleaned"] = ephemeral_cleaned
+        return response
 
     async def _regenerate_surface_if_available(self) -> None:
         """Regenerate Knowledge Surface if the feature is available."""

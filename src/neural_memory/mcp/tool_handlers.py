@@ -554,7 +554,17 @@ class ToolHandler:
             _source = os.environ.get("NEURALMEMORY_SOURCE", "")[:256]
             mcp_source = f"mcp:{_source}" if _source else "mcp_tool"
 
+            # Mark neurons as ephemeral if requested
+            is_ephemeral = bool(args.get("ephemeral", False))
+            if is_ephemeral:
+                ephemeral_ids = [n.id for n in result.neurons_created]
+                if ephemeral_ids:
+                    await storage.update_neurons_ephemeral_batch(ephemeral_ids, ephemeral=True)
+
             expiry_days = args.get("expires_days")
+            # Ephemeral memories default to 1-day expiry if not explicitly set
+            if is_ephemeral and expiry_days is None:
+                expiry_days = 1
             raw_trust = args.get("trust_score")
             trust_score: float | None = None
             if raw_trust is not None:
@@ -706,6 +716,10 @@ class ToolHandler:
                 response["sensitive_types_encrypted"] = sorted(
                     {m.type.value for m in remaining_matches}
                 )
+
+        if is_ephemeral:
+            response["ephemeral"] = True
+            response["message"] += " [ephemeral — auto-expires, never synced]"
 
         if expiry_days is not None:
             response["expires_in_days"] = expiry_days
@@ -863,6 +877,7 @@ class ToolHandler:
                 "expires_days",
                 "encrypted",
                 "event_at",
+                "ephemeral",
             ):
                 if key in item:
                     single_args[key] = item[key]
@@ -983,6 +998,8 @@ class ToolHandler:
                 except ValueError:
                     pass
 
+        permanent_only = bool(args.get("permanent_only", False))
+
         pipeline = ReflexPipeline(storage, brain.config)
         result = await pipeline.query(
             query=effective_query,
@@ -992,6 +1009,7 @@ class ToolHandler:
             valid_at=valid_at,
             tags=tags,
             session_id=f"mcp-{id(self)}",
+            exclude_ephemeral=permanent_only,
         )
 
         # Passive auto-capture on long queries

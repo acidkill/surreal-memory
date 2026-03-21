@@ -122,6 +122,7 @@ class FalkorDBNeuronMixin(FalkorDBBaseMixin):
         time_range: tuple[datetime, datetime] | None = None,
         limit: int = 100,
         offset: int = 0,
+        ephemeral: bool | None = None,
     ) -> list[Neuron]:
         full_scan = content_contains is None and content_exact is None
         limit = min(limit, 10000 if full_scan else 1000)
@@ -200,6 +201,7 @@ class FalkorDBNeuronMixin(FalkorDBBaseMixin):
         self,
         contents: list[str],
         type: NeuronType | None = None,
+        ephemeral: bool | None = None,
     ) -> dict[str, Neuron]:
         if not contents:
             return {}

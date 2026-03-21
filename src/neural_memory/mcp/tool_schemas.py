@@ -178,6 +178,12 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "instead of crafting perfect prose.",
                     "additionalProperties": True,
                 },
+                "ephemeral": {
+                    "type": "boolean",
+                    "description": "Session-scoped memory: auto-expires after TTL (default 24h), "
+                    "never synced to cloud, excluded from consolidation. "
+                    "Use for scratch notes, debugging context, temporary reasoning.",
+                },
             },
             "required": ["content"],
         },
@@ -244,6 +250,10 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
                             "source_id": {
                                 "type": "string",
                                 "description": "Link to a registered source",
+                            },
+                            "ephemeral": {
+                                "type": "boolean",
+                                "description": "Session-scoped memory (auto-expires, never synced)",
                             },
                         },
                         "required": ["content"],
@@ -327,6 +337,10 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "description": "When set, activates budget-aware fiber selection: ranks fibers by value-per-token "
                     "and selects the most efficient ones to fit within this budget. "
                     "Adds budget_stats to the response. Default: not set (uses standard sequential truncation).",
+                },
+                "permanent_only": {
+                    "type": "boolean",
+                    "description": "Exclude ephemeral (session-scoped) memories from results. Default: false (include all).",
                 },
             },
             "required": ["query"],

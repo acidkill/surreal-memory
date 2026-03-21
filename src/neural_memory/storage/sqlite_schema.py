@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Schema version for migrations
-SCHEMA_VERSION = 32
+SCHEMA_VERSION = 33
 
 # â”€â”€ Migrations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Each entry maps (from_version -> to_version) with a list of SQL statements.
@@ -601,6 +601,11 @@ MIGRATIONS: dict[tuple[int, int], list[str]] = {
         "CREATE INDEX IF NOT EXISTS idx_neurons_lifecycle ON neurons(brain_id, lifecycle_state)",
         "CREATE INDEX IF NOT EXISTS idx_neurons_last_accessed ON neurons(brain_id, last_accessed_at)",
     ],
+    (32, 33): [
+        # Ephemeral memories: session-scoped neurons that auto-expire and never sync.
+        "ALTER TABLE neurons ADD COLUMN ephemeral INTEGER DEFAULT 0",
+        "CREATE INDEX IF NOT EXISTS idx_neurons_ephemeral ON neurons(brain_id, ephemeral)",
+    ],
 }
 
 
@@ -733,6 +738,7 @@ CREATE TABLE IF NOT EXISTS neurons (
     last_accessed_at TEXT,  -- Updated on every recall hit (batch)
     lifecycle_state TEXT DEFAULT 'active',  -- ACTIVE | WARM | COOL | COMPRESSED | ARCHIVED
     frozen INTEGER DEFAULT 0,  -- 1 = never compress
+    ephemeral INTEGER DEFAULT 0,  -- 1 = session-scoped, auto-expires, never synced
     PRIMARY KEY (brain_id, id),
     FOREIGN KEY (brain_id) REFERENCES brains(id) ON DELETE CASCADE
 );

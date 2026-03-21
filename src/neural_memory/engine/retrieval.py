@@ -197,6 +197,7 @@ class ReflexPipeline:
         valid_at: datetime | None = None,
         tags: set[str] | None = None,
         session_id: str | None = None,
+        exclude_ephemeral: bool = False,
     ) -> RetrievalResult:
         """
         Execute the retrieval pipeline.
@@ -271,7 +272,9 @@ class ReflexPipeline:
                 return fiber_result
 
         # 3. Find anchor neurons (time-first) with ranked results
-        anchor_sets, ranked_lists = await self._find_anchors_ranked(stimulus)
+        anchor_sets, ranked_lists = await self._find_anchors_ranked(
+            stimulus, exclude_ephemeral=exclude_ephemeral
+        )
 
         # 3.5 RRF score fusion: compute initial activation levels from multi-retriever ranks
         # Use dynamic per-brain retriever weights when available
@@ -1390,7 +1393,7 @@ class ReflexPipeline:
         return [nid for nid, _ in scored[:top_k]]
 
     async def _find_anchors_ranked(
-        self, stimulus: Stimulus
+        self, stimulus: Stimulus, *, exclude_ephemeral: bool = False
     ) -> tuple[list[list[str]], list[list[RankedAnchor]]]:
         """Find anchor neurons with ranked results for RRF fusion.
 
@@ -1406,6 +1409,7 @@ class ReflexPipeline:
         """
         anchor_sets: list[list[str]] = []
         ranked_lists: list[list[RankedAnchor]] = []
+        ephemeral_filter: bool | None = False if exclude_ephemeral else None
 
         # 1. TIME ANCHORS FIRST (primary) — batch via asyncio.gather
         time_anchors: list[str] = []
@@ -1415,6 +1419,7 @@ class ReflexPipeline:
                     type=NeuronType.TIME,
                     time_range=(hint.absolute_start, hint.absolute_end),
                     limit=5,
+                    ephemeral=ephemeral_filter,
                 )
                 for hint in stimulus.time_hints
             ]
@@ -1433,14 +1438,18 @@ class ReflexPipeline:
 
         # 2 & 3. Entity + keyword anchors (parallel)
         entity_tasks = [
-            self._storage.find_neurons(content_contains=entity.text, limit=3)
+            self._storage.find_neurons(
+                content_contains=entity.text, limit=3, ephemeral=ephemeral_filter
+            )
             for entity in stimulus.entities
         ]
 
         # Expand keywords for better recall
         expanded_keywords = self._expand_query_terms(list(stimulus.keywords[:5]))
         keyword_tasks = [
-            self._storage.find_neurons(content_contains=keyword, limit=2)
+            self._storage.find_neurons(
+                content_contains=keyword, limit=2, ephemeral=ephemeral_filter
+            )
             for keyword in expanded_keywords[:8]  # cap at 8 to limit queries
         ]
 

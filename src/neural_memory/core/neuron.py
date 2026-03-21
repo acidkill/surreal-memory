@@ -52,6 +52,7 @@ class Neuron:
     metadata: dict[str, Any] = field(default_factory=dict)
     content_hash: int = 0
     created_at: datetime = field(default_factory=utcnow)
+    ephemeral: bool = False
 
     @classmethod
     def create(
@@ -61,6 +62,7 @@ class Neuron:
         metadata: dict[str, Any] | None = None,
         neuron_id: str | None = None,
         content_hash: int = 0,
+        ephemeral: bool = False,
     ) -> Neuron:
         """
         Factory method to create a new Neuron.
@@ -71,6 +73,7 @@ class Neuron:
             metadata: Optional metadata dict
             neuron_id: Optional explicit ID (generates UUID if not provided)
             content_hash: SimHash fingerprint for near-duplicate detection
+            ephemeral: If True, this neuron is session-scoped and auto-expires
 
         Returns:
             A new Neuron instance
@@ -82,6 +85,7 @@ class Neuron:
             metadata=metadata or {},
             content_hash=content_hash,
             created_at=utcnow(),
+            ephemeral=ephemeral,
         )
 
     def with_metadata(self, **kwargs: Any) -> Neuron:
@@ -101,6 +105,7 @@ class Neuron:
             metadata={**self.metadata, **kwargs},
             content_hash=self.content_hash,
             created_at=self.created_at,
+            ephemeral=self.ephemeral,
         )
 
 

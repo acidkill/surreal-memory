@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from neural_memory.core.neuron import Neuron, NeuronState, NeuronType
@@ -77,8 +77,8 @@ class SQLiteNeuronMixin:
 
         try:
             await conn.execute(
-                """INSERT INTO neurons (id, brain_id, type, content, metadata, content_hash, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                """INSERT INTO neurons (id, brain_id, type, content, metadata, content_hash, created_at, ephemeral)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     neuron.id,
                     brain_id,
@@ -87,6 +87,7 @@ class SQLiteNeuronMixin:
                     json.dumps(neuron.metadata),
                     neuron.content_hash,
                     neuron.created_at.isoformat(),
+                    1 if neuron.ephemeral else 0,
                 ),
             )
 
@@ -139,6 +140,7 @@ class SQLiteNeuronMixin:
         self,
         contents: list[str],
         type: NeuronType | None = None,
+        ephemeral: bool | None = None,
     ) -> dict[str, Neuron]:
         """Find neurons by exact content for multiple contents in one query."""
         if not contents:
@@ -154,6 +156,10 @@ class SQLiteNeuronMixin:
         if type is not None:
             query += " AND type = ?"
             params.append(type.value)
+
+        if ephemeral is not None:
+            query += " AND ephemeral = ?"
+            params.append(1 if ephemeral else 0)
 
         results: dict[str, Neuron] = {}
         async with conn.execute(query, params) as cursor:
@@ -173,6 +179,7 @@ class SQLiteNeuronMixin:
         time_range: tuple[datetime, datetime] | None = None,
         limit: int = 100,
         offset: int = 0,
+        ephemeral: bool | None = None,
     ) -> list[Neuron]:
         # Cache shortcut for exact-match lookups (most repeated pattern)
         if content_exact is not None and content_contains is None and time_range is None:
@@ -209,6 +216,10 @@ class SQLiteNeuronMixin:
                 params.append(start.isoformat())
                 params.append(end.isoformat())
 
+            if ephemeral is not None:
+                query += " AND n.ephemeral = ?"
+                params.append(1 if ephemeral else 0)
+
             query += " ORDER BY fts.rank LIMIT ? OFFSET ?"
             params.extend([limit, offset])
         else:
@@ -237,6 +248,10 @@ class SQLiteNeuronMixin:
                 query += " AND created_at >= ? AND created_at <= ?"
                 params.append(start.isoformat())
                 params.append(end.isoformat())
+
+            if ephemeral is not None:
+                query += " AND ephemeral = ?"
+                params.append(1 if ephemeral else 0)
 
             query += " ORDER BY id LIMIT ? OFFSET ?"
             params.extend([limit, offset])
@@ -567,6 +582,44 @@ class SQLiteNeuronMixin:
         )
         await conn.commit()
 
+    async def update_neuron_ephemeral(self, neuron_id: str, ephemeral: bool) -> None:
+        """Set or clear the ephemeral flag for a neuron.
+
+        Args:
+            neuron_id: The neuron ID to update.
+            ephemeral: True for session-scoped, False for permanent.
+        """
+        conn = self._ensure_conn()
+        brain_id = self._get_brain_id()
+        await conn.execute(
+            "UPDATE neurons SET ephemeral = ? WHERE id = ? AND brain_id = ?",
+            (1 if ephemeral else 0, neuron_id, brain_id),
+        )
+        await conn.commit()
+        self._neuron_cache.invalidate()
+
+    async def update_neurons_ephemeral_batch(self, neuron_ids: list[str], ephemeral: bool) -> None:
+        """Batch-set ephemeral flag for multiple neurons.
+
+        Args:
+            neuron_ids: Neuron IDs to update.
+            ephemeral: True for session-scoped, False for permanent.
+        """
+        if not neuron_ids:
+            return
+        conn = self._ensure_conn()
+        brain_id = self._get_brain_id()
+        chunk_size = 500
+        for start in range(0, len(neuron_ids), chunk_size):
+            chunk = neuron_ids[start : start + chunk_size]
+            placeholders = ",".join("?" for _ in chunk)
+            await conn.execute(
+                f"UPDATE neurons SET ephemeral = ? WHERE brain_id = ? AND id IN ({placeholders})",
+                [1 if ephemeral else 0, brain_id, *chunk],
+            )
+        await conn.commit()
+        self._neuron_cache.invalidate()
+
     async def get_lifecycle_distribution(self) -> dict[str, int]:
         """Return count of neurons by lifecycle_state for the current brain.
 
@@ -661,3 +714,25 @@ class SQLiteNeuronMixin:
         )
         await conn.commit()
         return cursor.rowcount > 0
+
+    async def cleanup_ephemeral_neurons(self, max_age_hours: float = 24.0) -> int:
+        """Delete ephemeral neurons older than max_age_hours.
+
+        Args:
+            max_age_hours: Maximum age in hours before ephemeral neurons are deleted.
+
+        Returns:
+            Number of deleted neurons.
+        """
+        conn = self._ensure_conn()
+        brain_id = self._get_brain_id()
+        cutoff = (utcnow() - timedelta(hours=max_age_hours)).isoformat()
+
+        cursor = await conn.execute(
+            "DELETE FROM neurons WHERE brain_id = ? AND ephemeral = 1 AND created_at < ?",
+            (brain_id, cutoff),
+        )
+        await conn.commit()
+        if cursor.rowcount > 0:
+            self._neuron_cache.invalidate()
+        return cursor.rowcount

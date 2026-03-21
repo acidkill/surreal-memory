@@ -103,6 +103,7 @@ class NeuralStorage(ABC):
         self,
         contents: list[str],
         type: NeuronType | None = None,
+        ephemeral: bool | None = None,
     ) -> dict[str, Neuron]:
         """Find neurons by exact content match for multiple contents at once.
 
@@ -112,13 +113,16 @@ class NeuralStorage(ABC):
         Args:
             contents: List of exact content strings to match
             type: Optional neuron type filter
+            ephemeral: Filter by ephemeral flag (None=all, True=only ephemeral, False=only permanent)
 
         Returns:
             Dict mapping content string to first matching Neuron
         """
         results: dict[str, Neuron] = {}
         for content in contents:
-            matches = await self.find_neurons(type=type, content_exact=content, limit=1)
+            matches = await self.find_neurons(
+                type=type, content_exact=content, limit=1, ephemeral=ephemeral
+            )
             if matches:
                 results[content] = matches[0]
         return results
@@ -132,6 +136,7 @@ class NeuralStorage(ABC):
         time_range: tuple[datetime, datetime] | None = None,
         limit: int = 100,
         offset: int = 0,
+        ephemeral: bool | None = None,
     ) -> list[Neuron]:
         """
         Find neurons matching criteria.
@@ -143,6 +148,7 @@ class NeuralStorage(ABC):
             time_range: Filter by created_at within range
             limit: Maximum results to return
             offset: Number of rows to skip (for pagination)
+            ephemeral: Filter by ephemeral flag (None=all, True=only ephemeral, False=only permanent)
 
         Returns:
             List of matching neurons
@@ -1344,6 +1350,16 @@ class NeuralStorage(ABC):
         """
         raise NotImplementedError
 
+    # ========== Ephemeral Operations ==========
+
+    async def cleanup_ephemeral_neurons(self, max_age_hours: float = 24.0) -> int:
+        """Delete ephemeral neurons older than max_age_hours.
+
+        Returns:
+            Number of deleted neurons.
+        """
+        raise NotImplementedError
+
     # ========== Access Tracking Operations ==========
 
     async def batch_update_last_accessed(self, neuron_ids: list[str]) -> None:
@@ -1379,6 +1395,14 @@ class NeuralStorage(ABC):
             neuron_id: The neuron ID to update.
             frozen: True to prevent compression, False to resume normal lifecycle.
         """
+        raise NotImplementedError
+
+    async def update_neuron_ephemeral(self, neuron_id: str, ephemeral: bool) -> None:
+        """Set or clear the ephemeral flag for a neuron."""
+        raise NotImplementedError
+
+    async def update_neurons_ephemeral_batch(self, neuron_ids: list[str], ephemeral: bool) -> None:
+        """Batch-set ephemeral flag for multiple neurons."""
         raise NotImplementedError
 
     async def get_lifecycle_distribution(self) -> dict[str, int]:

@@ -90,6 +90,7 @@ class PostgresNeuronMixin(PostgresBaseMixin):
         time_range: tuple[datetime, datetime] | None = None,
         limit: int = 100,
         offset: int = 0,
+        ephemeral: bool | None = None,
     ) -> list[Neuron]:
         brain_id = self._get_brain_id()
         full_scan = content_contains is None and content_exact is None

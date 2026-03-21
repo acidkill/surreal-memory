@@ -27,6 +27,7 @@ def row_to_neuron(row: aiosqlite.Row) -> Neuron:
     """Convert database row to Neuron."""
     row_keys = row.keys()
     content_hash = row["content_hash"] if "content_hash" in row_keys else 0
+    ephemeral = bool(row["ephemeral"]) if "ephemeral" in row_keys else False
     return Neuron(
         id=row["id"],
         type=NeuronType(row["type"]),
@@ -34,6 +35,7 @@ def row_to_neuron(row: aiosqlite.Row) -> Neuron:
         metadata=json.loads(row["metadata"]),
         content_hash=content_hash,
         created_at=datetime.fromisoformat(row["created_at"]),
+        ephemeral=ephemeral,
     )
 
 

@@ -163,6 +163,7 @@ class SQLiteChangeLogMixin:
                ), 0
                FROM neurons n
                WHERE n.brain_id = ?
+                 AND COALESCE(n.ephemeral, 0) = 0
                  AND NOT EXISTS (
                      SELECT 1 FROM change_log cl
                      WHERE cl.brain_id = ? AND cl.entity_type = 'neuron' AND cl.entity_id = n.id

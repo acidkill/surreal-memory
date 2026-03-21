@@ -99,6 +99,7 @@ class InMemoryStorage(
         time_range: tuple[datetime, datetime] | None = None,
         limit: int = 100,
         offset: int = 0,
+        ephemeral: bool | None = None,
     ) -> list[Neuron]:
         full_scan = content_contains is None and content_exact is None
         limit = min(limit, 10000 if full_scan else 1000)
@@ -117,6 +118,8 @@ class InMemoryStorage(
                 start, end = time_range
                 if not (start <= neuron.created_at <= end):
                     continue
+            if ephemeral is not None and neuron.ephemeral != ephemeral:
+                continue
 
             results.append(neuron)
 

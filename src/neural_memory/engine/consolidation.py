@@ -465,7 +465,9 @@ class ConsolidationEngine:
         offset = 0
         orphan_ids: list[str] = []
         while True:
-            batch = await self._storage.find_neurons(limit=batch_size, offset=offset)
+            batch = await self._storage.find_neurons(
+                limit=batch_size, offset=offset, ephemeral=False
+            )
             if not batch:
                 break
             for neuron in batch:
@@ -1156,7 +1158,9 @@ class ConsolidationEngine:
         offset = 0
         anchors: list[Neuron] = []
         while True:
-            batch = await self._storage.find_neurons(limit=batch_size, offset=offset)
+            batch = await self._storage.find_neurons(
+                limit=batch_size, offset=offset, ephemeral=False
+            )
             if not batch:
                 break
             anchors.extend(n for n in batch if n.metadata.get("is_anchor", False))
@@ -1307,7 +1311,7 @@ class ConsolidationEngine:
 
         # Fetch neurons in batches via find_neurons (full scan)
         try:
-            neurons = await self._storage.find_neurons(limit=10000)
+            neurons = await self._storage.find_neurons(limit=10000, ephemeral=False)
         except Exception:
             _logger.error("LIFECYCLE failed to fetch neurons", exc_info=True)
             return
