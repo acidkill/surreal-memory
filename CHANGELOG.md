@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.16.0] — 2026-03-21
+
+### Improved
+
+- **Agent instruction prompts** — audited and optimized all 10 instruction surfaces
+  - Deduplicated SYSTEM_PROMPT cognitive sections (merged 2 → 1, ~50 lines saved)
+  - Strengthened OpenClaw `buildToolInstructions()` from 5-line stub to full RECALL/SAVE/EPHEMERAL/COMPACT guide
+  - Removed marketing copy from SKILL.md — agents see usage instructions, not feature lists
+  - Fixed stale `fresh_only=true` param in `.cursorrules` and `CLAUDE.md` template
+  - Added `ephemeral=true` docs to all surfaces (MCP_INSTRUCTIONS, SKILL.md, .cursorrules, CLAUDE.md, plugin.json)
+  - Added `compact=true` + `token_budget` mention to all surfaces
+  - Added `tags=[...]` to all SYSTEM_PROMPT examples for consistency
+  - Removed hardcoded tool count from SKILL.md
+
 ## [4.15.0] — 2026-03-21
 
 ### Added
