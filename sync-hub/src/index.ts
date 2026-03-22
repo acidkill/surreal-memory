@@ -15,6 +15,7 @@ import devices from "./routes/devices.js";
 import health from "./routes/health.js";
 import auth from "./routes/auth.js";
 import { requireAuth } from "./middleware/auth.js";
+import { attachLicense } from "./middleware/license.js";
 import { handleError } from "./errors.js";
 
 const app = new Hono<AppEnv>();
@@ -43,8 +44,9 @@ app.onError((err, c) => {
 app.route("/v1/health", health);
 app.route("/v1/auth", auth);
 
-// --- Protected routes (require API key) ---
+// --- Protected routes (require API key + license check) ---
 app.use("/v1/hub/*", requireAuth);
+app.use("/v1/hub/*", attachLicense);
 app.route("/v1/hub/sync", sync);
 app.route("/v1/hub/register", register);
 app.route("/v1/hub/status", status);

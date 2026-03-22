@@ -6,7 +6,7 @@
  */
 
 import { Hono } from "hono";
-import type { AppEnv, AuthContext, SyncChange, SyncResponse } from "../types.js";
+import type { AppEnv, SyncChange, SyncResponse, LicenseContext } from "../types.js";
 import { SyncStatus } from "../types.js";
 import { handleError, HubError } from "../errors.js";
 import {
@@ -89,13 +89,22 @@ sync.post("/", async (c) => {
     await updateDeviceSync(db, body.device_id, body.brain_id, hubSequence);
 
     // 8. Return — NO conflict resolution here
-    const response: SyncResponse = {
+    const response: SyncResponse & { hints?: string[] } = {
       hub_sequence: hubSequence,
       changes: unseen,
       conflicts: [],
       status: SyncStatus.SUCCESS,
       message: `Pushed ${changes.length}, pulled ${unseen.length}`,
     };
+
+    // 9. Upsell hint for free users with significant sync volume
+    const license = c.get("license") as LicenseContext | undefined;
+    const totalChanges = changes.length + unseen.length;
+    if ((!license || license.tier === "free") && totalChanges > 50) {
+      response.hints = [
+        `Synced ${totalChanges} changes via full changelist. Pro users get Merkle delta sync (~95% faster).`,
+      ];
+    }
 
     return c.json(response);
   } catch (err) {

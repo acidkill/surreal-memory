@@ -1390,6 +1390,16 @@ class ToolHandler:
         if cross_lang_hint:
             response["cross_language_hint"] = cross_lang_hint
 
+        # Pro hint: when many fibers matched but results were truncated
+        fibers_count = getattr(result, "fibers_matched", 0)
+        if isinstance(fibers_count, int) and fibers_count > 10:
+            pro_hints = response.get("pro_hints", [])
+            pro_hints.append(
+                f"Showing top results from {fibers_count} matches. "
+                "Pro: Cone queries return ALL relevant memories for exhaustive recall."
+            )
+            response["pro_hints"] = pro_hints
+
         # Surface pending alerts count
         alert_info = await self._surface_pending_alerts()  # type: ignore[attr-defined]
         if alert_info:
@@ -1832,6 +1842,18 @@ class ToolHandler:
             except Exception:
                 logger.debug("Gromov delta estimation failed", exc_info=True)
                 result["gromov"] = {"error": "estimation failed"}
+
+        # Pro hint for large brains
+        total_entities = (
+            result.get("fiber_count", 0)
+            + result.get("neuron_count", 0)
+            + result.get("synapse_count", 0)
+        )
+        if total_entities > 500:
+            result["pro_hints"] = [
+                f"Brain has {total_entities} entities. "
+                "Pro: Merkle delta sync keeps multi-device brains in sync ~95% faster."
+            ]
 
         return result
 

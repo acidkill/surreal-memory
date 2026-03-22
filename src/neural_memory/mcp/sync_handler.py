@@ -199,7 +199,7 @@ class SyncToolHandler:
             )
 
             result = await engine.process_sync_response(sync_response)
-            return {
+            sync_result: dict[str, Any] = {
                 "status": "success",
                 "action": action,
                 "changes_pushed": len(request.changes),
@@ -207,6 +207,13 @@ class SyncToolHandler:
                 "conflicts": result["conflicts"],
                 "hub_sequence": result["hub_sequence"],
             }
+
+            # Pass through Pro upsell hints from hub
+            hub_hints = response_data.get("hints")
+            if hub_hints:
+                sync_result["hints"] = hub_hints
+
+            return sync_result
 
         except ImportError:
             return {

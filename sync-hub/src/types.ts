@@ -108,9 +108,17 @@ export interface Env {
   // RATE_LIMITS: KVNamespace;   // Phase 2
 }
 
+// License context (attached by license middleware)
+export interface LicenseContext {
+  tier: "free" | "pro" | "team";
+  licenseId: string | null;
+  expiresAt: string | null;
+}
+
 // Hono Variables type for c.set/c.get
 export interface HonoVariables {
   auth: AuthContext;
+  license: LicenseContext;
 }
 
 // Combined type for Hono app
