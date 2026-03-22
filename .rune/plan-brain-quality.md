@@ -12,9 +12,9 @@ Domain-specific capabilities for vertical use cases (accounting, legal, data viz
 
 | # | Name | Status | Plan File | Summary |
 |---|------|--------|-----------|---------|
-| C1+C2 | Domain Entities + Structured Data | ⬚ Pending | plan-brain-quality-c1c2.md | Entity subtypes + table-as-graph encoding |
-| C3 | Cross-Encoder Reranking | ⬚ Pending | plan-brain-quality-c3.md | Optional bge-reranker post-SA refinement |
-| C4 | Agent Visualization | ⬚ Pending | plan-brain-quality-c4.md | nmem_visualize → Vega-Lite/markdown/ASCII charts |
+| C1+C2 | Domain Entities + Structured Data | ⬚ Pending | plan-brain-quality-c1c2.md | Entity subtypes + table-as-graph encoding | **Free** |
+| C3 | Cross-Encoder Reranking | ⬚ Pending | plan-brain-quality-c3.md | Optional bge-reranker post-SA refinement | **Private (Pro)** |
+| C4 | Agent Visualization | ⬚ Pending | plan-brain-quality-c4.md | nmem_visualize → Vega-Lite/markdown/ASCII charts | **Free** |
 
 ## Dependency Graph
 ```

@@ -4,6 +4,8 @@
 Auto-ingest files from watched folders into Neural Memory. Drop file → auto-memorize.
 Reuses existing DocTrainer + doc_chunker + doc_extractor + SimHash — no reimplementation.
 
+**Destination: Free** — core DX feature, drives adoption.
+
 ## Phases
 | # | Name | Status | Plan File | Summary |
 |---|------|--------|-----------|---------|

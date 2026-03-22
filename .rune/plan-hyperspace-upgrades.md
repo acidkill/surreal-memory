@@ -9,7 +9,7 @@ Borrow proven techniques from HyperspaceDB (hyperbolic vector database, Rust) to
 |---|------|--------|-----------|---------|
 | 1 | Quick Wins | ✅ Done | plan-hyperspace-upgrades-p1.md | Generation visited, Tribunal scoring, W1 drift, Fuzzy recall |
 | 2 | Advanced Retrieval | ✅ Done | plan-hyperspace-upgrades-p2.md | Gromov health metric, Anisotropic fidelity, Koopman predict |
-| 3 | Infrastructure | ⬚ Pending | plan-hyperspace-upgrades-p3.md | Merkle delta sync, Cone regions, Hyperbolic embedding research |
+| 3 | Infrastructure | ⬚ Pending | plan-hyperspace-upgrades-p3.md | Merkle delta sync (Hub), Cone regions (Private), Hyperbolic embedding (Private) |
 
 ## Key Decisions
 - Tier 1 items are backward-compatible, zero new dependencies, can ship incrementally

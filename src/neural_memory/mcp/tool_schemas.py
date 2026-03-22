@@ -1031,6 +1031,36 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "nmem_visualize",
+        "description": "Generate charts from memory data. Returns Vega-Lite, markdown table, or ASCII chart.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "What to visualize (e.g., 'ROE trend across quarters', 'revenue by product')",
+                },
+                "chart_type": {
+                    "type": "string",
+                    "enum": ["line", "bar", "pie", "scatter", "table", "timeline"],
+                    "description": "Chart type (auto-detected if omitted based on data shape)",
+                },
+                "format": {
+                    "type": "string",
+                    "enum": ["vega_lite", "markdown_table", "ascii", "all"],
+                    "description": "Output format (default: vega_lite)",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 50,
+                    "description": "Max data points (default: 20)",
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    {
         "name": "nmem_review",
         "description": "Spaced repetition reviews (Leitner box system).",
         "inputSchema": {
@@ -1097,14 +1127,14 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "nmem_sync_config",
-        "description": "View or update sync configuration. Use action='setup' for guided onboarding.",
+        "description": "View or update sync configuration. Use action='setup' for guided onboarding, action='activate' to activate a purchased license key.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["get", "set", "setup"],
-                    "description": "get=view config, set=update config, setup=guided onboarding",
+                    "enum": ["get", "set", "setup", "activate"],
+                    "description": "get=view config, set=update config, setup=guided onboarding, activate=activate purchased license key",
                 },
                 "enabled": {
                     "type": "boolean",
@@ -1132,6 +1162,10 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "type": "string",
                     "enum": ["prefer_recent", "prefer_local", "prefer_remote", "prefer_stronger"],
                     "description": "Default conflict strategy",
+                },
+                "license_key": {
+                    "type": "string",
+                    "description": "NM license key to activate (for action='activate', starts with nm_)",
                 },
             },
             "required": ["action"],

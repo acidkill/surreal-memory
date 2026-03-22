@@ -53,6 +53,7 @@ from neural_memory.mcp.tool_handlers import ToolHandler
 from neural_memory.mcp.tool_schemas import get_tool_schemas_for_tier
 from neural_memory.mcp.train_handler import TrainHandler
 from neural_memory.mcp.version_check_handler import VersionCheckHandler
+from neural_memory.mcp.visualize_handler import VisualizeHandler
 from neural_memory.unified_config import get_config, get_shared_storage
 
 if TYPE_CHECKING:
@@ -90,6 +91,7 @@ class MCPServer(
     AlertHandler,
     ReviewHandler,
     NarrativeHandler,
+    VisualizeHandler,
     ConnectionHandler,
     CognitiveHandler,
     Mem0SyncHandler,
@@ -242,6 +244,7 @@ class MCPServer(
             "nmem_alerts": self._alerts,
             "nmem_review": self._review,
             "nmem_narrative": self._narrative,
+            "nmem_visualize": self._visualize,
             "nmem_sync": self._sync,
             "nmem_sync_status": self._sync_status,
             "nmem_sync_config": self._sync_config,

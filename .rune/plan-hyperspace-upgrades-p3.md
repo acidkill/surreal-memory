@@ -3,6 +3,11 @@
 ## Goal
 3 infrastructure-level upgrades: Merkle delta sync (production-ready), Cone region queries (experimental), and hyperbolic embedding (research spike). Only Merkle sync is expected to ship in near-term.
 
+## Destination
+- **3.1 Merkle delta sync** → Sync Hub (closed source, Cloudflare Worker) — Pro tier feature
+- **3.2 Cone region queries** → Private package (neural-memory-pro) — already scaffolded
+- **3.3 Hyperbolic embedding** → Private package (neural-memory-pro) — research first
+
 ## Prerequisites
 - Phase 1 and 2 complete
 - Cloud Sync Hub operational (Cloudflare Workers + D1)
