@@ -11,12 +11,15 @@ from neural_memory.engine.clustering import UnionFind
 from neural_memory.engine.drift_detection import (
     JACCARD_MERGE_THRESHOLD,
     MIN_COOCCURRENCE_COUNT,
+    ActivationDriftReport,
     DriftReport,
     TagCluster,
     compute_jaccard,
+    detect_activation_drift,
     detect_clusters,
     detect_temporal_drift,
     run_drift_detection,
+    wasserstein_1,
 )
 from neural_memory.utils.timeutils import utcnow
 
@@ -583,3 +586,107 @@ class TestUnionFind:
         uf = UnionFind(3)
         groups = uf.groups()
         assert len(groups) == 3
+
+
+# ── Wasserstein-1 Distance ─────────────────────────────────────────
+
+
+class TestWasserstein1:
+    """Tests for W1 (Earth Mover's) distance computation."""
+
+    def test_identical_distributions(self) -> None:
+        """Identical distributions → W1 = 0."""
+        assert wasserstein_1([1.0, 2.0, 3.0], [1.0, 2.0, 3.0]) == 0.0
+
+    def test_empty_distributions(self) -> None:
+        """Empty distributions → W1 = 0."""
+        assert wasserstein_1([], []) == 0.0
+        assert wasserstein_1([1.0], []) == 0.0
+        assert wasserstein_1([], [1.0]) == 0.0
+
+    def test_opposite_distributions(self) -> None:
+        """Maximally different distributions → high W1."""
+        w1 = wasserstein_1([1.0, 0.0, 0.0], [0.0, 0.0, 1.0])
+        assert w1 > 0.3  # Should be substantial
+
+    def test_gradual_shift(self) -> None:
+        """Gradual shift → proportional W1."""
+        small = wasserstein_1([1.0, 2.0, 3.0], [1.5, 2.0, 2.5])
+        large = wasserstein_1([1.0, 2.0, 3.0], [3.0, 2.0, 1.0])
+        assert small < large
+
+    def test_symmetric(self) -> None:
+        """W1 should be symmetric."""
+        a = [1.0, 2.0, 3.0]
+        b = [3.0, 1.0, 2.0]
+        assert abs(wasserstein_1(a, b) - wasserstein_1(b, a)) < 1e-10
+
+    def test_different_lengths(self) -> None:
+        """Handles distributions of different lengths."""
+        w1 = wasserstein_1([1.0, 2.0], [1.0, 2.0, 3.0])
+        assert w1 >= 0.0  # Should work without error
+
+    def test_all_zeros(self) -> None:
+        """All-zero distribution → W1 = 0."""
+        assert wasserstein_1([0.0, 0.0], [0.0, 0.0]) == 0.0
+        assert wasserstein_1([0.0], [1.0]) == 0.0  # One is zero-sum
+
+
+class TestActivationDrift:
+    """Tests for activation drift detection using W1."""
+
+    def test_no_drift(self) -> None:
+        """Identical activations → stable."""
+        report = detect_activation_drift(
+            {"concept": [0.5, 0.6, 0.7]},
+            {"concept": [0.5, 0.6, 0.7]},
+        )
+        assert report.overall_drift == 0.0
+        assert len(report.drifting_types) == 0
+        assert report.results[0].status == "stable"
+
+    def test_drift_detected(self) -> None:
+        """Differently shaped activations → non-zero drift."""
+        # Concentrated at start vs concentrated at end
+        report = detect_activation_drift(
+            {"concept": [0.9, 0.1, 0.0, 0.0]},
+            {"concept": [0.0, 0.0, 0.1, 0.9]},
+        )
+        assert report.overall_drift > 0.0
+
+    def test_multiple_types(self) -> None:
+        """Different types should be analyzed independently."""
+        report = detect_activation_drift(
+            {"concept": [0.5, 0.5], "entity": [0.1, 0.1]},
+            {"concept": [0.5, 0.5], "entity": [0.9, 0.9]},
+        )
+        assert len(report.results) == 2
+        # concept should be stable, entity may drift
+        concept = next(r for r in report.results if r.neuron_type == "concept")
+        assert concept.status == "stable"
+
+    def test_missing_type_in_one_period(self) -> None:
+        """Type present in only one period → included with empty other."""
+        report = detect_activation_drift(
+            {"concept": [0.5, 0.5]},
+            {"concept": [0.5, 0.5], "new_type": [0.8, 0.8]},
+        )
+        assert len(report.results) == 2
+        new_type = next(r for r in report.results if r.neuron_type == "new_type")
+        assert new_type.period_a_count == 0
+        assert new_type.period_b_count == 2
+
+    def test_empty_input(self) -> None:
+        """Empty input → zero drift."""
+        report = detect_activation_drift({}, {})
+        assert report.overall_drift == 0.0
+        assert len(report.results) == 0
+
+    def test_counts_reported(self) -> None:
+        """Period counts should be correctly reported."""
+        report = detect_activation_drift(
+            {"concept": [0.1, 0.2, 0.3]},
+            {"concept": [0.4, 0.5]},
+        )
+        assert report.results[0].period_a_count == 3
+        assert report.results[0].period_b_count == 2

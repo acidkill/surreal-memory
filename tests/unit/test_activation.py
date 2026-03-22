@@ -415,3 +415,128 @@ class TestCoActivation:
         assert len(co_activations) == 1
         assert abs(co_activations[0].binding_strength - 0.7) < 0.01
         assert co_activations[0].co_fire_count == 3
+
+
+class TestGenerationBasedVisited:
+    """Tests for generation-based visited tracking in SpreadingActivation."""
+
+    @pytest.fixture
+    def config(self) -> BrainConfig:
+        return BrainConfig(activation_threshold=0.1, max_spread_hops=3)
+
+    @pytest.fixture
+    async def storage_with_graph(self, config: BrainConfig) -> InMemoryStorage:
+        from neural_memory.core.brain import Brain
+
+        storage = InMemoryStorage()
+        brain = Brain.create(name="test", config=config)
+        await storage.save_brain(brain)
+        storage.set_brain(brain.id)
+
+        neurons = [
+            Neuron.create(type=NeuronType.CONCEPT, content="A", neuron_id="a"),
+            Neuron.create(type=NeuronType.CONCEPT, content="B", neuron_id="b"),
+            Neuron.create(type=NeuronType.CONCEPT, content="C", neuron_id="c"),
+        ]
+        for n in neurons:
+            await storage.add_neuron(n)
+
+        synapses = [
+            Synapse.create(source_id="a", target_id="b", type=SynapseType.RELATED_TO, weight=0.8),
+            Synapse.create(source_id="b", target_id="c", type=SynapseType.RELATED_TO, weight=0.7),
+        ]
+        for s in synapses:
+            await storage.add_synapse(s)
+
+        return storage
+
+    @pytest.mark.asyncio
+    async def test_generation_increments(
+        self, storage_with_graph: InMemoryStorage, config: BrainConfig
+    ) -> None:
+        """Each activate() call should increment the generation counter."""
+        sa = SpreadingActivation(storage_with_graph, config)
+        assert sa._generation == 0
+
+        await sa.activate(["a"])
+        assert sa._generation == 1
+
+        await sa.activate(["a"])
+        assert sa._generation == 2
+
+    @pytest.mark.asyncio
+    async def test_no_revisit_within_generation(
+        self, storage_with_graph: InMemoryStorage, config: BrainConfig
+    ) -> None:
+        """Within a single activate() call, nodes should not be revisited."""
+        sa = SpreadingActivation(storage_with_graph, config)
+        results, trace = await sa.activate(["a"])
+
+        # Each neuron should appear at most once in results
+        assert len(results) <= 3  # a, b, c
+        # Anchor 'a' plus reachable 'b' and 'c'
+        assert "a" in results
+        assert "b" in results
+
+    @pytest.mark.asyncio
+    async def test_revisit_across_generations(
+        self, storage_with_graph: InMemoryStorage, config: BrainConfig
+    ) -> None:
+        """Across separate activate() calls, nodes should be revisitable."""
+        sa = SpreadingActivation(storage_with_graph, config)
+
+        results1, _ = await sa.activate(["a"])
+        results2, _ = await sa.activate(["a"])
+
+        # Both calls should find the same nodes
+        assert set(results1.keys()) == set(results2.keys())
+
+    @pytest.mark.asyncio
+    async def test_visited_dict_persists(
+        self, storage_with_graph: InMemoryStorage, config: BrainConfig
+    ) -> None:
+        """The visited dict should persist between calls (not re-allocated)."""
+        sa = SpreadingActivation(storage_with_graph, config)
+
+        await sa.activate(["a"])
+        entries_after_first = len(sa._visited_gen)
+
+        await sa.activate(["a"])
+        entries_after_second = len(sa._visited_gen)
+
+        # Dict should grow (or stay same if same keys), not reset
+        assert entries_after_second >= entries_after_first
+
+    @pytest.mark.asyncio
+    async def test_trim_stale_entries(
+        self, storage_with_graph: InMemoryStorage, config: BrainConfig
+    ) -> None:
+        """Periodic trim should remove stale generation entries."""
+        sa = SpreadingActivation(storage_with_graph, config)
+
+        # Force generation to just before trim interval
+        sa._generation = SpreadingActivation._TRIM_INTERVAL - 1
+
+        await sa.activate(["a"])  # This triggers trim at generation 100
+        assert sa._generation == SpreadingActivation._TRIM_INTERVAL
+
+        # All remaining entries should have generation >= cutoff
+        cutoff = sa._generation - SpreadingActivation._TRIM_KEEP_GENERATIONS
+        for gen in sa._visited_gen.values():
+            assert gen >= cutoff
+
+    @pytest.mark.asyncio
+    async def test_results_consistent_with_set_approach(
+        self, storage_with_graph: InMemoryStorage, config: BrainConfig
+    ) -> None:
+        """Results should be identical to the old set-based approach."""
+        sa = SpreadingActivation(storage_with_graph, config)
+        results, _ = await sa.activate(["a"], decay_factor=0.5)
+
+        # Verify basic graph traversal works correctly:
+        # a(1.0) -> b(1.0 * 0.5 * 0.8 = 0.4) -> c(0.4 * 0.5 * 0.7 = 0.14)
+        assert "a" in results
+        assert "b" in results
+        assert abs(results["b"].activation_level - 0.4) < 0.05
+        if "c" in results:
+            assert abs(results["c"].activation_level - 0.14) < 0.05

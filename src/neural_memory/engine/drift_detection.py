@@ -205,6 +205,129 @@ def detect_clusters(
     return reports
 
 
+# ── Wasserstein-1 Activation Drift ────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class ActivationDriftResult:
+    """Result of W1 activation drift analysis for a neuron type."""
+
+    neuron_type: str
+    w1_distance: float  # Wasserstein-1 distance between period distributions
+    status: str  # "stable" | "drifting" | "major_shift"
+    period_a_count: int
+    period_b_count: int
+
+
+@dataclass(frozen=True)
+class ActivationDriftReport:
+    """Full W1 drift report across all neuron types."""
+
+    results: tuple[ActivationDriftResult, ...]
+    overall_drift: float  # Average W1 across all types
+    drifting_types: tuple[str, ...]  # Types with status != "stable"
+
+
+def wasserstein_1(dist_a: list[float], dist_b: list[float]) -> float:
+    """Compute Wasserstein-1 (Earth Mover's) distance between two distributions.
+
+    Both distributions are L1-normalized, then the CDF difference is summed.
+    Inspired by HyperspaceDB's W1 metric for distribution comparison.
+
+    Args:
+        dist_a: First distribution (raw values, will be normalized).
+        dist_b: Second distribution (raw values, will be normalized).
+
+    Returns:
+        W1 distance in [0, 1] for normalized distributions.
+    """
+    if not dist_a or not dist_b:
+        return 0.0
+
+    # Align lengths by padding shorter with zeros
+    max_len = max(len(dist_a), len(dist_b))
+    a = list(dist_a) + [0.0] * (max_len - len(dist_a))
+    b = list(dist_b) + [0.0] * (max_len - len(dist_b))
+
+    # L1-normalize
+    sum_a = sum(a)
+    sum_b = sum(b)
+    if sum_a <= 0.0 or sum_b <= 0.0:
+        return 0.0
+
+    a = [x / sum_a for x in a]
+    b = [x / sum_b for x in b]
+
+    # CDF difference
+    cdf_a = 0.0
+    cdf_b = 0.0
+    w1 = 0.0
+    for i in range(max_len):
+        cdf_a += a[i]
+        cdf_b += b[i]
+        w1 += abs(cdf_a - cdf_b)
+
+    # Normalize by length to keep in [0, 1]
+    return w1 / max_len if max_len > 0 else 0.0
+
+
+_W1_DRIFT_THRESHOLD = 0.3  # W1 >= 0.3 → drifting
+_W1_MAJOR_THRESHOLD = 0.6  # W1 >= 0.6 → major shift
+
+
+def detect_activation_drift(
+    period_a_activations: dict[str, list[float]],
+    period_b_activations: dict[str, list[float]],
+) -> ActivationDriftReport:
+    """Detect drift in neuron activation distributions between two time periods.
+
+    Compares activation level distributions grouped by neuron type
+    using Wasserstein-1 distance. More sensitive than Jaccard for
+    detecting gradual shifts in topic importance.
+
+    Args:
+        period_a_activations: {neuron_type: [activation_levels]} for period A (earlier).
+        period_b_activations: {neuron_type: [activation_levels]} for period B (recent).
+
+    Returns:
+        ActivationDriftReport with per-type W1 distances and overall drift.
+    """
+    all_types = sorted(set(period_a_activations.keys()) | set(period_b_activations.keys()))
+
+    results: list[ActivationDriftResult] = []
+    for ntype in all_types:
+        a_vals = period_a_activations.get(ntype, [])
+        b_vals = period_b_activations.get(ntype, [])
+
+        w1 = wasserstein_1(a_vals, b_vals)
+
+        if w1 >= _W1_MAJOR_THRESHOLD:
+            status = "major_shift"
+        elif w1 >= _W1_DRIFT_THRESHOLD:
+            status = "drifting"
+        else:
+            status = "stable"
+
+        results.append(
+            ActivationDriftResult(
+                neuron_type=ntype,
+                w1_distance=round(w1, 4),
+                status=status,
+                period_a_count=len(a_vals),
+                period_b_count=len(b_vals),
+            )
+        )
+
+    overall = sum(r.w1_distance for r in results) / len(results) if results else 0.0
+    drifting = tuple(r.neuron_type for r in results if r.status != "stable")
+
+    return ActivationDriftReport(
+        results=tuple(results),
+        overall_drift=round(overall, 4),
+        drifting_types=drifting,
+    )
+
+
 # ── Cross-Session Drift ───────────────────────────────────────────────
 
 
@@ -322,12 +445,36 @@ async def run_drift_detection(
     # 5. Detect temporal drift
     temporal_drifts = await detect_temporal_drift(storage)
 
-    # 6. Build summary
+    # 6. Activation drift (W1) — optional, requires activation data
+    activation_drift_data: dict[str, object] | None = None
+    try:
+        period_a = await storage.get_activation_by_type(period="early")  # type: ignore[attr-defined]
+        period_b = await storage.get_activation_by_type(period="recent")  # type: ignore[attr-defined]
+        if period_a and period_b:
+            w1_report = detect_activation_drift(period_a, period_b)
+            activation_drift_data = {
+                "overall_drift": w1_report.overall_drift,
+                "drifting_types": list(w1_report.drifting_types),
+                "per_type": [
+                    {
+                        "type": r.neuron_type,
+                        "w1_distance": r.w1_distance,
+                        "status": r.status,
+                        "period_a_count": r.period_a_count,
+                        "period_b_count": r.period_b_count,
+                    }
+                    for r in w1_report.results
+                ],
+            }
+    except Exception:
+        pass  # Storage doesn't support activation history yet — graceful fallback
+
+    # 7. Build summary
     merge_count = sum(1 for r in reports if r.suggestion == "merge")
     alias_count = sum(1 for r in reports if r.suggestion == "alias")
     review_count = sum(1 for r in reports if r.suggestion == "review")
 
-    return {
+    result: dict[str, object] = {
         "clusters": [
             {
                 "cluster_id": r.cluster_id,
@@ -348,3 +495,8 @@ async def run_drift_detection(
             "temporal_drifts": len(temporal_drifts),
         },
     }
+
+    if activation_drift_data is not None:
+        result["activation_drift"] = activation_drift_data
+
+    return result

@@ -7,6 +7,7 @@ and returns a human-readable explanation with supporting fiber evidence.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -21,6 +22,7 @@ logger = logging.getLogger(__name__)
 _MAX_HOPS_LIMIT = 10
 _MAX_CANDIDATES = 5
 _MAX_EVIDENCE_PER_STEP = 3
+_CONFIDENCE_DECAY = 0.4
 
 
 @dataclass(frozen=True)
@@ -44,7 +46,39 @@ class ConnectionExplanation:
     steps: tuple[ConnectionStep, ...] = ()
     total_hops: int = 0
     avg_weight: float = 0.0
+    confidence: float = 0.0
+    strength: str = "none"
     markdown: str = ""
+
+
+def compute_path_confidence(hops: int, avg_weight: float) -> float:
+    """Compute path confidence using exponential decay.
+
+    Combines hop distance decay with average synapse weight to produce
+    a single [0, 1] confidence score. Inspired by HyperspaceDB's
+    Tribunal scoring: confidence drops exponentially with path length.
+
+    Args:
+        hops: Number of hops in the path.
+        avg_weight: Average synapse weight along the path.
+
+    Returns:
+        Confidence score in [0, 1].
+    """
+    if hops <= 0 or avg_weight <= 0.0:
+        return 0.0
+    return math.exp(-_CONFIDENCE_DECAY * hops) * min(avg_weight, 1.0)
+
+
+def _confidence_to_strength(confidence: float) -> str:
+    """Map confidence score to human-readable strength label."""
+    if confidence >= 0.7:
+        return "strong"
+    if confidence >= 0.4:
+        return "moderate"
+    if confidence >= 0.2:
+        return "weak"
+    return "tenuous"
 
 
 async def explain_connection(
@@ -121,9 +155,11 @@ async def explain_connection(
 
     total_hops = len(steps)
     avg_weight = sum(s.weight for s in steps) / total_hops if total_hops else 0.0
+    confidence = compute_path_confidence(total_hops, avg_weight)
+    strength = _confidence_to_strength(confidence)
 
     frozen_steps = tuple(steps)
-    md = _build_markdown(best_source, frozen_steps, from_entity, to_entity, avg_weight)
+    md = _build_markdown(best_source, frozen_steps, from_entity, to_entity, avg_weight, confidence, strength)
 
     return ConnectionExplanation(
         found=True,
@@ -132,6 +168,8 @@ async def explain_connection(
         steps=frozen_steps,
         total_hops=total_hops,
         avg_weight=round(avg_weight, 3),
+        confidence=round(confidence, 3),
+        strength=strength,
         markdown=md,
     )
 
@@ -167,12 +205,14 @@ def _build_markdown(
     from_entity: str,
     to_entity: str,
     avg_weight: float,
+    confidence: float = 0.0,
+    strength: str = "none",
 ) -> str:
     """Build human-readable markdown explanation."""
     lines: list[str] = [
         f"## Connection: {from_entity} → {to_entity}",
         "",
-        f"**Path length:** {len(steps)} hop(s) | **Avg weight:** {avg_weight:.2f}",
+        f"**Path length:** {len(steps)} hop(s) | **Avg weight:** {avg_weight:.2f} | **Confidence:** {confidence:.2f} ({strength})",
         "",
         "### Path",
         "",

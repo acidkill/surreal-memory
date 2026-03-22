@@ -144,7 +144,17 @@ class SpreadingActivation:
     This implements the core retrieval mechanism: starting from
     anchor neurons and spreading activation through synapses,
     decaying with distance, to find related memories.
+
+    Uses generation-based visited tracking: instead of clearing a visited
+    set between searches, a generation counter is incremented. Nodes with
+    a stale generation number are considered unvisited. This avoids O(N)
+    set re-allocation on repeated searches (e.g. during consolidation).
+    Inspired by HyperspaceDB's generation-based bitmap approach.
     """
+
+    # Trim stale entries from visited dict every N generations
+    _TRIM_INTERVAL = 100
+    _TRIM_KEEP_GENERATIONS = 50
 
     def __init__(
         self,
@@ -160,6 +170,8 @@ class SpreadingActivation:
         """
         self._storage = storage
         self._config = config
+        self._generation: int = 0
+        self._visited_gen: dict[tuple[str, str], int] = {}
 
     async def activate(
         self,
@@ -247,8 +259,17 @@ class SpreadingActivation:
             trace.new_neurons_per_hop[0] += 1
             trace.activation_gain_per_hop[0] += initial_level
 
-        # Visited tracking (neuron_id, source) to allow multiple paths
-        visited: set[tuple[str, str]] = set()
+        # Generation-based visited tracking: increment generation per search,
+        # nodes with stale generation are considered unvisited (O(1) "clear").
+        self._generation += 1
+        current_gen = self._generation
+
+        # Periodic trim to prevent unbounded dict growth
+        if current_gen % self._TRIM_INTERVAL == 0:
+            cutoff = current_gen - self._TRIM_KEEP_GENERATIONS
+            self._visited_gen = {
+                k: g for k, g in self._visited_gen.items() if g >= cutoff
+            }
 
         # Track which hop levels have been checked for diminishing returns
         dr_checked_hops: set[int] = set()
@@ -259,11 +280,11 @@ class SpreadingActivation:
                 break
             current = heapq.heappop(queue)
 
-            # Skip if we've visited this neuron from this source
+            # Skip if we've visited this neuron from this source in this generation
             visit_key = (current.neuron_id, current.source)
-            if visit_key in visited:
+            if self._visited_gen.get(visit_key, -1) == current_gen:
                 continue
-            visited.add(visit_key)
+            self._visited_gen[visit_key] = current_gen
 
             # Skip if we've exceeded max hops
             if current.hops >= max_hops:

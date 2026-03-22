@@ -8,7 +8,11 @@ import pytest
 
 from neural_memory.core.neuron import Neuron, NeuronType
 from neural_memory.core.synapse import Synapse, SynapseType
-from neural_memory.engine.connection_explainer import explain_connection
+from neural_memory.engine.connection_explainer import (
+    compute_path_confidence,
+    explain_connection,
+    _confidence_to_strength,
+)
 from neural_memory.mcp.server import MCPServer, handle_message
 from neural_memory.unified_config import ResponseConfig, ToolTierConfig
 
@@ -214,6 +218,121 @@ class TestExplainConnection:
 
         assert result.found is True
         assert result.avg_weight == round((0.6 + 0.8) / 2, 3)
+
+
+class TestPathConfidence:
+    """Tests for Tribunal-style confidence scoring."""
+
+    def test_single_hop_high_weight(self) -> None:
+        """1 hop with weight=1.0 → exp(-0.4) ≈ 0.670."""
+        conf = compute_path_confidence(1, 1.0)
+        assert abs(conf - 0.6703) < 0.001
+
+    def test_two_hops(self) -> None:
+        """2 hops with weight=1.0 → exp(-0.8) ≈ 0.449."""
+        conf = compute_path_confidence(2, 1.0)
+        assert abs(conf - 0.4493) < 0.001
+
+    def test_five_hops(self) -> None:
+        """5 hops → exp(-2.0) ≈ 0.135."""
+        conf = compute_path_confidence(5, 1.0)
+        assert abs(conf - 0.1353) < 0.001
+
+    def test_ten_hops(self) -> None:
+        """10 hops → exp(-4.0) ≈ 0.018."""
+        conf = compute_path_confidence(10, 1.0)
+        assert abs(conf - 0.0183) < 0.002
+
+    def test_weight_scaling(self) -> None:
+        """Weight scales confidence linearly."""
+        full = compute_path_confidence(2, 1.0)
+        half = compute_path_confidence(2, 0.5)
+        assert abs(half - full * 0.5) < 0.001
+
+    def test_zero_hops(self) -> None:
+        """Zero hops → 0.0 (invalid path)."""
+        assert compute_path_confidence(0, 1.0) == 0.0
+
+    def test_zero_weight(self) -> None:
+        """Zero weight → 0.0."""
+        assert compute_path_confidence(3, 0.0) == 0.0
+
+    def test_weight_capped_at_one(self) -> None:
+        """Weight > 1.0 should be capped."""
+        conf = compute_path_confidence(1, 2.0)
+        assert conf == compute_path_confidence(1, 1.0)
+
+    def test_strength_labels(self) -> None:
+        """Strength labels should map correctly."""
+        assert _confidence_to_strength(0.8) == "strong"
+        assert _confidence_to_strength(0.7) == "strong"
+        assert _confidence_to_strength(0.5) == "moderate"
+        assert _confidence_to_strength(0.4) == "moderate"
+        assert _confidence_to_strength(0.3) == "weak"
+        assert _confidence_to_strength(0.2) == "weak"
+        assert _confidence_to_strength(0.1) == "tenuous"
+        assert _confidence_to_strength(0.0) == "tenuous"
+
+
+class TestExplainConnectionConfidence:
+    """Integration tests: confidence field in explain_connection results."""
+
+    @pytest.mark.asyncio
+    async def test_result_includes_confidence(self) -> None:
+        """ConnectionExplanation should include confidence and strength."""
+        n_a = _make_neuron("n1", "React")
+        n_b = _make_neuron("n2", "DOM")
+        s_ab = _make_synapse("s1", "n1", "n2", weight=0.8)
+
+        storage = AsyncMock()
+        storage.find_neurons = AsyncMock(
+            side_effect=lambda content_contains=None, limit=5: (
+                [n_a] if "React" in (content_contains or "") else [n_b]
+            )
+        )
+        storage.get_path = AsyncMock(return_value=[(n_b, s_ab)])
+        storage.find_fibers_batch = AsyncMock(return_value=[])
+
+        result = await explain_connection(storage, "React", "DOM")
+
+        assert result.found is True
+        assert result.confidence > 0.0
+        assert result.strength in ("strong", "moderate", "weak", "tenuous")
+        # 1 hop, weight 0.8: exp(-0.4) * 0.8 ≈ 0.536
+        assert abs(result.confidence - 0.536) < 0.01
+        assert result.strength == "moderate"
+
+    @pytest.mark.asyncio
+    async def test_markdown_includes_confidence(self) -> None:
+        """Markdown output should show confidence score and strength."""
+        n_a = _make_neuron("n1", "A")
+        n_b = _make_neuron("n2", "B")
+        s_ab = _make_synapse("s1", "n1", "n2", weight=1.0)
+
+        storage = AsyncMock()
+        storage.find_neurons = AsyncMock(
+            side_effect=lambda content_contains=None, limit=5: (
+                [n_a] if content_contains == "A" else [n_b]
+            )
+        )
+        storage.get_path = AsyncMock(return_value=[(n_b, s_ab)])
+        storage.find_fibers_batch = AsyncMock(return_value=[])
+
+        result = await explain_connection(storage, "A", "B")
+
+        assert "Confidence:" in result.markdown
+        assert "moderate" in result.markdown
+
+    @pytest.mark.asyncio
+    async def test_not_found_has_zero_confidence(self) -> None:
+        """Not-found results should have 0 confidence."""
+        storage = AsyncMock()
+        storage.find_neurons = AsyncMock(return_value=[])
+
+        result = await explain_connection(storage, "X", "Y")
+
+        assert result.confidence == 0.0
+        assert result.strength == "none"
 
 
 class TestConnectionMCPHandler:
