@@ -406,16 +406,12 @@ async def optimize_context(
                 and level in (FidelityLevel.ESSENCE, FidelityLevel.SUMMARY)
             ):
                 try:
-                    rendered = await anisotropic_compress(
-                        source_content, level, embed_fn
-                    )
+                    rendered = await anisotropic_compress(source_content, level, embed_fn)
                 except Exception:
                     rendered = ""
 
             if not rendered:
-                rendered = render_at_fidelity(
-                    fiber, level, anchor_content=anchor_text
-                )
+                rendered = render_at_fidelity(fiber, level, anchor_content=anchor_text)
             if not rendered:
                 rendered = item.content  # Fallback to original
 

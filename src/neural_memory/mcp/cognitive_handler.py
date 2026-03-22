@@ -424,7 +424,9 @@ class CognitiveHandler:
         """
         action = args.get("action", "create")
         if action not in ("create", "list", "get", "auto"):
-            return {"error": f"Invalid action: {action}. Must be 'create', 'list', 'get', or 'auto'."}
+            return {
+                "error": f"Invalid action: {action}. Must be 'create', 'list', 'get', or 'auto'."
+            }
 
         storage = await self.get_storage()
         try:
@@ -801,13 +803,17 @@ class CognitiveHandler:
                 }
                 create_result = await self._predict_create(storage, auto_args)
                 if "prediction_id" in create_result:
-                    created.append({
-                        "neuron_id": neuron_id,
-                        "prediction_id": create_result["prediction_id"],
-                        "content_preview": content_preview,
-                    })
+                    created.append(
+                        {
+                            "neuron_id": neuron_id,
+                            "prediction_id": create_result["prediction_id"],
+                            "content_preview": content_preview,
+                        }
+                    )
             except Exception:
-                logger.debug("Auto-predict: failed to create prediction for %s", neuron_id, exc_info=True)
+                logger.debug(
+                    "Auto-predict: failed to create prediction for %s", neuron_id, exc_info=True
+                )
 
         result["created"] = created
         result["predictions_created"] = len(created)
