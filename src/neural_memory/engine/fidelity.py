@@ -414,3 +414,125 @@ def get_essence_generator(
             "Unknown essence_generator strategy %r, falling back to extractive", strategy
         )
     return ExtractiveEssenceGenerator()
+
+
+# ── Anisotropic Compression (Phase 2) ────────────────────────────────
+
+# Type alias for embedding function
+EmbedFn = Callable[[str], Coroutine[None, None, list[float]]]
+
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    """Compute cosine similarity between two vectors without numpy."""
+    dot = sum(x * y for x, y in zip(a, b, strict=False))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    if norm_a == 0.0 or norm_b == 0.0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+async def anisotropic_compress(
+    content: str,
+    target_level: FidelityLevel,
+    embed_fn: EmbedFn,
+    *,
+    summary_threshold: float = 0.5,
+) -> str:
+    """Direction-preserving compression using semantic alignment.
+
+    Computes a "direction vector" (embedding of full content), then keeps
+    only sentences whose embeddings are aligned with that direction.
+    Orthogonal sentences (tangential info) are dropped first.
+
+    Args:
+        content: Full text to compress.
+        target_level: Desired fidelity level.
+        embed_fn: Async function to get embedding vector for text.
+        summary_threshold: Cosine similarity threshold for SUMMARY level.
+
+    Returns:
+        Compressed content string.
+    """
+    if not content or not content.strip():
+        return ""
+
+    if target_level == FidelityLevel.FULL:
+        return content
+
+    if target_level == FidelityLevel.GHOST:
+        return ""  # Ghost is metadata-only, handled by render_at_fidelity
+
+    content = content.strip()
+    sentences = _split_sentences(content)
+
+    if len(sentences) <= 1:
+        return (
+            _truncate(content, MAX_ESSENCE_LENGTH)
+            if target_level == FidelityLevel.ESSENCE
+            else content
+        )
+
+    try:
+        # Get direction vector (embedding of full content)
+        direction = await embed_fn(content)
+        if not direction:
+            return extract_essence(content)
+
+        # Score each sentence by angular similarity to direction
+        scored: list[tuple[float, int, str]] = []
+        for i, sentence in enumerate(sentences):
+            if not sentence.strip():
+                continue
+            sent_embedding = await embed_fn(sentence)
+            if not sent_embedding:
+                continue
+            cosine = _cosine_similarity(sent_embedding, direction)
+            scored.append((cosine, i, sentence))
+
+        if not scored:
+            return extract_essence(content)
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+
+        if target_level == FidelityLevel.ESSENCE:
+            # Keep single highest-cosine sentence
+            return _truncate(scored[0][2], MAX_ESSENCE_LENGTH)
+
+        # SUMMARY: keep sentences above threshold, preserve original order
+        kept = [(idx, sent) for cosine, idx, sent in scored if cosine >= summary_threshold]
+        if not kept:
+            # If nothing passes threshold, keep top 2
+            kept = [(idx, sent) for _, idx, sent in scored[:2]]
+        kept.sort(key=lambda x: x[0])  # Restore original order
+        return " ".join(sent for _, sent in kept)
+
+    except Exception:
+        logger.debug("Anisotropic compression failed, falling back to extractive", exc_info=True)
+        return extract_essence(content) if target_level == FidelityLevel.ESSENCE else content
+
+
+class AnisotropicEssenceGenerator(EssenceGenerator):
+    """Direction-preserving essence using embedding alignment.
+
+    Falls back to extractive when embedding provider is unavailable.
+    """
+
+    def __init__(self, embed_fn: EmbedFn | None = None) -> None:
+        self._embed_fn = embed_fn
+        self._extractive = ExtractiveEssenceGenerator()
+
+    async def generate(self, content: str, *, priority: int = 5) -> str:
+        if not self._embed_fn:
+            return await self._extractive.generate(content, priority=priority)
+
+        try:
+            result = await anisotropic_compress(
+                content,
+                FidelityLevel.ESSENCE,
+                self._embed_fn,
+            )
+            return result if result else await self._extractive.generate(content, priority=priority)
+        except Exception:
+            logger.debug("Anisotropic essence failed, falling back to extractive", exc_info=True)
+            return await self._extractive.generate(content, priority=priority)

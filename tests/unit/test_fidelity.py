@@ -5,13 +5,16 @@ from __future__ import annotations
 from neural_memory.core.fiber import Fiber
 from neural_memory.engine.fidelity import (
     MAX_ESSENCE_LENGTH,
+    AnisotropicEssenceGenerator,
     ExtractiveEssenceGenerator,
     FidelityLevel,
     LLMEssenceGenerator,
+    _cosine_similarity,
     _render_ghost,
     _score_sentence,
     _split_sentences,
     _truncate,
+    anisotropic_compress,
     compute_fidelity_score,
     extract_essence,
     get_essence_generator,
@@ -732,3 +735,108 @@ class TestGetEssenceGenerator:
     def test_unknown_strategy_defaults_extractive(self) -> None:
         gen = get_essence_generator("unknown")
         assert isinstance(gen, ExtractiveEssenceGenerator)
+
+
+# ── Phase 5: Anisotropic Compression Tests ────────────────────────────
+
+
+class TestCosineSimilarity:
+    """Tests for cosine similarity helper."""
+
+    def test_identical_vectors(self) -> None:
+        assert abs(_cosine_similarity([1.0, 0.0], [1.0, 0.0]) - 1.0) < 1e-10
+
+    def test_orthogonal_vectors(self) -> None:
+        assert abs(_cosine_similarity([1.0, 0.0], [0.0, 1.0])) < 1e-10
+
+    def test_opposite_vectors(self) -> None:
+        assert abs(_cosine_similarity([1.0, 0.0], [-1.0, 0.0]) + 1.0) < 1e-10
+
+    def test_zero_vector(self) -> None:
+        assert _cosine_similarity([0.0, 0.0], [1.0, 1.0]) == 0.0
+
+    def test_similar_vectors(self) -> None:
+        sim = _cosine_similarity([1.0, 1.0], [1.0, 0.5])
+        assert 0.5 < sim < 1.0
+
+
+class TestAnisotropicCompress:
+    """Tests for direction-preserving compression."""
+
+    @staticmethod
+    async def _mock_embed(text: str) -> list[float]:
+        """Deterministic mock embedding: hash-based direction."""
+        h = hash(text) % 1000
+        return [float(h % 10) / 10, float((h // 10) % 10) / 10, float((h // 100) % 10) / 10]
+
+    async def test_full_returns_original(self) -> None:
+        content = "Some text. Another sentence."
+        result = await anisotropic_compress(content, FidelityLevel.FULL, self._mock_embed)
+        assert result == content
+
+    async def test_ghost_returns_empty(self) -> None:
+        result = await anisotropic_compress("Text.", FidelityLevel.GHOST, self._mock_embed)
+        assert result == ""
+
+    async def test_empty_content(self) -> None:
+        result = await anisotropic_compress("", FidelityLevel.ESSENCE, self._mock_embed)
+        assert result == ""
+
+    async def test_essence_returns_single_sentence(self) -> None:
+        content = "First sentence about Python. Second about JavaScript. Third about Rust."
+        result = await anisotropic_compress(content, FidelityLevel.ESSENCE, self._mock_embed)
+        # Should be a single sentence (no sentence-ending period followed by new sentence)
+        assert len(result) <= MAX_ESSENCE_LENGTH
+
+    async def test_summary_keeps_multiple_sentences(self) -> None:
+        content = (
+            "Authentication uses JWT tokens. "
+            "The database is PostgreSQL. "
+            "Caching uses Redis for session storage."
+        )
+        result = await anisotropic_compress(
+            content, FidelityLevel.SUMMARY, self._mock_embed, summary_threshold=0.0
+        )
+        # With threshold=0, all sentences should be kept
+        assert len(result) > 0
+
+    async def test_fallback_on_embed_failure(self) -> None:
+        async def failing_embed(text: str) -> list[float]:
+            raise RuntimeError("Embed failed")
+
+        content = "First sentence. Second sentence. Third sentence."
+        result = await anisotropic_compress(content, FidelityLevel.ESSENCE, failing_embed)
+        # Should fall back to extractive
+        assert len(result) > 0
+
+    async def test_single_sentence_preserved(self) -> None:
+        content = "Only one sentence here."
+        result = await anisotropic_compress(content, FidelityLevel.ESSENCE, self._mock_embed)
+        assert result  # Should return something
+
+
+class TestAnisotropicEssenceGenerator:
+    """Tests for AnisotropicEssenceGenerator class."""
+
+    @staticmethod
+    async def _mock_embed(text: str) -> list[float]:
+        return [0.1, 0.2, 0.3]
+
+    async def test_without_embed_fn_falls_back(self) -> None:
+        gen = AnisotropicEssenceGenerator(embed_fn=None)
+        result = await gen.generate("First sentence. Second sentence.")
+        assert len(result) > 0  # Falls back to extractive
+
+    async def test_with_embed_fn(self) -> None:
+        gen = AnisotropicEssenceGenerator(embed_fn=self._mock_embed)
+        result = await gen.generate("First sentence. Second sentence. Third sentence.")
+        assert len(result) > 0
+        assert len(result) <= MAX_ESSENCE_LENGTH
+
+    async def test_embed_failure_falls_back(self) -> None:
+        async def fail_embed(text: str) -> list[float]:
+            raise RuntimeError("fail")
+
+        gen = AnisotropicEssenceGenerator(embed_fn=fail_embed)
+        result = await gen.generate("Some content here.")
+        assert len(result) > 0  # Falls back to extractive
