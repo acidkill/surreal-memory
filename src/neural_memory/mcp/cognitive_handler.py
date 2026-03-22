@@ -789,10 +789,10 @@ class CognitiveHandler:
         # Create predictions for spike neurons
         created: list[dict[str, Any]] = []
         for neuron_id in prediction.spike_neurons[:10]:  # Cap at 10 auto-predictions
-            neuron = await storage.get_neuron(neuron_id)
-            if not neuron:
+            found_neuron = await storage.get_neuron(neuron_id)
+            if not found_neuron:
                 continue
-            content_preview = (neuron.content or "")[:80]
+            content_preview = (found_neuron.content or "")[:80]
             pred_content = f"[auto-koopman] Topic predicted to spike: {content_preview}"
 
             try:
