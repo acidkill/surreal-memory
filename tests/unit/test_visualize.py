@@ -9,13 +9,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from neural_memory.engine.chart_generator import (
-    ChartSpec,
     DataPoint,
     detect_chart_type,
     extract_data_points,
     generate_chart,
 )
-
 
 # ── Fixtures ──────────────────────────────────────────
 
