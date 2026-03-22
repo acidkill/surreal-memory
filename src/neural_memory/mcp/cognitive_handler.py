@@ -423,8 +423,8 @@ class CognitiveHandler:
         future observations with optional deadline and hypothesis linkage.
         """
         action = args.get("action", "create")
-        if action not in ("create", "list", "get"):
-            return {"error": f"Invalid action: {action}. Must be 'create', 'list', or 'get'."}
+        if action not in ("create", "list", "get", "auto"):
+            return {"error": f"Invalid action: {action}. Must be 'create', 'list', 'get', or 'auto'."}
 
         storage = await self.get_storage()
         try:
@@ -437,6 +437,8 @@ class CognitiveHandler:
             return await self._predict_create(storage, args)
         elif action == "list":
             return await self._predict_list(storage, args)
+        elif action == "auto":
+            return await self._predict_auto(storage, args)
         else:  # get
             return await self._predict_get(storage, args)
 
@@ -705,6 +707,111 @@ class CognitiveHandler:
         except Exception:
             logger.error("Prediction get failed", exc_info=True)
             return {"error": "Failed to get prediction details"}
+
+    async def _predict_auto(self, storage: NeuralStorage, args: dict[str, Any]) -> dict[str, Any]:
+        """Auto-generate predictions using Koopman DMD on activation trajectories.
+
+        Runs trajectory prediction on the most active neurons, identifies
+        spike candidates, and creates auto-predictions for them.
+        """
+        try:
+            from neural_memory.engine.koopman import predict_activation_trajectory
+        except ImportError:
+            return {"error": "numpy is required for auto-predict. Install with: pip install numpy"}
+
+        top_n = min(int(args.get("top_n", 50)), 200)
+        steps_ahead = min(int(args.get("steps_ahead", 3)), 10)
+
+        # Fetch most active neurons (by activation history)
+        try:
+            neurons = await storage.find_neurons(limit=top_n)
+        except Exception:
+            logger.error("Auto-predict: failed to fetch neurons", exc_info=True)
+            return {"error": "Failed to fetch neurons for auto-prediction"}
+
+        if len(neurons) < 10:
+            return {
+                "status": "insufficient_data",
+                "message": f"Need at least 10 neurons, found {len(neurons)}.",
+                "predictions_created": 0,
+            }
+
+        # Build activation history from neuron states
+        activation_history: dict[str, list[float]] = {}
+        for neuron in neurons:
+            try:
+                state = await storage.get_neuron_state(neuron.id)
+                if state and hasattr(state, "activation_history") and state.activation_history:
+                    history = state.activation_history
+                    if isinstance(history, list) and len(history) >= 10:
+                        activation_history[neuron.id] = [float(v) for v in history]
+            except (TypeError, ValueError, AttributeError):
+                continue
+
+        if len(activation_history) < 2:
+            return {
+                "status": "insufficient_data",
+                "message": f"Only {len(activation_history)} neurons have sufficient activation history (need 10+ data points).",
+                "predictions_created": 0,
+            }
+
+        # Run Koopman trajectory prediction
+        prediction = predict_activation_trajectory(
+            activation_history,
+            steps_ahead=steps_ahead,
+        )
+
+        if not prediction.predicted:
+            return {
+                "status": "insufficient_data",
+                "message": "Koopman extrapolation returned no predictions.",
+                "predictions_created": 0,
+            }
+
+        result: dict[str, Any] = {
+            "status": "ok",
+            "neurons_analyzed": len(activation_history),
+            "steps_ahead": prediction.steps_ahead,
+            "is_stable": prediction.is_stable,
+            "max_eigenvalue": round(prediction.max_eigenvalue, 4),
+            "spike_neurons": prediction.spike_neurons,
+            "predictions_created": len(prediction.spike_neurons),
+        }
+
+        if not prediction.is_stable:
+            result["stability_warning"] = (
+                "Brain activation trajectory is diverging (max eigenvalue > 1.0). "
+                "This may indicate belief instability — consider consolidation."
+            )
+
+        # Create predictions for spike neurons
+        created: list[dict[str, Any]] = []
+        for neuron_id in prediction.spike_neurons[:10]:  # Cap at 10 auto-predictions
+            neuron = await storage.get_neuron(neuron_id)
+            if not neuron:
+                continue
+            content_preview = (neuron.content or "")[:80]
+            pred_content = f"[auto-koopman] Topic predicted to spike: {content_preview}"
+
+            try:
+                auto_args = {
+                    "content": pred_content,
+                    "confidence": 0.6,
+                    "tags": "auto-predict,koopman",
+                }
+                create_result = await self._predict_create(storage, auto_args)
+                if "prediction_id" in create_result:
+                    created.append({
+                        "neuron_id": neuron_id,
+                        "prediction_id": create_result["prediction_id"],
+                        "content_preview": content_preview,
+                    })
+            except Exception:
+                logger.debug("Auto-predict: failed to create prediction for %s", neuron_id, exc_info=True)
+
+        result["created"] = created
+        result["predictions_created"] = len(created)
+        return result
 
     # ──────────────────── Verify ────────────────────
 

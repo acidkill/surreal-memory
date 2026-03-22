@@ -35,7 +35,7 @@
   - `normalized_delta: float` — delta / max_possible (diameter)
   - `structure_quality: str` — "tree-like" (δ<0.1), "hierarchical" (δ<0.3), "mixed" (δ<0.5), "flat" (δ≥0.5)
   - `sample_count: int`, `tuple_count: int`
-- [ ] Integrate into `nmem_health` as optional `--deep` flag (expensive: O(n⁴) worst case)
+- [x] Integrate into `nmem_health` as optional `--deep` flag (expensive: O(n⁴) worst case)
 - [ ] Cache result with TTL (1 hour) — brain structure doesn't change that fast
 - [ ] Add `gromov_delta` field to HealthPulse dataclass
 - [x] Unit tests: star graph → δ≈0, cycle graph → δ>0, complete graph → δ=0 (all dist=1)
@@ -66,7 +66,7 @@
   - SUMMARY: keep sentences with cosine > 0.5 to direction
   - ESSENCE: keep single sentence with highest cosine to direction
   - GHOST: keep only the direction vector hash (for future re-expansion)
-- [ ] Integrate into `render_at_fidelity()` as enhanced path (when embeddings available)
+- [x] Integrate into `context_optimizer.py` as enhanced path (when embeddings available)
 - [x] Fallback to current extractive method when no embedding provider
 - [ ] Store `direction_hash` in fiber metadata for GHOST-level reconstruction hints
 - [x] Unit tests: verify high-cosine sentences survive compression, low-cosine dropped
@@ -102,7 +102,7 @@
   - Build trajectory matrix
   - Extrapolate and return predicted activations
   - Flag neurons predicted to spike (activation > 2× current)
-- [ ] Add `nmem_predict action="auto"` subcommand to cognitive handler
+- [x] Add `nmem_predict action="auto"` subcommand to cognitive handler
   - Runs Koopman on top-50 most active neurons
   - Creates auto-predictions for neurons predicted to spike
   - Tags with `source: "koopman"` to distinguish from user predictions

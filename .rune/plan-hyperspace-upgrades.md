@@ -8,7 +8,7 @@ Borrow proven techniques from HyperspaceDB (hyperbolic vector database, Rust) to
 | # | Name | Status | Plan File | Summary |
 |---|------|--------|-----------|---------|
 | 1 | Quick Wins | ✅ Done | plan-hyperspace-upgrades-p1.md | Generation visited, Tribunal scoring, W1 drift, Fuzzy recall |
-| 2 | Advanced Retrieval | ⬚ Pending | plan-hyperspace-upgrades-p2.md | Gromov health metric, Anisotropic fidelity, Koopman predict |
+| 2 | Advanced Retrieval | ✅ Done | plan-hyperspace-upgrades-p2.md | Gromov health metric, Anisotropic fidelity, Koopman predict |
 | 3 | Infrastructure | ⬚ Pending | plan-hyperspace-upgrades-p3.md | Merkle delta sync, Cone regions, Hyperbolic embedding research |
 
 ## Key Decisions

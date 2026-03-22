@@ -1491,6 +1491,18 @@ class ToolHandler:
         # BrainSettings (self.config.brain) does NOT have fidelity fields
         brain_obj = await storage.get_brain(storage.brain_id) if storage.brain_id else None
         brain_config = brain_obj.config if brain_obj else None
+
+        # Build embed_fn for anisotropic compression (if embedding enabled)
+        embed_fn = None
+        if brain_config and brain_config.embedding_enabled:
+            try:
+                from neural_memory.engine.semantic_discovery import _create_provider
+
+                provider = _create_provider(brain_config)
+                embed_fn = provider.embed
+            except Exception:
+                logger.debug("Embedding provider unavailable for anisotropic compression")
+
         plan = await optimize_context(
             storage,
             fibers,
@@ -1505,6 +1517,7 @@ class ToolHandler:
             else 0.1,
             decay_rate=brain_config.decay_rate if brain_config else 0.1,
             decay_floor=brain_config.decay_floor if brain_config else 0.05,
+            embed_fn=embed_fn,
         )
 
         include_ghosts = args.get("include_ghosts", True)
@@ -1759,7 +1772,7 @@ class ToolHandler:
         engine = DiagnosticsEngine(storage)
         report = await engine.analyze(brain.id)
 
-        return {
+        result: dict[str, Any] = {
             "brain": brain.name,
             "grade": report.grade,
             "purity_score": report.purity_score,
@@ -1791,6 +1804,26 @@ class ToolHandler:
             ],
             "roadmap": self._build_health_roadmap(report),
         }
+
+        # Deep analysis: Gromov delta-hyperbolicity (expensive, opt-in)
+        if args.get("deep", False):
+            try:
+                from neural_memory.engine.gromov import estimate_gromov_delta
+
+                gromov = await estimate_gromov_delta(storage, sample_size=200)
+                result["gromov"] = {
+                    "delta": gromov.delta,
+                    "normalized_delta": gromov.normalized_delta,
+                    "structure_quality": gromov.structure_quality,
+                    "sample_count": gromov.sample_count,
+                    "tuple_count": gromov.tuple_count,
+                    "diameter": gromov.diameter,
+                }
+            except Exception:
+                logger.debug("Gromov delta estimation failed", exc_info=True)
+                result["gromov"] = {"error": "estimation failed"}
+
+        return result
 
     @staticmethod
     def _build_health_roadmap(report: Any) -> dict[str, Any]:

@@ -9,6 +9,7 @@ Zero LLM dependency — pure graph metrics.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -218,6 +219,7 @@ async def optimize_context(
     fidelity_essence_threshold: float = 0.1,
     decay_rate: float = 0.1,
     decay_floor: float = 0.05,
+    embed_fn: Callable[[str], Coroutine[None, None, list[float]]] | None = None,
 ) -> ContextPlan:
     """Optimize context selection and token allocation.
 
@@ -241,6 +243,8 @@ async def optimize_context(
         ContextPlan with ordered, budget-constrained items + fidelity stats
     """
     from neural_memory.engine.fidelity import (
+        FidelityLevel,
+        anisotropic_compress,
         compute_fidelity_score,
         render_at_fidelity,
         select_fidelity,
@@ -391,9 +395,27 @@ async def optimize_context(
                 essence_threshold=fidelity_essence_threshold,
             )
 
-            rendered = render_at_fidelity(
-                fiber, level, anchor_content=anchor_content_map.get(fiber.id)
-            )
+            # Use anisotropic compression when embed_fn available and level
+            # is ESSENCE or SUMMARY (direction-preserving compression)
+            rendered = ""
+            anchor_text = anchor_content_map.get(fiber.id, "")
+            source_content = anchor_text or fiber.summary or ""
+            if (
+                embed_fn
+                and source_content
+                and level in (FidelityLevel.ESSENCE, FidelityLevel.SUMMARY)
+            ):
+                try:
+                    rendered = await anisotropic_compress(
+                        source_content, level, embed_fn
+                    )
+                except Exception:
+                    rendered = ""
+
+            if not rendered:
+                rendered = render_at_fidelity(
+                    fiber, level, anchor_content=anchor_text
+                )
             if not rendered:
                 rendered = item.content  # Fallback to original
 
