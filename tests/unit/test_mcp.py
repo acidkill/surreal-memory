@@ -2202,16 +2202,35 @@ class TestMCPContextExtended:
         from datetime import datetime, timedelta
 
         mock_storage = AsyncMock()
+        mock_storage.brain_id = None
         now = datetime.now()
         fresh_fiber = MagicMock(
+            id="fiber-fresh",
             summary="Fresh memory",
             anchor_neuron_id=None,
             created_at=now - timedelta(hours=1),
+            last_conducted=None,
+            last_ghost_shown_at=None,
+            frequency=1,
+            conductivity=0.5,
+            essence=None,
+            tags=[],
+            synapse_count=0,
+            content_hash=None,
         )
         old_fiber = MagicMock(
+            id="fiber-old",
             summary="Old memory",
             anchor_neuron_id=None,
             created_at=now - timedelta(days=90),
+            last_conducted=None,
+            last_ghost_shown_at=None,
+            frequency=0,
+            conductivity=0.5,
+            essence=None,
+            tags=[],
+            synapse_count=0,
+            content_hash=None,
         )
         mock_storage.get_fibers = AsyncMock(return_value=[fresh_fiber, old_fiber])
 
@@ -2224,10 +2243,29 @@ class TestMCPContextExtended:
     @pytest.mark.asyncio
     async def test_context_anchor_fallback(self, server: MCPServer) -> None:
         """Test nmem_context falls back to anchor neuron when fiber has no summary."""
+        from datetime import datetime, timedelta
+
         mock_storage = AsyncMock()
-        fiber = MagicMock(summary=None, anchor_neuron_id="anchor-1")
+        mock_storage.brain_id = None
+        now = datetime.now()
+        fiber = MagicMock(
+            id="fiber-anchor",
+            summary=None,
+            anchor_neuron_id="anchor-1",
+            created_at=now - timedelta(hours=1),
+            last_conducted=now - timedelta(hours=1),
+            last_ghost_shown_at=None,
+            frequency=1,
+            conductivity=0.5,
+            essence=None,
+            tags=[],
+            synapse_count=0,
+            content_hash=None,
+        )
         mock_storage.get_fibers = AsyncMock(return_value=[fiber])
-        mock_storage.get_neuron = AsyncMock(return_value=MagicMock(content="Anchor content"))
+        mock_storage.get_neuron = AsyncMock(
+            return_value=MagicMock(content="Anchor content", content_hash=None)
+        )
 
         with patch.object(server, "get_storage", return_value=mock_storage):
             result = await server.call_tool("nmem_context", {})
@@ -2239,7 +2277,21 @@ class TestMCPContextExtended:
     async def test_context_no_summary_no_anchor(self, server: MCPServer) -> None:
         """Test nmem_context with fiber that has no summary and no anchor."""
         mock_storage = AsyncMock()
-        fiber = MagicMock(summary=None, anchor_neuron_id=None)
+        mock_storage.brain_id = None
+        fiber = MagicMock(
+            id="fiber-empty",
+            summary=None,
+            anchor_neuron_id=None,
+            created_at=None,
+            last_conducted=None,
+            last_ghost_shown_at=None,
+            frequency=0,
+            conductivity=0.5,
+            essence=None,
+            tags=[],
+            synapse_count=0,
+            content_hash=None,
+        )
         mock_storage.get_fibers = AsyncMock(return_value=[fiber])
 
         with patch.object(server, "get_storage", return_value=mock_storage):

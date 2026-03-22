@@ -186,26 +186,30 @@ def compute_fidelity_score(
 ) -> float:
     """Compute fidelity score for a memory.
 
-    Formula: max((importance + activation) * e^(-decay_rate * t), decay_floor)
+    Formula: max((importance + activation) * e^(-decay_rate * days), decay_floor)
+
+    The decay_rate is per-day (matching BrainConfig and NeuronState.decay()),
+    so hours_since_access is converted to days before applying the formula.
 
     Args:
         activation: Spreading activation level from retrieval (0-1).
         importance: Normalized priority (0-1).
         hours_since_access: Hours since last access/conducted.
-        decay_rate: Lambda decay rate from BrainConfig.
+        decay_rate: Lambda decay rate from BrainConfig (per day).
         decay_floor: Minimum score — ghost never reaches 0.
 
     Returns:
         Score in [decay_floor, 1.0].
     """
     base = min(1.0, importance + activation)
-    decay = math.exp(-decay_rate * hours_since_access)
+    days_since_access = hours_since_access / 24.0
+    decay = math.exp(-decay_rate * days_since_access)
     return max(base * decay, decay_floor)
 
 
 def select_fidelity(
     score: float,
-    budget_pressure: float,
+    budget_pressure: float = 0.0,
     *,
     full_threshold: float = 0.6,
     summary_threshold: float = 0.3,

@@ -235,6 +235,98 @@ class TestComputeFidelityScore:
         assert score <= 1.0
 
 
+class TestFidelityDecayUnitConsistency:
+    """Cross-validation: fidelity decay must match NeuronState.decay() units.
+
+    Bug #98: compute_fidelity_score() was using hours directly with a per-day
+    decay_rate, causing 24x faster decay than intended. These tests ensure
+    both systems agree on the same time scale.
+    """
+
+    def test_one_day_matches_neuron_decay(self) -> None:
+        """1 day: fidelity score decay should match NeuronState.decay()."""
+        import math
+
+        decay_rate = 0.1
+        # NeuronState.decay: e^(-0.1 * 1 day) = e^(-0.1) ≈ 0.905
+        neuron_decay = math.exp(-decay_rate * 1.0)
+
+        # Fidelity: 24 hours, base=1.0
+        fidelity = compute_fidelity_score(
+            activation=0.5, importance=0.5,
+            hours_since_access=24, decay_rate=decay_rate,
+        )
+        # base = 1.0, decay = e^(-0.1 * 1 day) = 0.905
+        expected = 1.0 * neuron_decay
+        assert abs(fidelity - expected) < 0.01, (
+            f"Fidelity {fidelity:.3f} != expected {expected:.3f} (NeuronState decay)"
+        )
+
+    def test_seven_days_still_full_or_summary(self) -> None:
+        """7-day old memory with moderate importance should NOT be GHOST."""
+        score = compute_fidelity_score(
+            activation=0.5, importance=0.5,
+            hours_since_access=168,  # 7 days
+            decay_rate=0.1,
+        )
+        # e^(-0.1 * 7) ≈ 0.497 → score ≈ 0.497
+        assert score > 0.3, f"7-day memory score {score:.3f} too low (expected >0.3)"
+        level = select_fidelity(score)
+        assert level in (FidelityLevel.FULL, FidelityLevel.SUMMARY), (
+            f"7-day memory should be FULL or SUMMARY, got {level}"
+        )
+
+    def test_thirty_days_not_immediately_ghost(self) -> None:
+        """30-day memory with high importance should still be above floor."""
+        score = compute_fidelity_score(
+            activation=0.3, importance=0.7,
+            hours_since_access=720,  # 30 days
+            decay_rate=0.1,
+        )
+        # e^(-0.1 * 30) ≈ 0.050, base=1.0 → score ≈ 0.050
+        # With decay_floor=0.05 it should be at floor but not below
+        assert score >= 0.05
+
+    def test_one_hour_barely_decays(self) -> None:
+        """1 hour old memory should barely decay (< 1% drop)."""
+        fresh = compute_fidelity_score(
+            activation=0.5, importance=0.5,
+            hours_since_access=0, decay_rate=0.1,
+        )
+        one_hour = compute_fidelity_score(
+            activation=0.5, importance=0.5,
+            hours_since_access=1, decay_rate=0.1,
+        )
+        # 1 hour = 1/24 day → e^(-0.1/24) ≈ 0.9958 → ~0.4% drop
+        drop = (fresh - one_hour) / fresh
+        assert drop < 0.01, f"1-hour decay is {drop:.4f} (should be <1%)"
+
+    def test_realistic_fidelity_distribution(self) -> None:
+        """Verify FULL → SUMMARY → ESSENCE → GHOST at realistic time ranges."""
+        decay_rate = 0.1
+
+        # 1 day → should be FULL (score ~0.905)
+        s1 = compute_fidelity_score(
+            activation=0.5, importance=0.5,
+            hours_since_access=24, decay_rate=decay_rate,
+        )
+        assert select_fidelity(s1) == FidelityLevel.FULL
+
+        # 14 days → should be SUMMARY (score ~0.247)
+        s14 = compute_fidelity_score(
+            activation=0.3, importance=0.3,
+            hours_since_access=336, decay_rate=decay_rate,
+        )
+        assert select_fidelity(s14) in (FidelityLevel.SUMMARY, FidelityLevel.ESSENCE)
+
+        # 60 days → should be GHOST (score near floor)
+        s60 = compute_fidelity_score(
+            activation=0.1, importance=0.1,
+            hours_since_access=1440, decay_rate=decay_rate,
+        )
+        assert select_fidelity(s60) == FidelityLevel.GHOST
+
+
 class TestSelectFidelity:
     """Tests for select_fidelity()."""
 
@@ -260,6 +352,12 @@ class TestSelectFidelity:
         # Score 0.3 is normally SUMMARY, but max pressure shifts threshold by +0.3
         result = select_fidelity(0.3, budget_pressure=1.0)
         assert result in (FidelityLevel.ESSENCE, FidelityLevel.GHOST)
+
+    def test_budget_pressure_defaults_to_zero(self) -> None:
+        """budget_pressure should default to 0.0 (no pressure)."""
+        # Should work without specifying budget_pressure
+        result = select_fidelity(0.8)
+        assert result == FidelityLevel.FULL
 
     def test_custom_thresholds(self) -> None:
         result = select_fidelity(
