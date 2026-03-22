@@ -54,6 +54,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Gromov delta cache: {brain_id: (timestamp, GromovResult)} — TTL 1 hour
+_gromov_cache: dict[str, tuple[Any, Any]] = {}
+
 
 def _require_brain_id(storage: NeuralStorage) -> str:
     """Return the current brain ID or raise ValueError if not set."""
@@ -1805,12 +1808,19 @@ class ToolHandler:
             "roadmap": self._build_health_roadmap(report),
         }
 
-        # Deep analysis: Gromov delta-hyperbolicity (expensive, opt-in)
+        # Deep analysis: Gromov delta-hyperbolicity (expensive, opt-in, cached 1h)
         if args.get("deep", False):
             try:
                 from neural_memory.engine.gromov import estimate_gromov_delta
 
-                gromov = await estimate_gromov_delta(storage, sample_size=200)
+                cache_key = brain.id if brain else "_default"
+                now = utcnow()
+                cached = _gromov_cache.get(cache_key)
+                if cached and (now - cached[0]).total_seconds() < 3600:
+                    gromov = cached[1]
+                else:
+                    gromov = await estimate_gromov_delta(storage, sample_size=200)
+                    _gromov_cache[cache_key] = (now, gromov)
                 result["gromov"] = {
                     "delta": gromov.delta,
                     "normalized_delta": gromov.normalized_delta,

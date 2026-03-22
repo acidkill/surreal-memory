@@ -69,6 +69,8 @@ class HealthPulse:
     consolidation_ratio: float = 0.0
     hints: tuple[HealthHint, ...] = ()
     should_consolidate: bool = False
+    gromov_delta: float | None = None
+    gromov_quality: str | None = None
 
     @property
     def hint_messages(self) -> tuple[str, ...]:
