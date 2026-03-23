@@ -1061,6 +1061,41 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "nmem_watch",
+        "description": "Watch directories for file changes and auto-ingest into memory.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["scan", "start", "stop", "status", "list"],
+                    "description": "scan=one-shot ingest directory, start=background watch, stop=stop watching, status=show stats, list=tracked files",
+                },
+                "directory": {
+                    "type": "string",
+                    "description": "Directory path to scan (for scan action)",
+                },
+                "directories": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of directory paths to watch (for start action, max 10)",
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ["active", "deleted"],
+                    "description": "Filter files by status (for list action)",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 200,
+                    "description": "Max files to return (default: 50, for list action)",
+                },
+            },
+            "required": ["action"],
+        },
+    },
+    {
         "name": "nmem_review",
         "description": "Spaced repetition reviews (Leitner box system).",
         "inputSchema": {

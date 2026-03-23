@@ -65,7 +65,7 @@ class TestToolTiers:
 
     def test_full_tier_returns_all(self) -> None:
         tools = get_tool_schemas_for_tier("full")
-        assert len(tools) == 51
+        assert len(tools) == 52
 
     def test_full_tier_matches_get_tool_schemas(self) -> None:
         full = get_tool_schemas_for_tier("full")
@@ -108,7 +108,7 @@ class TestToolTiers:
 
     def test_invalid_tier_defaults_to_full(self) -> None:
         tools = get_tool_schemas_for_tier("bogus")
-        assert len(tools) == 51
+        assert len(tools) == 52
 
     def test_tier_hierarchy_minimal_subset_of_standard(self) -> None:
         assert TOOL_TIERS["minimal"] < TOOL_TIERS["standard"]
@@ -133,7 +133,7 @@ class TestToolTiers:
         a = get_tool_schemas()
         b = get_tool_schemas()
         a.pop()
-        assert len(b) == 51
+        assert len(b) == 52
 
     def test_get_tool_schemas_for_tier_returns_copy(self) -> None:
         a = get_tool_schemas_for_tier("standard")
@@ -158,15 +158,18 @@ class TestServerTierIntegration:
 
     def test_server_full_tier(self) -> None:
         server = self._make_server("full")
-        assert len(server.get_tools()) == 51
+        with patch("neural_memory.plugins.get_plugin_tools", return_value=[]):
+            assert len(server.get_tools()) == 52
 
     def test_server_standard_tier(self) -> None:
         server = self._make_server("standard")
-        assert len(server.get_tools()) == 9
+        with patch("neural_memory.plugins.get_plugin_tools", return_value=[]):
+            assert len(server.get_tools()) == 9
 
     def test_server_minimal_tier(self) -> None:
         server = self._make_server("minimal")
-        assert len(server.get_tools()) == 4
+        with patch("neural_memory.plugins.get_plugin_tools", return_value=[]):
+            assert len(server.get_tools()) == 4
 
     @pytest.mark.asyncio
     async def test_hidden_tools_still_callable(self) -> None:

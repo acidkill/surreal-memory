@@ -416,7 +416,8 @@ _MAX_EXPORT_FIBERS = 50_000
 async def _export_neurons(conn: aiosqlite.Connection, brain_id: str) -> list[dict[str, Any]]:
     neurons: list[dict[str, Any]] = []
     async with conn.execute(
-        "SELECT * FROM neurons WHERE brain_id = ? LIMIT ?", (brain_id, _MAX_EXPORT_NEURONS)
+        "SELECT * FROM neurons WHERE brain_id = ? AND (ephemeral IS NULL OR ephemeral = 0) LIMIT ?",
+        (brain_id, _MAX_EXPORT_NEURONS),
     ) as cursor:
         async for row in cursor:
             neurons.append(

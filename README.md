@@ -260,6 +260,24 @@ ruff check src/ tests/    # Lint
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
+## Neural Memory Pro
+
+Need more power? **[Neural Memory Pro](https://theio.vn)** replaces SQLite with InfinityDB — a purpose-built spatial database engine for neural graphs.
+
+| | Free (SQLite) | Pro (InfinityDB) |
+|--|---------------|-------------------|
+| **Vector search** | Sequential scan | HNSW index, <5ms at 1M neurons |
+| **Scale** | ~50K neurons | 2M+ tested |
+| **Compression** | None | 5-tier adaptive (up to 89%) |
+| **Graph traversal** | SQL JOINs | Native BFS, <1ms depth-3 |
+| **MCP tools** | 52 | 52 + 3 Pro-exclusive |
+
+```bash
+pip install git+https://github.com/AIVN-Foundation/neural-memory-pro.git
+```
+
+One command. Auto-registers, auto-upgrades storage. All free tools keep working.
+
 ## Support
 
 If NeuralMemory is useful to you, consider [sponsoring](https://github.com/sponsors/nhadaututtheky) or starring the repo.

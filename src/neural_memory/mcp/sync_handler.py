@@ -382,7 +382,49 @@ class SyncToolHandler:
 
                 return result
 
-            return {"error": "Invalid action. Use: get, set, setup"}
+            if action == "activate":
+                license_key = str(args.get("license_key", "")).strip()
+                if not license_key:
+                    return {"error": "Missing license_key parameter"}
+                if not license_key.startswith("nm_"):
+                    return {"error": "Invalid license key format. Expected nm_pro_* or nm_team_*"}
+
+                hub_url = self.config.sync.hub_url
+                api_key = self.config.sync.api_key
+                if not hub_url or not api_key:
+                    return {
+                        "error": "Sync must be configured first. Run nmem_sync_config(action='setup').",
+                    }
+
+                import aiohttp
+
+                activate_url = _build_hub_url(hub_url, "/hub/activate")
+                headers: dict[str, str] = {
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {api_key}",
+                }
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        activate_url,
+                        json={"license_key": license_key},
+                        headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=15),
+                    ) as resp:
+                        data = await resp.json()
+                        if resp.status != 200:
+                            return {
+                                "status": "error",
+                                "message": data.get("error", f"Activation failed ({resp.status})"),
+                            }
+                        return {
+                            "status": "activated",
+                            "tier": data.get("tier", "pro"),
+                            "expires_at": data.get("expiresAt"),
+                            "features": data.get("features", []),
+                            "message": data.get("message", "License activated!"),
+                        }
+
+            return {"error": "Invalid action. Use: get, set, setup, activate"}
         except Exception:
             logger.error("Sync config failed", exc_info=True)
             return {"error": "Failed to manage sync config"}

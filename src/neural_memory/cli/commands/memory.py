@@ -95,6 +95,7 @@ async def _encode_and_store(
     expiry_days: int | None,
     project_id: str | None,
     event_timestamp: datetime | None = None,
+    ephemeral: bool = False,
 ) -> dict[str, Any]:
     """Encode content into neural graph and store typed memory metadata."""
     encoder = MemoryEncoder(storage, brain_config)
@@ -105,6 +106,12 @@ async def _encode_and_store(
         timestamp=event_timestamp or utcnow(),
         tags=tags,
     )
+
+    # Mark neurons as ephemeral if requested
+    if ephemeral:
+        ephemeral_ids = [n.id for n in result.neurons_created]
+        if ephemeral_ids:
+            await storage.update_neurons_ephemeral_batch(ephemeral_ids, ephemeral=True)
 
     typed_mem = TypedMemory.create(
         fiber_id=result.fiber.id,
@@ -169,6 +176,10 @@ def remember(
             help="ISO datetime of original event (e.g. '2026-03-02T08:00:00'). Defaults to now.",
         ),
     ] = None,
+    ephemeral: Annotated[
+        bool,
+        typer.Option("--ephemeral", help="Session-scoped memory: auto-expires after 24h, never synced"),
+    ] = False,
     stdin: Annotated[
         bool,
         typer.Option("--stdin", help="Read content from stdin (safe for shell-special characters)"),
@@ -183,6 +194,7 @@ def remember(
         nmem remember "Need to refactor auth module" --type todo --priority 7
         nmem remember "API_KEY=xxx" --redact
         nmem remember "Meeting at 8am" --timestamp "2026-03-02T08:00:00"
+        nmem remember "Debug note" --ephemeral
         echo "content with backticks" | nmem remember --stdin --type context
     """
     import sys
@@ -200,6 +212,9 @@ def remember(
     store_content, sensitive_matches = _validate_content(content, force=force, redact=redact)
     mem_type = _resolve_memory_type(memory_type, store_content)
     expiry_days = expires if expires is not None else DEFAULT_EXPIRY_DAYS.get(mem_type)
+    # Ephemeral memories default to 1-day expiry
+    if ephemeral and expiry_days is None:
+        expiry_days = 1
     mem_priority = Priority.from_int(priority) if priority is not None else Priority.NORMAL
 
     # Parse --timestamp for original event time
@@ -244,6 +259,7 @@ def remember(
             expiry_days=expiry_days,
             project_id=project_id,
             event_timestamp=event_timestamp,
+            ephemeral=ephemeral,
         )
 
         response = {
@@ -255,6 +271,9 @@ def remember(
             "neurons_linked": enc["neurons_linked"],
             "synapses_created": enc["synapses_created"],
         }
+        if ephemeral:
+            response["ephemeral"] = True
+            response["message"] += " [ephemeral — auto-expires in 24h]"
         if project_id:
             response["project"] = project
         if enc["typed_mem"].expires_at:

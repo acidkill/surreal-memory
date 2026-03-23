@@ -41,9 +41,10 @@ class TestMCPServer:
 
     def test_get_tools(self, server: MCPServer) -> None:
         """Test that get_tools returns all expected tools."""
-        tools = server.get_tools()
+        with patch("neural_memory.plugins.get_plugin_tools", return_value=[]):
+            tools = server.get_tools()
 
-        assert len(tools) == 51
+        assert len(tools) == 52
         tool_names = {tool["name"] for tool in tools}
         assert tool_names == {
             "nmem_remember",
@@ -71,6 +72,7 @@ class TestMCPServer:
             "nmem_review",
             "nmem_narrative",
             "nmem_visualize",
+            "nmem_watch",
             "nmem_sync",
             "nmem_sync_status",
             "nmem_sync_config",
@@ -1043,13 +1045,14 @@ class TestMCPProtocol:
         """Test MCP tools/list message."""
         message = {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
 
-        response = await handle_message(server, message)
+        with patch("neural_memory.plugins.get_plugin_tools", return_value=[]):
+            response = await handle_message(server, message)
 
         assert response["jsonrpc"] == "2.0"
         assert response["id"] == 2
         assert "result" in response
         assert "tools" in response["result"]
-        assert len(response["result"]["tools"]) == 51
+        assert len(response["result"]["tools"]) == 52
 
     @pytest.mark.asyncio
     async def test_tools_call_message(self, server: MCPServer) -> None:

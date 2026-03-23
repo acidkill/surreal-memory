@@ -85,6 +85,9 @@ graphiti = [
 llamaindex = [
     "llama-index-core>=0.10.0",
 ]
+watch = [
+    "watchdog>=4.0.0",
+]
 extract = [
     "pymupdf4llm>=0.0.10",
     "python-docx>=1.0",

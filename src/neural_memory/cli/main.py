@@ -94,6 +94,7 @@ from neural_memory.cli.commands import (  # noqa: E402
     tools,
     train,
     update,
+    watch,
 )
 
 memory.register(app)
@@ -105,6 +106,7 @@ codebase.register(app)
 train.register(app)
 update.register(app)
 migrate.register(app)
+watch.register(app)
 
 
 def main() -> None:
