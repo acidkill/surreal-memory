@@ -98,6 +98,15 @@ def has_pro() -> bool:
     return len(get_plugins()) > 0
 
 
+def get_storage_class() -> type | None:
+    """Get Pro storage class if available."""
+    for plugin in get_plugins():
+        cls = plugin.get_storage_class()
+        if cls is not None:
+            return cls
+    return None
+
+
 def get_plugin_tools() -> list[dict[str, Any]]:
     """Collect all MCP tool schemas from registered plugins."""
     tools: list[dict[str, Any]] = []
@@ -124,6 +133,7 @@ __all__ = [
     "get_plugin_tools",
     "get_plugins",
     "get_retrieval_strategy",
+    "get_storage_class",
     "has_pro",
     "register",
 ]

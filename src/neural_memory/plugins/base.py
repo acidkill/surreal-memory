@@ -67,3 +67,13 @@ class ProPlugin(ABC):
         Default: None (tool not handled by this plugin).
         """
         return None
+
+    def get_storage_class(self) -> type | None:
+        """Return a NeuralStorage subclass for Pro storage backend.
+
+        Optional — override to provide an alternative storage engine.
+        The returned class must accept (base_dir, brain_id, dimensions) and
+        implement NeuralStorage + async open()/close().
+        Default: None (use SQLite).
+        """
+        return None

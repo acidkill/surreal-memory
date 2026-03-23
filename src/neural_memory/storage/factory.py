@@ -51,6 +51,11 @@ async def create_storage(
     """
     if config.mode == BrainMode.LOCAL:
         if local_path:
+            # Check if Pro plugin provides an alternative storage engine
+            pro_storage = await _try_pro_storage(local_path, brain_id)
+            if pro_storage is not None:
+                return pro_storage
+
             local_storage = SQLiteStorage(local_path)
             await local_storage.initialize()
             local_storage.set_brain(brain_id)
@@ -90,6 +95,31 @@ async def create_storage(
 
     else:
         raise ValueError(f"Unknown brain mode: {config.mode}")
+
+
+async def _try_pro_storage(local_path: str, brain_id: str) -> NeuralStorage | None:
+    """Try to create Pro storage if plugin provides one.
+
+    Returns None if Pro is not installed or storage creation fails.
+    Falls back silently to let the caller use SQLite.
+    """
+    try:
+        from neural_memory.plugins import get_storage_class
+
+        storage_cls = get_storage_class()
+        if storage_cls is None:
+            return None
+
+        from pathlib import Path
+
+        base_dir = Path(local_path).parent
+        storage = storage_cls(base_dir, brain_id=brain_id)
+        await storage.open()
+        logger.info("Using Pro storage engine: %s", storage_cls.__name__)
+        return storage  # type: ignore[return-value]
+    except Exception:
+        logger.debug("Pro storage not available, falling back to SQLite", exc_info=True)
+        return None
 
 
 class HybridStorage:
