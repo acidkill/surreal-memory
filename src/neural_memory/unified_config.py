@@ -292,6 +292,33 @@ class MaintenanceConfig:
     lifecycle_enabled: bool = True
     lifecycle_heat_threshold: float = 0.5
     lifecycle_recency_active_days: float = 3.0
+    # Auto-decay in serve daemon
+    decay_enabled: bool = True
+    decay_interval_hours: int = 12
+    # Scheduled re-index
+    reindex_enabled: bool = False
+    reindex_paths: tuple[str, ...] = ()
+    reindex_interval_hours: int = 168  # weekly
+    reindex_extensions: tuple[str, ...] = (
+        ".md",
+        ".txt",
+        ".py",
+        ".js",
+        ".ts",
+        ".json",
+        ".yaml",
+        ".yml",
+        ".toml",
+        ".rst",
+        ".html",
+        ".css",
+    )
+    # Notifications (webhook + health alerts)
+    notifications_enabled: bool = False
+    notifications_webhook_url: str = ""
+    notifications_health_threshold: str = "D"  # alert at D or F
+    notifications_daily_summary: bool = False
+    notifications_zero_activity_alert: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -320,6 +347,17 @@ class MaintenanceConfig:
             "lifecycle_enabled": self.lifecycle_enabled,
             "lifecycle_heat_threshold": self.lifecycle_heat_threshold,
             "lifecycle_recency_active_days": self.lifecycle_recency_active_days,
+            "decay_enabled": self.decay_enabled,
+            "decay_interval_hours": self.decay_interval_hours,
+            "reindex_enabled": self.reindex_enabled,
+            "reindex_paths": list(self.reindex_paths),
+            "reindex_interval_hours": self.reindex_interval_hours,
+            "reindex_extensions": list(self.reindex_extensions),
+            "notifications_enabled": self.notifications_enabled,
+            "notifications_webhook_url": self.notifications_webhook_url,
+            "notifications_health_threshold": self.notifications_health_threshold,
+            "notifications_daily_summary": self.notifications_daily_summary,
+            "notifications_zero_activity_alert": self.notifications_zero_activity_alert,
         }
 
     @classmethod
@@ -360,6 +398,35 @@ class MaintenanceConfig:
             lifecycle_enabled=data.get("lifecycle_enabled", True),
             lifecycle_heat_threshold=data.get("lifecycle_heat_threshold", 0.5),
             lifecycle_recency_active_days=data.get("lifecycle_recency_active_days", 3.0),
+            decay_enabled=data.get("decay_enabled", True),
+            decay_interval_hours=data.get("decay_interval_hours", 12),
+            reindex_enabled=data.get("reindex_enabled", False),
+            reindex_paths=tuple(data.get("reindex_paths", ())),
+            reindex_interval_hours=data.get("reindex_interval_hours", 168),
+            reindex_extensions=tuple(
+                data.get(
+                    "reindex_extensions",
+                    (
+                        ".md",
+                        ".txt",
+                        ".py",
+                        ".js",
+                        ".ts",
+                        ".json",
+                        ".yaml",
+                        ".yml",
+                        ".toml",
+                        ".rst",
+                        ".html",
+                        ".css",
+                    ),
+                )
+            ),
+            notifications_enabled=data.get("notifications_enabled", False),
+            notifications_webhook_url=data.get("notifications_webhook_url", ""),
+            notifications_health_threshold=data.get("notifications_health_threshold", "D"),
+            notifications_daily_summary=data.get("notifications_daily_summary", False),
+            notifications_zero_activity_alert=data.get("notifications_zero_activity_alert", True),
         )
 
 

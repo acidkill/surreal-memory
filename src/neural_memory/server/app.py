@@ -47,25 +47,46 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.storage = storage
     app.state.startup_time = time.monotonic()
 
-    # Start background consolidation daemon if enabled
-    consolidation_task: asyncio.Task[None] | None = None
+    # Start background daemons
     config = get_config()
     maint = config.maintenance
+    background_tasks: list[asyncio.Task[None]] = []
+
     if maint.enabled and maint.scheduled_consolidation_enabled:
-        consolidation_task = asyncio.create_task(_consolidation_loop(storage, maint))
+        background_tasks.append(asyncio.create_task(_consolidation_loop(storage, maint)))
         _logger.info(
             "Background consolidation daemon started: every %dh",
             maint.scheduled_consolidation_interval_hours,
         )
 
+    if maint.enabled and maint.decay_enabled:
+        background_tasks.append(asyncio.create_task(_decay_loop(storage, config, maint)))
+        _logger.info(
+            "Background decay daemon started: every %dh",
+            maint.decay_interval_hours,
+        )
+
+    if maint.enabled and maint.reindex_enabled and maint.reindex_paths:
+        background_tasks.append(asyncio.create_task(_reindex_loop(storage, config, maint)))
+        _logger.info(
+            "Background re-index daemon started: every %dh, paths=%s",
+            maint.reindex_interval_hours,
+            maint.reindex_paths,
+        )
+
+    if maint.enabled and maint.notifications_enabled and maint.notifications_webhook_url:
+        background_tasks.append(asyncio.create_task(_notification_loop(storage, config, maint)))
+        _logger.info("Background notification daemon started")
+
     yield
 
-    if consolidation_task is not None and not consolidation_task.done():
-        consolidation_task.cancel()
-        try:
-            await consolidation_task
-        except asyncio.CancelledError:
-            pass
+    for task in background_tasks:
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
     await storage.close()
 
 
@@ -105,6 +126,243 @@ async def _consolidation_loop(
             raise
         except Exception:
             _logger.error("Background consolidation failed", exc_info=True)
+
+
+async def _decay_loop(
+    storage: NeuralStorage,
+    config: Any,
+    maint: Any,
+) -> None:
+    """Background loop: apply Ebbinghaus decay on a fixed interval."""
+    import asyncio
+    import logging
+
+    from neural_memory.engine.lifecycle import DecayManager
+
+    _logger = logging.getLogger(__name__)
+    interval_seconds = maint.decay_interval_hours * 3600
+
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            brain_id = storage.brain_id
+            if not brain_id:
+                _logger.debug("Decay daemon skipped: no brain context set")
+                continue
+
+            decay_rate = config.brain.decay_rate if hasattr(config, "brain") else 0.1
+            manager = DecayManager(decay_rate=decay_rate)
+            report = await manager.apply_decay(storage)
+            _logger.info("Background decay complete: %s", report.summary())
+
+            # Pro upsell hint
+            if report.neurons_pruned > 50:
+                _logger.info(
+                    "💡 Pro tip: InfinityDB compresses dormant neurons instead of "
+                    "pruning — recoverable anytime. See https://theio.vn"
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _logger.error("Background decay failed", exc_info=True)
+
+
+async def _reindex_loop(
+    storage: NeuralStorage,
+    config: Any,
+    maint: Any,
+) -> None:
+    """Background loop: re-index configured paths on a fixed interval."""
+    import asyncio
+    import logging
+    from pathlib import Path
+
+    _logger = logging.getLogger(__name__)
+    interval_seconds = maint.reindex_interval_hours * 3600
+    extensions = set(maint.reindex_extensions)
+
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            brain_id = storage.brain_id
+            if not brain_id:
+                _logger.debug("Re-index daemon skipped: no brain context set")
+                continue
+
+            from neural_memory.engine.doc_trainer import DocTrainer
+            from neural_memory.engine.file_watcher import FileWatcher, WatchConfig
+            from neural_memory.engine.watch_state import WatchStateTracker
+
+            total_files = 0
+            total_ingested = 0
+
+            brain = await storage.get_brain(brain_id)
+            if not brain:
+                _logger.debug("Re-index skipped: brain not found")
+                continue
+
+            db = storage._db  # type: ignore[attr-defined]
+            tracker = WatchStateTracker(db)
+            trainer = DocTrainer(storage, brain.config)
+
+            for path_str in maint.reindex_paths:
+                path = Path(path_str).expanduser().resolve()
+                if not path.is_dir():
+                    _logger.warning("Re-index path not found: %s", path)
+                    continue
+
+                watch_config = WatchConfig(
+                    watch_paths=(str(path),),
+                    extensions=frozenset(extensions),
+                )
+                watcher = FileWatcher(trainer, tracker, watch_config)
+
+                results = await watcher.process_path(path)
+                total_files += len(results)
+                total_ingested += sum(1 for r in results if r.success and not r.skipped)
+
+            _logger.info(
+                "Background re-index complete: %d files scanned, %d ingested",
+                total_files,
+                total_ingested,
+            )
+
+            # Pro upsell hint
+            if total_files > 1000:
+                _logger.info(
+                    "💡 Pro tip: InfinityDB indexes 10x faster with HNSW — "
+                    "handles 1M+ files. See https://theio.vn"
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _logger.error("Background re-index failed", exc_info=True)
+
+
+async def _notification_loop(
+    storage: NeuralStorage,
+    config: Any,
+    maint: Any,
+) -> None:
+    """Background loop: health check + webhook notifications."""
+    import asyncio
+    import logging
+
+    _logger = logging.getLogger(__name__)
+    # Check health every 6 hours (or daily summary at 24h)
+    check_interval = 6 * 3600
+    grade_order = {"A": 0, "B": 1, "C": 2, "D": 3, "F": 4}
+    threshold_level = grade_order.get(maint.notifications_health_threshold.upper(), 3)
+    last_daily_summary: float = 0.0
+    daily_interval = 24 * 3600
+
+    while True:
+        await asyncio.sleep(check_interval)
+        try:
+            brain_id = storage.brain_id
+            if not brain_id:
+                continue
+
+            from neural_memory.engine.diagnostics import DiagnosticsEngine
+
+            engine = DiagnosticsEngine(storage)
+            report = await engine.analyze(brain_id)
+
+            alerts: list[dict[str, str]] = []
+
+            # Health grade alert
+            grade_level = grade_order.get(report.grade, 0)
+            if grade_level >= threshold_level:
+                alerts.append(
+                    {
+                        "type": "health_alert",
+                        "message": (
+                            f"Brain health dropped to {report.grade} "
+                            f"(purity: {report.purity_score:.0f}%). "
+                            f"{len(report.warnings)} warning(s)."
+                        ),
+                        "grade": report.grade,
+                    }
+                )
+
+            # Zero activity alert
+            if maint.notifications_zero_activity_alert:
+                stats = await storage.get_enhanced_stats(brain_id)
+                recent_fibers = stats.get("recent_fiber_count", -1)
+                if recent_fibers == 0:
+                    alerts.append(
+                        {
+                            "type": "zero_activity",
+                            "message": "No new memories in the last 24 hours.",
+                        }
+                    )
+
+            # Send alerts
+            if alerts:
+                await _send_webhook(
+                    maint.notifications_webhook_url,
+                    {
+                        "brain_id": brain_id,
+                        "alerts": alerts,
+                        "source": "neural-memory",
+                    },
+                    _logger,
+                )
+
+            # Daily summary
+            import time
+
+            now = time.monotonic()
+            if maint.notifications_daily_summary and (now - last_daily_summary) >= daily_interval:
+                last_daily_summary = now
+                stats = await storage.get_stats(brain_id)
+                await _send_webhook(
+                    maint.notifications_webhook_url,
+                    {
+                        "brain_id": brain_id,
+                        "type": "daily_summary",
+                        "grade": report.grade,
+                        "purity": round(report.purity_score, 1),
+                        "neurons": stats.get("neurons", 0),
+                        "synapses": stats.get("synapses", 0),
+                        "fibers": stats.get("fibers", 0),
+                        "warnings": len(report.warnings),
+                        "source": "neural-memory",
+                    },
+                    _logger,
+                )
+
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _logger.error("Background notification check failed", exc_info=True)
+
+
+async def _send_webhook(url: str, payload: dict[str, Any], logger: Any) -> None:
+    """Send JSON payload to webhook URL (non-blocking via executor)."""
+    import asyncio
+    import json
+    from functools import partial
+
+    def _do_post() -> None:
+        from urllib.parse import urlparse
+        from urllib.request import Request, urlopen
+
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            logger.warning("Webhook URL scheme not allowed: %s", parsed.scheme)
+            return
+
+        data = json.dumps(payload).encode("utf-8")
+        req = Request(url, data=data, headers={"Content-Type": "application/json"})  # noqa: S310
+        try:
+            with urlopen(req, timeout=10) as resp:  # noqa: S310
+                logger.debug("Webhook sent: %d", resp.status)
+        except Exception as e:
+            logger.warning("Webhook failed: %s", e)
+
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, partial(_do_post))
 
 
 def create_app(
