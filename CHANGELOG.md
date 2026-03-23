@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.20.0] — 2026-03-23
+
+### Added
+
+- **Ctrl+K Command Palette** — dashboard-wide search: navigate pages, search fibers by summary, search neurons by content (debounced). Pro upsell hints for semantic search and cross-brain search
+- **Mindmap fiber names** — fiber list and root node now show human-readable summaries instead of UUIDs
+
+### Fixed
+
+- **activate.ts security** — license key moved from query param to POST body, upstream error messages no longer forwarded, strict regex validation (`nm_pro_*`/`nm_team_*`), tier whitelist validation before D1 write, removed dead code
+- **Stale `type: ignore`** in `file_watcher.py` — removed unused mypy suppression
+
 ## [4.19.0] — 2026-03-22
 
 ### Added
