@@ -115,8 +115,15 @@ def _auto_detect_provider() -> tuple[str, str]:
     )
 
 
+# Module-level singleton cache — avoids reloading models per tool call (#100)
+_provider_cache: dict[tuple[str, str], Any] = {}
+
+
 def _create_provider(config: BrainConfig, task_type: str = "RETRIEVAL_QUERY") -> Any:
-    """Create an embedding provider from BrainConfig.
+    """Create or retrieve a cached embedding provider from BrainConfig.
+
+    Providers are cached by (provider_name, model_name) so the model is loaded
+    once per MCP process lifetime instead of once per tool call.
 
     Args:
         config: Brain configuration with embedding_provider and embedding_model.
@@ -132,26 +139,33 @@ def _create_provider(config: BrainConfig, task_type: str = "RETRIEVAL_QUERY") ->
         provider_name, model_name = _auto_detect_provider()
         logger.info("Auto-detected embedding provider: %s (model: %s)", provider_name, model_name)
 
+    cache_key = (provider_name, model_name)
+    if cache_key in _provider_cache:
+        return _provider_cache[cache_key]
+
     if provider_name == "sentence_transformer":
         from neural_memory.engine.embedding.sentence_transformer import (
             SentenceTransformerEmbedding,
         )
 
-        return SentenceTransformerEmbedding(model_name=model_name)
+        provider = SentenceTransformerEmbedding(model_name=model_name)
     elif provider_name == "openai":
         from neural_memory.engine.embedding.openai_embedding import OpenAIEmbedding
 
-        return OpenAIEmbedding(model=model_name)
+        provider = OpenAIEmbedding(model=model_name)
     elif provider_name == "gemini":
         from neural_memory.engine.embedding.gemini_embedding import GeminiEmbedding
 
-        return GeminiEmbedding(model=model_name, task_type=task_type)
+        provider = GeminiEmbedding(model=model_name, task_type=task_type)
     elif provider_name == "ollama":
         from neural_memory.engine.embedding.ollama_embedding import OllamaEmbedding
 
-        return OllamaEmbedding(model=model_name)
+        provider = OllamaEmbedding(model=model_name)
     else:
         raise ValueError(f"Unknown embedding provider: {provider_name}")
+
+    _provider_cache[cache_key] = provider
+    return provider
 
 
 async def discover_semantic_synapses(

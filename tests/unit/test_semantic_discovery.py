@@ -13,6 +13,7 @@ from neural_memory.engine.consolidation import ConsolidationEngine, Consolidatio
 from neural_memory.engine.semantic_discovery import (
     SemanticDiscoveryResult,
     _cosine_similarity,
+    _provider_cache,
     discover_semantic_synapses,
 )
 from neural_memory.storage.memory_store import InMemoryStorage
@@ -307,3 +308,52 @@ class TestConsolidationIntegration:
             metadata={"_semantic_discovery": True},
         )
         assert synapse.metadata.get("_semantic_discovery") is True
+
+
+class TestProviderCache:
+    """Tests for embedding provider singleton cache (#100)."""
+
+    def test_cache_returns_same_instance(self) -> None:
+        """_create_provider should return cached instance on second call."""
+        from neural_memory.engine.semantic_discovery import _create_provider
+
+        config = BrainConfig(
+            embedding_provider="sentence_transformer",
+            embedding_model="test-model",
+        )
+        with patch(
+            "neural_memory.engine.embedding.sentence_transformer.SentenceTransformerEmbedding",
+        ) as mock_st:
+            p1 = _create_provider(config)
+            p2 = _create_provider(config)
+            assert p1 is p2
+            # Constructor called only once
+            mock_st.assert_called_once_with(model_name="test-model")
+
+        # Cleanup cache to avoid polluting other tests
+        _provider_cache.clear()
+
+    def test_cache_keys_by_provider_and_model(self) -> None:
+        """Different model names should get separate cache entries."""
+        from unittest.mock import MagicMock
+
+        from neural_memory.engine.semantic_discovery import _create_provider
+
+        config_a = BrainConfig(
+            embedding_provider="sentence_transformer",
+            embedding_model="model-a",
+        )
+        config_b = BrainConfig(
+            embedding_provider="sentence_transformer",
+            embedding_model="model-b",
+        )
+        with patch(
+            "neural_memory.engine.embedding.sentence_transformer.SentenceTransformerEmbedding",
+            side_effect=lambda **kw: MagicMock(name=f"ST({kw})"),
+        ) as mock_st:
+            p1 = _create_provider(config_a)
+            p2 = _create_provider(config_b)
+            assert p1 is not p2
+            assert mock_st.call_count == 2
+
+        _provider_cache.clear()
