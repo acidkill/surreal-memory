@@ -54,6 +54,7 @@ from neural_memory.mcp.tool_schemas import get_tool_schemas_for_tier
 from neural_memory.mcp.train_handler import TrainHandler
 from neural_memory.mcp.version_check_handler import VersionCheckHandler
 from neural_memory.mcp.visualize_handler import VisualizeHandler
+from neural_memory.mcp.watch_handler import WatchHandler
 from neural_memory.unified_config import get_config, get_shared_storage
 
 if TYPE_CHECKING:
@@ -92,6 +93,7 @@ class MCPServer(
     ReviewHandler,
     NarrativeHandler,
     VisualizeHandler,
+    WatchHandler,
     ConnectionHandler,
     CognitiveHandler,
     Mem0SyncHandler,
@@ -212,9 +214,13 @@ class MCPServer(
         return None
 
     def get_tools(self) -> list[dict[str, Any]]:
-        """Return list of available MCP tools, filtered by tier."""
+        """Return list of available MCP tools, filtered by tier + plugin tools."""
+        from neural_memory.plugins import get_plugin_tools
+
         tier = self.config.tool_tier.tier
-        return get_tool_schemas_for_tier(tier)
+        tools = get_tool_schemas_for_tier(tier)
+        tools.extend(get_plugin_tools())
+        return tools
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Dispatch a tool call to the appropriate handler."""
@@ -245,6 +251,7 @@ class MCPServer(
             "nmem_review": self._review,
             "nmem_narrative": self._narrative,
             "nmem_visualize": self._visualize,
+            "nmem_watch": self._watch,
             "nmem_sync": self._sync,
             "nmem_sync_status": self._sync_status,
             "nmem_sync_config": self._sync_config,
@@ -274,6 +281,14 @@ class MCPServer(
         handler = dispatch.get(name)
         if handler:
             return await handler(arguments)
+
+        # Check plugin-provided tools
+        from neural_memory.plugins import get_plugin_tool_handler
+
+        plugin_handler = get_plugin_tool_handler(name)
+        if plugin_handler:
+            return await plugin_handler(self, arguments)
+
         return {"error": f"Unknown tool: {name}"}
 
 

@@ -98,11 +98,30 @@ def has_pro() -> bool:
     return len(get_plugins()) > 0
 
 
+def get_plugin_tools() -> list[dict[str, Any]]:
+    """Collect all MCP tool schemas from registered plugins."""
+    tools: list[dict[str, Any]] = []
+    for plugin in get_plugins():
+        tools.extend(plugin.get_tools())
+    return tools
+
+
+def get_plugin_tool_handler(tool_name: str) -> Callable[..., Any] | None:
+    """Look up a tool handler from any registered plugin."""
+    for plugin in get_plugins():
+        handler = plugin.get_tool_handler(tool_name)
+        if handler is not None:
+            return handler
+    return None
+
+
 __all__ = [
     "ProPlugin",
     "discover",
     "get_compression_fn",
     "get_consolidation_strategy",
+    "get_plugin_tool_handler",
+    "get_plugin_tools",
     "get_plugins",
     "get_retrieval_strategy",
     "has_pro",
