@@ -43,6 +43,63 @@ import type { PluginLogger } from "./types.js";
 import { createToolsFromMcp, createFallbackTools, createCompatibilityTools } from "./tools.js";
 import type { ToolDefinition } from "./tools.js";
 
+// ── Prompt metadata stripping ─────────────────────────────
+
+/**
+ * Strip metadata preamble from raw prompts before recall.
+ *
+ * OpenClaw + Telegram injects JSON metadata, NeuralMemory context blocks,
+ * env vars, and system boilerplate into ev.prompt. Passing these raw to
+ * nmem_recall creates junk neurons like "[concept] json message id".
+ *
+ * Stripping order matters — later passes clean up residue from earlier ones.
+ */
+export function stripPromptMetadata(raw: string): string {
+  let cleaned = raw;
+
+  // 1. Remove JSON blocks (Telegram metadata, conversation info)
+  cleaned = cleaned.replace(
+    /^\{[\s\S]*?"(?:conversation|message_id|sender_id|sender|chat_id|update_id)"[\s\S]*?\}$/gm,
+    "",
+  );
+
+  // 2. Remove NeuralMemory context sections (## Relevant Memories, etc.)
+  //    The |$ ensures sections at end-of-string are also stripped.
+  cleaned = cleaned.replace(
+    /^#{1,3}\s*(?:Relevant Memories|Related Information|Relevant Context|Neural Memory)[\s\S]*?(?=\n#{1,3}\s|\n\n(?![-•*\s])|$)/gim,
+    "",
+  );
+
+  // 3. Remove neuron-type bullet lines injected by NM context
+  cleaned = cleaned.replace(
+    /^-\s*\[(?:concept|entity|decision|error|preference|insight|memory|fact|workflow|instruction|pattern)\].*$/gim,
+    "",
+  );
+
+  // 4. Remove [NeuralMemory — ...] wrapper lines
+  cleaned = cleaned.replace(/^\[NeuralMemory\s*[—–-].*\]$/gm, "");
+
+  // 5. Remove metadata labels (untrusted metadata lines)
+  cleaned = cleaned.replace(
+    /^(?:Conversation info|Sender|Context|System)\s*\(.*?\)\s*:?\s*$/gim,
+    "",
+  );
+
+  // 6. Remove env/export lines
+  cleaned = cleaned.replace(/^export\s+\w+=.*$/gm, "");
+
+  // 7. Collapse whitespace runs
+  cleaned = cleaned.replace(/\n{3,}/g, "\n\n").trim();
+
+  // Fallback: if everything was stripped, use last non-empty line of raw
+  if (!cleaned) {
+    const lines = raw.split("\n").filter((l) => l.trim());
+    cleaned = lines[lines.length - 1]?.trim() ?? raw.trim();
+  }
+
+  return cleaned;
+}
+
 // ── System prompt for tool awareness ──────────────────────
 
 /**
@@ -177,7 +234,7 @@ function getOrCreateMcpClient(
 
   const existing = mcpClients.get(key);
   if (existing) {
-    logger.debug(`Reusing existing MCP client for brain "${cfg.brain}"`);
+    logger.debug?.(`Reusing existing MCP client for brain "${cfg.brain}"`);
     return existing;
   }
 
@@ -282,8 +339,9 @@ const plugin: OpenClawPluginDefinition = {
           const ev = event as BeforeAgentStartEvent;
 
           try {
+            const query = stripPromptMetadata(ev.prompt);
             const raw = await mcp.callTool("nmem_recall", {
-              query: ev.prompt,
+              query,
               depth: cfg.contextDepth,
               max_tokens: cfg.maxContextTokens,
             });
