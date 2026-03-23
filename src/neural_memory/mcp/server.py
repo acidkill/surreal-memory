@@ -287,7 +287,7 @@ class MCPServer(
 
         plugin_handler = get_plugin_tool_handler(name)
         if plugin_handler:
-            return await plugin_handler(self, arguments)
+            return await plugin_handler(self, arguments)  # type: ignore[no-any-return]
 
         return {"error": f"Unknown tool: {name}"}
 
