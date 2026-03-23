@@ -143,6 +143,7 @@ def _create_provider(config: BrainConfig, task_type: str = "RETRIEVAL_QUERY") ->
     if cache_key in _provider_cache:
         return _provider_cache[cache_key]
 
+    provider: Any
     if provider_name == "sentence_transformer":
         from neural_memory.engine.embedding.sentence_transformer import (
             SentenceTransformerEmbedding,

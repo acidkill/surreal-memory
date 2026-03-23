@@ -116,7 +116,7 @@ async def _try_pro_storage(local_path: str, brain_id: str) -> NeuralStorage | No
         storage = storage_cls(base_dir, brain_id=brain_id)
         await storage.open()
         logger.info("Using Pro storage engine: %s", storage_cls.__name__)
-        return storage  # type: ignore[return-value]
+        return storage  # type: ignore[no-any-return]
     except Exception:
         logger.debug("Pro storage not available, falling back to SQLite", exc_info=True)
         return None
