@@ -177,7 +177,7 @@ function getOrCreateMcpClient(
 
   const existing = mcpClients.get(key);
   if (existing) {
-    logger.info(`Reusing existing MCP client for brain "${cfg.brain}"`);
+    logger.debug(`Reusing existing MCP client for brain "${cfg.brain}"`);
     return existing;
   }
 
