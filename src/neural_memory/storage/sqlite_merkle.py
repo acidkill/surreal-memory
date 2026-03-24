@@ -207,6 +207,58 @@ class SQLiteMerkleMixin:
         return MerkleTreeBuilder.compute_branch_hash(hashes)
 
 
+    async def get_bucket_entity_ids(
+        self,
+        entity_type: str,
+        prefix: str,
+        *,
+        is_pro: bool = False,
+    ) -> list[str]:
+        """Return all entity IDs in the given bucket prefix.
+
+        Used by the Merkle sync protocol for delete detection: both sides
+        exchange the full list of entity IDs per differing bucket so the
+        receiver can compute inserts, updates, and deletes.
+
+        Args:
+            entity_type: One of ``"neuron"``, ``"synapse"``, ``"fiber"``.
+            prefix: Bucket prefix like ``"neurons/0a"``.
+            is_pro: Must be ``True`` to query.
+
+        Returns:
+            Sorted list of entity ID strings in the bucket, or empty if not Pro.
+        """
+        if not is_pro:
+            return []
+
+        conn = self._ensure_read_conn()
+        brain_id = self._get_brain_id()
+
+        table_map: dict[str, str] = {
+            "neuron": "neurons",
+            "synapse": "synapses",
+            "fiber": "fibers",
+        }
+        table = table_map.get(entity_type)
+        if not table:
+            return []
+
+        # Extract 2-char hex prefix from "neurons/0a" -> "0a"
+        parts = prefix.split("/")
+        if len(parts) != 2:
+            return []
+        hex_prefix = parts[1].lower()
+
+        # Filter by entity_id[:2] matching hex_prefix
+        # Use LOWER(SUBSTR(...)) for case-insensitive matching
+        cursor = await conn.execute(
+            f"SELECT id FROM {table} WHERE brain_id = ? AND LOWER(SUBSTR(id, 1, 2)) = ?",
+            (brain_id, hex_prefix),
+        )
+        rows = await cursor.fetchall()
+        return sorted(str(row[0]) for row in rows)
+
+
 # ------------------------------------------------------------------
 # Internal helpers
 # ------------------------------------------------------------------

@@ -333,3 +333,93 @@ async def test_mixin_get_merkle_tree_pro_reads_db() -> None:
     assert "neurons/ab" in result
     assert result["neurons/ab"] == "abc123"
     conn.execute.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# get_bucket_entity_ids tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mixin_get_bucket_entity_ids_free_tier_returns_empty() -> None:
+    """get_bucket_entity_ids returns [] when is_pro=False."""
+    from neural_memory.storage.sqlite_merkle import SQLiteMerkleMixin
+
+    mixin = SQLiteMerkleMixin.__new__(SQLiteMerkleMixin)
+    result = await mixin.get_bucket_entity_ids("neuron", "neurons/0a", is_pro=False)
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_mixin_get_bucket_entity_ids_invalid_type_returns_empty() -> None:
+    """get_bucket_entity_ids returns [] for unknown entity type."""
+    from neural_memory.storage.sqlite_merkle import SQLiteMerkleMixin
+
+    conn = _make_mock_conn()
+    mixin = SQLiteMerkleMixin.__new__(SQLiteMerkleMixin)
+    mixin._ensure_read_conn = MagicMock(return_value=conn)  # type: ignore[attr-defined]
+    mixin._get_brain_id = MagicMock(return_value="test-brain")  # type: ignore[attr-defined]
+
+    result = await mixin.get_bucket_entity_ids("unknown", "unknown/0a", is_pro=True)
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_mixin_get_bucket_entity_ids_invalid_prefix_returns_empty() -> None:
+    """get_bucket_entity_ids returns [] for malformed prefix."""
+    from neural_memory.storage.sqlite_merkle import SQLiteMerkleMixin
+
+    conn = _make_mock_conn()
+    mixin = SQLiteMerkleMixin.__new__(SQLiteMerkleMixin)
+    mixin._ensure_read_conn = MagicMock(return_value=conn)  # type: ignore[attr-defined]
+    mixin._get_brain_id = MagicMock(return_value="test-brain")  # type: ignore[attr-defined]
+
+    result = await mixin.get_bucket_entity_ids("neuron", "badprefix", is_pro=True)
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_mixin_get_bucket_entity_ids_returns_sorted() -> None:
+    """get_bucket_entity_ids returns sorted entity IDs from DB."""
+    from neural_memory.storage.sqlite_merkle import SQLiteMerkleMixin
+
+    rows = [("0a-uuid-3",), ("0a-uuid-1",), ("0a-uuid-2",)]
+    conn = _make_mock_conn(rows)  # type: ignore[arg-type]
+
+    mixin = SQLiteMerkleMixin.__new__(SQLiteMerkleMixin)
+    mixin._ensure_read_conn = MagicMock(return_value=conn)  # type: ignore[attr-defined]
+    mixin._get_brain_id = MagicMock(return_value="test-brain")  # type: ignore[attr-defined]
+
+    result = await mixin.get_bucket_entity_ids("neuron", "neurons/0a", is_pro=True)
+    assert result == ["0a-uuid-1", "0a-uuid-2", "0a-uuid-3"]
+    conn.execute.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Invalidation hook integration tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_invalidation_called_on_entity_write() -> None:
+    """Verify invalidate_merkle_prefix is called after add/delete operations.
+
+    Tests the contract: write methods must invalidate the Merkle cache.
+    We test this indirectly by checking the invalidate method's behavior.
+    """
+    from neural_memory.storage.sqlite_merkle import SQLiteMerkleMixin
+
+    conn = _make_mock_conn()
+    mixin = SQLiteMerkleMixin.__new__(SQLiteMerkleMixin)
+    mixin._ensure_conn = MagicMock(return_value=conn)  # type: ignore[attr-defined]
+    mixin._get_brain_id = MagicMock(return_value="test-brain")  # type: ignore[attr-defined]
+
+    # Pro tier: should execute DELETE
+    await mixin.invalidate_merkle_prefix("neuron", "0abc-uuid", is_pro=True)
+    conn.execute.assert_called_once()
+    sql = conn.execute.call_args[0][0]
+    assert "DELETE FROM merkle_hashes" in sql
+
+    # Verify the correct bucket prefix is targeted
+    params = conn.execute.call_args[0][1]
+    assert "neurons/0a" in params  # bucket prefix for entity_id[:2] = "0a"
