@@ -698,6 +698,19 @@ def _sanitize_toml_str(value: str) -> str:
     return cleaned
 
 
+_ISO_DATETIME_PATTERN = re.compile(r"^[0-9T:\-\+Z\.]*$")
+
+
+def _sanitize_iso_datetime(value: str) -> str:
+    """Sanitize an ISO datetime string for TOML. Returns empty on invalid."""
+    if not isinstance(value, str):
+        return ""
+    cleaned = value.strip()[:64]
+    if not _ISO_DATETIME_PATTERN.match(cleaned):
+        return ""
+    return cleaned
+
+
 def _sanitize_sync_id(value: str) -> str:
     """Sanitize a sync identifier (user_id, agent_id).
 
@@ -1494,8 +1507,8 @@ class UnifiedConfig:
             "# License tier",
             "[license]",
             f'tier = "{_sanitize_toml_str(self.license.tier)}"',
-            f'activated_at = "{_sanitize_toml_str(self.license.activated_at)}"',
-            f'expires_at = "{_sanitize_toml_str(self.license.expires_at)}"',
+            f'activated_at = "{_sanitize_iso_datetime(self.license.activated_at)}"',
+            f'expires_at = "{_sanitize_iso_datetime(self.license.expires_at)}"',
             "",
             "# Cross-encoder reranking (optional, requires pip install neural-memory[reranker])",
             "[reranker]",
