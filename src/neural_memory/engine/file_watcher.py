@@ -257,7 +257,7 @@ class FileWatcher:
 
         watcher = self
 
-        class _Handler(FileSystemEventHandler):
+        class _Handler(FileSystemEventHandler):  # type: ignore[misc]
             def on_created(self, event: Any) -> None:
                 if not event.is_directory:
                     watcher._queue_event(Path(event.src_path), "created")
