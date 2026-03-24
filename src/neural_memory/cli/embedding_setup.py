@@ -54,6 +54,16 @@ _PROVIDERS: list[dict[str, str]] = [
         "note": "Paid, needs OPENAI_API_KEY",
         "env_key": "OPENAI_API_KEY",
     },
+    {
+        "key": "openrouter",
+        "name": "OpenRouter",
+        "type": "cloud",
+        "module": "openai",
+        "install": "pip install neural-memory[embeddings-openrouter]",
+        "default_model": "openai/text-embedding-3-small",
+        "note": "OpenAI-compatible, needs OPENROUTER_API_KEY",
+        "env_key": "OPENROUTER_API_KEY",
+    },
 ]
 
 

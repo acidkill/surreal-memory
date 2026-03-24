@@ -199,6 +199,7 @@ def _check_embedding_provider() -> dict[str, Any]:
     provider_checks: dict[str, str] = {
         "sentence_transformer": "sentence_transformers",
         "openai": "openai",
+        "openrouter": "openai",
         "gemini": "google.generativeai",
         "ollama": "ollama",
     }
@@ -216,6 +217,7 @@ def _check_embedding_provider() -> dict[str, Any]:
             install_hint = {
                 "sentence_transformer": "pip install neural-memory[embeddings]",
                 "openai": "pip install neural-memory[embeddings-openai]",
+                "openrouter": "pip install neural-memory[embeddings-openrouter]",
                 "gemini": "pip install neural-memory[embeddings-gemini]",
                 "ollama": "pip install neural-memory[embeddings]",
             }
