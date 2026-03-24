@@ -1487,16 +1487,65 @@ class ReflexPipeline:
             for entity in stimulus.entities
         ]
 
-        # Expand keywords for better recall
+        # Expand keywords for better recall (morphological + smart expansion)
         expanded_keywords = self._expand_query_terms(list(stimulus.keywords[:5]))
+
+        # Smart query expansion: synonyms, abbreviations, cross-language
+        from neural_memory.engine.query_expander import expand_terms
+        from neural_memory.engine.token_normalizer import normalize_for_search
+
+        expanded_keywords = expand_terms(
+            expanded_keywords,
+            enable_synonyms=self._config.query_expansion_synonyms,
+            enable_abbreviations=self._config.query_expansion_abbreviations,
+            enable_cross_language=(
+                self._config.query_expansion_cross_language
+                and self._embedding_provider is None  # skip if embedding handles cross-lang
+            ),
+            max_per_term=self._config.query_expansion_max_per_term,
+        )
+
+        # Token normalization: add Vietnamese compound + diacritics-stripped variants
+        normalized: list[str] = []
+        seen_kw: set[str] = set()
+        for kw in expanded_keywords[:12]:
+            for variant in normalize_for_search(kw):
+                if variant not in seen_kw:
+                    normalized.append(variant)
+                    seen_kw.add(variant)
+
+        # IDF-weighted anchor limits: rare terms get more slots, common fewer
+        kw_limits: dict[str, int] = {}
+        _default_kw_limit = 2
+        if self._config.idf_anchor_enabled:
+            try:
+                from neural_memory.engine.idf_anchor import compute_keyword_limits
+
+                _kw_df = await self._storage.get_keyword_df_batch(
+                    [k.lower() for k in normalized[:15]]
+                )
+                _total_fibers = await self._storage.get_total_fiber_count()
+                kw_limits = compute_keyword_limits(
+                    normalized[:15],
+                    _kw_df,
+                    _total_fibers,
+                    min_limit=self._config.idf_anchor_min_limit,
+                    max_limit=self._config.idf_anchor_max_limit,
+                )
+            except Exception:
+                logger.debug("IDF anchor limit computation failed (non-critical)", exc_info=True)
+
         keyword_tasks = [
             self._storage.find_neurons(
-                content_contains=keyword, limit=2, ephemeral=ephemeral_filter
+                content_contains=keyword,
+                limit=kw_limits.get(keyword, _default_kw_limit),
+                ephemeral=ephemeral_filter,
             )
-            for keyword in expanded_keywords[:8]  # cap at 8 to limit queries
+            for keyword in normalized[:15]  # cap at 15 (expanded with Vietnamese variants)
         ]
 
         entity_anchors: list[str] = []
+        keyword_anchors: list[str] = []
         all_tasks = entity_tasks + keyword_tasks
         if all_tasks:
             all_results = await asyncio.gather(*all_tasks)
@@ -1504,7 +1553,6 @@ class ReflexPipeline:
             for neurons in all_results[: len(entity_tasks)]:
                 entity_anchors.extend(n.id for n in neurons)
 
-            keyword_anchors: list[str] = []
             for neurons in all_results[len(entity_tasks) :]:
                 keyword_anchors.extend(n.id for n in neurons)
 
@@ -1524,6 +1572,69 @@ class ReflexPipeline:
                         for i, nid in enumerate(keyword_anchors)
                     ]
                 )
+
+        # 3.5 FUZZY SEARCH — typo tolerance when keyword results are sparse
+        if self._config.fuzzy_search_enabled and len(keyword_anchors) < 2:
+            try:
+                from neural_memory.engine.fuzzy_match import (
+                    find_fuzzy_matches,
+                    generate_prefix_variants,
+                )
+
+                fuzzy_anchors: list[str] = []
+                fuzzy_seen: set[str] = set()
+                # Use original keywords (not expanded) for fuzzy
+                # Collect all prefix queries first, then run in parallel
+                _fuzzy_kw_prefix_pairs: list[tuple[str, str]] = []
+                for kw in list(stimulus.keywords[:3]):
+                    for prefix in generate_prefix_variants(kw):
+                        _fuzzy_kw_prefix_pairs.append((kw, prefix))
+
+                _fuzzy_tasks = [
+                    self._storage.find_neurons(
+                        content_contains=prefix,
+                        limit=self._config.fuzzy_search_max_candidates,
+                        ephemeral=ephemeral_filter,
+                    )
+                    for _kw, prefix in _fuzzy_kw_prefix_pairs
+                ]
+                _fuzzy_results = await asyncio.gather(*_fuzzy_tasks) if _fuzzy_tasks else []
+
+                for (kw, _prefix), prefix_neurons in zip(
+                    _fuzzy_kw_prefix_pairs, _fuzzy_results
+                ):
+                    # Match against _raw_keywords metadata (short strings),
+                    # falling back to content for neurons without raw keywords
+                    keyword_to_id: dict[str, str] = {}
+                    for n in prefix_neurons:
+                        raw_kws = n.metadata.get("_raw_keywords", []) if n.metadata else []
+                        if raw_kws:
+                            for rk in raw_kws:
+                                if rk and rk not in keyword_to_id:
+                                    keyword_to_id[rk] = n.id
+                        elif n.content and n.content not in keyword_to_id:
+                            keyword_to_id[n.content] = n.id
+                    matches = find_fuzzy_matches(
+                        kw,
+                        list(keyword_to_id.keys()),
+                        max_distance=self._config.fuzzy_search_max_distance,
+                    )
+                    for match_content, _dist in matches:
+                        nid = keyword_to_id.get(match_content)
+                        if nid and nid not in fuzzy_seen:
+                            fuzzy_anchors.append(nid)
+                            fuzzy_seen.add(nid)
+
+                if fuzzy_anchors:
+                    anchor_sets.append(fuzzy_anchors)
+                    ranked_lists.append(
+                        [
+                            RankedAnchor(neuron_id=nid, rank=i + 1, retriever="fuzzy")
+                            for i, nid in enumerate(fuzzy_anchors)
+                        ]
+                    )
+            except Exception:
+                logger.debug("Fuzzy search failed (non-critical)", exc_info=True)
 
         # 4. EMBEDDING ANCHORS - parallel source (always, not just fallback)
         if self._embedding_provider is not None:

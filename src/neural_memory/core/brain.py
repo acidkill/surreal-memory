@@ -107,6 +107,19 @@ class BrainConfig:
     fidelity_summary_threshold: float = 0.3
     fidelity_essence_threshold: float = 0.1
     essence_generator: str = "extractive"  # "extractive" or "llm"
+    # Fuzzy search (typo tolerance)
+    fuzzy_search_enabled: bool = False
+    fuzzy_search_max_distance: int = 2
+    fuzzy_search_max_candidates: int = 50
+    # IDF-weighted anchor selection
+    idf_anchor_enabled: bool = False
+    idf_anchor_min_limit: int = 1
+    idf_anchor_max_limit: int = 5
+    # Query expansion (synonym, abbreviation, cross-language)
+    query_expansion_synonyms: bool = True
+    query_expansion_abbreviations: bool = True
+    query_expansion_cross_language: bool = True
+    query_expansion_max_per_term: int = 5
     # Cross-encoder reranking (optional post-SA refinement)
     reranker_enabled: bool = False
     reranker_model: str = "BAAI/bge-reranker-v2-m3"

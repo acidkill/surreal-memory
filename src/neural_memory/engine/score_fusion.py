@@ -26,6 +26,7 @@ DEFAULT_RETRIEVER_WEIGHTS: dict[str, float] = {
     "keyword": 0.7,
     "embedding": 1.0,
     "graph_expansion": 0.5,
+    "fuzzy": 0.4,
 }
 
 
