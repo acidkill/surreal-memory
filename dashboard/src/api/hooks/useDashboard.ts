@@ -22,6 +22,7 @@ import type {
   WatcherStatusResponse,
   VisualizeRequest,
   VisualizeResponse,
+  LicenseResponse,
 } from "@/api/types"
 
 // Keys
@@ -42,6 +43,7 @@ const keys = {
   configStatus: ["dashboard", "config-status"] as const,
   embeddingConfig: ["config", "embedding"] as const,
   watcherStatus: ["dashboard", "watcher-status"] as const,
+  license: ["dashboard", "license"] as const,
 }
 
 // Stats
@@ -234,4 +236,18 @@ export function useVisualize() {
     mutationFn: (req: VisualizeRequest) =>
       api.post<VisualizeResponse>("/api/dashboard/visualize", req),
   })
+}
+
+// License tier
+export function useLicense() {
+  return useQuery({
+    queryKey: keys.license,
+    queryFn: () => api.get<LicenseResponse>("/api/dashboard/license"),
+    staleTime: 60_000,
+  })
+}
+
+export function useIsPro(): boolean {
+  const { data } = useLicense()
+  return data?.is_pro ?? false
 }

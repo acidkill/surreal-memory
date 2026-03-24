@@ -416,9 +416,24 @@ class SyncToolHandler:
                                 "status": "error",
                                 "message": data.get("error", f"Activation failed ({resp.status})"),
                             }
+
+                        # Persist license tier to config.toml
+                        from dataclasses import replace as _dc_replace
+
+                        from neural_memory.unified_config import LicenseConfig
+
+                        activated_tier = str(data.get("tier", "pro")).lower()
+                        new_license = LicenseConfig.from_dict({
+                            "tier": activated_tier,
+                            "activated_at": data.get("activatedAt", ""),
+                            "expires_at": data.get("expiresAt", ""),
+                        })
+                        self.config = _dc_replace(self.config, license=new_license)
+                        self.config.save()
+
                         return {
                             "status": "activated",
-                            "tier": data.get("tier", "pro"),
+                            "tier": activated_tier,
                             "expires_at": data.get("expiresAt"),
                             "features": data.get("features", []),
                             "message": data.get("message", "License activated!"),

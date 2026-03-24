@@ -1015,6 +1015,36 @@ class ResponseConfig:
         )
 
 
+_VALID_TIERS = frozenset({"free", "pro", "team"})
+
+
+@dataclass(frozen=True)
+class LicenseConfig:
+    """License tier information — set via nmem_sync_config(action='activate')."""
+
+    tier: str = "free"  # "free" | "pro" | "team"
+    activated_at: str = ""
+    expires_at: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "tier": self.tier,
+            "activated_at": self.activated_at,
+            "expires_at": self.expires_at,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> LicenseConfig:
+        tier = str(data.get("tier", "free")).lower()
+        if tier not in _VALID_TIERS:
+            tier = "free"
+        return cls(
+            tier=tier,
+            activated_at=str(data.get("activated_at", "")),
+            expires_at=str(data.get("expires_at", "")),
+        )
+
+
 @dataclass(frozen=True)
 class RerankerConfig:
     """Settings for optional cross-encoder reranking after spreading activation."""
@@ -1179,6 +1209,9 @@ class UnifiedConfig:
     # Telegram backup integration
     telegram: TelegramConfig = field(default_factory=TelegramConfig)
 
+    # License tier (free/pro/team)
+    license: LicenseConfig = field(default_factory=LicenseConfig)
+
     # Cross-encoder reranking (optional)
     reranker: RerankerConfig = field(default_factory=RerankerConfig)
 
@@ -1204,6 +1237,10 @@ class UnifiedConfig:
 
     # Metadata
     version: str = "1.0"
+
+    def is_pro(self) -> bool:
+        """Return True if the current license tier is 'pro' or 'team'."""
+        return self.license.tier in ("pro", "team")
 
     @classmethod
     def load(cls, config_path: Path | None = None) -> UnifiedConfig:
@@ -1265,6 +1302,7 @@ class UnifiedConfig:
             telegram=TelegramConfig.from_dict(data.get("telegram", {})),
             tool_tier=ToolTierConfig.from_dict(data.get("tool_tier", {})),
             mem0_sync=Mem0SyncConfig.from_dict(data.get("mem0_sync", {})),
+            license=LicenseConfig.from_dict(data.get("license", {})),
             reranker=RerankerConfig.from_dict(data.get("reranker", {})),
             watcher=WatcherConfig.from_dict(data.get("watcher", {})),
             device_id=raw_device_id,
@@ -1452,6 +1490,12 @@ class UnifiedConfig:
             f"chat_ids = [{', '.join(repr(cid) for cid in self.telegram.chat_ids)}]",
             f"max_file_size_mb = {self.telegram.max_file_size_mb}",
             f"backup_on_consolidation = {'true' if self.telegram.backup_on_consolidation else 'false'}",
+            "",
+            "# License tier",
+            "[license]",
+            f'tier = "{_sanitize_toml_str(self.license.tier)}"',
+            f'activated_at = "{_sanitize_toml_str(self.license.activated_at)}"',
+            f'expires_at = "{_sanitize_toml_str(self.license.expires_at)}"',
             "",
             "# Cross-encoder reranking (optional, requires pip install neural-memory[reranker])",
             "[reranker]",

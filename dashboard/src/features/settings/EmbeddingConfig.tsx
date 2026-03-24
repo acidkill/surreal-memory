@@ -5,11 +5,10 @@ import {
   useTestEmbedding,
 } from "@/api/hooks/useDashboard"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Lock } from "lucide-react"
 import { toast } from "sonner"
 import { useTranslation } from "react-i18next"
+import { ProGate } from "@/components/common/ProGate"
 
 const PROVIDERS = [
   { value: "sentence_transformer", label: "Sentence Transformer (Local)" },
@@ -35,8 +34,6 @@ interface FormState {
   model: string
   similarity_threshold: number
 }
-
-const isPro = false
 
 export default function EmbeddingConfig() {
   const { t } = useTranslation()
@@ -112,17 +109,7 @@ export default function EmbeddingConfig() {
   }
 
   return (
-    <div className="relative">
-      {!isPro && (
-        <div className="absolute inset-0 z-10 flex items-start justify-end p-4 pointer-events-none">
-          <Badge variant="warning" className="flex items-center gap-1">
-            <Lock className="size-3" aria-hidden="true" />
-            {t("settings.proFeature")}
-          </Badge>
-        </div>
-      )}
-
-      <div className={!isPro ? "opacity-60 pointer-events-none" : undefined}>
+    <ProGate label={t("settings.proFeature")}>
         <Card>
           <CardHeader>
             <CardTitle>{t("settings.embeddingConfig")}</CardTitle>
@@ -214,7 +201,6 @@ export default function EmbeddingConfig() {
             </div>
           </CardContent>
         </Card>
-      </div>
-    </div>
+    </ProGate>
   )
 }

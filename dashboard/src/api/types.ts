@@ -394,3 +394,11 @@ export interface VisualizeResponse {
   ascii?: string
   memories?: Array<{ id: string; content: string; type: string }>
 }
+
+// GET /api/dashboard/license
+export interface LicenseResponse {
+  tier: "free" | "pro" | "team"
+  is_pro: boolean
+  activated_at: string
+  expires_at: string
+}

@@ -314,5 +314,13 @@
     "avgDuration": "Avg Duration",
     "server": "Server",
     "noData": "No tool events recorded yet. Use NeuralMemory tools to start tracking."
+  },
+  "license": {
+    "tier": "License",
+    "pro_badge": "PRO",
+    "pro_feature": "Pro Feature",
+    "free": "Free",
+    "pro": "Pro",
+    "team": "Team"
   }
 }

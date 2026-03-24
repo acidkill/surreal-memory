@@ -1,4 +1,4 @@
-import { useStats, useHealthCheck, useBrainFiles } from "@/api/hooks/useDashboard"
+import { useStats, useHealthCheck, useBrainFiles, useLicense } from "@/api/hooks/useDashboard"
 import { useTelegramStatus, useTelegramTest, useTelegramBackup } from "@/api/hooks/useTelegram"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -23,6 +23,7 @@ export default function SettingsPage() {
   const { data: stats } = useStats()
   const { data: healthCheck } = useHealthCheck()
   const { data: brainFiles } = useBrainFiles()
+  const { data: license } = useLicense()
   const { data: telegram, isLoading: telegramLoading } = useTelegramStatus()
   const testMutation = useTelegramTest()
   const backupMutation = useTelegramBackup()
@@ -97,6 +98,12 @@ export default function SettingsPage() {
             <div className="flex justify-between">
               <span className="text-muted-foreground">{t("settings.totalBrains")}</span>
               <span className="font-mono">{stats?.total_brains ?? "-"}</span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-muted-foreground">{t("license.tier", "License")}</span>
+              <Badge variant={license?.is_pro ? "success" : "secondary"}>
+                {(license?.tier ?? "free").toUpperCase()}
+              </Badge>
             </div>
           </CardContent>
         </Card>

@@ -1447,3 +1447,17 @@ async def visualize_memory(
         result["ascii"] = chart.ascii_chart
 
     return result
+
+
+@router.get("/license", tags=["dashboard"], summary="Current license tier")
+async def get_license() -> dict[str, Any]:
+    """Return the current license tier and expiry."""
+    from neural_memory.unified_config import get_config
+
+    cfg = get_config()
+    return {
+        "tier": cfg.license.tier,
+        "is_pro": cfg.is_pro(),
+        "activated_at": cfg.license.activated_at,
+        "expires_at": cfg.license.expires_at,
+    }

@@ -1,4 +1,5 @@
 import { useEvolution } from "@/api/hooks/useDashboard"
+import { ProGate } from "@/components/common/ProGate"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
@@ -51,6 +52,7 @@ export default function EvolutionPage() {
     : []
 
   return (
+    <ProGate label={t("license.pro_feature", "Pro Feature")}>
     <div className="space-y-6 p-6">
       <h1 className="font-display text-2xl font-bold">{t("evolution.title")}</h1>
 
@@ -132,5 +134,6 @@ export default function EvolutionPage() {
         </Card>
       </div>
     </div>
+    </ProGate>
   )
 }

@@ -314,5 +314,13 @@
     "avgDuration": "Thời gian TB",
     "server": "Server",
     "noData": "Chưa có dữ liệu. Sử dụng các công cụ NeuralMemory để bắt đầu theo dõi."
+  },
+  "license": {
+    "tier": "Giấy phép",
+    "pro_badge": "PRO",
+    "pro_feature": "Tính năng Pro",
+    "free": "Miễn phí",
+    "pro": "Pro",
+    "team": "Nhóm"
   }
 }
