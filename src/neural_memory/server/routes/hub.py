@@ -12,8 +12,15 @@ from pydantic import BaseModel, Field
 from neural_memory.core.brain import Brain, BrainConfig
 from neural_memory.server.dependencies import get_storage, require_local_request
 from neural_memory.storage.base import NeuralStorage
-from neural_memory.sync.protocol import ConflictStrategy, SyncChange, SyncRequest, SyncResponse
+from neural_memory.sync.protocol import (
+    ConflictStrategy,
+    MerkleSyncRequest,
+    SyncChange,
+    SyncRequest,
+    SyncResponse,
+)
 from neural_memory.sync.sync_engine import SyncEngine
+from neural_memory.unified_config import get_config
 from neural_memory.utils.timeutils import utcnow
 
 logger = logging.getLogger(__name__)
@@ -55,6 +62,14 @@ class HubSyncRequest(BaseModel):
     brain_id: str = Field(..., max_length=128)
     last_sequence: int = Field(0, ge=0)
     changes: list[SyncChangeItem] = Field(default_factory=list, max_length=1000)
+    strategy: str = Field("prefer_recent", max_length=32)
+
+
+class HubMerkleSyncRequest(BaseModel):
+    device_id: str = Field(..., max_length=32)
+    brain_id: str = Field(..., max_length=128)
+    root_hash: str = Field(..., max_length=128)
+    buckets: dict[str, dict[str, str]] = Field(default_factory=dict)
     strategy: str = Field("prefer_recent", max_length=32)
 
 
@@ -295,4 +310,78 @@ async def list_devices(
             }
             for d in devices_list
         ],
+    }
+
+
+@router.post("/sync/merkle", tags=["hub"], summary="Merkle delta sync (Pro)")
+async def hub_merkle_sync(
+    body: HubMerkleSyncRequest,
+    storage: Annotated[NeuralStorage, Depends(get_storage)],
+) -> dict[str, Any]:
+    """Single-round Merkle sync: compare bucket hashes and return diffs.
+
+    Pro-only. Device sends all bucket hashes (~49KB), hub compares in one
+    pass, returns only changed entities grouped by prefix.
+    """
+    _validate_brain_id(body.brain_id)
+    _validate_device_id(body.device_id)
+    conflict_strategy = _validate_strategy(body.strategy)
+
+    config = get_config()
+    if not config.is_pro():
+        raise HTTPException(
+            status_code=403,
+            detail="Merkle sync requires a Pro license",
+        )
+
+    try:
+        existing_brain = await storage.get_brain(body.brain_id)
+        if existing_brain is None:
+            now = utcnow()
+            brain = Brain(
+                id=body.brain_id,
+                name=body.brain_id,
+                config=BrainConfig(),
+                created_at=now,
+                updated_at=now,
+            )
+            await storage.save_brain(brain)
+
+        storage.set_brain(body.brain_id)
+        sync_engine = SyncEngine(storage, device_id="hub", strategy=conflict_strategy)
+
+        request = MerkleSyncRequest(
+            device_id=body.device_id,
+            brain_id=body.brain_id,
+            root_hash=body.root_hash,
+            buckets=body.buckets,
+            strategy=conflict_strategy,
+        )
+        response = await sync_engine.handle_merkle_sync(request, is_pro=True)
+    except HTTPException:
+        raise
+    except Exception:
+        logger.error(
+            "Merkle sync failed for device %s brain %s",
+            body.device_id,
+            body.brain_id,
+            exc_info=True,
+        )
+        raise HTTPException(status_code=500, detail="Merkle sync failed")
+
+    return {
+        "status": response.status,
+        "hub_root_hash": response.hub_root_hash,
+        "changed_prefixes": response.changed_prefixes,
+        "diffs": [
+            {
+                "entity_type": d.entity_type,
+                "prefix": d.prefix,
+                "entity_ids": d.entity_ids,
+                "entities": d.entities,
+            }
+            for d in response.diffs
+        ],
+        "hub_sequence": response.hub_sequence,
+        "message": response.message,
     }

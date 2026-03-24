@@ -300,7 +300,10 @@
     "conflictStrategy": "Giải quyết xung đột",
     "conflictDesc": "Cách xử lý khi cùng một ký ức bị thay đổi trên nhiều thiết bị.",
     "strategyUpdated": "Đã cập nhật chiến lược xung đột",
-    "updateFailed": "Cập nhật cấu hình thất bại"
+    "updateFailed": "Cập nhật cấu hình thất bại",
+    "syncMode": "Chế độ đồng bộ",
+    "merkleDelta": "Merkle Delta",
+    "fullSync": "Đồng bộ toàn phần"
   },
   "toolStats": {
     "title": "Thống kê công cụ",

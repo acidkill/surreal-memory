@@ -1,4 +1,5 @@
 import { useState } from "react"
+import { useIsPro } from "@/api/hooks/useDashboard"
 import { useSyncStatus, useUpdateSyncConfig } from "@/api/hooks/useSync"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -28,6 +29,7 @@ const STRATEGY_LABELS: Record<string, string> = {
 export default function SyncPage() {
   const { data: status, isLoading, refetch } = useSyncStatus()
   const updateConfig = useUpdateSyncConfig()
+  const isPro = useIsPro()
   const { t } = useTranslation()
 
   const [hubUrl, setHubUrl] = useState("")
@@ -148,6 +150,12 @@ export default function SyncPage() {
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">{t("sync.deviceId")}</span>
                   <span className="font-mono text-xs">{status.device_id?.slice(0, 12)}...</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">{t("sync.syncMode")}</span>
+                  <Badge variant={isPro ? "success" : "secondary"}>
+                    {isPro ? t("sync.merkleDelta") : t("sync.fullSync")}
+                  </Badge>
                 </div>
               </>
             )}

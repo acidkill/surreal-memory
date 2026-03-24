@@ -70,3 +70,46 @@ class SyncResponse:
     conflicts: list[SyncConflict] = field(default_factory=list)
     status: SyncStatus = SyncStatus.SUCCESS
     message: str = ""
+
+
+# ── Merkle delta sync protocol ────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class MerkleSyncRequest:
+    """Single-round Merkle sync request.
+
+    Device sends all bucket hashes (~49KB) so the hub can compare in one pass.
+    """
+
+    device_id: str
+    brain_id: str
+    root_hash: str
+    buckets: dict[str, dict[str, str]]  # {entity_type: {prefix: hash}}
+    strategy: ConflictStrategy = ConflictStrategy.PREFER_RECENT
+
+
+@dataclass(frozen=True)
+class MerkleBucketDiff:
+    """Diff payload for a single bucket that differs between device and hub."""
+
+    entity_type: str
+    prefix: str
+    entity_ids: list[str] = field(default_factory=list)  # Full ID list for delete detection
+    entities: list[dict[str, Any]] = field(default_factory=list)  # Changed entity payloads
+
+
+@dataclass(frozen=True)
+class MerkleSyncResponse:
+    """Hub response to a Merkle sync request.
+
+    If root hashes match: status="in_sync", no diffs.
+    Otherwise: status="diff" with changed bucket payloads.
+    """
+
+    status: str  # "in_sync" or "diff"
+    hub_root_hash: str = ""
+    changed_prefixes: list[str] = field(default_factory=list)
+    diffs: list[MerkleBucketDiff] = field(default_factory=list)
+    hub_sequence: int = 0
+    message: str = ""

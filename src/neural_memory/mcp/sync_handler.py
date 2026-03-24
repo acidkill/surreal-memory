@@ -128,7 +128,17 @@ class SyncToolHandler:
                         "message": "Cloud hub requires HTTPS. Use https:// URL.",
                     }
 
-            # Send to hub
+            # Try Merkle delta sync if Pro (single round, ~49KB)
+            if self.config.is_pro() and action in ("full", "pull"):
+                merkle_result = await self._try_merkle_sync(
+                    engine, brain_id, hub_url, args, strategy
+                )
+                if merkle_result is not None:
+                    return merkle_result
+                # Fallback: Merkle failed or unavailable, continue with change-log sync
+                logger.debug("Merkle sync unavailable, falling back to change-log")
+
+            # Send to hub (change-log sync)
             import aiohttp
 
             sync_url = _build_sync_url(hub_url)
@@ -202,6 +212,7 @@ class SyncToolHandler:
             sync_result: dict[str, Any] = {
                 "status": "success",
                 "action": action,
+                "sync_mode": "changelog",
                 "changes_pushed": len(request.changes),
                 "changes_pulled": result["applied"],
                 "conflicts": result["conflicts"],
@@ -223,6 +234,97 @@ class SyncToolHandler:
         except Exception:
             logger.error("Sync failed", exc_info=True)
             return {"status": "error", "message": "Sync operation failed"}
+
+    async def _try_merkle_sync(
+        self,
+        engine: Any,
+        brain_id: str,
+        hub_url: str,
+        args: dict[str, Any],
+        strategy: Any,
+    ) -> dict[str, Any] | None:
+        """Attempt Merkle delta sync. Returns result dict or None to fallback."""
+        try:
+            import aiohttp
+
+            request = await engine.prepare_merkle_request(brain_id, is_pro=True)
+            if request is None:
+                return None
+
+            merkle_url = _build_hub_url(hub_url, "/hub/sync/merkle")
+            api_key = args.get("api_key") or self.config.sync.api_key
+            headers: dict[str, str] = {"Content-Type": "application/json"}
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    merkle_url,
+                    json={
+                        "device_id": request.device_id,
+                        "brain_id": request.brain_id,
+                        "root_hash": request.root_hash,
+                        "buckets": request.buckets,
+                        "strategy": request.strategy.value,
+                    },
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as resp:
+                    if resp.status == 403:
+                        # Hub says not Pro — fall back
+                        return None
+                    if resp.status != 200:
+                        logger.debug("Merkle sync HTTP %d, falling back", resp.status)
+                        return None
+                    data = await resp.json()
+
+            if data.get("status") == "in_sync":
+                return {
+                    "status": "success",
+                    "action": "full",
+                    "sync_mode": "merkle",
+                    "changes_pushed": 0,
+                    "changes_pulled": 0,
+                    "conflicts": 0,
+                    "hub_sequence": data.get("hub_sequence", 0),
+                    "message": "In sync (Merkle hash match)",
+                }
+
+            # Process diffs
+            from neural_memory.sync.protocol import MerkleBucketDiff, MerkleSyncResponse
+
+            diffs = [
+                MerkleBucketDiff(
+                    entity_type=d["entity_type"],
+                    prefix=d["prefix"],
+                    entity_ids=d.get("entity_ids", []),
+                    entities=d.get("entities", []),
+                )
+                for d in data.get("diffs", [])
+            ]
+            response = MerkleSyncResponse(
+                status=data.get("status", "diff"),
+                hub_root_hash=data.get("hub_root_hash", ""),
+                changed_prefixes=data.get("changed_prefixes", []),
+                diffs=diffs,
+                hub_sequence=data.get("hub_sequence", 0),
+            )
+
+            result = await engine.process_merkle_response(response, request.buckets)
+            return {
+                "status": "success",
+                "action": "full",
+                "sync_mode": "merkle",
+                "changes_pulled": result.get("applied", 0),
+                "deleted": result.get("deleted", 0),
+                "changed_prefixes": result.get("changed_prefixes", 0),
+                "conflicts": 0,
+                "hub_sequence": result.get("hub_sequence", 0),
+            }
+
+        except Exception:
+            logger.debug("Merkle sync failed, falling back to change-log", exc_info=True)
+            return None
 
     async def _sync_status(self, args: dict[str, Any]) -> dict[str, Any]:
         """Handle nmem_sync_status tool call."""

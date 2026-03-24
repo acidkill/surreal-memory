@@ -259,7 +259,10 @@
     "conflictStrategy": "Conflict Resolution",
     "conflictDesc": "How to resolve when the same memory is changed on multiple devices.",
     "strategyUpdated": "Conflict strategy updated",
-    "updateFailed": "Failed to update config"
+    "updateFailed": "Failed to update config",
+    "syncMode": "Sync Mode",
+    "merkleDelta": "Merkle Delta",
+    "fullSync": "Full Sync"
   },
   "oracle": {
     "title": "Brain Oracle",

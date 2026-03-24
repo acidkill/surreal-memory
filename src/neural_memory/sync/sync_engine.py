@@ -13,6 +13,9 @@ from neural_memory.core.synapse import Direction, Synapse, SynapseType
 from neural_memory.sync.incremental_merge import merge_change_lists
 from neural_memory.sync.protocol import (
     ConflictStrategy,
+    MerkleBucketDiff,
+    MerkleSyncRequest,
+    MerkleSyncResponse,
     SyncChange,
     SyncRequest,
     SyncResponse,
@@ -177,6 +180,286 @@ class SyncEngine:
             conflicts=conflicts_list,
             status=SyncStatus.SUCCESS,
         )
+
+    # ── Merkle delta sync ─────────────────────────────────────────────
+
+    async def prepare_merkle_request(
+        self,
+        brain_id: str,
+        *,
+        is_pro: bool = False,
+    ) -> MerkleSyncRequest | None:
+        """Build a Merkle sync request with all local bucket hashes.
+
+        Returns ``None`` if not Pro or if hash cache is incomplete.
+        """
+        if not is_pro:
+            return None
+
+        from neural_memory.sync.merkle import ENTITY_TYPES
+
+        buckets: dict[str, dict[str, str]] = {}
+        for entity_type in ENTITY_TYPES:
+            # Ensure hashes are fresh
+            await self._storage.compute_merkle_root(entity_type, is_pro=True)
+            tree = await self._storage.get_merkle_tree(entity_type, is_pro=True)
+            if tree:
+                buckets[entity_type] = tree
+
+        root_hash = await self._storage.get_merkle_root(is_pro=True)
+        if root_hash is None:
+            return None
+
+        return MerkleSyncRequest(
+            device_id=self._device_id,
+            brain_id=brain_id,
+            root_hash=root_hash,
+            buckets=buckets,
+            strategy=self._strategy,
+        )
+
+    async def handle_merkle_sync(
+        self,
+        request: MerkleSyncRequest,
+        *,
+        is_pro: bool = False,
+    ) -> MerkleSyncResponse:
+        """Hub-side handler: compare bucket hashes and return diffs.
+
+        Computes local Merkle hashes, compares with device's buckets,
+        and returns entity payloads for differing buckets.
+        """
+        if not is_pro:
+            return MerkleSyncResponse(status="error", message="Merkle sync requires Pro")
+
+        from neural_memory.sync.merkle import ENTITY_TYPES
+
+        # Compute local hashes
+        for entity_type in ENTITY_TYPES:
+            await self._storage.compute_merkle_root(entity_type, is_pro=True)
+
+        hub_root = await self._storage.get_merkle_root(is_pro=True)
+        hub_root = hub_root or ""
+
+        # Fast path: roots match = in sync
+        if hub_root == request.root_hash:
+            stats = await self._storage.get_change_log_stats()
+            return MerkleSyncResponse(
+                status="in_sync",
+                hub_root_hash=hub_root,
+                hub_sequence=stats.get("last_sequence", 0),
+            )
+
+        # Compare bucket-by-bucket
+        changed_prefixes: list[str] = []
+        diffs: list[MerkleBucketDiff] = []
+
+        for entity_type in ENTITY_TYPES:
+            local_tree = await self._storage.get_merkle_tree(entity_type, is_pro=True)
+            remote_buckets = request.buckets.get(entity_type, {})
+
+            # Find differing bucket prefixes
+            all_prefixes = set(local_tree) | set(remote_buckets)
+            type_prefix = f"{entity_type}s"
+
+            for prefix in sorted(all_prefixes):
+                # Skip the type-root entry (e.g. "neurons") — compare buckets only
+                if prefix == type_prefix:
+                    continue
+
+                local_hash = local_tree.get(prefix, "")
+                remote_hash = remote_buckets.get(prefix, "")
+
+                if local_hash != remote_hash:
+                    changed_prefixes.append(prefix)
+
+                    # Fetch entities for this bucket
+                    bucket_key = prefix.split("/")[-1] if "/" in prefix else ""
+                    entities = await self._fetch_bucket_entities(
+                        entity_type, bucket_key
+                    )
+                    entity_ids = [e["id"] for e in entities]
+
+                    diffs.append(
+                        MerkleBucketDiff(
+                            entity_type=entity_type,
+                            prefix=prefix,
+                            entity_ids=entity_ids,
+                            entities=entities,
+                        )
+                    )
+
+        stats = await self._storage.get_change_log_stats()
+        return MerkleSyncResponse(
+            status="diff",
+            hub_root_hash=hub_root,
+            changed_prefixes=changed_prefixes,
+            diffs=diffs,
+            hub_sequence=stats.get("last_sequence", 0),
+        )
+
+    async def process_merkle_response(
+        self,
+        response: MerkleSyncResponse,
+        local_buckets: dict[str, dict[str, str]],
+    ) -> dict[str, Any]:
+        """Client-side: apply diffs from Merkle sync response.
+
+        For each differing bucket, computes insert/update/delete sets
+        by comparing entity ID lists.
+        """
+        if response.status == "in_sync":
+            return {"applied": 0, "deleted": 0, "status": "in_sync"}
+
+        applied = 0
+        deleted = 0
+
+        for diff in response.diffs:
+            remote_ids = set(diff.entity_ids)
+            remote_entities = {e["id"]: e for e in diff.entities}
+
+            # Get local IDs for this bucket
+            bucket_key = diff.prefix.split("/")[-1] if "/" in diff.prefix else ""
+            local_entities = await self._fetch_bucket_entities(
+                diff.entity_type, bucket_key
+            )
+            local_ids = {e["id"] for e in local_entities}
+
+            # Inserts: remote has, local doesn't
+            for eid in remote_ids - local_ids:
+                payload = remote_entities.get(eid, {})
+                if payload:
+                    change = SyncChange(
+                        sequence=0,
+                        entity_type=diff.entity_type,
+                        entity_id=eid,
+                        operation="insert",
+                        device_id="hub",
+                        changed_at=payload.get("updated_at", utcnow().isoformat()),
+                        payload=payload,
+                    )
+                    try:
+                        await self._apply_remote_change(change)
+                        applied += 1
+                    except Exception:
+                        logger.warning("Merkle insert failed: %s %s", diff.entity_type, eid)
+
+            # Updates: both have, hash differs (hub sends full payload)
+            for eid in remote_ids & local_ids:
+                payload = remote_entities.get(eid, {})
+                if payload:
+                    change = SyncChange(
+                        sequence=0,
+                        entity_type=diff.entity_type,
+                        entity_id=eid,
+                        operation="update",
+                        device_id="hub",
+                        changed_at=payload.get("updated_at", utcnow().isoformat()),
+                        payload=payload,
+                    )
+                    try:
+                        await self._apply_remote_change(change)
+                        applied += 1
+                    except Exception:
+                        logger.warning("Merkle update failed: %s %s", diff.entity_type, eid)
+
+            # Deletes: local has, remote doesn't
+            for eid in local_ids - remote_ids:
+                change = SyncChange(
+                    sequence=0,
+                    entity_type=diff.entity_type,
+                    entity_id=eid,
+                    operation="delete",
+                    device_id="hub",
+                    changed_at=utcnow().isoformat(),
+                )
+                try:
+                    await self._apply_remote_change(change)
+                    deleted += 1
+                except Exception:
+                    logger.warning("Merkle delete failed: %s %s", diff.entity_type, eid)
+
+        # Update sync watermark
+        if response.hub_sequence > 0:
+            await self._storage.mark_synced(response.hub_sequence)
+            await self._storage.update_device_sync(self._device_id, response.hub_sequence)
+
+        return {
+            "applied": applied,
+            "deleted": deleted,
+            "changed_prefixes": len(response.changed_prefixes),
+            "hub_sequence": response.hub_sequence,
+            "status": "diff",
+        }
+
+    async def _fetch_bucket_entities(
+        self,
+        entity_type: str,
+        bucket_key: str,
+    ) -> list[dict[str, Any]]:
+        """Fetch all entities whose ID starts with ``bucket_key`` prefix.
+
+        Returns dicts suitable for sync payloads.
+        """
+        entities: list[dict[str, Any]] = []
+
+        if entity_type == "neuron":
+            neurons = await self._storage.find_neurons(limit=10000)
+            for n in neurons:
+                nid = n.id[:2].lower() if len(n.id) >= 2 else n.id.lower().ljust(2, "0")
+                if nid == bucket_key:
+                    entities.append({
+                        "id": n.id,
+                        "type": n.type.value if hasattr(n.type, "value") else str(n.type),
+                        "content": n.content,
+                        "content_hash": n.content_hash,
+                        "created_at": n.created_at.isoformat() if n.created_at else "",
+                        "updated_at": getattr(n, "updated_at", n.created_at),
+                        "metadata": n.metadata or {},
+                    })
+                    if hasattr(entities[-1]["updated_at"], "isoformat"):
+                        entities[-1]["updated_at"] = entities[-1]["updated_at"].isoformat()
+
+        elif entity_type == "synapse":
+            synapses = await self._storage.get_synapses()
+            for s in synapses:
+                sid = s.id[:2].lower() if len(s.id) >= 2 else s.id.lower().ljust(2, "0")
+                if sid == bucket_key:
+                    entities.append({
+                        "id": s.id,
+                        "source_id": s.source_id,
+                        "target_id": s.target_id,
+                        "type": s.type.value if hasattr(s.type, "value") else str(s.type),
+                        "weight": s.weight,
+                        "direction": s.direction.value if hasattr(s.direction, "value") else str(s.direction),
+                        "content_hash": getattr(s, "content_hash", 0),
+                        "reinforced_count": s.reinforced_count,
+                        "created_at": s.created_at.isoformat() if s.created_at else "",
+                        "metadata": s.metadata or {},
+                    })
+
+        elif entity_type == "fiber":
+            fibers = await self._storage.find_fibers(limit=10000)
+            for f in fibers:
+                fid = f.id[:2].lower() if len(f.id) >= 2 else f.id.lower().ljust(2, "0")
+                if fid == bucket_key:
+                    entities.append({
+                        "id": f.id,
+                        "anchor_neuron_id": f.anchor_neuron_id,
+                        "summary": f.summary or "",
+                        "conductivity": f.conductivity,
+                        "salience": f.salience,
+                        "frequency": f.frequency,
+                        "neuron_ids": list(f.neuron_ids),
+                        "synapse_ids": list(f.synapse_ids),
+                        "pathway": list(f.pathway),
+                        "auto_tags": list(f.auto_tags),
+                        "agent_tags": list(f.agent_tags),
+                        "created_at": f.created_at.isoformat() if f.created_at else "",
+                        "metadata": f.metadata or {},
+                    })
+
+        return entities
 
     async def _apply_remote_change(self, change: SyncChange) -> None:
         """Apply a single remote change to local storage.

@@ -1577,6 +1577,26 @@ class NeuralStorage(ABC):
         """
         raise NotImplementedError
 
+    # ========== Merkle Hash Operations ==========
+
+    async def compute_merkle_root(self, entity_type: str, *, is_pro: bool = False) -> str | None:
+        """Compute and cache the Merkle root hash for an entity type."""
+        raise NotImplementedError
+
+    async def get_merkle_tree(self, entity_type: str, *, is_pro: bool = False) -> dict[str, str]:
+        """Return cached {prefix: hash} map for an entity type."""
+        raise NotImplementedError
+
+    async def invalidate_merkle_prefix(
+        self, entity_type: str, entity_id: str, *, is_pro: bool = False
+    ) -> None:
+        """Delete cached hashes for the bucket containing entity_id."""
+        raise NotImplementedError
+
+    async def get_merkle_root(self, *, is_pro: bool = False) -> str | None:
+        """Get combined root hash across all entity types."""
+        raise NotImplementedError
+
     # ========== Alert Operations ==========
 
     def _get_brain_id(self) -> str:
