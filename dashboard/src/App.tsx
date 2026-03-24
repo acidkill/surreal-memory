@@ -13,6 +13,7 @@ const SettingsPage = lazy(() => import("@/features/settings/SettingsPage"))
 const SyncPage = lazy(() => import("@/features/sync/SyncPage"))
 const OraclePage = lazy(() => import("@/features/oracle/OraclePage"))
 const ToolStatsPage = lazy(() => import("@/features/tool-stats/ToolStatsPage"))
+const VisualizePage = lazy(() => import("@/features/visualize/VisualizePage"))
 
 export default function App() {
   return (
@@ -95,6 +96,14 @@ export default function App() {
           element={
             <Suspense fallback={<PageSkeleton />}>
               <ToolStatsPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="visualize"
+          element={
+            <Suspense fallback={<PageSkeleton />}>
+              <VisualizePage />
             </Suspense>
           }
         />

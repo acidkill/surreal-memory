@@ -8,6 +8,7 @@
     "mindmap": "Sơ đồ tư duy",
     "oracle": "Tiên tri",
     "toolStats": "Thống kê công cụ",
+    "visualize": "Trực quan",
     "sync": "Đồng bộ",
     "settings": "Cài đặt"
   },
@@ -314,6 +315,10 @@
     "avgDuration": "Thời gian TB",
     "server": "Server",
     "noData": "Chưa có dữ liệu. Sử dụng các công cụ NeuralMemory để bắt đầu theo dõi."
+  },
+  "visualize": {
+    "title": "Trực quan hóa",
+    "description": "Truy vấn bộ nhớ và tạo biểu đồ từ dữ liệu đã lưu."
   },
   "license": {
     "tier": "Giấy phép",

@@ -11,6 +11,7 @@ import {
   Brain,
   Sparkles,
   BarChart3,
+  LineChart,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useLayoutStore } from "@/stores/useLayoutStore"
@@ -26,6 +27,7 @@ const navItems = [
   { to: "/sync", icon: Cloud, labelKey: "nav.sync" },
   { to: "/oracle", icon: Sparkles, labelKey: "nav.oracle" },
   { to: "/tool-stats", icon: BarChart3, labelKey: "nav.toolStats" },
+  { to: "/visualize", icon: LineChart, labelKey: "nav.visualize" },
   { to: "/settings", icon: Settings, labelKey: "nav.settings" },
 ] as const
 

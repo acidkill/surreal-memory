@@ -9,6 +9,7 @@
     "sync": "Cloud Sync",
     "oracle": "Oracle",
     "toolStats": "Tool Stats",
+    "visualize": "Visualize",
     "settings": "Settings"
   },
   "common": {
@@ -314,6 +315,10 @@
     "avgDuration": "Avg Duration",
     "server": "Server",
     "noData": "No tool events recorded yet. Use NeuralMemory tools to start tracking."
+  },
+  "visualize": {
+    "title": "Memory Visualizer",
+    "description": "Query your memories and generate charts from stored data."
   },
   "license": {
     "tier": "License",
