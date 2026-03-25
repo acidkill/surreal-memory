@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.20.2] — 2026-03-25
+
+### Fixed
+
+- **Consolidation timeout** — full consolidation could run for hours on brains with 5K+ neurons/20K+ synapses. Root causes: dream engine O(N²) pair generation from unbounded activated neurons, enrichment O(N²) Jaccard fiber comparison on up to 10K fibers, and no timeout on any strategy
+  - Added per-strategy timeout (120s) and total timeout (600s) via `asyncio.wait_for()`
+  - Capped dream activated neurons at 500, reduced max pairs from 50K to 5K, max new dream synapses capped at 200
+  - Capped enrichment fiber clustering at 1000 highest-salience fibers (was unbounded up to 10K)
+
+### Improved
+
+- **Consolidation progress logging** — each strategy now logs start/finish with duration, making it easy to identify bottlenecks
+- **Timeout reporting** — timed-out strategies are listed in the consolidation report (`report.extra["timed_out_strategies"]`)
+
 ## [4.20.1] — 2026-03-25
 
 ### Fixed
