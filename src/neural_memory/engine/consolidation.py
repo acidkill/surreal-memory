@@ -311,11 +311,17 @@ class ConsolidationEngine:
         report = ConsolidationReport(started_at=reference_time, dry_run=dry_run)
         start = time.perf_counter()
 
-        run_all = ConsolidationStrategy.ALL in strategies
+        # Normalize string strategies to enum values (callers may pass raw strings)
+        normalized: list[ConsolidationStrategy] = [
+            s if isinstance(s, ConsolidationStrategy) else ConsolidationStrategy(s)
+            for s in strategies
+        ]
+
+        run_all = ConsolidationStrategy.ALL in normalized
         requested: set[ConsolidationStrategy] = (
             {s for s in ConsolidationStrategy if s != ConsolidationStrategy.ALL}
             if run_all
-            else set(strategies)
+            else set(normalized)
         )
 
         strategy_timeout = self._config.strategy_timeout_seconds
