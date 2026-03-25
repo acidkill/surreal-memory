@@ -622,17 +622,27 @@ class ConsolidationEngine:
 
         # Find candidate pairs (fibers sharing at least one neuron)
         candidate_pairs: set[tuple[int, int]] = set()
+        max_candidate_pairs = 50_000
         for indices in neuron_to_fibers.values():
+            # Skip overly-shared neurons (e.g. entity appearing in 500+ fibers)
+            if len(indices) > 100:
+                continue
             indices_list = sorted(indices)
             for i_pos in range(len(indices_list)):
                 for j_pos in range(i_pos + 1, len(indices_list)):
                     candidate_pairs.add((indices_list[i_pos], indices_list[j_pos]))
+            if len(candidate_pairs) >= max_candidate_pairs:
+                break
 
         # Union-Find clustering
         uf = UnionFind(n)
 
         # Only compute Jaccard for actual candidate pairs
+        pairs_checked = 0
         for i, j in candidate_pairs:
+            pairs_checked += 1
+            if pairs_checked % 1000 == 0:
+                await asyncio.sleep(0)  # yield so timeout can fire
             # Domain guard: never merge structured/verbatim fibers with non-structured
             fi_verbatim = fiber_list[i].metadata.get("_verbatim", False)
             fj_verbatim = fiber_list[j].metadata.get("_verbatim", False)
@@ -1370,11 +1380,19 @@ class ConsolidationEngine:
         if len(anchors) < 2:
             return
 
+        # Cap anchors to prevent O(N^2) blowup (N=2000 → 2M comparisons)
+        max_anchors = 2000
+        if len(anchors) > max_anchors:
+            anchors = anchors[:max_anchors]
+
         # Group duplicates by SimHash proximity
         seen: set[str] = set()
         for i, anchor_a in enumerate(anchors):
             if anchor_a.id in seen:
                 continue
+            # Yield to event loop every 100 outer iterations so timeout can fire
+            if i % 100 == 0:
+                await asyncio.sleep(0)
             if anchor_a.content_hash is None or anchor_a.content_hash == 0:
                 continue
 

@@ -7,6 +7,7 @@ Creates new knowledge from existing knowledge:
 
 from __future__ import annotations
 
+import asyncio
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -138,6 +139,9 @@ async def find_cross_cluster_links(
         tags_a = tagged_fibers[i].tags
         if not tags_a:
             continue
+        # Yield to event loop every 50 outer iterations so timeout can fire
+        if i % 50 == 0:
+            await asyncio.sleep(0)
         for j in range(i + 1, n):
             tags_b = tagged_fibers[j].tags
             if not tags_b:
