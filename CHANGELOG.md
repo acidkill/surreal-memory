@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.20.4] — 2026-03-25
+
+### Fixed
+
+- **`_essence_backfill` pagination bug** — used broken cursor-based pagination with `offset=` param that `get_fibers()` doesn't support. Replaced with single-batch fetch (limit=1000) + safety cap of 2000 fibers
+- **`_summarize` O(N²) pair explosion** — no cap on candidate pairs or fiber count. Added: cap fibers at 1000 (highest-salience), skip tags shared by >100 fibers, cap pairs at 50K, yield every 1000 pairs
+- **Unbounded `get_synapses()` in dream engine** — filtered by `RELATED_TO` type (the only type dream creates), reducing memory footprint
+- **`_prune` event loop blocking** — added `asyncio.sleep(0)` yield every 500 synapses in prune loop
+- **Dormant neuron selection bias** — `_dream_cycle` always picked first 20 dormant neurons instead of randomizing
+
+### Improved
+
+- **Yield frequency** — cross-cluster enrichment 50→20 iterations, SimHash dedup 100→50 iterations for more responsive timeout cancellation
+- **Encryptor cache TTL** — `_get_encryptor()` in retrieval engine now has 5-minute TTL instead of caching forever (picks up config changes mid-session)
+
 ## [4.20.3] — 2026-03-25
 
 ### Fixed
