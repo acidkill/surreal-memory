@@ -727,7 +727,7 @@ def _sanitize_sync_id(value: str) -> str:
     return cleaned
 
 
-_VALID_STORAGE_BACKENDS = {"sqlite", "falkordb", "postgres"}
+_VALID_STORAGE_BACKENDS = {"sqlite", "falkordb", "postgres", "infinitydb"}
 
 
 def _validate_storage_backend(value: str) -> str:
@@ -1487,6 +1487,7 @@ class UnifiedConfig:
             "[sync]",
             f"enabled = {'true' if self.sync.enabled else 'false'}",
             f'hub_url = "{self.sync.hub_url}"',
+            f'api_key = "{_sanitize_toml_str(self.sync.api_key)}"',
             f"auto_sync = {'true' if self.sync.auto_sync else 'false'}",
             f"sync_interval_seconds = {self.sync.sync_interval_seconds}",
             f'conflict_strategy = "{self.sync.conflict_strategy}"',
@@ -1825,6 +1826,10 @@ async def get_shared_storage(brain_name: str | None = None) -> NeuralStorage:
     else:
         name = brain_name
 
+    # InfinityDB backend (Pro plugin)
+    if config.storage_backend == "infinitydb":
+        return await _get_infinitydb_storage(config, name)
+
     # FalkorDB backend
     if config.storage_backend == "falkordb":
         return await _get_falkordb_storage(config, name)
@@ -1832,6 +1837,10 @@ async def get_shared_storage(brain_name: str | None = None) -> NeuralStorage:
     # PostgreSQL backend
     if config.storage_backend == "postgres":
         return await _get_postgres_storage(config, name)
+
+    # Pro auto-upgrade: only when explicitly configured via config.toml
+    # Users set storage_backend = "infinitydb" to opt in (handled above).
+    # Auto-detect is NOT done to avoid breaking existing SQLite setups.
 
     # Default: SQLite backend
     return await _get_sqlite_storage(config, name, brain_name)
@@ -1903,7 +1912,36 @@ async def _get_sqlite_storage(
 
 
 # Cached FalkorDB storage (single connection, multi-graph)
+_infinitydb_storage: NeuralStorage | None = None
 _falkordb_storage: NeuralStorage | None = None
+
+
+async def _get_infinitydb_storage(config: UnifiedConfig, name: str) -> NeuralStorage:
+    """Create or return cached InfinityDB storage (Pro plugin)."""
+    global _infinitydb_storage
+
+    if _infinitydb_storage is not None:
+        _infinitydb_storage.set_brain(name)
+        return _infinitydb_storage
+
+    from neural_memory.plugins import get_storage_class
+
+    storage_cls = get_storage_class()
+    if storage_cls is None:
+        logger.warning(
+            "InfinityDB backend requested but Pro plugin not installed, falling back to SQLite"
+        )
+        return await _get_sqlite_storage(config, name, None)
+
+    base_dir = config.data_dir / "brains"
+    base_dir.mkdir(parents=True, exist_ok=True)
+
+    storage = storage_cls(base_dir=str(base_dir), brain_id=name)
+    await storage.open()
+
+    _infinitydb_storage = storage
+    logger.info("InfinityDB storage initialized for brain '%s'", name)
+    return _infinitydb_storage
 
 
 async def _get_falkordb_storage(config: UnifiedConfig, name: str) -> NeuralStorage:

@@ -50,6 +50,7 @@ def run_doctor(*, json_output: bool = False, fix: bool = False) -> dict[str, Any
     checks.append(_check_surface())
     checks.append(_check_config_freshness())
     checks.append(_check_cli_tools())
+    checks.append(_check_pro_plugin())
 
     # Auto-fix pass
     if fix:
@@ -416,6 +417,57 @@ def _check_cli_tools() -> dict[str, Any]:
         "status": WARN,
         "detail": f"missing: {', '.join(missing)} (nmem mcp fallback available)",
     }
+
+
+def _check_pro_plugin() -> dict[str, Any]:
+    """Check if Neural Memory Pro plugin is installed and active."""
+    try:
+        from neural_memory.plugins import get_plugins, has_pro
+
+        if has_pro():
+            plugins = get_plugins()
+            names = [f"{p.name} v{p.version}" for p in plugins]
+            return {
+                "name": "Pro plugin",
+                "status": OK,
+                "detail": ", ".join(names),
+            }
+
+        # Check if Pro package is importable but not registered
+        try:
+            import neural_memory_pro  # noqa: F401
+
+            return {
+                "name": "Pro plugin",
+                "status": WARN,
+                "detail": "Package installed but not registered — check entry_points",
+            }
+        except ImportError:
+            pass
+
+        # Check license
+        from neural_memory.unified_config import get_config
+
+        config = get_config()
+        if config.is_pro():
+            return {
+                "name": "Pro plugin",
+                "status": WARN,
+                "detail": "License active but plugin not installed",
+                "fix": "Run: pip install neural-memory-pro",
+            }
+
+        return {
+            "name": "Pro plugin",
+            "status": SKIP,
+            "detail": "Not installed (free tier)",
+        }
+    except Exception:
+        return {
+            "name": "Pro plugin",
+            "status": SKIP,
+            "detail": "Could not check",
+        }
 
 
 def _check_hooks() -> dict[str, Any]:

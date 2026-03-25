@@ -157,13 +157,14 @@ class TestDoctor:
             patch("neural_memory.cli.doctor._check_dedup") as m10,
             patch("neural_memory.cli.doctor._check_surface") as m11,
             patch("neural_memory.cli.doctor._check_config_freshness") as m12,
+            patch("neural_memory.cli.doctor._check_pro_plugin") as m13,
         ):
-            for m in [m1, m2, m3, m4, m5, m6, m7, m7b, m8, m9, m10, m11, m12]:
+            for m in [m1, m2, m3, m4, m5, m6, m7, m7b, m8, m9, m10, m11, m12, m13]:
                 m.return_value = {"name": "test", "status": "ok", "detail": "ok"}
 
             result = run_doctor(json_output=True)
-            assert result["passed"] == 13
-            assert result["total"] == 13
+            assert result["passed"] == 14
+            assert result["total"] == 14
             assert result["failed"] == 0
 
     def test_run_doctor_with_failures(self) -> None:
@@ -183,15 +184,16 @@ class TestDoctor:
             patch("neural_memory.cli.doctor._check_dedup") as m10,
             patch("neural_memory.cli.doctor._check_surface") as m11,
             patch("neural_memory.cli.doctor._check_config_freshness") as m12,
+            patch("neural_memory.cli.doctor._check_pro_plugin") as m13,
         ):
             m1.return_value = {"name": "Python", "status": "ok", "detail": "ok"}
             m2.return_value = {"name": "Config", "status": "fail", "detail": "missing"}
-            for m in [m3, m4, m5, m6, m7, m7b, m8, m9, m10, m11, m12]:
+            for m in [m3, m4, m5, m6, m7, m7b, m8, m9, m10, m11, m12, m13]:
                 m.return_value = {"name": "test", "status": "ok", "detail": "ok"}
 
             result = run_doctor(json_output=True)
             assert result["failed"] == 1
-            assert result["passed"] == 12
+            assert result["passed"] == 13
 
 
 # ──────────────────── Embedding Setup ────────────────────

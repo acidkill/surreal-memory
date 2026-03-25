@@ -249,6 +249,7 @@ class TestAutoFix:
 class TestRunDoctorIntegration:
     """Test run_doctor with new checks."""
 
+    @patch("neural_memory.cli.doctor._check_pro_plugin")
     @patch("neural_memory.cli.doctor._check_surface")
     @patch("neural_memory.cli.doctor._check_dedup")
     @patch("neural_memory.cli.doctor._check_hooks")
@@ -261,13 +262,13 @@ class TestRunDoctorIntegration:
     @patch("neural_memory.cli.doctor._check_brain")
     @patch("neural_memory.cli.doctor._check_config")
     @patch("neural_memory.cli.doctor._check_python_version")
-    def test_includes_all_13_checks(self, *mocks: MagicMock) -> None:
+    def test_includes_all_14_checks(self, *mocks: MagicMock) -> None:
         for mock in mocks:
             mock.return_value = {"name": "test", "status": OK, "detail": "ok"}
 
         result = run_doctor(json_output=True)
-        assert result["total"] == 13
-        assert result["passed"] == 13
+        assert result["total"] == 14
+        assert result["passed"] == 14
 
     def test_quickstart_url_defined(self) -> None:
         assert "quickstart" in QUICKSTART_URL

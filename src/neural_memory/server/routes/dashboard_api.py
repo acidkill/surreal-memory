@@ -1481,7 +1481,7 @@ async def activate_license(body: ActivateLicenseRequest) -> dict[str, Any]:
 
     from neural_memory.unified_config import LicenseConfig, get_config, set_config
 
-    cfg = get_config()
+    cfg = get_config(reload=True)
 
     # Normalize key format
     key = body.license_key.strip()

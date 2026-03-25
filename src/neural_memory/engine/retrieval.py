@@ -361,13 +361,43 @@ class ReflexPipeline:
         if strategy == "auto":
             strategy = await self._auto_select_strategy()
 
+        if strategy == "cone":
+            # Pro cone queries: HNSW nearest-neighbor via plugin
+            cone_done = False
+            from neural_memory.plugins import get_retrieval_strategy
+
+            cone_fn = get_retrieval_strategy("cone")
+            if cone_fn is not None and self._embedding_provider is not None:
+                try:
+                    db = getattr(self._storage, "_infinitydb", None)
+                    if db is not None:
+                        query_vec = await self._embedding_provider.embed(query)
+                        cone_results = await cone_fn(query_vec, db)
+                        activations = {}
+                        for cr in cone_results:
+                            activations[cr.neuron_id] = ActivationResult(
+                                neuron_id=cr.neuron_id,
+                                activation_level=cr.combined_score,
+                                hop_distance=0,
+                                path=[cr.neuron_id],
+                                source_anchor=cr.neuron_id,
+                            )
+                        intersections: list[str] = []
+                        co_activations: list[CoActivation] = []
+                        cone_done = True
+                except Exception:
+                    logger.debug("Cone query failed, falling back", exc_info=True)
+            if not cone_done:
+                logger.debug("Cone unavailable — falling back to classic activation")
+                strategy = "classic"
+
         if strategy == "ppr" and self._ppr_activator is not None:
             # Personalized PageRank activation
             activations, intersections = await self._ppr_activator.activate_from_multiple(
                 anchor_sets,
                 anchor_activations=anchor_activations,
             )
-            co_activations: list[CoActivation] = []
+            co_activations = []
         elif strategy == "hybrid" and self._ppr_activator is not None:
             # Hybrid: PPR primary + reflex for fiber pathways
             ppr_activations, ppr_intersections = await self._ppr_activator.activate_from_multiple(

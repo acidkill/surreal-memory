@@ -601,26 +601,49 @@ class CompressionEngine:
         backup_created = False
         entities_preserved = 0
 
-        if target_tier == CompressionTier.GRAPH_ONLY:
+        # Pro directional compression: multi-axis semantic preservation
+        _pro_compressed = False
+        if target_tier in (CompressionTier.EXTRACTIVE, CompressionTier.ENTITY_ONLY):
+            from neural_memory.plugins import get_compression_fn
+
+            pro_compress = get_compression_fn()
+            if pro_compress is not None:
+                try:
+                    level_map = {
+                        CompressionTier.EXTRACTIVE: "summary",
+                        CompressionTier.ENTITY_ONLY: "essence",
+                    }
+                    compressed_content = await pro_compress(
+                        original_content,
+                        level_map[target_tier],
+                        None,  # embed_fn — Pro uses internal embedding
+                    )
+                    compressed_token_count = _token_count(compressed_content)
+                    entities_preserved = len(neuron_contents)
+                    _pro_compressed = True
+                except Exception:
+                    logger.debug("Pro compression failed, falling back to free", exc_info=True)
+
+        if not _pro_compressed and target_tier == CompressionTier.GRAPH_ONLY:
             compressed_content = ""
             compressed_token_count = 0
             entities_preserved = 0
-        elif target_tier == CompressionTier.TEMPLATE:
+        elif not _pro_compressed and target_tier == CompressionTier.TEMPLATE:
             compressed_content, entities_preserved = compress_tier3_template(
                 neuron_contents, relations
             )
             compressed_token_count = _token_count(compressed_content)
-        elif target_tier == CompressionTier.ENTITY_ONLY:
+        elif not _pro_compressed and target_tier == CompressionTier.ENTITY_ONLY:
             compressed_content, entities_preserved = compress_tier2_entity_preserving(
                 original_content, neuron_contents, relations, self._config
             )
             compressed_token_count = _token_count(compressed_content)
-        elif target_tier == CompressionTier.EXTRACTIVE:
+        elif not _pro_compressed and target_tier == CompressionTier.EXTRACTIVE:
             compressed_content, entities_preserved = compress_tier1_extractive(
                 original_content, neuron_contents, self._config
             )
             compressed_token_count = _token_count(compressed_content)
-        else:
+        elif not _pro_compressed:
             # FULL — no compression needed (should be filtered before here).
             return CompressionResult(
                 fiber_id=fiber.id,

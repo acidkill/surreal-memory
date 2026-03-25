@@ -49,6 +49,7 @@ class ConsolidationStrategy(StrEnum):
     PROCESS_TOOL_EVENTS = "process_tool_events"
     ESSENCE_BACKFILL = "essence_backfill"
     DETECT_DRIFT = "detect_drift"
+    SMART_MERGE = "smart_merge"  # Pro: HNSW-accelerated merge via plugin
     ALL = "all"
 
 
@@ -209,6 +210,7 @@ class ConsolidationEngine:
         frozenset(
             {
                 ConsolidationStrategy.MERGE,
+                ConsolidationStrategy.SMART_MERGE,
                 ConsolidationStrategy.MATURE,
                 ConsolidationStrategy.COMPRESS,
                 ConsolidationStrategy.LIFECYCLE,
@@ -275,6 +277,7 @@ class ConsolidationEngine:
             ),
             ConsolidationStrategy.DETECT_DRIFT: lambda: self._detect_drift(report, dry_run),
             ConsolidationStrategy.ESSENCE_BACKFILL: lambda: self._essence_backfill(report, dry_run),
+            ConsolidationStrategy.SMART_MERGE: lambda: self._smart_merge_pro(report, dry_run),
         }
         handler = dispatch.get(strategy)
         if handler is not None:
@@ -1674,3 +1677,29 @@ class ConsolidationEngine:
                 report.extra["drift_clusters"] = total
         except Exception:
             _logger.debug("DETECT_DRIFT failed (non-critical)", exc_info=True)
+
+    async def _smart_merge_pro(self, report: ConsolidationReport, dry_run: bool) -> None:
+        """Pro: HNSW-accelerated smart merge via plugin."""
+        _logger = logging.getLogger(__name__)
+
+        from neural_memory.plugins import get_consolidation_strategy
+
+        merge_fn = get_consolidation_strategy("smart_merge")
+        if merge_fn is None:
+            _logger.debug("SMART_MERGE skipped: Pro plugin not installed")
+            return
+
+        db = getattr(self._storage, "_infinitydb", None)
+        if db is None:
+            _logger.debug("SMART_MERGE skipped: storage is not InfinityDB")
+            return
+
+        try:
+            result = await merge_fn(db, dry_run=dry_run)
+            merged_count = result.get("merged_count", 0)
+            if merged_count > 0:
+                report.neurons_pruned += merged_count
+                report.extra["smart_merge_count"] = merged_count
+                _logger.info("SMART_MERGE: %d neurons merged via Pro HNSW clustering", merged_count)
+        except Exception:
+            _logger.debug("SMART_MERGE failed (non-critical)", exc_info=True)
