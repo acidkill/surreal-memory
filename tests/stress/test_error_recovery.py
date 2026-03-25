@@ -136,7 +136,7 @@ class TestRelatedMemoryFailureGraceful:
         server.get_storage = AsyncMock(return_value=mock_storage)
 
         with (
-            patch("neural_memory.mcp.tool_handlers.MemoryEncoder") as mock_enc,
+            patch("neural_memory.mcp.remember_handler.MemoryEncoder") as mock_enc,
             patch("neural_memory.safety.sensitive.check_sensitive_content", return_value=[]),
             patch("neural_memory.engine.activation.SpreadingActivation") as mock_activation,
         ):

@@ -138,7 +138,7 @@ class TestPassiveCaptureFailure:
         mock_storage.find_fibers_batch = AsyncMock(return_value=[])
 
         with (
-            patch("neural_memory.mcp.tool_handlers.MemoryEncoder") as mock_enc,
+            patch("neural_memory.mcp.remember_handler.MemoryEncoder") as mock_enc,
             patch("neural_memory.safety.sensitive.check_sensitive_content", return_value=[]),
             patch("neural_memory.engine.activation.SpreadingActivation") as mock_act,
         ):
