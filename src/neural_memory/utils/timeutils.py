@@ -20,3 +20,14 @@ def utcnow() -> datetime:
     triggering a ``DeprecationWarning``.
     """
     return datetime.now(UTC).replace(tzinfo=None)
+
+
+def ensure_naive_utc(dt: datetime) -> datetime:
+    """Convert a datetime to naive UTC.
+
+    If the datetime is timezone-aware, convert to UTC and strip tzinfo.
+    If already naive, return as-is (assumed to be UTC per project convention).
+    """
+    if dt.tzinfo is not None:
+        return dt.astimezone(UTC).replace(tzinfo=None)
+    return dt

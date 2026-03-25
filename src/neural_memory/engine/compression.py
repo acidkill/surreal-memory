@@ -26,7 +26,7 @@ from datetime import datetime
 from enum import IntEnum, StrEnum
 from typing import TYPE_CHECKING, Any
 
-from neural_memory.utils.timeutils import utcnow
+from neural_memory.utils.timeutils import ensure_naive_utc, utcnow
 
 if TYPE_CHECKING:
     from neural_memory.core.fiber import Fiber
@@ -916,7 +916,7 @@ class CompressionEngine:
         """
         import time
 
-        reference_time = reference_time or utcnow()
+        reference_time = ensure_naive_utc(reference_time) if reference_time else utcnow()
         report = CompressionReport(started_at=reference_time, dry_run=dry_run)
         start = time.perf_counter()
 

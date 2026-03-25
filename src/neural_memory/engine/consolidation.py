@@ -22,7 +22,7 @@ from neural_memory.core.fiber import Fiber
 from neural_memory.core.neuron import Neuron, NeuronType
 from neural_memory.core.synapse import Synapse, SynapseType
 from neural_memory.engine.clustering import UnionFind
-from neural_memory.utils.timeutils import utcnow
+from neural_memory.utils.timeutils import ensure_naive_utc, utcnow
 
 if TYPE_CHECKING:
     from neural_memory.storage.base import NeuralStorage
@@ -300,7 +300,7 @@ class ConsolidationEngine:
         if strategies is None:
             strategies = [ConsolidationStrategy.ALL]
 
-        reference_time = reference_time or utcnow()
+        reference_time = ensure_naive_utc(reference_time) if reference_time else utcnow()
         report = ConsolidationReport(started_at=reference_time, dry_run=dry_run)
         start = time.perf_counter()
 

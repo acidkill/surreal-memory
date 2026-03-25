@@ -69,14 +69,14 @@
 - [ ] `nmem_edit` type/priority changes persisted in PostgreSQL
 - [ ] Parity test suite: run SQLite test matrix against PostgreSQL
 
-### A2. File Watcher Ingestion — Issue #66
+### A2. File Watcher Ingestion — Issue #66 ✅
 
 **Problem**: Users manually run `nmem train` on files. Should be automatic: drop file → auto-memorize.
 
 **Scope**: 3 phases (plan: `.rune/plan-file-watcher.md`)
-- [ ] Phase 1: Core FileWatcher class, watchdog integration, state tracking (mtime + simhash)
-- [ ] Phase 2: `nmem watch` CLI + `nmem_watch` MCP tool + config
-- [ ] Phase 3: `nmem serve` integration, debounce (2s), metrics
+- [x] Phase 1: Core FileWatcher class, watchdog integration, state tracking (mtime + simhash)
+- [x] Phase 2: `nmem watch` CLI + `nmem_watch` MCP tool + config
+- [x] Phase 3: `nmem serve` integration, debounce (2s), metrics
 - **Brain test**: Não tự hấp thụ thông tin từ môi trường → Yes
 
 ### A3. Brain Quality Track C — Vertical Intelligence

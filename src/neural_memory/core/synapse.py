@@ -9,7 +9,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import uuid4
 
-from neural_memory.utils.timeutils import utcnow
+from neural_memory.utils.timeutils import ensure_naive_utc, utcnow
 
 
 class SynapseType(StrEnum):
@@ -293,6 +293,8 @@ class Synapse:
         """
         if reference_time is None:
             reference_time = utcnow()
+        else:
+            reference_time = ensure_naive_utc(reference_time)
 
         if self.last_activated:
             hours_since = (reference_time - self.last_activated).total_seconds() / 3600

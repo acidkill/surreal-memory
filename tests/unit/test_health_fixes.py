@@ -486,3 +486,19 @@ class TestVersionBump:
         import neural_memory
 
         assert neural_memory.__version__ == "4.20.0"
+
+
+class TestPackageIntegrity:
+    """Issue #114/#115: verify critical subpackages are importable."""
+
+    def test_cli_commands_importable(self) -> None:
+        """Catches packaging regression where cli/commands/ is missing from wheel."""
+        from neural_memory.cli.commands import (  # noqa: F401
+            brain,
+            memory,
+            tools,
+            watch,
+        )
+
+    def test_cli_main_importable(self) -> None:
+        from neural_memory.cli.main import app  # noqa: F401

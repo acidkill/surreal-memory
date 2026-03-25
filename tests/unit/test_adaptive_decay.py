@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta, timezone
 
 from neural_memory.core.synapse import Synapse, SynapseType
-from neural_memory.utils.timeutils import utcnow
+from neural_memory.utils.timeutils import ensure_naive_utc, utcnow
 
 
 def _make_synapse(
@@ -121,3 +121,40 @@ class TestAdaptiveDecay:
         s = _make_synapse(weight=0.0, reinforced_count=5, hours_ago=500)
         decayed = s.time_decay()
         assert decayed.weight == 0.0
+
+    def test_timezone_aware_reference_time_no_crash(self) -> None:
+        """Issue #113: aware reference_time must not crash with naive stored datetimes."""
+        s = _make_synapse(weight=1.0, reinforced_count=0, hours_ago=24)
+        aware_ref = datetime.now(UTC)
+        decayed = s.time_decay(reference_time=aware_ref)
+        assert decayed.weight > 0.0
+
+    def test_timezone_aware_non_utc_reference_time(self) -> None:
+        """Aware reference_time in non-UTC timezone should be converted to naive UTC."""
+        s = _make_synapse(weight=1.0, reinforced_count=0, hours_ago=24)
+        # UTC+7
+        tz7 = timezone(timedelta(hours=7))
+        aware_ref = datetime.now(tz7)
+        decayed = s.time_decay(reference_time=aware_ref)
+        assert decayed.weight > 0.0
+
+
+class TestEnsureNaiveUtc:
+    """Tests for ensure_naive_utc helper."""
+
+    def test_naive_passthrough(self) -> None:
+        dt = utcnow()
+        assert ensure_naive_utc(dt) is dt
+
+    def test_aware_utc_stripped(self) -> None:
+        dt = datetime.now(UTC)
+        result = ensure_naive_utc(dt)
+        assert result.tzinfo is None
+        assert abs((dt.replace(tzinfo=None) - result).total_seconds()) < 1
+
+    def test_aware_non_utc_converted(self) -> None:
+        tz7 = timezone(timedelta(hours=7))
+        dt = datetime(2026, 3, 25, 14, 0, 0, tzinfo=tz7)  # 14:00 UTC+7 = 07:00 UTC
+        result = ensure_naive_utc(dt)
+        assert result.tzinfo is None
+        assert result.hour == 7
