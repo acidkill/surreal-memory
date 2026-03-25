@@ -127,6 +127,7 @@ extra_css:
   - assets/css/quickstart.css
 
 extra_javascript:
+  - assets/redirect.js
   - assets/js/quickstart.js
 
 extra:
