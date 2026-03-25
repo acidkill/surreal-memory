@@ -1504,7 +1504,11 @@ async def activate_license(body: ActivateLicenseRequest) -> dict[str, Any]:
     try:
         import aiohttp
 
-        url = hub_url.rstrip("/") + "/hub/activate"
+        base = hub_url.rstrip("/")
+        if "localhost" in base or "127.0.0.1" in base:
+            url = f"{base}/hub/activate"
+        else:
+            url = f"{base}/v1/hub/activate"
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_key}",
