@@ -167,6 +167,40 @@ def check_content(text: str) -> FirewallResult:
     return FirewallResult(blocked=False, sanitized=sanitized)
 
 
+def sanitize_explicit_content(text: str) -> str:
+    """Light sanitization for explicit nmem_remember path.
+
+    Unlike check_content() (which blocks), this only strips dangerous
+    control sequences and fake role tags. It does NOT block content —
+    the caller made a deliberate decision to store it.
+
+    Safe for technical content: base64, JSON metadata, code snippets
+    all pass through unchanged. Only chat-platform artifacts and
+    binary control characters are removed.
+
+    Args:
+        text: Raw content from explicit remember call.
+
+    Returns:
+        Sanitized content with control sequences stripped.
+    """
+    if not text or not isinstance(text, str):
+        return text
+
+    sanitized = _CONTROL_SEQ_RE.sub("", text)
+
+    # Collapse excessive whitespace from removals
+    sanitized = re.sub(r"\n{3,}", "\n\n", sanitized)
+
+    if sanitized != text:
+        logger.debug(
+            "Explicit path: sanitized %d control chars from content",
+            len(text) - len(sanitized),
+        )
+
+    return sanitized
+
+
 def _is_highly_repetitive(text: str) -> bool:
     """Check if text contains excessive repetition using 3-gram frequency."""
     if len(text) < 100:

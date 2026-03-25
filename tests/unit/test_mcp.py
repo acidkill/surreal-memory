@@ -248,7 +248,7 @@ class TestMCPToolCalls:
 
         with (
             patch.object(server, "get_storage", return_value=mock_storage),
-            patch("neural_memory.mcp.tool_handlers.MemoryEncoder", return_value=mock_encoder),
+            patch("neural_memory.mcp.remember_handler.MemoryEncoder", return_value=mock_encoder),
         ):
             result = await server.call_tool(
                 "nmem_remember",
@@ -423,7 +423,7 @@ class TestMCPToolCalls:
 
         with (
             patch.object(server, "get_storage", return_value=mock_storage),
-            patch("neural_memory.mcp.tool_handlers.MemoryEncoder", return_value=mock_encoder),
+            patch("neural_memory.mcp.remember_handler.MemoryEncoder", return_value=mock_encoder),
         ):
             result = await server.call_tool("nmem_todo", {"task": "Review code", "priority": 8})
 
@@ -539,7 +539,7 @@ class TestMCPToolCalls:
 
         with (
             patch.object(server, "get_storage", return_value=mock_storage),
-            patch("neural_memory.mcp.tool_handlers.MemoryEncoder", return_value=mock_encoder),
+            patch("neural_memory.mcp.remember_handler.MemoryEncoder", return_value=mock_encoder),
         ):
             text = "We decided to use Redis for caching. TODO: Set up Redis server."
             result = await server.call_tool("nmem_auto", {"action": "process", "text": text})
@@ -696,7 +696,7 @@ class TestMCPToolCalls:
 
         with (
             patch.object(server, "get_storage", return_value=mock_storage),
-            patch("neural_memory.mcp.tool_handlers.MemoryEncoder", return_value=mock_encoder),
+            patch("neural_memory.mcp.remember_handler.MemoryEncoder", return_value=mock_encoder),
         ):
             result = await server.call_tool(
                 "nmem_session",
@@ -746,7 +746,7 @@ class TestMCPToolCalls:
 
         with (
             patch.object(server, "get_storage", return_value=mock_storage),
-            patch("neural_memory.mcp.tool_handlers.MemoryEncoder", return_value=mock_encoder),
+            patch("neural_memory.mcp.remember_handler.MemoryEncoder", return_value=mock_encoder),
         ):
             result = await server.call_tool("nmem_session", {"action": "end"})
 
@@ -922,7 +922,7 @@ class TestMCPErrorPaths:
 
         with (
             patch.object(server, "get_storage", return_value=mock_storage),
-            patch("neural_memory.mcp.tool_handlers.MemoryEncoder", return_value=mock_encoder),
+            patch("neural_memory.mcp.remember_handler.MemoryEncoder", return_value=mock_encoder),
         ):
             result = await server.call_tool("nmem_session", {"action": "end"})
 
@@ -2173,7 +2173,7 @@ class TestMCPAutoExtended:
 
         with (
             patch.object(server, "get_storage", return_value=mock_storage),
-            patch("neural_memory.mcp.tool_handlers.MemoryEncoder", return_value=mock_encoder),
+            patch("neural_memory.mcp.remember_handler.MemoryEncoder", return_value=mock_encoder),
         ):
             text = "We decided to use PostgreSQL. TODO: Set up migrations."
             result = await server.call_tool(
@@ -2420,7 +2420,7 @@ class TestMCPRecallExtended:
 
         with (
             patch.object(server, "get_storage", return_value=mock_storage),
-            patch("neural_memory.mcp.tool_handlers.MemoryEncoder", return_value=mock_encoder),
+            patch("neural_memory.mcp.remember_handler.MemoryEncoder", return_value=mock_encoder),
         ):
             # No "type" in args — should use suggest_memory_type
             result = await server.call_tool(

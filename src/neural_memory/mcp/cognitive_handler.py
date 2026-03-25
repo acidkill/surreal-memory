@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, Literal
 
+from neural_memory.mcp.constants import MAX_CONTENT_LENGTH
 from neural_memory.mcp.tool_handlers import _require_brain_id
 
 if TYPE_CHECKING:
@@ -57,7 +58,7 @@ class CognitiveHandler:
         content = args.get("content", "").strip()
         if not content:
             return {"error": "content is required"}
-        if len(content) > 100_000:
+        if len(content) > MAX_CONTENT_LENGTH:
             return {"error": f"Content too long ({len(content)} chars). Max: 100,000."}
 
         initial_confidence = args.get("confidence", 0.5)
@@ -274,7 +275,7 @@ class CognitiveHandler:
         content = args.get("content", "").strip()
         if not content:
             return {"error": "content is required"}
-        if len(content) > 100_000:
+        if len(content) > MAX_CONTENT_LENGTH:
             return {"error": f"Content too long ({len(content)} chars). Max: 100,000."}
 
         evidence_type = args.get("type", "for")
@@ -449,7 +450,7 @@ class CognitiveHandler:
         content = args.get("content", "").strip()
         if not content:
             return {"error": "content is required"}
-        if len(content) > 100_000:
+        if len(content) > MAX_CONTENT_LENGTH:
             return {"error": f"Content too long ({len(content)} chars). Max: 100,000."}
 
         confidence = args.get("confidence", 0.7)
@@ -837,7 +838,7 @@ class CognitiveHandler:
             return {"error": f"outcome must be 'correct' or 'wrong', got: {outcome}"}
 
         content = args.get("content", "").strip() if args.get("content") else None
-        if content and len(content) > 100_000:
+        if content and len(content) > MAX_CONTENT_LENGTH:
             return {"error": f"Content too long ({len(content)} chars). Max: 100,000."}
 
         storage = await self.get_storage()
@@ -1345,7 +1346,7 @@ class CognitiveHandler:
         content = (args.get("content") or "").strip()
         if not content:
             return {"error": "content is required for evolve"}
-        if len(content) > 100_000:
+        if len(content) > MAX_CONTENT_LENGTH:
             return {"error": f"Content too long ({len(content)} chars). Max: 100,000."}
 
         # Verify the old hypothesis exists and is a hypothesis (not a prediction)
