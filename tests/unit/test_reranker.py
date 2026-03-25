@@ -81,6 +81,15 @@ class TestNormalize:
 # ---------------------------------------------------------------------------
 
 
+try:
+    import numpy as np
+except ModuleNotFoundError:
+    np = None  # type: ignore[assignment]
+
+_needs_numpy = pytest.mark.skipif(np is None, reason="numpy not installed")
+
+
+@_needs_numpy
 class TestCrossEncoderReranker:
     @patch("neural_memory.engine.reranker._check_cross_encoder", return_value=True)
     def test_rerank_empty_candidates(self, mock_check: MagicMock) -> None:
@@ -91,7 +100,6 @@ class TestCrossEncoderReranker:
     @patch("neural_memory.engine.reranker._check_cross_encoder", return_value=True)
     def test_rerank_scores_blended(self, mock_check: MagicMock) -> None:
         """Reranked results should blend cross-encoder score with activation."""
-        import numpy as np
 
         mock_model = MagicMock()
         # Higher score for candidate 2 (index 1) than candidate 1 (index 0)
@@ -116,7 +124,6 @@ class TestCrossEncoderReranker:
 
     @patch("neural_memory.engine.reranker._check_cross_encoder", return_value=True)
     def test_rerank_limit_respected(self, mock_check: MagicMock) -> None:
-        import numpy as np
 
         mock_model = MagicMock()
         mock_model.predict.return_value = np.array([2.0, 1.5, 1.0, 0.5, 0.0])
@@ -132,7 +139,6 @@ class TestCrossEncoderReranker:
     @patch("neural_memory.engine.reranker._check_cross_encoder", return_value=True)
     def test_rerank_min_score_filter(self, mock_check: MagicMock) -> None:
         """Candidates with very low reranker scores should be filtered."""
-        import numpy as np
 
         mock_model = MagicMock()
         # All very negative scores → sigmoid < min_score
@@ -150,7 +156,6 @@ class TestCrossEncoderReranker:
     @patch("neural_memory.engine.reranker._check_cross_encoder", return_value=True)
     def test_rerank_max_candidates_cap(self, mock_check: MagicMock) -> None:
         """Should cap candidates at max_candidates."""
-        import numpy as np
 
         mock_model = MagicMock()
         mock_model.predict.return_value = np.ones(5)
@@ -207,10 +212,10 @@ class TestRerankActivations:
         result = rerank_activations("test", activations, {"n1": "content1", "n2": "content2"})
         assert result is activations  # same object, unchanged
 
+    @_needs_numpy
     @patch("neural_memory.engine.reranker.reranker_available", return_value=True)
     def test_rerank_updates_activation_levels(self, mock_available: MagicMock) -> None:
         """Reranked activations should have blended scores."""
-        import numpy as np
 
         activations = {
             "n1": FakeActivationResult(neuron_id="n1", activation_level=0.8),
