@@ -1,4 +1,6 @@
-{{ super() }}
+{% extends "base.html" %}
+
+{% block extrahead %}
 <script>
 if (
   window.location.hostname === 'neuralmemory.theio.vn' &&
@@ -7,3 +9,4 @@ if (
   window.location.replace('/landing/pro-landing.html');
 }
 </script>
+{% endblock %}
