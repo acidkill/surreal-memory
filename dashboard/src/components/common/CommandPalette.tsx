@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react"
+import { createPortal } from "react-dom"
 import { Command } from "cmdk"
 import { useNavigate } from "react-router-dom"
 import { useFibers } from "@/api/hooks/useDashboard"
@@ -155,10 +156,10 @@ export function CommandPalette() {
         </kbd>
       </button>
 
-      {/* Dialog overlay */}
-      {open && (
+      {/* Dialog overlay — portal to body to escape stacking contexts */}
+      {open && createPortal(
         <div
-          className="fixed inset-0 z-50 flex items-start justify-center pt-[15vh] bg-black/50 backdrop-blur-sm"
+          className="fixed inset-0 z-[100] flex items-start justify-center pt-[15vh] bg-black/50 backdrop-blur-sm"
           onClick={(e) => {
             if (e.target === e.currentTarget) setOpen(false)
           }}
@@ -318,7 +319,8 @@ export function CommandPalette() {
               </div>
             </div>
           </Command>
-        </div>
+        </div>,
+        document.body,
       )}
     </>
   )
