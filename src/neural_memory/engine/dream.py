@@ -80,8 +80,12 @@ async def dream(
 
     activation_engine = SpreadingActivation(storage, config)
 
+    # Cap total activated neurons to prevent O(N^2) explosion in pair gen
+    max_activated = 500
     activated_ids: set[str] = set()
     for neuron in seed_neurons:
+        if len(activated_ids) >= max_activated:
+            break
         try:
             results, _trace = await activation_engine.activate(
                 anchor_neurons=[neuron.id],
@@ -89,6 +93,8 @@ async def dream(
             )
             for result in results.values():
                 activated_ids.add(result.neuron_id)
+                if len(activated_ids) >= max_activated:
+                    break
         except Exception:
             logger.debug("Dream activation failed for neuron %s", neuron.id, exc_info=True)
             continue
@@ -98,13 +104,15 @@ async def dream(
     pairs_explored = 0
     new_synapses: list[Synapse] = []
 
-    max_dream_pairs = 50_000
+    # Cap at 5000 pairs (was 50_000 — too slow for large brains)
+    max_dream_pairs = 5_000
+    max_new_synapses = 200
     for i in range(len(activated_list)):
-        if pairs_explored > max_dream_pairs:
+        if pairs_explored >= max_dream_pairs or len(new_synapses) >= max_new_synapses:
             break
         for j in range(i + 1, len(activated_list)):
             pairs_explored += 1
-            if pairs_explored > max_dream_pairs:
+            if pairs_explored >= max_dream_pairs or len(new_synapses) >= max_new_synapses:
                 break
             a_id = activated_list[i]
             b_id = activated_list[j]

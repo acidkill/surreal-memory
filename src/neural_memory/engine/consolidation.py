@@ -8,6 +8,7 @@ Provides automated memory maintenance:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -65,6 +66,8 @@ class ConsolidationConfig:
     infer_co_activation_threshold: int = 3
     infer_window_days: int = 7
     infer_max_per_run: int = 50
+    strategy_timeout_seconds: float = 120.0
+    total_timeout_seconds: float = 600.0
 
 
 @dataclass(frozen=True)
@@ -289,6 +292,10 @@ class ConsolidationEngine:
         within each tier. Tiers execute sequentially so that later
         strategies can depend on results from earlier ones.
 
+        Each strategy has a per-strategy timeout (default 120s) and the
+        entire consolidation has a total timeout (default 600s) to prevent
+        runaway execution.
+
         Args:
             strategies: List of strategies to run (default: all)
             dry_run: If True, calculate but don't apply changes
@@ -311,6 +318,10 @@ class ConsolidationEngine:
             else set(strategies)
         )
 
+        strategy_timeout = self._config.strategy_timeout_seconds
+        total_timeout = self._config.total_timeout_seconds
+        timed_out_strategies: list[str] = []
+
         for tier in self.STRATEGY_TIERS:
             tier_strategies = tier & requested
             if not tier_strategies:
@@ -318,7 +329,48 @@ class ConsolidationEngine:
             # Run strategies sequentially within each tier to avoid
             # stale data snapshots and shared mutable report races
             for strategy in tier_strategies:
-                await self._run_strategy(strategy, report, reference_time, dry_run)
+                elapsed = time.perf_counter() - start
+                if elapsed > total_timeout:
+                    remaining = [s.value for s in tier_strategies if s >= strategy]
+                    timed_out_strategies.extend(remaining)
+                    logger.warning(
+                        "Consolidation total timeout (%.0fs) reached after %.1fs, "
+                        "skipping remaining strategies: %s",
+                        total_timeout,
+                        elapsed,
+                        remaining,
+                    )
+                    break
+
+                logger.info("Consolidation: starting %s", strategy.value)
+                strategy_start = time.perf_counter()
+                try:
+                    await asyncio.wait_for(
+                        self._run_strategy(strategy, report, reference_time, dry_run),
+                        timeout=strategy_timeout,
+                    )
+                except TimeoutError:
+                    strategy_elapsed = time.perf_counter() - strategy_start
+                    logger.warning(
+                        "Consolidation: %s timed out after %.1fs (limit: %.0fs)",
+                        strategy.value,
+                        strategy_elapsed,
+                        strategy_timeout,
+                    )
+                    timed_out_strategies.append(strategy.value)
+                finally:
+                    strategy_elapsed = time.perf_counter() - strategy_start
+                    logger.info(
+                        "Consolidation: %s finished in %.1fs",
+                        strategy.value,
+                        strategy_elapsed,
+                    )
+            else:
+                continue
+            break  # break outer loop if inner broke due to total timeout
+
+        if timed_out_strategies:
+            report.extra["timed_out_strategies"] = timed_out_strategies
 
         report.duration_ms = (time.perf_counter() - start) * 1000
         return report

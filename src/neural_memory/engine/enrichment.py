@@ -121,6 +121,14 @@ async def find_cross_cluster_links(
     if len(tagged_fibers) < 2:
         return []
 
+    # Cap fiber count for O(N^2) Jaccard comparison — 1000 fibers = 500K pairs max
+    max_fibers_for_clustering = 1000
+    if len(tagged_fibers) > max_fibers_for_clustering:
+        # Keep highest-salience fibers
+        tagged_fibers = sorted(tagged_fibers, key=lambda f: f.salience, reverse=True)[
+            :max_fibers_for_clustering
+        ]
+
     n = len(tagged_fibers)
 
     # Union-Find clustering
