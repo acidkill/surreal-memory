@@ -201,3 +201,29 @@ en_core_web_lg/
 # Gemini CLI settings (contains user-specific config)
 .gemini/
 .gitnexus
+
+# Node (root-level tooling — dashboard has its own entry above)
+node_modules/
+package-lock.json
+package.json
+
+# Pay-hub (Cloudflare Worker — closed source, separate repo)
+pay-hub/
+
+# Playwright MCP
+.playwright-mcp/
+
+# Plugin zip artifacts
+neural-memory-plugin-*.zip
+
+# uv lockfile
+uv.lock
+
+# Local-only docs/plans
+docs/plans/
+
+# Misc local files
+AGENTS.md
+AUDIT-REPORT.md
+lefthook.yml
+integrations/neuralmemory/coverage/
