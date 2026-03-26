@@ -268,7 +268,9 @@ One command. No config changes needed.
 pip install neural-memory-pro
 ```
 
-Pro auto-registers via Python entry points. Your existing 52 MCP tools keep working unchanged. Three new tools appear automatically. Storage upgrades from SQLite to InfinityDB on next startup.
+Pro auto-registers via Python entry points. Your existing 52 MCP tools keep working unchanged. Three new tools appear automatically.
+
+To enable InfinityDB (semantic search engine), set `storage_backend = "infinitydb"` in your `config.toml`. On next startup, existing memories are auto-migrated from SQLite. Both databases coexist — downgrade is safe.
 
 **Downgrade is safe:** uninstall `neural-memory-pro` and everything reverts to free SQLite. No data loss — SQLite database is preserved alongside InfinityDB files.
 
@@ -346,7 +348,7 @@ Powered by [Sepay](https://sepay.vn) — local payment gateway.
 No. InfinityDB runs 100% locally. Cloud sync is optional.
 
 **Will my existing memories transfer?**
-Yes. On first Pro startup, SQLite data is automatically migrated to InfinityDB. Both databases coexist — nothing is deleted.
+Yes. After you enable InfinityDB (`storage_backend = "infinitydb"` in config.toml), SQLite data is automatically migrated on next startup. Both databases coexist — nothing is deleted.
 
 **What happens if I cancel Pro?**
 Your agent falls back to free SQLite storage. InfinityDB files remain on disk (in case you resubscribe). No data loss.

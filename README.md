@@ -196,8 +196,9 @@ Pro  (HNSW):  7 results — includes "JWT rotation", "session hardening", "OAuth
 ### Get Pro
 
 ```bash
-pip install neural-memory-pro    # auto-registers, auto-upgrades storage
-nmem pro status                  # verify activation
+pip install neural-memory-pro         # install Pro package
+nmem pro activate YOUR_LICENSE_KEY    # activate license
+nmem pro status                       # verify: Pro: Active
 ```
 
 **[$9/mo](https://nhadaututtheky.github.io/neural-memory/landing/pricing/)** — 30-day money-back guarantee. All free tools keep working. Downgrade anytime, keep your data.
@@ -254,15 +255,21 @@ Set memory slot in `~/.openclaw/openclaw.json`:
 <details>
 <summary><b>Upgrade to Pro</b></summary>
 
-Already using Neural Memory? Upgrade in one command — no migration, no data loss:
+Already using Neural Memory? Upgrade in 3 steps:
 
 ```bash
-pip install neural-memory-pro
-nmem pro activate YOUR_LICENSE_KEY
-nmem pro status    # verify: Pro: Active
+pip install neural-memory-pro         # 1. install Pro package
+nmem pro activate YOUR_LICENSE_KEY    # 2. activate license
 ```
 
-All 52 free tools keep working. Pro adds semantic recall, smart merge, and 5-tier compression on top.
+Then enable InfinityDB (semantic search engine):
+
+```toml
+# ~/.neuralmemory/config.toml
+storage_backend = "infinitydb"
+```
+
+Restart your MCP server. Existing memories are auto-migrated from SQLite to InfinityDB on first startup.
 
 > [Get a license →](https://nhadaututtheky.github.io/neural-memory/landing/pricing/) · [Pro quickstart →](https://nhadaututtheky.github.io/neural-memory/guides/pro-quickstart/)
 
