@@ -2,6 +2,18 @@
 
 > Your agent's brain, upgraded. From keyword search to semantic understanding.
 
+Free Neural Memory is a complete, production-ready memory system — **you never have to pay**. But if your agent's brain is growing past 10K memories and you're noticing missed recalls, slow consolidation, or ballooning storage, Pro is the upgrade path.
+
+**One command. No migration. No breaking changes.**
+
+```bash
+pip install neural-memory-pro    # auto-registers, auto-upgrades storage
+```
+
+All 52 free tools keep working. Your existing memories are preserved. Pro adds 3 new tools and upgrades the engine underneath.
+
+> **New to Pro?** Start with the [Pro Quickstart Guide →](../guides/pro-quickstart.md)
+
 ---
 
 ## The Problem

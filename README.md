@@ -6,66 +6,207 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![VS Code](https://img.shields.io/visual-studio-marketplace/v/neuralmem.neuralmemory?label=VS%20Code)](https://marketplace.visualstudio.com/items?itemName=neuralmem.neuralmemory)
 [![OpenClaw Plugin](https://img.shields.io/npm/v/neuralmemory?label=OpenClaw)](https://www.npmjs.com/package/neuralmemory)
-[![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 
-**Reflex-based memory system for AI agents** — retrieval through activation, not search.
+**Your AI agent forgets everything between sessions. Neural Memory gives it a brain.**
 
 <p align="center">
-  <img src="docs/assets/images/hero-brain.svg" alt="Neural Memory — spreading activation visualization" width="720"/>
+  <img src="docs/assets/images/hero-brain.svg" alt="Neural Memory — spreading activation" width="720"/>
 </p>
 
-NeuralMemory stores experiences as interconnected neurons and recalls them through spreading activation — like the human brain. Instead of searching a database, memories surface through association.
-
-**50 MCP tools** · **14 memory types** · **24 synapse types** · **4700+ tests** · **Cognitive reasoning layer**
-
----
-
-## Why Not RAG / Vector Search?
-
-| Aspect | RAG / Vector Search | NeuralMemory |
-|--------|---------------------|--------------|
-| **Model** | Search engine | Human brain |
-| **LLM/Embedding** | Required (API calls) | **Optional** — core is pure graph traversal |
-| **Relationships** | None (just similarity) | Explicit: `CAUSED_BY`, `LEADS_TO`, `RESOLVED_BY` |
-| **Multi-hop** | Multiple queries | Natural graph traversal |
-| **Lifecycle** | Static | Decay, reinforcement, consolidation |
-| **API Cost** | ~$0.02/1K queries | **$0.00** — fully offline |
-
-**Example: "Why did Tuesday's outage happen?"**
-- **RAG**: Returns "JWT caused outage" (missing *why*)
-- **NeuralMemory**: Traces `outage ← CAUSED_BY ← JWT ← SUGGESTED_BY ← Alice` → full causal chain
-
-### Benchmarks
-
-| Metric | NeuralMemory | Mem0 | Cognee |
-|--------|:---:|:---:|:---:|
-| **Write 50 memories** | 1.2s | 148.2s (121x slower) | 290.6s (80x slower) |
-| **Read 20 queries** | 1.8s | 2.9s | 34.6s |
-| **API calls** | **0** | 70 | 149 |
-
-> Zero LLM calls, zero API cost. [Full benchmarks →](docs/benchmarks.md)
-
----
-
-## Get Started in 60 Seconds
+Memories are stored as interconnected neurons and recalled through spreading activation — the same way the human brain works. No vector database. No API calls. No monthly embedding bill.
 
 ```bash
 pip install neural-memory
 nmem init --full
 ```
 
-One command sets up everything: config, brain, MCP server, hooks, embeddings, dedup, and maintenance.
+Restart your AI tool. Your agent now remembers.
 
-Restart your AI tool — your brain is live.
+---
 
-> **New?** See the [Interactive Quickstart Guide](https://nhadaututtheky.github.io/neural-memory/guides/quickstart-guide/) with animated demos.
+## 3 Tools. That's It.
 
-```bash
-nmem doctor        # 11 diagnostic checks
-nmem doctor --fix  # Auto-fix issues
+50 MCP tools are available, but you only need three:
+
+| Tool | What it does |
+|------|-------------|
+| `nmem_remember` | Store a memory — auto-detects type, tags, and connections |
+| `nmem_recall` | Recall through spreading activation — related memories surface naturally |
+| `nmem_health` | Brain health score (A–F) with actionable fix suggestions |
+
+Everything else — sessions, context loading, habit tracking, maintenance — works transparently in the background.
+
+> [All 50 MCP tools →](https://nhadaututtheky.github.io/neural-memory/api/mcp-tools/)
+
+---
+
+## What Makes This Different
+
+Most memory tools are search engines. Neural Memory is a **graph that thinks**.
+
+When you ask "Why did Tuesday's outage happen?", a vector database returns the most similar sentence. Neural Memory traces the chain:
+
+```
+outage ← CAUSED_BY ← JWT expiry ← SUGGESTED_BY ← Alice's review
 ```
 
-### Setup by Tool
+**Relationships are explicit** — `CAUSED_BY`, `LEADS_TO`, `RESOLVED_BY`, `CONTRADICTS` — so your agent doesn't just find memories, it *reasons* through them.
+
+| | Search-based (RAG) | Neural Memory |
+|--|---------------------|---------------|
+| Retrieval | Similarity score | Graph traversal |
+| Relationships | None | 24 explicit types |
+| LLM required | Yes (embedding) | No — fully offline |
+| Multi-hop reasoning | Multiple queries | One traversal |
+| Memory lifecycle | Static | Decay, reinforcement, consolidation |
+| Cost per 1K queries | ~$0.02 | **$0.00** |
+
+---
+
+## Cloud Sync — Your Data, Your Infrastructure
+
+Sync your brain across every machine. Unlike other memory tools, **we never store your data**.
+
+```
+Laptop ←→ Your Cloudflare Worker ←→ Desktop
+                  ↕
+              Your Phone
+```
+
+You deploy the sync hub to **your own Cloudflare account** (free tier). Your D1 database, your encryption key, your data. We provide the code — you own the infrastructure.
+
+```bash
+nmem sync              # push/pull changes
+nmem sync --auto       # auto-sync after every remember/recall
+```
+
+Sync uses **Merkle delta** — only diffs travel, not the full brain. Fast, efficient, private.
+
+> [Cloud Sync setup guide →](https://nhadaututtheky.github.io/neural-memory/guides/cloud-sync/)
+
+---
+
+## Features
+
+#### Memory & Recall
+- **14 memory types** — fact, decision, error, insight, preference, workflow, instruction, and more
+- **Spreading activation** — memories surface by association, not keyword match
+- **Cognitive reasoning** — hypothesize, submit evidence, make predictions, verify with Bayesian confidence
+
+#### Knowledge Ingestion
+- **Train from documents** — PDF, DOCX, PPTX, HTML, JSON, XLSX, CSV ingested into permanent brain knowledge
+- **Import adapters** — migrate from ChromaDB, Mem0, Cognee, Graphiti, LlamaIndex in one command
+
+#### Lifecycle & Storage
+- **Memory consolidation** — episodic memories mature into semantic knowledge over time
+- **Compression tiers** — full → summary → essence → ghost → metadata (reclaim storage, keep meaning)
+- **Brain versioning** — snapshot, rollback, diff, transplant memories between brains
+
+#### Ecosystem
+- **Web dashboard** — 7-page React UI with graph visualization, health radar, timeline, mindmap
+- **VS Code extension** — memory tree, graph explorer, CodeLens, WebSocket sync ([Marketplace →](https://marketplace.visualstudio.com/items?itemName=neuralmem.neuralmemory))
+- **Safety** — Fernet encryption, sensitive content auto-detection, parameterized SQL, path validation
+- **Telegram backup** — send brain `.db` files to Telegram for offsite backup
+
+---
+
+## Quick Examples
+
+```bash
+# Store memories (type auto-detected)
+nmem remember "Fixed auth bug with null check in login.py:42"
+nmem remember "We decided to use PostgreSQL" --type decision
+nmem todo "Review PR #123" --priority 7
+
+# Recall
+nmem recall "auth bug"
+nmem recall "database decision" --depth 2
+
+# Brain management
+nmem brain list && nmem brain health
+nmem brain export -o backup.json
+
+# Sync across devices
+nmem sync --full
+
+# Web dashboard
+nmem serve    # http://localhost:8000/dashboard
+```
+
+```python
+import asyncio
+from neural_memory import Brain
+from neural_memory.storage import InMemoryStorage
+from neural_memory.engine.encoder import MemoryEncoder
+from neural_memory.engine.retrieval import ReflexPipeline
+
+async def main():
+    storage = InMemoryStorage()
+    brain = Brain.create("my_brain")
+    await storage.save_brain(brain)
+    storage.set_brain(brain.id)
+
+    encoder = MemoryEncoder(storage, brain.config)
+    await encoder.encode("Met Alice to discuss API design")
+    await encoder.encode("Decided to use FastAPI for backend")
+
+    pipeline = ReflexPipeline(storage, brain.config)
+    result = await pipeline.query("What did we decide about backend?")
+    print(result.context)  # "Decided to use FastAPI for backend"
+
+asyncio.run(main())
+```
+
+---
+
+## Neural Memory Pro
+
+Free Neural Memory is complete — 52 tools, unlimited memories, fully offline. **You never have to pay.**
+
+But past 10K memories, things change. Keyword matching misses semantically related content. Consolidation slows to minutes. Storage grows unbounded. If your agent's brain is getting big, Pro makes it smart.
+
+### Free recalls by keyword. Pro recalls by meaning.
+
+```
+Query: "authentication improvements"
+
+Free (FTS5):  2 results — exact matches only
+Pro  (HNSW):  7 results — includes "JWT rotation", "session hardening", "OAuth migration"
+```
+
+### What Pro adds
+
+| | Free (SQLite) | Pro (InfinityDB) |
+|--|:---:|:---:|
+| **Recall** | Keyword match (FTS5) | Semantic similarity (HNSW) |
+| **Speed at 1M neurons** | ~500ms | **<5ms** |
+| **Scale tested** | ~50K neurons | 2M+ neurons |
+| **Compression** | Text-level trimming | 5-tier vector compression (97% savings) |
+| **Consolidation** | O(N²) brute-force | O(N×k) HNSW clustering |
+| **Storage per 1M** | ~5 GB | **~1 GB** |
+| **Cloud sync** | Manual push/pull | Merkle delta (auto, diffs only) |
+
+### Pro-exclusive features
+
+- **Cone Queries** — adjustable semantic recall. Narrow the cone for precision, widen for exploration
+- **Smart Merge** — consolidation that scales to 1M+ neurons using HNSW neighbor clustering
+- **Directional Compression** — compress along multiple semantic axes while preserving meaning
+- **5-Tier Auto Lifecycle** — memories flow from float32 → float16 → int8 → binary → metadata. Auto-promote on access
+
+### Get Pro
+
+```bash
+pip install neural-memory-pro    # auto-registers, auto-upgrades storage
+nmem pro status                  # verify activation
+```
+
+**[$9/mo](https://nhadaututtheky.github.io/neural-memory/landing/pricing/)** — 30-day money-back guarantee. All free tools keep working. Downgrade anytime, keep your data.
+
+> [Pro quickstart →](https://nhadaututtheky.github.io/neural-memory/guides/pro-quickstart/) · [Full comparison →](https://nhadaututtheky.github.io/neural-memory/landing/pro/) · [Pricing →](https://nhadaututtheky.github.io/neural-memory/landing/pricing/)
+
+---
+
+## Setup by Tool
 
 <details>
 <summary><b>Claude Code (Plugin)</b></summary>
@@ -111,130 +252,48 @@ Set memory slot in `~/.openclaw/openclaw.json`:
 </details>
 
 <details>
+<summary><b>Upgrade to Pro</b></summary>
+
+Already using Neural Memory? Upgrade in one command — no migration, no data loss:
+
+```bash
+pip install neural-memory-pro
+nmem pro activate YOUR_LICENSE_KEY
+nmem pro status    # verify: Pro: Active
+```
+
+All 52 free tools keep working. Pro adds semantic recall, smart merge, and 5-tier compression on top.
+
+> [Get a license →](https://nhadaututtheky.github.io/neural-memory/landing/pricing/) · [Pro quickstart →](https://nhadaututtheky.github.io/neural-memory/guides/pro-quickstart/)
+
+</details>
+
+<details>
 <summary><b>Installation extras</b></summary>
 
 ```bash
-pip install neural-memory[server]       # FastAPI server + dashboard
-pip install neural-memory[extract]      # PDF/DOCX/PPTX/HTML/XLSX extraction
-pip install neural-memory[nlp-vi]       # Vietnamese NLP
-pip install neural-memory[embeddings]   # Local embedding models
-pip install neural-memory[embeddings-openai] # OpenAI embeddings
-pip install neural-memory[embeddings-openrouter] # OpenRouter embeddings
-pip install neural-memory[all]          # Everything
+pip install neural-memory[server]              # FastAPI server + dashboard
+pip install neural-memory[extract]             # PDF/DOCX/PPTX/HTML/XLSX extraction
+pip install neural-memory[nlp-vi]              # Vietnamese NLP
+pip install neural-memory[embeddings]          # Local embedding models
+pip install neural-memory[embeddings-openai]   # OpenAI embeddings
+pip install neural-memory[all]                 # Everything
 ```
 
 </details>
 
----
+<details>
+<summary><b>Benchmarks vs alternatives</b></summary>
 
-## 3 Tools You Need
+| Metric | NeuralMemory | Mem0 | Cognee |
+|--------|:---:|:---:|:---:|
+| **Write 50 memories** | 1.2s | 148.2s (121x slower) | 290.6s (80x slower) |
+| **Read 20 queries** | 1.8s | 2.9s | 34.6s |
+| **API calls** | **0** | 70 | 149 |
 
-Once configured, **50 tools** are available — but you only need three:
+Zero LLM calls, zero API cost. [Full benchmarks →](docs/benchmarks.md)
 
-| Tool | What it does |
-|------|-------------|
-| `nmem_remember` | Store a memory — auto-detects type, tags, and connections |
-| `nmem_recall` | Recall through spreading activation — related memories surface naturally |
-| `nmem_health` | Brain health score (A-F) with actionable fix suggestions |
-
-Everything else works transparently: sessions, context loading, habit tracking, maintenance.
-
-> [All 50 tools →](https://nhadaututtheky.github.io/neural-memory/api/mcp-tools/)
-
----
-
-## How It Works
-
-```
-Query: "What did Alice suggest?"
-         │
-         ▼
-┌─────────────────────┐
-│ 1. Decompose Query  │  → time hints, entities, intent
-└─────────────────────┘
-         │
-         ▼
-┌─────────────────────┐
-│ 2. Find Anchors     │  → "Alice" neuron
-└─────────────────────┘
-         │
-         ▼
-┌─────────────────────┐
-│ 3. Spread Activation│  → activate connected neurons
-└─────────────────────┘
-         │
-         ▼
-┌─────────────────────┐
-│ 4. Find Intersection│  → high-activation subgraph
-└─────────────────────┘
-         │
-         ▼
-┌─────────────────────┐
-│ 5. Extract Context  │  → "Alice suggested rate limiting"
-└─────────────────────┘
-```
-
----
-
-## Quick Examples
-
-```bash
-# Store memories (type auto-detected)
-nmem remember "Fixed auth bug with null check in login.py:42"
-nmem remember "We decided to use PostgreSQL" --type decision
-nmem todo "Review PR #123" --priority 7
-
-# Recall
-nmem recall "auth bug"
-nmem recall "database decision" --depth 2
-
-# Brain management
-nmem brain list && nmem brain health
-nmem brain export -o backup.json
-
-# Web dashboard
-nmem serve    # http://localhost:8000/dashboard
-```
-
-```python
-import asyncio
-from neural_memory import Brain
-from neural_memory.storage import InMemoryStorage
-from neural_memory.engine.encoder import MemoryEncoder
-from neural_memory.engine.retrieval import ReflexPipeline
-
-async def main():
-    storage = InMemoryStorage()
-    brain = Brain.create("my_brain")
-    await storage.save_brain(brain)
-    storage.set_brain(brain.id)
-
-    encoder = MemoryEncoder(storage, brain.config)
-    await encoder.encode("Met Alice to discuss API design")
-    await encoder.encode("Decided to use FastAPI for backend")
-
-    pipeline = ReflexPipeline(storage, brain.config)
-    result = await pipeline.query("What did we decide about backend?")
-    print(result.context)  # "Decided to use FastAPI for backend"
-
-asyncio.run(main())
-```
-
----
-
-## Features
-
-- **14 memory types** — fact, decision, preference, todo, insight, context, instruction, error, workflow, reference...
-- **Knowledge base training** — Ingest PDF, DOCX, PPTX, HTML, JSON, XLSX, CSV into permanent brain knowledge
-- **Cognitive reasoning** — Hypothesize, submit evidence, make predictions, verify outcomes with Bayesian confidence
-- **Brain versioning** — Snapshot, rollback, diff, transplant memories between brains
-- **Cloud sync** — Multi-device sync via your own Cloudflare Worker (free tier). [Setup guide →](https://nhadaututtheky.github.io/neural-memory/guides/cloud-sync/)
-- **Web dashboard** — 7-page React dashboard with graph visualization, health radar, timeline, mindmap
-- **VS Code extension** — Memory tree, graph explorer, CodeLens, WebSocket sync. [Marketplace →](https://marketplace.visualstudio.com/items?itemName=neuralmem.neuralmemory)
-- **PostgreSQL backend** — Optional pgvector backend for large-scale deployments
-- **Telegram backup** — Send brain `.db` files to Telegram for offsite backup
-- **Safety** — Fernet encryption, sensitive content auto-detection, parameterized SQL, path validation
-- **Import adapters** — Migrate from ChromaDB, Mem0, Cognee, Graphiti, LlamaIndex
+</details>
 
 ---
 
@@ -243,48 +302,24 @@ asyncio.run(main())
 | Guide | Description |
 |-------|-------------|
 | [Quickstart Guide](https://nhadaututtheky.github.io/neural-memory/guides/quickstart-guide/) | Interactive guide with animated demos |
+| [Pro Quickstart](https://nhadaututtheky.github.io/neural-memory/guides/pro-quickstart/) | Get started with Pro features |
 | [CLI Reference](https://nhadaututtheky.github.io/neural-memory/getting-started/cli-reference/) | All 66 CLI commands |
 | [MCP Tools Reference](https://nhadaututtheky.github.io/neural-memory/api/mcp-tools/) | All 50 MCP tools with parameters |
+| [Cloud Sync](https://nhadaututtheky.github.io/neural-memory/guides/cloud-sync/) | Multi-device sync setup |
 | [Brain Health Guide](https://nhadaututtheky.github.io/neural-memory/guides/brain-health/) | Understanding and improving brain health |
 | [Embedding Setup](https://nhadaututtheky.github.io/neural-memory/guides/embedding-setup/) | Configure embedding providers |
-| [Cloud Sync](https://nhadaututtheky.github.io/neural-memory/guides/cloud-sync/) | Multi-device sync setup |
 | [Architecture](https://nhadaututtheky.github.io/neural-memory/architecture/overview/) | Technical design deep-dive |
 
 ## Development
 
 ```bash
 git clone https://github.com/nhadaututtheky/neural-memory
-cd neural-memory
-pip install -e ".[dev]"
+cd neural-memory && pip install -e ".[dev]"
 pytest tests/ -v          # 4700+ tests
 ruff check src/ tests/    # Lint
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-## Neural Memory Pro
-
-Free NM recalls by **keyword matching**. Pro recalls by **meaning** — powered by InfinityDB, a purpose-built spatial database with HNSW vector search.
-
-| | Free (SQLite) | Pro (InfinityDB) |
-|--|---------------|-------------------|
-| **Recall method** | Keyword match (FTS5) | Semantic similarity (HNSW) |
-| **Search speed** | ~500ms at 10K neurons | **<5ms** at 1M neurons |
-| **Scale** | ~50K neurons | 2M+ tested |
-| **Compression** | Text-level trimming | 5-tier vector compression (up to 97%) |
-| **Consolidation** | O(N²) brute-force | O(N×k) HNSW clustering |
-| **Storage per 1M neurons** | ~5 GB | **~1 GB** |
-| **MCP tools** | 52 | 52 + 3 Pro-exclusive |
-
-**Pro-exclusive features:** Cone Queries (adjustable semantic recall), Smart Merge (scalable consolidation), Directional Compression (multi-axis semantic preservation), 5-tier auto lifecycle (float32 → binary, auto-promote on access).
-
-```bash
-pip install neural-memory-pro
-```
-
-One command. Auto-registers, auto-upgrades storage. All free tools keep working. **[$9/mo](https://nhadaututtheky.github.io/neural-memory/landing/pricing/) — 30-day money-back guarantee.**
-
-> 📖 [Full comparison](https://nhadaututtheky.github.io/neural-memory/landing/pro/) · [Pricing](https://nhadaututtheky.github.io/neural-memory/landing/pricing/)
 
 ## Support
 

@@ -118,6 +118,7 @@ nav:
   - Changelog: changelog.md
   - Pro:
     - Why Pro: landing/pro.md
+    - Pro Quickstart: guides/pro-quickstart.md
     - Pricing: landing/pricing.md
   - Blog:
     - Why I Built NeuralMemory: blog/why-i-built-neuralmemory.md

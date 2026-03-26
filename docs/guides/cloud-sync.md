@@ -2,6 +2,22 @@
 
 Sync your memories across devices using your own Cloudflare Worker. Your data stays on **your** Cloudflare account — Neural Memory never touches it.
 
+## Free vs Pro Sync
+
+Cloud sync works on both tiers. Pro makes it faster and automatic.
+
+| | Free | Pro |
+|--|------|-----|
+| **Sync method** | Manual push/pull | **Merkle delta** (only diffs travel) |
+| **Auto-sync** | No | Yes — after every remember/recall |
+| **Sync speed (10K neurons)** | ~5s (full snapshot) | **<1s** (incremental diff) |
+| **Conflict resolution** | `prefer_recent` only | 4 strategies (recent, local, remote, stronger) |
+| **Multi-device** | Yes | Yes |
+
+All users get the same privacy model — your data, your infrastructure, your encryption keys. Pro just makes the sync smarter.
+
+> **Upgrading?** See the [Pro Quickstart →](pro-quickstart.md)
+
 ## Privacy Model
 
 | Aspect | Detail |
