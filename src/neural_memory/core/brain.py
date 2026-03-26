@@ -146,6 +146,12 @@ class BrainConfig:
     # Working memory chunking (group retrieval output)
     chunking_enabled: bool = True
     max_chunks: int = 5
+    # Schema assimilation (bottom-up knowledge organization)
+    schema_assimilation_enabled: bool = False
+    schema_min_cluster_size: int = 10
+    # Interference forgetting (memory competition detection)
+    interference_detection_enabled: bool = False
+    fan_effect_threshold: int = 15
 
     def with_updates(self, **kwargs: Any) -> BrainConfig:
         """Create a new config with updated values."""

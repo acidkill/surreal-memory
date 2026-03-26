@@ -51,6 +51,8 @@ class ConsolidationStrategy(StrEnum):
     DETECT_DRIFT = "detect_drift"
     SMART_MERGE = "smart_merge"  # Pro: HNSW-accelerated merge via plugin
     REPLAY = "replay"  # Hippocampal replay: LTP/LTD on recent fibers
+    SCHEMA = "schema"  # Schema assimilation: bottom-up knowledge organization
+    INTERFERENCE = "interference"  # Interference forgetting: memory competition
     ALL = "all"
 
 
@@ -212,6 +214,7 @@ class ConsolidationEngine:
             {
                 ConsolidationStrategy.MERGE,
                 ConsolidationStrategy.SMART_MERGE,
+                ConsolidationStrategy.INTERFERENCE,
                 ConsolidationStrategy.MATURE,
                 ConsolidationStrategy.COMPRESS,
                 ConsolidationStrategy.LIFECYCLE,
@@ -221,6 +224,7 @@ class ConsolidationEngine:
             {
                 ConsolidationStrategy.SUMMARIZE,
                 ConsolidationStrategy.INFER,
+                ConsolidationStrategy.SCHEMA,
                 ConsolidationStrategy.ESSENCE_BACKFILL,
             }
         ),
@@ -281,6 +285,8 @@ class ConsolidationEngine:
             ConsolidationStrategy.ESSENCE_BACKFILL: lambda: self._essence_backfill(report, dry_run),
             ConsolidationStrategy.SMART_MERGE: lambda: self._smart_merge_pro(report, dry_run),
             ConsolidationStrategy.REPLAY: lambda: self._replay(report, dry_run),
+            ConsolidationStrategy.SCHEMA: lambda: self._schema(report, dry_run),
+            ConsolidationStrategy.INTERFERENCE: lambda: self._interference(report, dry_run),
         }
         handler = dispatch.get(strategy)
         if handler is not None:
@@ -1337,6 +1343,46 @@ class ConsolidationEngine:
         report.extra["replay_episodes"] = result.episodes_replayed
         report.extra["replay_ltp"] = result.synapses_strengthened
         report.extra["replay_ltd"] = result.synapses_weakened
+
+    async def _schema(
+        self,
+        report: ConsolidationReport,
+        dry_run: bool,
+    ) -> None:
+        """Run schema assimilation — create/update schemas from tag clusters."""
+        from neural_memory.engine.schema_assimilation import batch_schema_assimilation
+
+        brain_id = self._storage.current_brain_id
+        if not brain_id:
+            return
+        brain = await self._storage.get_brain(brain_id)
+        if not brain:
+            return
+
+        schemas_created = await batch_schema_assimilation(
+            self._storage, brain.config, dry_run=dry_run,
+        )
+        report.extra["schemas_created"] = schemas_created
+
+    async def _interference(
+        self,
+        report: ConsolidationReport,
+        dry_run: bool,
+    ) -> None:
+        """Run interference scan — detect fan effects across tag clusters."""
+        from neural_memory.engine.interference import batch_interference_scan
+
+        brain_id = self._storage.current_brain_id
+        if not brain_id:
+            return
+        brain = await self._storage.get_brain(brain_id)
+        if not brain:
+            return
+
+        result = await batch_interference_scan(
+            self._storage, brain.config, dry_run=dry_run,
+        )
+        report.extra["interference_fan_effects"] = result.fan_effects_flagged
 
     async def _learn_habits(
         self,
