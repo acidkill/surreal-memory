@@ -125,6 +125,7 @@ Query memories by semantic search with confidence ranking.
 | `include_citations` | boolean | No | default: true | Include citation and audit trail in exact recall results (default: true). |
 | `recall_token_budget` | integer | No | — | When set, activates budget-aware fiber selection: ranks fibers by value-per-token and selects the most efficient ones... |
 | `permanent_only` | boolean | No | — | Exclude ephemeral (session-scoped) memories from results. Default: false (include all). |
+| `clean_for_prompt` | boolean | No | — | Return clean bullet-point text without section headers or neuron-type tags. Use when injecting recall output into pro... |
 | `compact` | boolean | No | — | Return compact response (strip metadata hints, truncate lists). Saves 60-80% tokens. |
 | `token_budget` | integer | No | — | Max tokens for response. Progressively strips content to fit budget. |
 

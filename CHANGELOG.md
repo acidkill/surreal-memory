@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.21.1] — 2026-03-28
+
+### Fixed
+
+- **Multilingual neuro engine** — arousal detection + prediction error reversal now support Vietnamese via pattern registries, with language-agnostic fallback for all other languages (closes #116, #119)
+- **Auto-ingest noise stripping** — input firewall strips NM context headers, neuron-type bullets, and metadata wrappers before re-encoding, preventing self-referential memory pollution (closes #118)
+- **OpenClaw hook migration** — migrated all legacy hooks to current API (`before_prompt_build`, `before_compaction`, `before_reset`, `gateway_start`)
+- **Gemini SDK import** — updated `google.generativeai` → `google.genai` + default model to `gemini-2.0-flash` (#117)
+
+### Added
+
+- **`clean_for_prompt` recall mode** — new parameter on `nmem_recall` strips section headers and type tags from output, reducing noise when injecting context into prompts
+- **Shared `detect_language()`** — deduplicated language detection from arousal + prediction_error into `extraction/parser.py`
+
+### Improved
+
+- **OpenClaw plugin v1.16.0** — auto-context recall uses `clean_for_prompt`, `sanitizeAutoCapture()` strips NM noise + short acknowledgements before re-ingest
+
 ## [4.21.0] — 2026-03-26
 
 ### Added
