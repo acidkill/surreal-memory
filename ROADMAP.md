@@ -4,7 +4,7 @@
 > Every item passes the VISION.md 4-question test + brain test.
 > ZERO LLM dependency — pure algorithmic, regex, graph-based.
 
-**Current state**: v4.20.4 — 52 MCP tools, 5173+ tests, schema v36, SQLite + PostgreSQL + InfinityDB backends, cognitive reasoning layer.
+**Current state**: v4.21.1 — 52 MCP tools, 5173+ tests, schema v36, SQLite + PostgreSQL + InfinityDB backends, neuroscience engine (10 brain-inspired algorithms).
 **Architecture**: Spreading activation reflex engine, biological memory model, MCP standard.
 
 ---
@@ -98,21 +98,35 @@
 - [x] Consolidation performance fixes (v4.20.2-v4.20.4: timeouts, O(N²) caps, async yields)
 - [x] InfinityDB integration fixes (7 bugs: singleton, list_brains, set_brain, WAL fallback, migrator)
 
-### A5. Neuroscience Engine — Issues #111, #112 (plan: `.rune/plan-neuro-engine.md`)
+### A5. Neuroscience Engine ✅ (plan: `.rune/plan-neuro-engine.md`)
 
 **Problem**: Brain metaphor stops at storage/retrieval. Real brains have lateral inhibition, reconsolidation, prediction error, context-dependent recall, and tiered access patterns. NM treats all memories equally at encoding and retrieval time.
 
-**Scope**: 4 phases, 10 improvements (~1600 LOC total)
-- [ ] Phase 1: Lateral Inhibition + Temporal Binding + Emotional Valence (~250 LOC)
-- [ ] Phase 2: Prediction Error Encoding + Retrieval Reconsolidation (~350 LOC)
-- [ ] Phase 3: Context-Dependent Retrieval + Hippocampal Replay + Working Memory Chunking (~470 LOC)
-- [ ] Phase 4: Schema Assimilation + Interference Forgetting (~550 LOC)
+**Scope**: 4 phases, 10 improvements (~1600 LOC total) — **shipped v4.21.0**
+- [x] Phase 1: Lateral Inhibition + Temporal Binding + Emotional Valence (~250 LOC)
+- [x] Phase 2: Prediction Error Encoding + Retrieval Reconsolidation (~350 LOC)
+- [x] Phase 3: Context-Dependent Retrieval + Hippocampal Replay + Working Memory Chunking (~470 LOC)
+- [x] Phase 4: Schema Assimilation + Interference Forgetting (~550 LOC)
+- [x] v4.21.1: Multilingual support (en/vi + agnostic fallback), input firewall noise stripping, `clean_for_prompt` recall mode
 - **Brain test**: ALL 10 improvements map to documented neuroscience principles → Yes
 - **Zero LLM**: Pure algorithmic (regex, SimHash, graph ops). No embeddings required.
+- 107 new tests, post-encode hooks, paginated tag fetch, real activation scores
 
-**Relation to Issues**:
-- #111 (Tiered Memory HOT/WARM/COLD) → Phase 3 context retrieval + valence-based tier resistance
-- #112 (Pro Auto-tier) → Phase 3 hippocampal replay (LTP/LTD = auto promote/demote by usage)
+### A6. Tiered Memory Loading — Issue #111
+
+**Problem**: All memories have equal access priority. Real brains have fast-access working memory vs long-term storage. Safety rules and user preferences should always be available, not just when semantically matched.
+
+**Scope**: Logical tiers on neurons (prerequisite for C1 physical storage tiers)
+- [ ] Schema migration: add `tier TEXT DEFAULT 'warm'` to neurons
+- [ ] HOT tier: always included in `nmem_context`, decay floor = 0.5
+- [ ] WARM tier: current behavior (semantic match, normal decay)
+- [ ] COLD tier: explicit `nmem_recall` only, aggressive decay
+- [ ] `nmem_remember(..., tier="hot")` + `nmem_edit` tier changes
+- [ ] `nmem_eternal` / `nmem_pin` → auto-promote to HOT
+- [ ] Safety boundaries: `type=boundary` → semantically HOT, never decayed below threshold
+- **Foundation**: A5 neuro engine provides arousal-based compression resistance + context fingerprints
+- **Brain test**: Não có working memory (nhanh) vs long-term memory (chậm) → Yes
+- **Backward compatible**: default `warm` → existing memories unchanged
 
 **Target**: v5.0 = "production-ready for teams" release.
 
@@ -168,6 +182,19 @@
 - [ ] Free tier: publish up to 3 brains. Premium: unlimited + featured listing
 - **Brain test**: Humans learn from books/teachers (external knowledge) → Yes
 
+### B5. Pro: Smart Tiers & Decision Intelligence — Issue #112
+
+**Problem**: Free tier gives manual HOT/WARM/COLD control (#111). Pro makes it intelligent — auto-promote/demote by usage, structured decision matching, domain-scoped safety boundaries.
+
+**Scope**: Requires #111 (A6) first
+- [ ] Auto-tier promotion/demotion: access patterns → auto WARM↔HOT, configurable thresholds
+- [ ] Decision component matching: structured `components` metadata on decisions, overlap scoring
+- [ ] Domain-filtered boundaries: `boundary:financial`, `boundary:external`, `nmem_boundaries(domain=...)`
+- [ ] Tier analytics dashboard: distribution chart, decay curves, coverage gap detection, promotion history
+- **Foundation**: A5 hippocampal replay (LTP/LTD) already provides strengthen/weaken mechanism
+- **Monetization gate**: Intelligence, not data access — users always see all memories, Pro makes management smarter
+- **Brain test**: Não tự điều chỉnh độ ưu tiên theo thói quen → Yes
+
 **Target**: v6.0 = "NeuralMemory as a service" with revenue stream.
 
 ---
@@ -176,12 +203,12 @@
 
 > From laptop brain to production brain. Handle millions of neurons.
 
-### C1. Tiered Storage Architecture — Issues #111, #112
+### C1. Tiered Storage Architecture
 
 **Problem**: SQLite great for <500K neurons. Beyond that, graph queries slow down.
 
 **Vision**: Hybrid storage — hot data in memory/FalkorDB, warm in SQLite WAL, cold in compressed archives.
-**Prerequisite**: A5 Neuroscience Engine provides the foundation (valence-based tier resistance, context fingerprints, LTP/LTD auto-promotion).
+**Prerequisite**: A6 Tiered Memory Loading (logical tiers) + B5 Auto-tier (intelligent placement). C1 adds the *physical* storage layer underneath.
 
 ```
 Hot tier (in-memory + optional FalkorDB) — recent + frequently activated
@@ -372,4 +399,4 @@ Every roadmap item must pass:
 ---
 
 *See [VISION.md](VISION.md) for the north star guiding all decisions.*
-*Last updated: 2026-03-26*
+*Last updated: 2026-03-28*
