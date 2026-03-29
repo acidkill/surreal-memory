@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.22.0] — 2026-03-29
+
+### Added
+
+- **A6 Tiered Memory Loading** — HOT/WARM/COLD tier system for context priority and decay behavior
+  - **HOT**: Always injected into context, 0.5× decay rate, activation floor at 0.5 — memories never fade below half strength
+  - **WARM**: Default tier, standard semantic-match retrieval, normal decay
+  - **COLD**: Excluded from auto-context, 2× decay rate — archive-grade memories accessible only via explicit recall
+  - **BOUNDARY safety invariant**: `MemoryType.BOUNDARY` memories always auto-promote to HOT tier (enforced in create, edit, pin, and decay)
+- **Tier parameter** on `nmem_remember`, `nmem_edit`, `nmem_pin`, and `nmem_train` tools
+- **Tier filter** on `nmem_recall` — filter recall results by specific tier
+- **Schema v37** — `tier` column on `typed_memories` table with index
+- **Dashboard**: Storage page with TierDistribution card (progress bars: red HOT, amber WARM, blue COLD)
+- **`MAX_HOT_CONTEXT_MEMORIES`** constant (50) caps auto-injected HOT memories per recall
+
+### Improved
+
+- **Context optimizer** — HOT tier gets +0.3 score boost, COLD excluded by default (`exclude_cold=True`)
+- **Lifecycle decay** — tier-aware decay with per-tier multipliers and floors, batched fiber lookups
+- **Recall handler** — combined trust + tier filtering into single loop, HOT memories always injected regardless of `fresh_only`
+
+### Tests
+
+- 42 new unit tests across 4 phase files (`test_tiered_memory_phase1-4.py`)
+- Covers: schema migration, tier constants, decay math, context optimizer, recall filter, lifecycle integration, dashboard API, tier stats
+
 ## [4.21.1] — 2026-03-28
 
 ### Fixed
