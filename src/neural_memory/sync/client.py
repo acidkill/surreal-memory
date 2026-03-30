@@ -162,7 +162,9 @@ class SyncClient:
         self._state = SyncClientState.CONNECTING
 
         if self._session is None:
-            self._session = aiohttp.ClientSession()
+            from neural_memory.utils.ssl_helper import safe_client_session
+
+            self._session = safe_client_session()
 
         try:
             self._ws = await self._session.ws_connect(self._server_url)

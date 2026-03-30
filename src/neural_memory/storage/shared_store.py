@@ -91,7 +91,9 @@ class SharedStorage(SharedFiberBrainMixin, NeuralStorage):
             if self._api_key:
                 headers["Authorization"] = f"Bearer {self._api_key}"
 
-            self._session = aiohttp.ClientSession(
+            from neural_memory.utils.ssl_helper import safe_client_session
+
+            self._session = safe_client_session(
                 timeout=self._timeout,
                 headers=headers,
             )

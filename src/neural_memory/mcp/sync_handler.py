@@ -147,8 +147,10 @@ class SyncToolHandler:
             # Send to hub (change-log sync)
             import aiohttp
 
+            from neural_memory.utils.ssl_helper import safe_client_session
+
             sync_url = _build_sync_url(hub_url)
-            async with aiohttp.ClientSession() as session:
+            async with safe_client_session() as session:
                 async with session.post(
                     sync_url,
                     json={
@@ -253,6 +255,8 @@ class SyncToolHandler:
         try:
             import aiohttp
 
+            from neural_memory.utils.ssl_helper import safe_client_session
+
             request = await engine.prepare_merkle_request(brain_id, is_pro=True)
             if request is None:
                 return None
@@ -263,7 +267,7 @@ class SyncToolHandler:
             if api_key:
                 headers["Authorization"] = f"Bearer {api_key}"
 
-            async with aiohttp.ClientSession() as session:
+            async with safe_client_session() as session:
                 async with session.post(
                     merkle_url,
                     json={
@@ -381,9 +385,11 @@ class SyncToolHandler:
         try:
             import aiohttp
 
+            from neural_memory.utils.ssl_helper import safe_client_session
+
             url = _build_hub_url(self.config.sync.hub_url, "/auth/me")
             headers = {"Authorization": f"Bearer {self.config.sync.api_key}"}
-            async with aiohttp.ClientSession() as session:
+            async with safe_client_session() as session:
                 async with session.get(
                     url,
                     headers=headers,
@@ -502,13 +508,15 @@ class SyncToolHandler:
 
                 import aiohttp
 
+                from neural_memory.utils.ssl_helper import safe_client_session
+
                 pay_url = f"{DEFAULT_PAY_URL}/verify"
                 headers: dict[str, str] = {
                     "Content-Type": "application/json",
                 }
                 # Pay-hub expects original format (NM-PRO-*), not normalized
                 original_key = str(args.get("license_key", "")).strip()
-                async with aiohttp.ClientSession() as session:
+                async with safe_client_session() as session:
                     async with session.post(
                         pay_url,
                         json={"key": original_key},
@@ -572,8 +580,10 @@ class SyncToolHandler:
         try:
             import aiohttp
 
+            from neural_memory.utils.ssl_helper import safe_client_session
+
             url = _build_hub_url(self.config.sync.hub_url, "/health")
-            async with aiohttp.ClientSession() as session:
+            async with safe_client_session() as session:
                 async with session.get(
                     url,
                     timeout=aiohttp.ClientTimeout(total=10),

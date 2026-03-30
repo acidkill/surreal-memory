@@ -1531,9 +1531,11 @@ async def activate_license(body: ActivateLicenseRequest) -> dict[str, Any]:
     try:
         import aiohttp
 
+        from neural_memory.utils.ssl_helper import safe_client_session
+
         pay_url = f"{DEFAULT_PAY_URL}/verify"
         headers: dict[str, str] = {"Content-Type": "application/json"}
-        async with aiohttp.ClientSession() as session:
+        async with safe_client_session() as session:
             async with session.post(
                 pay_url,
                 json={"key": original_key},

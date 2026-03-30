@@ -68,7 +68,7 @@ def _is_module_available(module_name: str) -> bool:
     try:
         spec = importlib.util.find_spec(module_name)
         return spec is not None
-    except (ModuleNotFoundError, ValueError):
+    except (ModuleNotFoundError, ValueError, ImportError):
         return False
 
 
@@ -292,6 +292,7 @@ def run_full_setup(
     force: bool = False,
     skip_mcp: bool = False,
     skip_skills: bool = False,
+    skip_embeddings: bool = False,
 ) -> dict[str, Any]:
     """Run the full extended setup.
 
@@ -370,14 +371,28 @@ def run_full_setup(
 
     # ── Phase 2: Embedding auto-detect ──────────────────────────────────
 
-    provider = detect_embedding_provider()
-    if provider is None:
-        provider = _prompt_install_embeddings()
-
-    if provider:
-        results["Embeddings"] = f"{provider['label']}"
+    if skip_embeddings:
+        provider = detect_embedding_provider()
+        if provider:
+            results["Embeddings"] = f"{provider['label']} (detected)"
+        else:
+            results["Embeddings"] = "skipped (keyword search only)"
     else:
-        results["Embeddings"] = "skipped (keyword search only)"
+        provider = detect_embedding_provider()
+        if provider is None:
+            # Only prompt in interactive terminals — avoids hanging in pipes/CI
+            if sys.stdin.isatty():
+                provider = _prompt_install_embeddings()
+            else:
+                typer.echo(
+                    "  Non-interactive terminal detected. Skipping embedding install prompt."
+                )
+                typer.echo("  Run interactively or use: pip install neural-memory[embeddings]")
+
+        if provider:
+            results["Embeddings"] = f"{provider['label']}"
+        else:
+            results["Embeddings"] = "skipped (keyword search only)"
 
     # ── Phase 3: Config defaults ────────────────────────────────────────
 

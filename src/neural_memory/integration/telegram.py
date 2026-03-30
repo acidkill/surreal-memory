@@ -51,10 +51,10 @@ class TelegramClient:
 
     async def _call(self, method: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
         """Make a Telegram Bot API call."""
-        import aiohttp
+        from neural_memory.utils.ssl_helper import safe_client_session
 
         url = f"{self._base_url}/{method}"
-        async with aiohttp.ClientSession() as session:
+        async with safe_client_session() as session:
             async with session.post(url, json=data) as resp:
                 result = await resp.json()
                 if not result.get("ok"):
@@ -65,10 +65,10 @@ class TelegramClient:
 
     async def _call_form(self, method: str, data: Any) -> dict[str, Any]:
         """Make a multipart form Telegram Bot API call."""
-        import aiohttp
+        from neural_memory.utils.ssl_helper import safe_client_session
 
         url = f"{self._base_url}/{method}"
-        async with aiohttp.ClientSession() as session:
+        async with safe_client_session() as session:
             async with session.post(url, data=data) as resp:
                 result = await resp.json()
                 if not result.get("ok"):

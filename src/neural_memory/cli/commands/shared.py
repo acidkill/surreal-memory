@@ -142,8 +142,10 @@ def shared_test() -> None:
             headers["Authorization"] = f"Bearer {config.shared.api_key}"
 
         try:
+            from neural_memory.utils.ssl_helper import safe_client_session
+
             conn_timeout = aiohttp.ClientTimeout(total=config.shared.timeout)
-            async with aiohttp.ClientSession(timeout=conn_timeout) as session:
+            async with safe_client_session(timeout=conn_timeout) as session:
                 async with session.get(url, headers=headers) as response:
                     if response.status == 200:
                         data = await response.json()
@@ -200,13 +202,14 @@ def shared_activate(
         import aiohttp
 
         from neural_memory.mcp.sync_handler import DEFAULT_PAY_URL
+        from neural_memory.utils.ssl_helper import safe_client_session
 
         pay_url = f"{DEFAULT_PAY_URL}/verify"
         headers = {
             "Content-Type": "application/json",
         }
         try:
-            async with aiohttp.ClientSession() as session:
+            async with safe_client_session() as session:
                 async with session.post(
                     pay_url,
                     json={"key": key.strip()},

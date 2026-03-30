@@ -6,9 +6,12 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import importlib
+
 from neural_memory.cli.full_setup import (
     _PROVIDER_PRIORITY,
     QUICKSTART_URL,
+    _is_module_available,
     detect_embedding_provider,
     enable_config_defaults,
     generate_maintenance_script,
@@ -228,6 +231,82 @@ class TestRunFullSetup:
         result = run_full_setup(skip_mcp=True)
         assert result["results"]["Claude Code"] == "skipped"
         assert "Hooks" not in result["results"]
+
+
+class TestIsModuleAvailable:
+    """Test _is_module_available handles edge cases (#122)."""
+
+    def test_returns_true_for_existing_module(self) -> None:
+        assert _is_module_available("os") is True
+
+    def test_returns_false_for_missing_module(self) -> None:
+        assert _is_module_available("nonexistent_fake_module_xyz") is False
+
+    def test_handles_import_error(self) -> None:
+        """ImportError from namespace packages should return False, not crash."""
+        with patch(
+            "neural_memory.cli.full_setup.importlib.util.find_spec",
+            side_effect=ImportError("namespace package"),
+        ):
+            assert _is_module_available("google.cloud.storage") is False
+
+    def test_handles_module_not_found_error(self) -> None:
+        with patch(
+            "neural_memory.cli.full_setup.importlib.util.find_spec",
+            side_effect=ModuleNotFoundError("no module"),
+        ):
+            assert _is_module_available("bogus") is False
+
+    def test_handles_value_error(self) -> None:
+        with patch(
+            "neural_memory.cli.full_setup.importlib.util.find_spec",
+            side_effect=ValueError("relative import"),
+        ):
+            assert _is_module_available(".relative") is False
+
+    def test_returns_false_when_spec_is_none(self) -> None:
+        with patch(
+            "neural_memory.cli.full_setup.importlib.util.find_spec",
+            return_value=None,
+        ):
+            assert _is_module_available("some_module") is False
+
+
+class TestRunFullSetupSkipEmbeddings:
+    """Test --skip-embeddings flag (#121)."""
+
+    @patch("neural_memory.cli.full_setup.generate_maintenance_script", return_value=None)
+    @patch("neural_memory.cli.full_setup.enable_config_defaults", return_value={})
+    @patch("neural_memory.cli.full_setup.detect_embedding_provider", return_value=None)
+    @patch("neural_memory.cli.setup.setup_skills", return_value={"s1": "installed"})
+    @patch("neural_memory.cli.setup.setup_hooks_claude", return_value="added")
+    @patch("neural_memory.cli.setup.setup_mcp_cursor", return_value="not_found")
+    @patch("neural_memory.cli.setup.setup_mcp_claude", return_value="added")
+    @patch("neural_memory.cli.setup.setup_brain", return_value="default")
+    @patch("neural_memory.cli.setup.setup_config", return_value=True)
+    @patch("neural_memory.unified_config.get_neuralmemory_dir", return_value=Path("/tmp/nm"))
+    @patch("neural_memory.cli.setup.print_summary")
+    @patch("neural_memory.cli.full_setup.print_full_banner")
+    def test_skip_embeddings_does_not_prompt(
+        self,
+        mock_banner: MagicMock,
+        mock_summary: MagicMock,
+        mock_dir: MagicMock,
+        mock_config: MagicMock,
+        mock_brain: MagicMock,
+        mock_claude: MagicMock,
+        mock_cursor: MagicMock,
+        mock_hooks: MagicMock,
+        mock_skills: MagicMock,
+        mock_detect: MagicMock,
+        mock_defaults: MagicMock,
+        mock_maintenance: MagicMock,
+    ) -> None:
+        """With skip_embeddings=True, _prompt_install_embeddings is never called."""
+        with patch("neural_memory.cli.full_setup._prompt_install_embeddings") as mock_prompt:
+            result = run_full_setup(skip_embeddings=True)
+            mock_prompt.assert_not_called()
+            assert "skipped" in result["results"]["Embeddings"]
 
 
 class TestQuickstartUrl:

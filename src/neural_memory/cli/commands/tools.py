@@ -186,6 +186,10 @@ def init(
         bool,
         typer.Option("--embeddings", help="Set up embedding provider"),
     ] = False,
+    skip_embeddings: Annotated[
+        bool,
+        typer.Option("--skip-embeddings", help="Skip embedding provider setup"),
+    ] = False,
     dedup: Annotated[
         bool,
         typer.Option("--dedup", help="Enable dedup"),
@@ -223,7 +227,12 @@ def init(
     if full:
         from neural_memory.cli.full_setup import run_full_setup
 
-        run_full_setup(force=force, skip_mcp=skip_mcp, skip_skills=skip_skills)
+        run_full_setup(
+            force=force,
+            skip_mcp=skip_mcp,
+            skip_skills=skip_skills,
+            skip_embeddings=skip_embeddings,
+        )
         return
 
     from neural_memory.cli.setup import (
