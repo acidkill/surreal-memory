@@ -306,6 +306,8 @@ class TypedMemory:
             tags=self.tags,
             metadata=self.metadata,
             created_at=self.created_at,
+            trust_score=self.trust_score,
+            source=self.source,
             tier=self.tier,
         )
 

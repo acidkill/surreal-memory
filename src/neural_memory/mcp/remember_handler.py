@@ -435,7 +435,7 @@ class RememberHandler:
                 except (TypeError, ValueError):
                     return {"error": f"Invalid trust_score: {raw_trust}"}
 
-            raw_tier = args.get("tier", "warm")
+            raw_tier = str(args.get("tier", "warm")).lower().strip()
             try:
                 from neural_memory.core.memory_types import MemoryTier
 

@@ -75,18 +75,18 @@ class TestStatsTierDistribution:
             for i in range(2)
         ]
 
-        async def find_by_tier(
-            tier: str | None = None, limit: int = 1000, **kw: object
-        ) -> list[TypedMemory]:
+        async def count_by_tier(
+            tier: str | None = None, **kw: object
+        ) -> int:
             if tier == "hot":
-                return hot_mems
+                return len(hot_mems)
             if tier == "warm":
-                return warm_mems
+                return len(warm_mems)
             if tier == "cold":
-                return cold_mems
-            return []
+                return len(cold_mems)
+            return 0
 
-        storage.find_typed_memories = AsyncMock(side_effect=find_by_tier)
+        storage.count_typed_memories = AsyncMock(side_effect=count_by_tier)
 
         # Mock onboarding/hints
         handler._check_onboarding = AsyncMock(return_value=None)
@@ -131,7 +131,7 @@ class TestStatsTierDistribution:
             }
         )
         storage.get_synapses = AsyncMock(return_value=[])
-        storage.find_typed_memories = AsyncMock(side_effect=Exception("db error"))
+        storage.count_typed_memories = AsyncMock(side_effect=Exception("db error"))
 
         handler._check_onboarding = AsyncMock(return_value=None)
         handler.get_update_hint = MagicMock(return_value=None)
@@ -164,18 +164,18 @@ class TestDashboardTierStatsEndpoint:
         ]
         cold_mems = []
 
-        async def find_by_tier(
-            tier: str | None = None, limit: int = 1000, **kw: object
-        ) -> list[TypedMemory]:
+        async def count_by_tier(
+            tier: str | None = None, **kw: object
+        ) -> int:
             if tier == "hot":
-                return hot_mems
+                return len(hot_mems)
             if tier == "warm":
-                return warm_mems
+                return len(warm_mems)
             if tier == "cold":
-                return cold_mems
-            return []
+                return len(cold_mems)
+            return 0
 
-        storage.find_typed_memories = AsyncMock(side_effect=find_by_tier)
+        storage.count_typed_memories = AsyncMock(side_effect=count_by_tier)
 
         result = await get_tier_stats(storage)
 
@@ -191,7 +191,7 @@ class TestDashboardTierStatsEndpoint:
         from neural_memory.server.routes.dashboard_api import get_tier_stats
 
         storage = AsyncMock()
-        storage.find_typed_memories = AsyncMock(return_value=[])
+        storage.count_typed_memories = AsyncMock(return_value=0)
 
         result = await get_tier_stats(storage)
 

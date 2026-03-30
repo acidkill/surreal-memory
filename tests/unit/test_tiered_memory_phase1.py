@@ -164,8 +164,9 @@ class TestSchemaMigration:
     def test_migration_exists(self) -> None:
         from neural_memory.storage.sqlite_schema import MIGRATIONS, SCHEMA_VERSION
 
-        assert SCHEMA_VERSION == 37
+        assert SCHEMA_VERSION == 38
         assert (36, 37) in MIGRATIONS
+        assert (37, 38) in MIGRATIONS
         stmts = MIGRATIONS[(36, 37)]
         assert any("tier" in s for s in stmts)
         assert any("idx_typed_memories_tier" in s for s in stmts)

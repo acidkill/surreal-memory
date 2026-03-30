@@ -178,6 +178,23 @@ class InMemoryCollectionsMixin:
         results.sort(key=lambda t: (t.priority, t.created_at), reverse=True)
         return results
 
+    async def count_typed_memories(
+        self,
+        tier: str | None = None,
+        memory_type: MemoryType | None = None,
+    ) -> int:
+        brain_id = self._get_brain_id()
+        count = 0
+        for tm in self._typed_memories[brain_id].values():
+            if tm.is_expired:
+                continue
+            if tier is not None and tm.tier != tier:
+                continue
+            if memory_type is not None and tm.memory_type != memory_type:
+                continue
+            count += 1
+        return count
+
     async def update_typed_memory(self, typed_memory: TypedMemory) -> None:
         brain_id = self._get_brain_id()
 

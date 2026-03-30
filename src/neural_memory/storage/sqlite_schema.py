@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Schema version for migrations
-SCHEMA_VERSION = 37
+SCHEMA_VERSION = 38
 
 # â”€â”€ Migrations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Each entry maps (from_version -> to_version) with a list of SQL statements.
@@ -631,6 +631,10 @@ MIGRATIONS: dict[tuple[int, int], list[str]] = {
         # Tiered Memory Loading (A6): HOT/WARM/COLD access tiers
         "ALTER TABLE typed_memories ADD COLUMN tier TEXT DEFAULT 'warm'",
         "CREATE INDEX IF NOT EXISTS idx_typed_memories_tier ON typed_memories(brain_id, tier)",
+    ],
+    (37, 38): [
+        # Fix L1: Promote pre-v37 BOUNDARY memories from default 'warm' to 'hot'
+        "UPDATE typed_memories SET tier = 'hot' WHERE memory_type = 'boundary' AND tier != 'hot'",
     ],
 }
 

@@ -126,6 +126,33 @@ class SQLiteTypedMemoryMixin:
 
         return memories
 
+    async def count_typed_memories(
+        self,
+        tier: str | None = None,
+        memory_type: MemoryType | None = None,
+    ) -> int:
+        conn = self._ensure_conn()
+        brain_id = self._get_brain_id()
+
+        query = "SELECT COUNT(*) FROM typed_memories WHERE brain_id = ?"
+        params: list[Any] = [brain_id]
+
+        if tier is not None:
+            query += " AND tier = ?"
+            params.append(tier)
+
+        if memory_type is not None:
+            query += " AND memory_type = ?"
+            params.append(memory_type.value)
+
+        # Exclude expired
+        query += " AND (expires_at IS NULL OR expires_at > ?)"
+        params.append(utcnow().isoformat())
+
+        async with conn.execute(query, params) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else 0
+
     async def update_typed_memory(self, typed_memory: TypedMemory) -> None:
         conn = self._ensure_conn()
         brain_id = self._get_brain_id()

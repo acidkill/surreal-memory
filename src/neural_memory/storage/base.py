@@ -772,6 +772,22 @@ class NeuralStorage(ABC):
         """
         raise NotImplementedError
 
+    async def count_typed_memories(
+        self,
+        tier: str | None = None,
+        memory_type: MemoryType | None = None,
+    ) -> int:
+        """Count typed memories matching criteria (no limit cap).
+
+        Args:
+            tier: Filter by loading tier ("hot", "warm", "cold")
+            memory_type: Filter by memory type
+
+        Returns:
+            Total count of matching typed memories
+        """
+        raise NotImplementedError
+
     async def update_typed_memory(self, typed_memory: TypedMemory) -> None:
         """Update an existing typed memory.
 

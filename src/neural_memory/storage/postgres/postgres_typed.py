@@ -123,6 +123,30 @@ class PostgresTypedMemoryMixin(PostgresBaseMixin):
 
         return memories
 
+    async def count_typed_memories(
+        self,
+        tier: str | None = None,
+        memory_type: MemoryType | None = None,
+    ) -> int:
+        brain_id = self._get_brain_id()
+
+        query = "SELECT COUNT(*) FROM typed_memories WHERE brain_id = $1"
+        params: list[Any] = [brain_id]
+
+        if tier is not None:
+            params.append(tier)
+            query += f" AND tier = ${len(params)}"
+
+        if memory_type is not None:
+            params.append(memory_type.value)
+            query += f" AND memory_type = ${len(params)}"
+
+        params.append(utcnow())
+        query += f" AND (expires_at IS NULL OR expires_at > ${len(params)})"
+
+        row = await self._query_one(query, *params)
+        return row[0] if row else 0
+
     async def update_typed_memory(self, typed_memory: TypedMemory) -> None:
         brain_id = self._get_brain_id()
         result = await self._query(

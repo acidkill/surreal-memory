@@ -234,8 +234,7 @@ class ToolHandler(RememberHandler, RecallHandler):
         tier_distribution = {"hot": 0, "warm": 0, "cold": 0}
         try:
             for tier_name in ("hot", "warm", "cold"):
-                tier_mems = await storage.find_typed_memories(tier=tier_name, limit=1000)
-                tier_distribution[tier_name] = len(tier_mems)
+                tier_distribution[tier_name] = await storage.count_typed_memories(tier=tier_name)
         except Exception:
             logger.debug("Tier distribution count failed (non-critical)", exc_info=True)
 
@@ -1246,6 +1245,8 @@ class ToolHandler(RememberHandler, RecallHandler):
         new_content = args.get("content")
         new_priority = args.get("priority")
         new_tier = args.get("tier")
+        if new_tier is not None:
+            new_tier = str(new_tier).lower().strip()
 
         if new_type is None and new_content is None and new_priority is None and new_tier is None:
             return {"error": "At least one of type, content, priority, or tier must be provided"}
@@ -1294,6 +1295,14 @@ class ToolHandler(RememberHandler, RecallHandler):
                     updated_meta = {**fiber.metadata, "type": new_type}
                     fiber = dc_replace(fiber, metadata=updated_meta)
                     await storage.update_fiber(fiber)
+                    # Enforce boundary invariant: boundaries are always HOT
+                    if (
+                        updated_tm.memory_type == MemoryType.BOUNDARY
+                        and updated_tm.tier != MemoryTier.HOT
+                    ):
+                        old_tier = updated_tm.tier
+                        updated_tm = updated_tm.with_tier(MemoryTier.HOT)
+                        changes.append(f"tier: {old_tier} → hot (boundary auto-promote)")
                 if new_priority is not None:
                     updated_tm = dc_replace(updated_tm, priority=Priority.from_int(new_priority))
                     changes.append(f"priority: {typed_mem.priority.value} → {new_priority}")
@@ -1302,15 +1311,6 @@ class ToolHandler(RememberHandler, RecallHandler):
                     updated_tm = updated_tm.with_tier(new_tier)
                     if updated_tm.tier != old_tier:
                         changes.append(f"tier: {old_tier} → {updated_tm.tier}")
-                # Enforce boundary invariant when type changed to boundary
-                if (
-                    new_type is not None
-                    and updated_tm.memory_type == MemoryType.BOUNDARY
-                    and updated_tm.tier != MemoryTier.HOT
-                ):
-                    old_tier = updated_tm.tier
-                    updated_tm = updated_tm.with_tier(MemoryTier.HOT)
-                    changes.append(f"tier: {old_tier} → hot (boundary auto-promote)")
                 await storage.update_typed_memory(updated_tm)
 
             # Update anchor neuron content

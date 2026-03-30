@@ -170,8 +170,7 @@ async def get_tier_stats(
     counts = {"hot": 0, "warm": 0, "cold": 0}
     try:
         for tier_name in ("hot", "warm", "cold"):
-            mems = await storage.find_typed_memories(tier=tier_name, limit=1000)
-            counts[tier_name] = len(mems)
+            counts[tier_name] = await storage.count_typed_memories(tier=tier_name)
     except Exception:
         logger.debug("Tier stats query failed", exc_info=True)
 

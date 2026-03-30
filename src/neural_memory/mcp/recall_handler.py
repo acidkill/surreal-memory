@@ -368,6 +368,8 @@ class RecallHandler:
         # - tier="warm" → includes un-typed fibers (they default to warm)
         # - tier="hot"/"cold" → excludes un-typed fibers (only explicit tier matches)
         recall_tier = args.get("tier")
+        if recall_tier is not None:
+            recall_tier = str(recall_tier).lower().strip()
         needs_post_filter = (min_trust is not None or recall_tier) and result.fibers_matched
         if needs_post_filter:
             try:
@@ -772,7 +774,7 @@ class RecallHandler:
                     "HOT memory limit reached (%d) — some HOT memories may be excluded from context",
                     MAX_HOT_CONTEXT_MEMORIES,
                 )
-        except (TypeError, AttributeError) as e:
+        except Exception as e:
             logger.warning("HOT memory injection failed — tier filter unavailable: %s", e)
 
         # Smart context optimization: score, dedup, budget
