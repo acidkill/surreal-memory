@@ -26,7 +26,7 @@ Restart your AI tool. Your agent now remembers.
 
 ## 3 Tools. That's It.
 
-50 MCP tools are available, but you only need three:
+52 MCP tools are available, but you only need three:
 
 | Tool | What it does |
 |------|-------------|
@@ -36,7 +36,7 @@ Restart your AI tool. Your agent now remembers.
 
 Everything else — sessions, context loading, habit tracking, maintenance — works transparently in the background.
 
-> [All 50 MCP tools →](https://nhadaututtheky.github.io/neural-memory/api/mcp-tools/)
+> [All 52 MCP tools →](https://nhadaututtheky.github.io/neural-memory/api/mcp-tools/)
 
 ---
 
@@ -311,7 +311,7 @@ Zero LLM calls, zero API cost. [Full benchmarks →](docs/benchmarks.md)
 | [Quickstart Guide](https://nhadaututtheky.github.io/neural-memory/guides/quickstart-guide/) | Interactive guide with animated demos |
 | [Pro Quickstart](https://nhadaututtheky.github.io/neural-memory/guides/pro-quickstart/) | Get started with Pro features |
 | [CLI Reference](https://nhadaututtheky.github.io/neural-memory/getting-started/cli-reference/) | All 66 CLI commands |
-| [MCP Tools Reference](https://nhadaututtheky.github.io/neural-memory/api/mcp-tools/) | All 50 MCP tools with parameters |
+| [MCP Tools Reference](https://nhadaututtheky.github.io/neural-memory/api/mcp-tools/) | All 52 MCP tools with parameters |
 | [Cloud Sync](https://nhadaututtheky.github.io/neural-memory/guides/cloud-sync/) | Multi-device sync setup |
 | [Brain Health Guide](https://nhadaututtheky.github.io/neural-memory/guides/brain-health/) | Understanding and improving brain health |
 | [Embedding Setup](https://nhadaututtheky.github.io/neural-memory/guides/embedding-setup/) | Configure embedding providers |
@@ -322,7 +322,7 @@ Zero LLM calls, zero API cost. [Full benchmarks →](docs/benchmarks.md)
 ```bash
 git clone https://github.com/nhadaututtheky/neural-memory
 cd neural-memory && pip install -e ".[dev]"
-pytest tests/ -v          # 4700+ tests
+pytest tests/ -v          # 5400+ tests
 ruff check src/ tests/    # Lint
 ```
 

@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.22.1] — 2026-03-30
+
+### Fixed
+
+- **L4**: `with_priority()` now preserves `trust_score` and `source` fields (pre-existing bug)
+- **L2**: HOT tier injection catches all exceptions, not just TypeError/AttributeError
+- **M1**: Boundary auto-promote in `_edit` moved before tier assignment — eliminates dead code path
+- **M2**: Tier distribution counts use `count_typed_memories()` SQL COUNT — no 1000-row display cap
+- **L1**: Schema v38 migration promotes pre-v37 BOUNDARY memories from default "warm" to "hot"
+- **L3**: Tier param normalized to lowercase in `nmem_remember`, `nmem_recall`, and `nmem_edit`
+
 ## [4.22.0] — 2026-03-29
 
 ### Added
