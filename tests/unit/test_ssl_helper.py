@@ -48,9 +48,7 @@ class TestSafeClientSession:
         ):
             result = safe_client_session(timeout=30)
             mock_connector.assert_called_once_with(ssl=fake_ctx)
-            mock_session.assert_called_once_with(
-                connector=mock_connector.return_value, timeout=30
-            )
+            mock_session.assert_called_once_with(connector=mock_connector.return_value, timeout=30)
             assert result == mock_session.return_value
 
     def test_passes_extra_kwargs_to_session(self) -> None:

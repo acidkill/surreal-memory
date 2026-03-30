@@ -6,8 +6,6 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-import importlib
-
 from neural_memory.cli.full_setup import (
     _PROVIDER_PRIORITY,
     QUICKSTART_URL,
