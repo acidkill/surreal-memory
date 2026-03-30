@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.23.0] — 2026-03-30
+
+### Added
+
+- **Storage visibility**: `nmem_stats` now shows `storage_backend`, `pro_installed`, `is_pro` fields
+- **Storage CLI**: `nmem storage status` — shows backend, Pro status, data file existence + sizes
+- **Storage CLI**: `nmem storage switch <sqlite|infinitydb>` — switch with Pro/data guards
+- **Migration**: `nmem migrate infinitydb` — SQLite → InfinityDB via export/import (Pro required)
+- **Activation guidance**: Pro activation (MCP + CLI) now shows next_step hint to InfinityDB
+- **Stats hint**: When Pro active but on SQLite, suggests InfinityDB upgrade path
+
 ## [4.22.2] — 2026-03-30
 
 ### Fixed
