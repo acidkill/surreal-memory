@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.23.3] — 2026-03-30
+
+### Improved
+
+- **Landing page**: Added "Install Free" CTA, quickstart guide for new users, post-purchase activation steps
+- **ClawHub**: Fixed display name from ".Claude Plugin" to "Neural Memory", published v4.23.3
+- **CLI docs**: Regenerated CLI reference for storage commands
+
 ## [4.23.2] — 2026-03-30
 
 ### Added
