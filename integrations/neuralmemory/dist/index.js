@@ -28,9 +28,9 @@
  * Registers:
  *   N tools    — dynamically from MCP server (fallback: 5 core + 2 compat)
  *   1 service  — MCP process lifecycle (start/stop)
- *   6 hooks    — before_agent_start (auto-context), agent_end (auto-capture),
- *                session:compact:before (flush), command:new/reset (flush),
- *                gateway:startup (consolidation)
+ *   5 hooks    — before_prompt_build (auto-context), agent_end (auto-capture),
+ *                before_compaction (flush), before_reset (flush),
+ *                gateway_start (consolidation)
  */
 import { NeuralMemoryMcpClient } from "./mcp-client.js";
 import { createToolsFromMcp, createFallbackTools, createCompatibilityTools } from "./tools.js";
@@ -66,6 +66,33 @@ export function stripPromptMetadata(raw) {
         const lines = raw.split("\n").filter((l) => l.trim());
         cleaned = lines[lines.length - 1]?.trim() ?? raw.trim();
     }
+    return cleaned;
+}
+// ── Auto-capture sanitization ─────────────────────────────
+/**
+ * Strip NeuralMemory context noise and metadata from auto-capture text.
+ *
+ * When agent_end forwards assistant messages to nmem_auto, those messages
+ * may contain NM context wrappers that were injected by before_prompt_build.
+ * Re-ingesting these creates junk neurons like "[concept] json message id".
+ *
+ * This is defense-in-depth — the Python input_firewall also strips these,
+ * but catching them here avoids wasting network round-trips.
+ */
+export function sanitizeAutoCapture(raw) {
+    let cleaned = raw;
+    // Strip NM context section headers
+    cleaned = cleaned.replace(/^#{1,3}\s*(?:Relevant Memories|Related Information|Relevant Context|Neural Memory)\b.*$/gim, "");
+    // Strip [NeuralMemory — ...] wrapper lines
+    cleaned = cleaned.replace(/^\[NeuralMemory\s*[—–-].*\]$/gm, "");
+    // Strip neuron-type bullet lines (- [concept] ..., - [error] ...)
+    cleaned = cleaned.replace(/^-\s*\[(?:concept|entity|decision|error|preference|insight|memory|fact|workflow|instruction|pattern)\]\s.*$/gim, "");
+    // Strip metadata labels
+    cleaned = cleaned.replace(/^(?:Conversation info|Sender|Context)\s*\(.*?\)\s*:?\s*$/gim, "");
+    // Strip short acknowledgement lines (< 20 chars, common filler)
+    cleaned = cleaned.replace(/^(?:OK|Sure|Done|Got it|Understood|Noted|Alright|I see|Thanks|Thank you|Okay)\.?\s*$/gim, "");
+    // Collapse whitespace
+    cleaned = cleaned.replace(/\n{3,}/g, "\n\n").trim();
     return cleaned;
 }
 // ── System prompt for tool awareness ──────────────────────
@@ -194,7 +221,7 @@ const plugin = {
     id: "neuralmemory",
     name: "NeuralMemory",
     description: "Brain-inspired persistent memory for AI agents — neurons, synapses, and fibers",
-    version: "1.15.0",
+    version: "1.16.0",
     kind: "memory",
     register(api) {
         const cfg = resolveConfig(api.pluginConfig);
@@ -242,8 +269,10 @@ const plugin = {
                 api.logger.info("NeuralMemory MCP service stopped");
             },
         });
-        // ── Hook: tool awareness + auto-context before agent start ───
-        api.on("before_agent_start", async (event, _ctx) => {
+        // ── Hook: tool awareness + auto-context before prompt build ──
+        // Migrated from legacy before_agent_start to before_prompt_build
+        // per OpenClaw compatibility guidance (issue #116).
+        api.on("before_prompt_build", async (event, _ctx) => {
             const result = {
                 systemPrompt: buildToolInstructions(registeredTools),
             };
@@ -255,6 +284,7 @@ const plugin = {
                         query,
                         depth: cfg.contextDepth,
                         max_tokens: cfg.maxContextTokens,
+                        clean_for_prompt: true,
                     });
                     const data = JSON.parse(raw);
                     if (data.answer && (data.confidence ?? 0) > 0.1) {
@@ -277,7 +307,7 @@ const plugin = {
                     return;
                 try {
                     const messages = ev.messages?.slice(-5) ?? [];
-                    const text = messages
+                    const rawText = messages
                         .filter((m) => typeof m === "object" &&
                         m !== null &&
                         m.role === "assistant" &&
@@ -285,6 +315,8 @@ const plugin = {
                         .map((m) => m.content)
                         .join("\n")
                         .slice(0, MAX_AUTO_CAPTURE_CHARS);
+                    // Strip NM context noise and short acknowledgements before re-ingest
+                    const text = sanitizeAutoCapture(rawText);
                     if (text.length > 50) {
                         await mcp.callTool("nmem_auto", {
                             action: "process",
@@ -298,8 +330,9 @@ const plugin = {
             }, { priority: 90 });
         }
         // ── Hook: flush memories before context compaction ──
+        // Migrated from legacy session:compact:before to before_compaction
         if (cfg.autoFlush) {
-            api.on("session:compact:before", async (_event, _ctx) => {
+            api.on("before_compaction", async (_event, _ctx) => {
                 if (!mcp.connected)
                     return;
                 try {
@@ -313,37 +346,26 @@ const plugin = {
                     api.logger.warn(`Pre-compact flush failed: ${err.message}`);
                 }
             }, { priority: 5 });
-            // Flush on session boundary (new/reset commands)
-            api.on("command:new", async (_event, _ctx) => {
+            // Flush on session boundary (/new and /reset)
+            // Migrated from legacy command:new + command:reset to before_reset
+            api.on("before_reset", async (_event, _ctx) => {
                 if (!mcp.connected)
                     return;
                 try {
                     await mcp.callTool("nmem_auto", {
                         action: "process",
-                        text: "[session boundary — command:new]",
+                        text: "[session boundary — reset]",
                     });
                 }
                 catch (err) {
                     api.logger.warn(`Session boundary flush failed: ${err.message}`);
                 }
             }, { priority: 10 });
-            api.on("command:reset", async (_event, _ctx) => {
-                if (!mcp.connected)
-                    return;
-                try {
-                    await mcp.callTool("nmem_auto", {
-                        action: "process",
-                        text: "[session boundary — command:reset]",
-                    });
-                }
-                catch (err) {
-                    api.logger.warn(`Session reset flush failed: ${err.message}`);
-                }
-            }, { priority: 10 });
         }
-        // ── Hook: consolidation on gateway startup ───────────
+        // ── Hook: consolidation on gateway start ─────────────
+        // Migrated from legacy gateway:startup to gateway_start
         if (cfg.autoConsolidate) {
-            api.on("gateway:startup", async (_event, _ctx) => {
+            api.on("gateway_start", async (_event, _ctx) => {
                 if (!mcp.connected) {
                     try {
                         await mcp.ensureConnected();

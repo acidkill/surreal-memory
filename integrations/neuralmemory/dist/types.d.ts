@@ -30,6 +30,15 @@ export type BeforeAgentStartResult = {
     modelOverride?: string;
     providerOverride?: string;
 };
+export type BeforePromptBuildEvent = {
+    prompt: string;
+    messages?: unknown[];
+    systemPrompt?: string;
+};
+export type BeforePromptBuildResult = {
+    systemPrompt?: string;
+    prependContext?: string;
+};
 export type AgentEndEvent = {
     messages: unknown[];
     success: boolean;

@@ -37,7 +37,17 @@ app.route("/checkout", checkout);
 app.route("/order", order);
 app.route("/webhook", webhook);
 
-// Verify endpoint (for sync hub backward compat)
+// Pro features granted on all verified licenses
+const PRO_FEATURES = [
+  "merkle_sync",
+  "cone_queries",
+  "directional_compression",
+  "cross_encoder",
+  "smart_merge",
+  "infinity_db",
+];
+
+// Verify endpoint — D1 primary, XLabs API fallback
 app.post("/verify", async (c) => {
   const body = await c.req.json<{ key: string }>();
   const key = (body.key || "").trim();
@@ -46,55 +56,75 @@ app.post("/verify", async (c) => {
     return c.json({ valid: false, error: "Missing key" });
   }
 
-  // Normalize to XLabs format for lookup
-  const xlabsKey = key.startsWith("nm_")
+  // Normalize: nm_pro_xxxx → NM-PRO-XXXX
+  const normalizedKey = key.startsWith("nm_")
     ? key.replaceAll("_", "-").toUpperCase()
-    : key;
+    : key.toUpperCase();
 
-  // Check XLabs
-  const res = await fetch("https://admin.theio.vn/api/licenses", {
-    headers: { Authorization: `Bearer ${c.env.XLABS_API_KEY}` },
-  });
+  // 1. Check D1 (primary — fulfilled orders have license_key)
+  const db = c.env.PAY_DB;
+  const d1Order = await db
+    .prepare(
+      "SELECT product, license_key, fulfilled_at FROM orders WHERE UPPER(license_key) = ? AND status = 'fulfilled'",
+    )
+    .bind(normalizedKey)
+    .first<{ product: string; license_key: string; fulfilled_at: string }>();
 
-  if (!res.ok) {
-    return c.json({ valid: false, error: "Verification service unavailable" });
+  if (d1Order) {
+    const tier = d1Order.product.includes("TEAM") ? "team" : "pro";
+    return c.json({
+      valid: true,
+      tier,
+      expires_at: null,
+      features: PRO_FEATURES,
+    });
   }
 
-  const data = await res.json<{
-    data: Array<{
-      license_key: string;
-      project_slug: string;
-      tier: string;
-      status: string;
-      features_json: string;
-      expires_at: string | null;
-    }>;
-  }>();
-
-  const match = data.data?.find(
-    (l) =>
-      l.license_key === xlabsKey &&
-      l.project_slug === "neural-memory" &&
-      l.status === "active",
-  );
-
-  if (!match) {
-    return c.json({ valid: false, error: "Invalid or expired license key" });
-  }
-
-  let features: string[] = [];
+  // 2. Fallback: check XLabs API
   try {
-    features = JSON.parse(match.features_json || "[]");
+    const res = await fetch("https://admin.theio.vn/api/licenses", {
+      headers: { Authorization: `Bearer ${c.env.XLABS_API_KEY}` },
+    });
+
+    if (res.ok) {
+      const data = await res.json<{
+        data: Array<{
+          license_key: string;
+          project_slug: string;
+          tier: string;
+          status: string;
+          features_json: string;
+          expires_at: string | null;
+        }>;
+      }>();
+
+      const match = data.data?.find(
+        (l) =>
+          l.license_key.toUpperCase() === normalizedKey &&
+          l.project_slug === "neural-memory" &&
+          l.status === "active",
+      );
+
+      if (match) {
+        let features: string[] = [];
+        try {
+          features = JSON.parse(match.features_json || "[]");
+        } catch {
+          features = PRO_FEATURES;
+        }
+        return c.json({
+          valid: true,
+          tier: match.tier,
+          expires_at: match.expires_at,
+          features,
+        });
+      }
+    }
   } catch {
-    features = [];
+    // XLabs API unreachable — D1 was already checked, report not found
   }
 
-  return c.json({
-    valid: true,
-    tier: match.tier,
-    expires_at: match.expires_at,
-    features,
-  });
+  return c.json({ valid: false, error: "Invalid or expired license key" });
 });
 
 export default app;

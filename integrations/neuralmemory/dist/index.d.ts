@@ -28,9 +28,9 @@
  * Registers:
  *   N tools    — dynamically from MCP server (fallback: 5 core + 2 compat)
  *   1 service  — MCP process lifecycle (start/stop)
- *   6 hooks    — before_agent_start (auto-context), agent_end (auto-capture),
- *                session:compact:before (flush), command:new/reset (flush),
- *                gateway:startup (consolidation)
+ *   5 hooks    — before_prompt_build (auto-context), agent_end (auto-capture),
+ *                before_compaction (flush), before_reset (flush),
+ *                gateway_start (consolidation)
  */
 import type { OpenClawPluginDefinition } from "./types.js";
 /**
@@ -43,6 +43,17 @@ import type { OpenClawPluginDefinition } from "./types.js";
  * Stripping order matters — later passes clean up residue from earlier ones.
  */
 export declare function stripPromptMetadata(raw: string): string;
+/**
+ * Strip NeuralMemory context noise and metadata from auto-capture text.
+ *
+ * When agent_end forwards assistant messages to nmem_auto, those messages
+ * may contain NM context wrappers that were injected by before_prompt_build.
+ * Re-ingesting these creates junk neurons like "[concept] json message id".
+ *
+ * This is defense-in-depth — the Python input_firewall also strips these,
+ * but catching them here avoids wasting network round-trips.
+ */
+export declare function sanitizeAutoCapture(raw: string): string;
 type PluginConfig = {
     pythonPath: string;
     brain: string;
