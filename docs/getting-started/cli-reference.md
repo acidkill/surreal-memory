@@ -513,6 +513,7 @@ nmem init [OPTIONS]
 | `--defaults` | boolean | No | `False` | Non-interactive with all defaults |
 | `--full` | boolean | No | `False` | Extended setup: embeddings, dedup, maintenance script |
 | `--embeddings` | boolean | No | `False` | Set up embedding provider |
+| `--skip-embeddings` | boolean | No | `False` | Skip embedding provider setup |
 | `--dedup` | boolean | No | `False` | Enable dedup |
 
 ### `nmem setup`
