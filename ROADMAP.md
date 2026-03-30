@@ -4,7 +4,7 @@
 > Every item passes the VISION.md 4-question test + brain test.
 > ZERO LLM dependency — pure algorithmic, regex, graph-based.
 
-**Current state**: v4.21.1 — 52 MCP tools, 5400+ tests, schema v38, SQLite + PostgreSQL + InfinityDB backends, neuroscience engine (10 brain-inspired algorithms).
+**Current state**: v4.22.1 — 52 MCP tools, 5400+ tests, schema v38, SQLite + PostgreSQL + InfinityDB backends, neuroscience engine (10 brain-inspired algorithms), tiered memory loading (HOT/WARM/COLD).
 **Architecture**: Spreading activation reflex engine, biological memory model, MCP standard.
 
 ---
@@ -112,19 +112,22 @@
 - **Zero LLM**: Pure algorithmic (regex, SimHash, graph ops). No embeddings required.
 - 107 new tests, post-encode hooks, paginated tag fetch, real activation scores
 
-### A6. Tiered Memory Loading — Issue #111
+### A6. Tiered Memory Loading — Issue #111 ✅ (plan: `.rune/plan-tiered-memory.md`)
 
 **Problem**: All memories have equal access priority. Real brains have fast-access working memory vs long-term storage. Safety rules and user preferences should always be available, not just when semantically matched.
 
-**Scope**: Logical tiers on neurons (prerequisite for C1 physical storage tiers)
-- [ ] Schema migration: add `tier TEXT DEFAULT 'warm'` to neurons
-- [ ] HOT tier: always included in `nmem_context`, decay floor = 0.5
-- [ ] WARM tier: current behavior (semantic match, normal decay)
-- [ ] COLD tier: explicit `nmem_recall` only, aggressive decay
-- [ ] `nmem_remember(..., tier="hot")` + `nmem_edit` tier changes
-- [ ] `nmem_eternal` / `nmem_pin` → auto-promote to HOT
-- [ ] Safety boundaries: `type=boundary` → semantically HOT, never decayed below threshold
-- **Foundation**: A5 neuro engine provides arousal-based compression resistance + context fingerprints
+**Scope**: Logical tiers on neurons (prerequisite for C1 physical storage tiers) — **shipped v4.22.0, fixes v4.22.1**
+- [x] Schema migration v37: `tier TEXT DEFAULT 'warm'` on typed_memories + index
+- [x] HOT tier: always injected into context, decay floor = 0.5, MAX_HOT_CONTEXT_MEMORIES = 50
+- [x] WARM tier: default behavior (semantic match, normal decay)
+- [x] COLD tier: explicit `nmem_recall` only, 2× decay rate, excluded from auto-context
+- [x] `nmem_remember(..., tier="hot")` + `nmem_edit` + `nmem_recall(tier=...)` filter
+- [x] `nmem_pin` → auto-promote to HOT
+- [x] Safety boundaries: `type=boundary` → always HOT, enforced in create/edit/pin/decay
+- [x] Context optimizer: HOT +0.3 score boost, COLD excluded by default
+- [x] Dashboard: TierDistribution card (progress bars), `count_typed_memories()` SQL COUNT
+- [x] v4.22.1: 6 review fixes — with_priority data loss, boundary migration v38, case-insensitive tier, broader exception handling
+- **42 new tests** across 4 phase files
 - **Brain test**: Não có working memory (nhanh) vs long-term memory (chậm) → Yes
 - **Backward compatible**: default `warm` → existing memories unchanged
 
