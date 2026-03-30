@@ -15,6 +15,9 @@ logger = logging.getLogger(__name__)
 # See docs/guides/cloud-sync.md for self-hosted setup
 DEFAULT_HUB_URL = ""
 
+# Pay-hub for license verification (always available, no sync config needed)
+DEFAULT_PAY_URL = "https://pay.theio.vn"
+
 
 def _mask_key(api_key: str) -> str:
     """Mask API key for display: nmk_a1b2****."""
@@ -494,24 +497,18 @@ class SyncToolHandler:
                 if not license_key.startswith("nm_"):
                     return {"error": "Invalid license key format. Expected nm_pro_* or nm_team_*"}
 
-                hub_url = self.config.sync.hub_url
-                api_key = self.config.sync.api_key
-                if not hub_url or not api_key:
-                    return {
-                        "error": "Sync must be configured first. Run nmem_sync_config(action='setup').",
-                    }
-
                 import aiohttp
 
-                activate_url = _build_hub_url(hub_url, "/hub/activate")
+                pay_url = f"{DEFAULT_PAY_URL}/verify"
                 headers: dict[str, str] = {
                     "Content-Type": "application/json",
-                    "Authorization": f"Bearer {api_key}",
                 }
+                # Pay-hub expects original format (NM-PRO-*), not normalized
+                original_key = str(args.get("license_key", "")).strip()
                 async with aiohttp.ClientSession() as session:
                     async with session.post(
-                        activate_url,
-                        json={"license_key": license_key},
+                        pay_url,
+                        json={"key": original_key},
                         headers=headers,
                         timeout=aiohttp.ClientTimeout(total=15),
                     ) as resp:
@@ -529,12 +526,13 @@ class SyncToolHandler:
                             LicenseConfig,
                             set_config,
                         )
+                        from neural_memory.utils.timeutils import utcnow
 
                         activated_tier = str(data.get("tier", "pro")).lower()
                         new_license = LicenseConfig.from_dict(
                             {
                                 "tier": activated_tier,
-                                "activated_at": data.get("activated_at", ""),
+                                "activated_at": utcnow().isoformat(),
                                 "expires_at": data.get("expires_at", ""),
                             }
                         )

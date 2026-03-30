@@ -181,36 +181,20 @@ def shared_activate(
         )
         raise typer.Exit(1)
 
-    from neural_memory.unified_config import get_config as get_unified_config
-
-    uconfig = get_unified_config(reload=True)
-    hub_url = uconfig.sync.hub_url
-    api_key = uconfig.sync.api_key
-    if not hub_url or not api_key:
-        typer.secho(
-            "Cloud sync not configured. Set up sync first via the dashboard or MCP.",
-            fg=typer.colors.RED,
-        )
-        raise typer.Exit(1)
-
     async def _activate() -> dict[str, Any]:
         import aiohttp
 
-        base = hub_url.rstrip("/")
-        if "localhost" in base or "127.0.0.1" in base:
-            activate_url = f"{base}/hub/activate"
-        else:
-            activate_url = f"{base}/v1/hub/activate"
+        from neural_memory.mcp.sync_handler import DEFAULT_PAY_URL
 
+        pay_url = f"{DEFAULT_PAY_URL}/verify"
         headers = {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
         }
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(
-                    activate_url,
-                    json={"license_key": license_key},
+                    pay_url,
+                    json={"key": key.strip()},
                     headers=headers,
                     timeout=aiohttp.ClientTimeout(total=15),
                 ) as resp:
@@ -246,11 +230,14 @@ def shared_activate(
     from dataclasses import replace
 
     from neural_memory.unified_config import LicenseConfig, set_config
+    from neural_memory.unified_config import get_config as get_unified_config
+    from neural_memory.utils.timeutils import utcnow
 
+    uconfig = get_unified_config(reload=True)
     new_license = LicenseConfig.from_dict(
         {
             "tier": result["tier"],
-            "activated_at": "",
+            "activated_at": utcnow().isoformat(),
             "expires_at": result.get("expires_at", ""),
         }
     )

@@ -699,7 +699,7 @@ def _sanitize_toml_str(value: str) -> str:
     return cleaned
 
 
-_ISO_DATETIME_PATTERN = re.compile(r"^[0-9T:\-\+Z\.]*$")
+_ISO_DATETIME_PATTERN = re.compile(r"^[0-9T:\-\+Z\. ]*$")
 
 
 def _sanitize_iso_datetime(value: str) -> str:
