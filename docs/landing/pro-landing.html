@@ -604,6 +604,8 @@
          style="color:var(--text-muted);font-size:13px;text-decoration:none;">Docs</a>
       <a href="https://github.com/nhadaututtheky/neural-memory" target="_blank" rel="noopener"
          style="color:var(--text-muted);font-size:13px;text-decoration:none;">GitHub</a>
+      <a href="https://github.com/nhadaututtheky/neural-memory#quick-start" target="_blank" rel="noopener"
+         style="color:var(--emerald);font-size:13px;text-decoration:none;font-weight:600;">Install Free</a>
       <button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle theme">
         <svg id="theme-icon-dark" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
         <svg id="theme-icon-light" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg>
@@ -615,7 +617,8 @@
   <!-- Center hint (visible when no panel is open) -->
   <div class="center-hint" id="center-hint">
     <div class="title">Your agent's brain,<br>upgraded</div>
-    <div class="subtitle">Click a neuron cluster to explore features</div>
+    <div class="subtitle">Free forever &mdash; 52 tools, unlimited memories. Pro for semantic search &amp; scale.</div>
+    <div class="subtitle" style="font-size:13px;margin-top:4px;">Click a neuron cluster to explore Pro features</div>
     <div class="drag-icon">
       <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="1.5">
         <path d="M12 2v4M12 18v4M2 12h4M18 12h4"/>
@@ -1329,6 +1332,10 @@
               </ul>
               <a href="https://github.com/nhadaututtheky/neural-memory" target="_blank" rel="noopener"
                  class="btn-checkout secondary" style="text-align:center;text-decoration:none">pip install neural-memory</a>
+              <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);font-size:12px;color:var(--text-muted);line-height:1.6">
+                <strong style="color:var(--text)">New here?</strong> Install → run <code style="color:var(--emerald)">nmem init --full</code> → restart your AI tool. Your agent now remembers across sessions.
+                <a href="https://neuralmemory.theio.vn/getting-started/quickstart/" target="_blank" rel="noopener" style="color:var(--cyan);text-decoration:none;"> Quickstart Guide &rarr;</a>
+              </div>
             </div>
             <div class="price-card featured">
               <div style="font-size:11px;font-weight:700;color:var(--violet);margin-bottom:8px">POPULAR</div>
@@ -1365,6 +1372,23 @@
             </div>
           </div>
           <p style="font-size:13px;text-align:center">30-day money-back guarantee. No questions asked.</p>
+          <div style="margin-top:28px;padding-top:24px;border-top:1px solid var(--border)">
+            <h3 style="font-size:16px;margin-bottom:12px">After Purchase</h3>
+            <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px">You'll receive a license key (<code style="color:var(--violet)">NM-PRO-XXXX-XXXX-XXXX</code>) via email. Then:</p>
+            <div class="code-block" style="font-size:12px;line-height:1.8">
+              <div style="color:var(--text-muted)"># 1. Activate (just one command)</div>
+              <div><span style="color:var(--emerald)">nmem shared activate</span> --key <span style="color:var(--violet)">NM-PRO-XXXX-XXXX-XXXX</span></div>
+              <br>
+              <div style="color:var(--text-muted)"># 2. Optional: upgrade to InfinityDB</div>
+              <div><span style="color:var(--emerald)">nmem storage status</span></div>
+              <div><span style="color:var(--emerald)">nmem migrate infinitydb</span></div>
+              <div><span style="color:var(--emerald)">nmem storage switch infinitydb</span></div>
+              <br>
+              <div style="color:var(--text-muted)"># Or activate via your AI agent:</div>
+              <div><span style="color:var(--cyan)">nmem_sync_config</span>(action=<span style="color:var(--emerald)">"activate"</span>, license_key=<span style="color:var(--emerald)">"NM-PRO-..."</span>)</div>
+            </div>
+            <p style="font-size:12px;color:var(--text-muted);margin-top:8px">Pro features activate instantly. Restart your AI tool to apply.</p>
+          </div>
         `,
       };
       return panels[key] || '<p>Feature details coming soon.</p>';
