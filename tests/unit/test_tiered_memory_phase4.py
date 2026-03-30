@@ -98,6 +98,11 @@ class TestStatsTierDistribution:
         assert result["tier_distribution"]["warm"] == 10
         assert result["tier_distribution"]["cold"] == 2
 
+        # Storage backend visibility (P1.1)
+        assert "storage_backend" in result
+        assert "pro_installed" in result
+        assert "is_pro" in result
+
     @pytest.mark.asyncio
     async def test_stats_tier_distribution_graceful_on_error(self) -> None:
         """tier_distribution should default to zeros if find_typed_memories fails."""

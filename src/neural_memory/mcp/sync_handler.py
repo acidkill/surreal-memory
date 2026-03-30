@@ -540,13 +540,24 @@ class SyncToolHandler:
                         self.config.save()
                         set_config(self.config)  # Update singleton for REST API
 
-                        return {
+                        result = {
                             "status": "activated",
                             "tier": activated_tier,
                             "expires_at": data.get("expires_at"),
                             "features": data.get("features", []),
                             "message": data.get("message", "License activated!"),
                         }
+
+                        # Guide user to InfinityDB if on SQLite
+                        if self.config.storage_backend == "sqlite":
+                            result["next_step"] = (
+                                "Pro activated! To unlock InfinityDB (HNSW indexing, "
+                                "tiered compression, cone queries), run: "
+                                "nmem storage status → nmem migrate infinitydb "
+                                "→ nmem storage switch infinitydb"
+                            )
+
+                        return result
 
             return {"error": "Invalid action. Use: get, set, setup, activate"}
         except Exception:

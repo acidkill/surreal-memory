@@ -209,6 +209,16 @@ class ToolHandler(RememberHandler, RecallHandler):
             }
         )
 
+    def _get_storage_info(self) -> dict[str, Any]:
+        """Get current storage backend and Pro status."""
+        from neural_memory.plugins import has_pro
+
+        return {
+            "backend": self.config.storage_backend,
+            "pro_installed": has_pro(),
+            "is_pro": self.config.is_pro(),
+        }
+
     async def _stats(self, args: dict[str, Any]) -> dict[str, Any]:
         """Get brain statistics."""
         storage = await self.get_storage()
@@ -238,9 +248,15 @@ class ToolHandler(RememberHandler, RecallHandler):
         except Exception:
             logger.debug("Tier distribution count failed (non-critical)", exc_info=True)
 
+        # Storage backend info
+        storage_info = self._get_storage_info()
+
         response = {
             "version": __version__,
             "brain": brain.name,
+            "storage_backend": storage_info["backend"],
+            "pro_installed": storage_info["pro_installed"],
+            "is_pro": storage_info["is_pro"],
             "neuron_count": stats["neuron_count"],
             "synapse_count": stats["synapse_count"],
             "fiber_count": stats["fiber_count"],
@@ -350,6 +366,23 @@ class ToolHandler(RememberHandler, RecallHandler):
                     )
         except Exception:
             logger.debug("Review check failed (non-critical)", exc_info=True)
+
+        # InfinityDB upgrade hint: Pro active but still on SQLite
+        try:
+            info = self._get_storage_info()
+            if (
+                info["is_pro"]
+                and info["pro_installed"]
+                and info["backend"] == "sqlite"
+                and neuron_count >= 100
+            ):
+                hints.append(
+                    "Pro is active but you're on SQLite. "
+                    "InfinityDB offers HNSW indexing, tiered compression, and cone queries. "
+                    "Run: nmem storage status → nmem migrate infinitydb → nmem storage switch infinitydb"
+                )
+        except Exception:
+            logger.debug("InfinityDB hint check failed (non-critical)", exc_info=True)
 
         return hints
 

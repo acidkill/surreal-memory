@@ -252,6 +252,15 @@ def shared_activate(
     if result.get("features"):
         typer.echo(f"  Features: {', '.join(result['features'])}")
     typer.echo()
+
+    # Guide to InfinityDB if on SQLite
+    if uconfig.storage_backend == "sqlite":
+        typer.echo("  Next: unlock InfinityDB (HNSW, tiered compression, cone queries)")
+        typer.echo("    nmem storage status")
+        typer.echo("    nmem migrate infinitydb")
+        typer.echo("    nmem storage switch infinitydb")
+        typer.echo()
+
     typer.secho("Restart your AI tool to apply Pro features.", fg=typer.colors.BRIGHT_BLACK)
 
 

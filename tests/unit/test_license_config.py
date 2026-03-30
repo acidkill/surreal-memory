@@ -181,8 +181,9 @@ class TestSanitizeIsoDatetime:
     def test_rejects_newlines(self) -> None:
         assert _sanitize_iso_datetime("2026-01-01\ninjected") == ""
 
-    def test_rejects_spaces(self) -> None:
-        assert _sanitize_iso_datetime("2026-01-01 10:00:00") == ""
+    def test_accepts_space_separated(self) -> None:
+        """Pay-hub returns space-separated datetimes like '2026-06-28 07:08:08'."""
+        assert _sanitize_iso_datetime("2026-01-01 10:00:00") == "2026-01-01 10:00:00"
 
     def test_rejects_alpha(self) -> None:
         assert _sanitize_iso_datetime("not-a-date") == ""

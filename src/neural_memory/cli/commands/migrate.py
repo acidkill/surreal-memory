@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Annotated, Any
 
 import typer
+
+logger = logging.getLogger(__name__)
 
 
 def migrate(
     target: Annotated[
         str,
-        typer.Argument(help="Target backend: 'falkordb', 'postgres', or 'sqlite'"),
+        typer.Argument(help="Target backend: 'falkordb', 'postgres', 'infinitydb', or 'sqlite'"),
     ],
     brain: Annotated[
         str | None,
@@ -53,8 +56,9 @@ def migrate(
     Examples:
         nmem migrate falkordb --brain default
         nmem migrate postgres --brain default --pg-host localhost --pg-database neuralmem
+        nmem migrate infinitydb --brain my-brain.v2
     """
-    supported = ("falkordb", "postgres", "sqlite")
+    supported = ("falkordb", "postgres", "infinitydb", "sqlite")
     if target not in supported:
         typer.secho(f"Unknown target backend: {target}", fg=typer.colors.RED)
         typer.echo(f"Supported targets: {', '.join(supported)}")
@@ -79,6 +83,8 @@ def migrate(
                 password=pg_password,
             )
         )
+    elif target == "infinitydb":
+        asyncio.run(_migrate_to_infinitydb(brain_name=brain))
     else:
         typer.secho("SQLite -> SQLite migration not needed.", fg=typer.colors.YELLOW)
         raise typer.Exit(0)
@@ -151,6 +157,107 @@ async def _migrate_to_postgres(
     )
 
     _print_result(result)
+
+
+async def _migrate_to_infinitydb(brain_name: str | None) -> None:
+    """Run the SQLite -> InfinityDB migration (Pro feature)."""
+    from pathlib import Path
+
+    from neural_memory.plugins import get_storage_class, has_pro
+    from neural_memory.unified_config import get_config
+
+    config = get_config()
+
+    # Pre-flight: Pro checks
+    if not has_pro():
+        typer.secho(
+            "Pro package not installed. Run: pip install neural-memory-pro",
+            fg=typer.colors.RED,
+        )
+        raise typer.Exit(1)
+    if not config.is_pro():
+        typer.secho(
+            "Pro license not active. Run: nmem shared activate --key <KEY>",
+            fg=typer.colors.RED,
+        )
+        raise typer.Exit(1)
+
+    name = brain_name or config.current_brain
+    brains_dir = Path(config.data_dir) / "brains"
+    db_path = brains_dir / f"{name}.db"
+
+    if not db_path.exists():
+        typer.secho(f"No SQLite data for brain '{name}': {db_path}", fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+    typer.secho(f"Migrating brain '{name}' from SQLite -> InfinityDB", bold=True)
+    typer.echo(f"  Source: {db_path}")
+    typer.echo(f"  Target: {brains_dir / name}/")
+
+    # Open source SQLite
+    from neural_memory.storage.sqlite import SQLiteStorage
+
+    source = SQLiteStorage(str(db_path))
+    await source.initialize()
+
+    # Find brain
+    brain_list = await source.list_brains()
+    brain_id: str | None = None
+    for b in brain_list:
+        if b.get("name") == name:
+            brain_id = b.get("id") or b.get("name")
+            break
+    if not brain_id and brain_list:
+        brain_id = brain_list[0].get("id") or brain_list[0].get("name") or name
+    if not brain_id:
+        typer.secho(f"No brain '{name}' found in SQLite database.", fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+    source.set_brain(brain_id)
+
+    # Count source
+    stats = await source.get_stats(brain_id)
+    n_neurons = stats.get("neuron_count", 0)
+    n_synapses = stats.get("synapse_count", 0)
+    n_fibers = stats.get("fiber_count", 0)
+    typer.echo(f"  Neurons: {n_neurons}, Synapses: {n_synapses}, Fibers: {n_fibers}")
+
+    # Export from source
+    typer.echo("  Exporting from SQLite...")
+    snapshot = await source.export_brain(brain_id)
+
+    # Open target InfinityDB
+    storage_cls = get_storage_class()
+    if storage_cls is None:
+        typer.secho("InfinityDB storage class not available from Pro plugin.", fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+    brain_dir = brains_dir / name
+    brain_dir.mkdir(parents=True, exist_ok=True)
+    target = storage_cls(str(brain_dir))
+    await target.initialize()
+
+    # Import into target
+    typer.echo("  Importing into InfinityDB...")
+    await target.import_brain(snapshot)
+
+    # Verify
+    target_brain_list = await target.list_brains()
+    if target_brain_list:
+        target_brain_id = target_brain_list[0].get("id") or target_brain_list[0].get("name")
+        target.set_brain(target_brain_id)
+        target_stats = await target.get_stats(target_brain_id)
+        t_neurons = target_stats.get("neuron_count", 0)
+        typer.echo(f"  Verified: {t_neurons} neurons in InfinityDB")
+
+        if n_neurons > 0 and abs(t_neurons - n_neurons) / n_neurons > 0.005:
+            typer.secho(
+                f"  WARNING: count mismatch — source {n_neurons}, target {t_neurons}",
+                fg=typer.colors.YELLOW,
+            )
+
+    typer.secho("Migration complete!", fg=typer.colors.GREEN)
+    typer.echo("  Next: nmem storage switch infinitydb")
 
 
 def _print_result(result: dict[str, Any]) -> None:
