@@ -75,9 +75,7 @@ class TestStatsTierDistribution:
             for i in range(2)
         ]
 
-        async def count_by_tier(
-            tier: str | None = None, **kw: object
-        ) -> int:
+        async def count_by_tier(tier: str | None = None, **kw: object) -> int:
             if tier == "hot":
                 return len(hot_mems)
             if tier == "warm":
@@ -164,9 +162,7 @@ class TestDashboardTierStatsEndpoint:
         ]
         cold_mems = []
 
-        async def count_by_tier(
-            tier: str | None = None, **kw: object
-        ) -> int:
+        async def count_by_tier(tier: str | None = None, **kw: object) -> int:
             if tier == "hot":
                 return len(hot_mems)
             if tier == "warm":
