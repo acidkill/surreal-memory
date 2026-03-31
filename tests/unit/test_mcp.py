@@ -44,7 +44,7 @@ class TestMCPServer:
         with patch("neural_memory.plugins.get_plugin_tools", return_value=[]):
             tools = server.get_tools()
 
-        assert len(tools) == 52
+        assert len(tools) == 53
         tool_names = {tool["name"] for tool in tools}
         assert tool_names == {
             "nmem_remember",
@@ -99,6 +99,7 @@ class TestMCPServer:
             "nmem_refine",
             "nmem_report_outcome",
             "nmem_budget",
+            "nmem_tier",
         }
 
     def test_tool_schemas(self, server: MCPServer) -> None:
@@ -1052,7 +1053,7 @@ class TestMCPProtocol:
         assert response["id"] == 2
         assert "result" in response
         assert "tools" in response["result"]
-        assert len(response["result"]["tools"]) == 52
+        assert len(response["result"]["tools"]) == 53
 
     @pytest.mark.asyncio
     async def test_tools_call_message(self, server: MCPServer) -> None:

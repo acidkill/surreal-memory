@@ -27,6 +27,7 @@ from neural_memory.utils.timeutils import ensure_naive_utc, utcnow
 
 if TYPE_CHECKING:
     from neural_memory.storage.base import NeuralStorage
+    from neural_memory.unified_config import TierConfig
 
 logger = logging.getLogger(__name__)
 
@@ -248,10 +249,12 @@ class ConsolidationEngine:
         storage: NeuralStorage,
         config: ConsolidationConfig | None = None,
         dream_decay_multiplier: float = 10.0,
+        tier_config: TierConfig | None = None,
     ) -> None:
         self._storage = storage
         self._config = config or ConsolidationConfig()
         self._dream_decay_multiplier = dream_decay_multiplier
+        self._tier_config = tier_config
 
     async def _run_strategy(
         self,
@@ -390,8 +393,38 @@ class ConsolidationEngine:
         if timed_out_strategies:
             report.extra["timed_out_strategies"] = timed_out_strategies
 
+        # Auto-tier promotion/demotion (Pro feature, runs after standard strategies)
+        await self._run_auto_tier(report, dry_run)
+
         report.duration_ms = (time.perf_counter() - start) * 1000
         return report
+
+    async def _run_auto_tier(
+        self,
+        report: ConsolidationReport,
+        dry_run: bool,
+    ) -> None:
+        """Run auto-tier promotion/demotion if enabled (Pro feature).
+
+        Runs after all standard consolidation strategies complete.
+        Results are attached to report.extra["auto_tier"].
+        """
+        if self._tier_config is None or not self._tier_config.auto_enabled:
+            return
+
+        brain_id = self._storage.current_brain_id
+        if not brain_id:
+            return
+
+        try:
+            from neural_memory.engine.tier_engine import TierEngine
+
+            engine = TierEngine(self._storage, self._tier_config)
+            tier_report = await engine.apply(brain_id, dry_run=dry_run)
+            report.extra["auto_tier"] = tier_report.to_dict()
+        except Exception:
+            logger.error("Auto-tier failed during consolidation", exc_info=True)
+            report.extra["auto_tier"] = {"error": "auto-tier failed"}
 
     async def _prune(
         self,

@@ -277,6 +277,7 @@ class MCPServer(
             "nmem_refine": self._refine,
             "nmem_report_outcome": self._report_outcome,
             "nmem_budget": self._budget,
+            "nmem_tier": self._tier,
         }
         handler = dispatch.get(name)
         if handler:

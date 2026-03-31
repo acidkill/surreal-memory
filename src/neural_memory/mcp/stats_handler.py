@@ -34,6 +34,9 @@ class StatsHandler:
         def get_update_hint(self) -> dict[str, Any] | None:
             raise NotImplementedError
 
+        async def _remember(self, args: dict[str, Any]) -> dict[str, Any]:
+            raise NotImplementedError
+
     async def _todo(self, args: dict[str, Any]) -> dict[str, Any]:
         """Add a TODO."""
         task = args.get("task")

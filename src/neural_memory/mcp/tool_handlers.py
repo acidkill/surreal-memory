@@ -14,6 +14,7 @@ Domain handlers:
 - LifecycleHandler: edit, forget, consolidate, tool_stats, lifecycle
 - InstructionHandler: refine, report_outcome
 - BudgetHandler: token budget analysis
+- TierHandler: auto-tier management (Pro feature)
 - RememberHandler: remember, remember_batch (inherited)
 - RecallHandler: recall, context (inherited)
 """
@@ -33,6 +34,7 @@ from neural_memory.mcp.provenance_handler import ProvenanceHandler
 from neural_memory.mcp.recall_handler import RecallHandler
 from neural_memory.mcp.remember_handler import RememberHandler
 from neural_memory.mcp.stats_handler import StatsHandler
+from neural_memory.mcp.tier_handler import TierHandler
 
 # Re-export shared utilities for backward compatibility.
 # Many handlers and tests import these from tool_handlers.
@@ -51,6 +53,7 @@ class ToolHandler(
     LifecycleHandler,
     InstructionHandler,
     BudgetHandler,
+    TierHandler,
     RememberHandler,
     RecallHandler,
 ):

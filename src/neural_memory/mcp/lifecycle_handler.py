@@ -267,12 +267,15 @@ class LifecycleHandler:
         config = ConsolidationConfig(**config_kwargs) if config_kwargs else None
 
         try:
+            # Pass tier_config for auto-tier (Pro feature, runs post-consolidation)
+            tier_config = self.config.tiers if self.config.is_pro() else None
             delta = await run_with_delta(
                 storage,
                 brain_id,
                 strategies=strategies,
                 dry_run=dry_run,
                 config=config,
+                tier_config=tier_config,
             )
         except Exception:
             logger.error("Consolidation failed", exc_info=True)

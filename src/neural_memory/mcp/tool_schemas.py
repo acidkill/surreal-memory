@@ -1909,4 +1909,30 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
             "required": ["action"],
         },
     },
+    {
+        "name": "nmem_tier",
+        "description": "Auto-tier management — promote/demote memories between HOT/WARM/COLD based on access patterns. "
+        "Pro feature: free users keep manual tiers only. "
+        "Use 'status' to see tier distribution. 'evaluate' for dry-run. 'apply' to execute changes. "
+        "'history' to see a memory's tier change log. 'config' to view thresholds.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["status", "evaluate", "apply", "history", "config"],
+                    "description": "Action: 'status' (distribution), 'evaluate' (dry-run), 'apply' (execute), 'history' (fiber tier log), 'config' (thresholds).",
+                },
+                "fiber_id": {
+                    "type": "string",
+                    "description": "Fiber ID for 'history' action.",
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "If true with action='apply', show changes without applying (default: false).",
+                },
+            },
+            "required": ["action"],
+        },
+    },
 ]

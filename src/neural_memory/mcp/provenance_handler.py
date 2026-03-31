@@ -156,7 +156,11 @@ class ProvenanceHandler:
             return {"error": "neuron_id is required"}
 
         storage = await self.get_storage()
-        _require_brain_id(storage)
+        try:
+            _require_brain_id(storage)
+        except ValueError:
+            logger.error("No brain configured for provenance")
+            return {"error": "No brain configured"}
 
         # Verify neuron exists
         neuron = await storage.get_neuron(neuron_id)
