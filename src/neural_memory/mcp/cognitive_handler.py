@@ -59,7 +59,7 @@ class CognitiveHandler:
         if not content:
             return {"error": "content is required"}
         if len(content) > MAX_CONTENT_LENGTH:
-            return {"error": f"Content too long ({len(content)} chars). Max: 100,000."}
+            return {"error": f"Content too long ({len(content)} chars). Max: {MAX_CONTENT_LENGTH:,}."}
 
         initial_confidence = args.get("confidence", 0.5)
         try:
@@ -276,7 +276,7 @@ class CognitiveHandler:
         if not content:
             return {"error": "content is required"}
         if len(content) > MAX_CONTENT_LENGTH:
-            return {"error": f"Content too long ({len(content)} chars). Max: 100,000."}
+            return {"error": f"Content too long ({len(content)} chars). Max: {MAX_CONTENT_LENGTH:,}."}
 
         evidence_type = args.get("type", "for")
         if evidence_type not in ("for", "against"):
@@ -451,7 +451,7 @@ class CognitiveHandler:
         if not content:
             return {"error": "content is required"}
         if len(content) > MAX_CONTENT_LENGTH:
-            return {"error": f"Content too long ({len(content)} chars). Max: 100,000."}
+            return {"error": f"Content too long ({len(content)} chars). Max: {MAX_CONTENT_LENGTH:,}."}
 
         confidence = args.get("confidence", 0.7)
         try:
@@ -839,7 +839,7 @@ class CognitiveHandler:
 
         content = args.get("content", "").strip() if args.get("content") else None
         if content and len(content) > MAX_CONTENT_LENGTH:
-            return {"error": f"Content too long ({len(content)} chars). Max: 100,000."}
+            return {"error": f"Content too long ({len(content)} chars). Max: {MAX_CONTENT_LENGTH:,}."}
 
         storage = await self.get_storage()
         try:
@@ -1347,7 +1347,7 @@ class CognitiveHandler:
         if not content:
             return {"error": "content is required for evolve"}
         if len(content) > MAX_CONTENT_LENGTH:
-            return {"error": f"Content too long ({len(content)} chars). Max: 100,000."}
+            return {"error": f"Content too long ({len(content)} chars). Max: {MAX_CONTENT_LENGTH:,}."}
 
         # Verify the old hypothesis exists and is a hypothesis (not a prediction)
         old_state = await storage.get_cognitive_state(hypothesis_id)
