@@ -3,7 +3,7 @@ import { createPortal } from "react-dom"
 import { useTranslation } from "react-i18next"
 import { useIsPro } from "@/api/hooks/useDashboard"
 import { api } from "@/api/client"
-import { X, ChevronRight, KeyRound, Check, Loader2 } from "lucide-react"
+import { X, CaretRight, Key, Check, SpinnerGap } from "@phosphor-icons/react"
 
 /* ------------------------------------------------------------------ */
 /*  Pricing config                                                     */
@@ -186,7 +186,7 @@ export function UpgradeModal() {
                     <span className="font-mono font-bold text-foreground">{PRICING.vn.price}</span>
                   </p>
                 </div>
-                <ChevronRight className="size-5 text-muted-foreground group-hover:text-foreground transition-colors" aria-hidden="true" />
+                <CaretRight className="size-5 text-muted-foreground group-hover:text-foreground transition-colors" aria-hidden="true" />
               </button>
 
               {/* International option */}
@@ -204,7 +204,7 @@ export function UpgradeModal() {
                     <span className="font-mono font-bold text-foreground">{PRICING.intl.price}</span>
                   </p>
                 </div>
-                <ChevronRight className="size-5 text-muted-foreground group-hover:text-foreground transition-colors" aria-hidden="true" />
+                <CaretRight className="size-5 text-muted-foreground group-hover:text-foreground transition-colors" aria-hidden="true" />
               </button>
 
               {/* Divider */}
@@ -219,11 +219,11 @@ export function UpgradeModal() {
                 onClick={() => setView("activate")}
                 className="group flex w-full items-center gap-4 rounded-xl border border-dashed border-border px-5 py-3 text-left transition-all hover:border-primary/40 cursor-pointer"
               >
-                <KeyRound className="size-5 text-muted-foreground" aria-hidden="true" />
+                <Key className="size-5 text-muted-foreground" aria-hidden="true" />
                 <span className="flex-1 text-sm font-medium text-muted-foreground group-hover:text-foreground">
                   {t("upgrade.haveKey", "I already have a license key")}
                 </span>
-                <ChevronRight className="size-4 text-muted-foreground group-hover:text-foreground transition-colors" aria-hidden="true" />
+                <CaretRight className="size-4 text-muted-foreground group-hover:text-foreground transition-colors" aria-hidden="true" />
               </button>
             </>
           )}
@@ -273,7 +273,7 @@ export function UpgradeModal() {
                       className="flex-1 flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors cursor-pointer"
                     >
                       {activating ? (
-                        <Loader2 className="size-4 animate-spin" />
+                        <SpinnerGap className="size-4 animate-spin" />
                       ) : (
                         t("upgrade.activate", "Activate")
                       )}

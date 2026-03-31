@@ -1,36 +1,36 @@
 import { NavLink } from "react-router-dom"
 import {
-  LayoutDashboard,
-  HeartPulse,
-  Network,
+  SquaresFour,
+  Heartbeat,
+  Graph,
   Clock,
-  TrendingUp,
-  Share2,
+  TrendUp,
+  ShareNetwork,
   Cloud,
   HardDrive,
-  Settings,
+  Gear,
   Brain,
-  Sparkles,
-  BarChart3,
-  LineChart,
-} from "lucide-react"
+  Sparkle,
+  ChartBar,
+  ChartLine,
+} from "@phosphor-icons/react"
 import { cn } from "@/lib/utils"
 import { useLayoutStore } from "@/stores/useLayoutStore"
 import { useTranslation } from "react-i18next"
 
 const navItems = [
-  { to: "/", icon: LayoutDashboard, labelKey: "nav.overview" },
-  { to: "/health", icon: HeartPulse, labelKey: "nav.health" },
-  { to: "/graph", icon: Network, labelKey: "nav.graph" },
+  { to: "/", icon: SquaresFour, labelKey: "nav.overview" },
+  { to: "/health", icon: Heartbeat, labelKey: "nav.health" },
+  { to: "/graph", icon: Graph, labelKey: "nav.graph" },
   { to: "/timeline", icon: Clock, labelKey: "nav.timeline" },
-  { to: "/evolution", icon: TrendingUp, labelKey: "nav.evolution" },
-  { to: "/diagrams", icon: Share2, labelKey: "nav.mindmap" },
+  { to: "/evolution", icon: TrendUp, labelKey: "nav.evolution" },
+  { to: "/diagrams", icon: ShareNetwork, labelKey: "nav.mindmap" },
   { to: "/sync", icon: Cloud, labelKey: "nav.sync" },
-  { to: "/oracle", icon: Sparkles, labelKey: "nav.oracle" },
-  { to: "/tool-stats", icon: BarChart3, labelKey: "nav.toolStats" },
-  { to: "/visualize", icon: LineChart, labelKey: "nav.visualize" },
+  { to: "/oracle", icon: Sparkle, labelKey: "nav.oracle" },
+  { to: "/tool-stats", icon: ChartBar, labelKey: "nav.toolStats" },
+  { to: "/visualize", icon: ChartLine, labelKey: "nav.visualize" },
   { to: "/storage", icon: HardDrive, labelKey: "nav.storage" },
-  { to: "/settings", icon: Settings, labelKey: "nav.settings" },
+  { to: "/settings", icon: Gear, labelKey: "nav.settings" },
 ] as const
 
 export function Sidebar() {
