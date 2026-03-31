@@ -14,6 +14,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Naive UTC sentinel for sorting (project convention: naive UTC datetimes)
+_DATETIME_MIN = datetime.min  # noqa: DTZ901
+
 
 class EvolutionHandler:
     """Mixin providing evolution, suggest, habits, version, and transplant handlers."""
@@ -134,7 +137,7 @@ class EvolutionHandler:
             idle_states = [s for s in states if s.access_frequency == 0]
 
             # Sort by creation time ascending (oldest first)
-            idle_states.sort(key=lambda s: s.created_at or datetime.min)
+            idle_states.sort(key=lambda s: s.created_at or _DATETIME_MIN)
 
             suggestions = []
             for state in idle_states[:limit]:

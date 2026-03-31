@@ -139,13 +139,15 @@ class TestTierConfig:
         assert cfg.max_hot_memories == 100
 
     def test_from_dict(self) -> None:
-        cfg = TierConfig.from_dict({
-            "auto_enabled": True,
-            "promote_threshold": 10,
-            "demote_inactive_days": 14,
-            "cold_archive_days": 60,
-            "max_hot_memories": 200,
-        })
+        cfg = TierConfig.from_dict(
+            {
+                "auto_enabled": True,
+                "promote_threshold": 10,
+                "demote_inactive_days": 14,
+                "cold_archive_days": 60,
+                "max_hot_memories": 200,
+            }
+        )
         assert cfg.auto_enabled is True
         assert cfg.promote_threshold == 10
         assert cfg.demote_inactive_days == 14
@@ -202,9 +204,7 @@ class TestPromotion:
         self, storage: SQLiteStorage, tier_config: TierConfig
     ) -> None:
         """WARM memories with access_frequency >= threshold get promoted to HOT."""
-        await _create_memory(
-            storage, "f1", access_frequency=5, last_activated_days_ago=1
-        )
+        await _create_memory(storage, "f1", access_frequency=5, last_activated_days_ago=1)
         engine = TierEngine(storage, tier_config)
         report = await engine.apply(storage.brain_id, dry_run=False)
 
@@ -222,18 +222,14 @@ class TestPromotion:
         self, storage: SQLiteStorage, tier_config: TierConfig
     ) -> None:
         """WARM memories below promote_threshold stay WARM."""
-        await _create_memory(
-            storage, "f1", access_frequency=2, last_activated_days_ago=1
-        )
+        await _create_memory(storage, "f1", access_frequency=2, last_activated_days_ago=1)
         engine = TierEngine(storage, tier_config)
         report = await engine.evaluate(storage.brain_id)
 
         assert len(report.promoted) == 0
 
     @pytest.mark.asyncio
-    async def test_respects_max_hot_cap(
-        self, storage: SQLiteStorage
-    ) -> None:
+    async def test_respects_max_hot_cap(self, storage: SQLiteStorage) -> None:
         """Promotion stops when max_hot_memories cap is reached."""
         config = TierConfig(
             auto_enabled=True,
@@ -242,12 +238,18 @@ class TestPromotion:
         )
         # Create 1 existing HOT + 3 WARM eligible for promotion
         await _create_memory(
-            storage, "existing-hot", tier=MemoryTier.HOT,
-            access_frequency=10, last_activated_days_ago=1,
+            storage,
+            "existing-hot",
+            tier=MemoryTier.HOT,
+            access_frequency=10,
+            last_activated_days_ago=1,
         )
         for i in range(3):
             await _create_memory(
-                storage, f"warm-{i}", access_frequency=5, last_activated_days_ago=1,
+                storage,
+                f"warm-{i}",
+                access_frequency=5,
+                last_activated_days_ago=1,
             )
 
         engine = TierEngine(storage, config)
@@ -262,9 +264,7 @@ class TestPromotion:
         self, storage: SQLiteStorage, tier_config: TierConfig
     ) -> None:
         """Dry run calculates changes but doesn't apply them."""
-        await _create_memory(
-            storage, "f1", access_frequency=5, last_activated_days_ago=1
-        )
+        await _create_memory(storage, "f1", access_frequency=5, last_activated_days_ago=1)
         engine = TierEngine(storage, tier_config)
         report = await engine.evaluate(storage.brain_id)
 
@@ -287,8 +287,11 @@ class TestDemotion:
     ) -> None:
         """HOT memories inactive for > demote_inactive_days get demoted to WARM."""
         await _create_memory(
-            storage, "f1", tier=MemoryTier.HOT,
-            access_frequency=10, last_activated_days_ago=10,
+            storage,
+            "f1",
+            tier=MemoryTier.HOT,
+            access_frequency=10,
+            last_activated_days_ago=10,
         )
         engine = TierEngine(storage, tier_config)
         report = await engine.apply(storage.brain_id, dry_run=False)
@@ -306,8 +309,11 @@ class TestDemotion:
     ) -> None:
         """HOT memories accessed recently stay HOT."""
         await _create_memory(
-            storage, "f1", tier=MemoryTier.HOT,
-            access_frequency=10, last_activated_days_ago=2,
+            storage,
+            "f1",
+            tier=MemoryTier.HOT,
+            access_frequency=10,
+            last_activated_days_ago=2,
         )
         engine = TierEngine(storage, tier_config)
         report = await engine.evaluate(storage.brain_id)
@@ -325,7 +331,10 @@ class TestArchive:
     ) -> None:
         """WARM memories inactive for > cold_archive_days get archived to COLD."""
         await _create_memory(
-            storage, "f1", access_frequency=1, last_activated_days_ago=60,
+            storage,
+            "f1",
+            access_frequency=1,
+            last_activated_days_ago=60,
         )
         engine = TierEngine(storage, tier_config)
         report = await engine.apply(storage.brain_id, dry_run=False)
@@ -342,7 +351,10 @@ class TestArchive:
     ) -> None:
         """WARM memories with recent access stay WARM."""
         await _create_memory(
-            storage, "f1", access_frequency=1, last_activated_days_ago=10,
+            storage,
+            "f1",
+            access_frequency=1,
+            last_activated_days_ago=10,
         )
         engine = TierEngine(storage, tier_config)
         report = await engine.evaluate(storage.brain_id)
@@ -360,8 +372,12 @@ class TestBoundaryProtection:
     ) -> None:
         """BOUNDARY type memories are never demoted from HOT."""
         await _create_memory(
-            storage, "f-boundary", memory_type=MemoryType.BOUNDARY,
-            tier=MemoryTier.HOT, access_frequency=0, last_activated_days_ago=100,
+            storage,
+            "f-boundary",
+            memory_type=MemoryType.BOUNDARY,
+            tier=MemoryTier.HOT,
+            access_frequency=0,
+            last_activated_days_ago=100,
         )
         engine = TierEngine(storage, tier_config)
         report = await engine.evaluate(storage.brain_id)
@@ -375,8 +391,12 @@ class TestBoundaryProtection:
     ) -> None:
         """BOUNDARY type WARM memories are never archived to COLD."""
         await _create_memory(
-            storage, "f-boundary", memory_type=MemoryType.BOUNDARY,
-            tier=MemoryTier.WARM, access_frequency=0, last_activated_days_ago=100,
+            storage,
+            "f-boundary",
+            memory_type=MemoryType.BOUNDARY,
+            tier=MemoryTier.WARM,
+            access_frequency=0,
+            last_activated_days_ago=100,
         )
         engine = TierEngine(storage, tier_config)
         report = await engine.evaluate(storage.brain_id)
@@ -395,8 +415,12 @@ class TestPinnedProtection:
     ) -> None:
         """Pinned fibers are never demoted from HOT."""
         await _create_memory(
-            storage, "f-pinned", tier=MemoryTier.HOT,
-            access_frequency=0, last_activated_days_ago=100, pinned=True,
+            storage,
+            "f-pinned",
+            tier=MemoryTier.HOT,
+            access_frequency=0,
+            last_activated_days_ago=100,
+            pinned=True,
         )
         engine = TierEngine(storage, tier_config)
         report = await engine.evaluate(storage.brain_id)
@@ -410,8 +434,11 @@ class TestPinnedProtection:
     ) -> None:
         """Pinned fibers are never archived from WARM."""
         await _create_memory(
-            storage, "f-pinned", access_frequency=0,
-            last_activated_days_ago=100, pinned=True,
+            storage,
+            "f-pinned",
+            access_frequency=0,
+            last_activated_days_ago=100,
+            pinned=True,
         )
         engine = TierEngine(storage, tier_config)
         report = await engine.evaluate(storage.brain_id)
@@ -425,9 +452,7 @@ class TestPinnedProtection:
 
 class TestOscillation:
     @pytest.mark.asyncio
-    async def test_no_promote_then_demote_same_cycle(
-        self, storage: SQLiteStorage
-    ) -> None:
+    async def test_no_promote_then_demote_same_cycle(self, storage: SQLiteStorage) -> None:
         """A memory promoted in this cycle cannot be demoted in the same cycle."""
         config = TierConfig(
             auto_enabled=True,
@@ -437,7 +462,10 @@ class TestOscillation:
         # This memory is WARM with high access but also "inactive" (>1 day)
         # It should be promoted but NOT demoted in the same cycle
         await _create_memory(
-            storage, "f1", access_frequency=5, last_activated_days_ago=5,
+            storage,
+            "f1",
+            access_frequency=5,
+            last_activated_days_ago=5,
         )
         engine = TierEngine(storage, config)
         report = await engine.apply(storage.brain_id, dry_run=False)
@@ -460,7 +488,10 @@ class TestPromotionHistory:
     ) -> None:
         """Promotion adds an entry to promotion_history in metadata."""
         await _create_memory(
-            storage, "f1", access_frequency=5, last_activated_days_ago=1,
+            storage,
+            "f1",
+            access_frequency=5,
+            last_activated_days_ago=1,
         )
         engine = TierEngine(storage, tier_config)
         await engine.apply(storage.brain_id, dry_run=False)
@@ -478,8 +509,11 @@ class TestPromotionHistory:
     ) -> None:
         """Demotion adds an entry to promotion_history in metadata."""
         await _create_memory(
-            storage, "f1", tier=MemoryTier.HOT,
-            access_frequency=10, last_activated_days_ago=10,
+            storage,
+            "f1",
+            tier=MemoryTier.HOT,
+            access_frequency=10,
+            last_activated_days_ago=10,
         )
         engine = TierEngine(storage, tier_config)
         await engine.apply(storage.brain_id, dry_run=False)
@@ -522,13 +556,17 @@ class TestNeverActivatedFallback:
         """HOT memories that were never activated get demoted using created_at fallback."""
         # last_activated_days_ago=None → last_activated=None, but created 100 days ago
         await _create_memory(
-            storage, "f-never", tier=MemoryTier.HOT,
-            access_frequency=0, last_activated_days_ago=None,
+            storage,
+            "f-never",
+            tier=MemoryTier.HOT,
+            access_frequency=0,
+            last_activated_days_ago=None,
         )
         # Manually backdate the neuron state created_at so it's older than demote threshold
         state = await storage.get_neuron_state("n-f-never")
         assert state is not None
         from dataclasses import replace
+
         old_state = replace(state, created_at=utcnow() - timedelta(days=100))
         await storage.update_neuron_state(old_state)
 
@@ -546,11 +584,15 @@ class TestNeverActivatedFallback:
     ) -> None:
         """WARM memories never activated get archived using created_at fallback."""
         await _create_memory(
-            storage, "f-never", access_frequency=0, last_activated_days_ago=None,
+            storage,
+            "f-never",
+            access_frequency=0,
+            last_activated_days_ago=None,
         )
         state = await storage.get_neuron_state("n-f-never")
         assert state is not None
         from dataclasses import replace
+
         old_state = replace(state, created_at=utcnow() - timedelta(days=100))
         await storage.update_neuron_state(old_state)
 
@@ -606,12 +648,19 @@ class TestHistoryCap:
         """promotion_history is capped at 20 entries."""
         # Create a memory with 19 existing history entries
         await _create_memory(
-            storage, "f-cap", access_frequency=5, last_activated_days_ago=1,
+            storage,
+            "f-cap",
+            access_frequency=5,
+            last_activated_days_ago=1,
         )
         tm = await storage.get_typed_memory("f-cap")
         assert tm is not None
-        existing_history = [{"from": "warm", "to": "hot", "reason": f"round-{i}", "at": "2026-01-01"} for i in range(19)]
+        existing_history = [
+            {"from": "warm", "to": "hot", "reason": f"round-{i}", "at": "2026-01-01"}
+            for i in range(19)
+        ]
         from dataclasses import replace
+
         updated = replace(tm, metadata={**tm.metadata, "promotion_history": existing_history})
         await storage.update_typed_memory(updated)
 
@@ -634,7 +683,10 @@ class TestDoubleReportDryRun:
     ) -> None:
         """Running evaluate twice returns the same report (no side effects)."""
         await _create_memory(
-            storage, "f1", access_frequency=5, last_activated_days_ago=1,
+            storage,
+            "f1",
+            access_frequency=5,
+            last_activated_days_ago=1,
         )
         engine = TierEngine(storage, tier_config)
         report1 = await engine.evaluate(storage.brain_id)

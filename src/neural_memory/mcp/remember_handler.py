@@ -497,10 +497,14 @@ class RememberHandler:
                     )
 
                     raw_context = args.get("context") or {}
-                    components = extract_decision_components(content, raw_context if isinstance(raw_context, dict) else None)
+                    components = extract_decision_components(
+                        content, raw_context if isinstance(raw_context, dict) else None
+                    )
                     if components is not None:
                         overlaps = await find_overlapping_decisions(
-                            storage, components, tags,
+                            storage,
+                            components,
+                            tags,
                         )
                         for ov in overlaps:
                             decision_overlaps_out.append(ov.to_dict())

@@ -133,7 +133,9 @@ class TierHandler:
         return {
             "fiber_id": fiber_id,
             "current_tier": mem.tier,
-            "memory_type": mem.memory_type.value if isinstance(mem.memory_type, MemoryType) else str(mem.memory_type),
+            "memory_type": mem.memory_type.value
+            if isinstance(mem.memory_type, MemoryType)
+            else str(mem.memory_type),
             "promotion_history": history,
             "total_changes": len(history),
         }

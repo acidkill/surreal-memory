@@ -220,7 +220,9 @@ async def find_overlapping_decisions(
         tag_score = len(tag_intersection) / len(tag_union) if tag_union else 0.0
 
         # 2. Text similarity on chosen/alternatives (token overlap)
-        text_score = _token_overlap_score(new_chosen_lower, new_rejected_lower, old_chosen, old_rejected)
+        text_score = _token_overlap_score(
+            new_chosen_lower, new_rejected_lower, old_chosen, old_rejected
+        )
 
         # Combined score (weighted average)
         overlap_score = 0.4 * tag_score + 0.6 * text_score

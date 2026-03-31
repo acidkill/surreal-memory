@@ -123,9 +123,7 @@ class TierEngine:
         current_hot_count = await self._storage.count_typed_memories(tier=MemoryTier.HOT)
 
         # --- Promotion: WARM → HOT ---
-        warm_memories = await self._storage.find_typed_memories(
-            tier=MemoryTier.WARM, limit=1000
-        )
+        warm_memories = await self._storage.find_typed_memories(tier=MemoryTier.WARM, limit=1000)
         for mem in warm_memories:
             if current_hot_count + len(promoted) >= self._config.max_hot_memories:
                 skipped_at_cap += 1
@@ -158,9 +156,7 @@ class TierEngine:
 
         # --- Demotion: HOT → WARM ---
         demote_cutoff = now - timedelta(days=self._config.demote_inactive_days)
-        hot_memories = await self._storage.find_typed_memories(
-            tier=MemoryTier.HOT, limit=1000
-        )
+        hot_memories = await self._storage.find_typed_memories(tier=MemoryTier.HOT, limit=1000)
         for mem in hot_memories:
             # Skip if already changed this cycle (prevent oscillation)
             if mem.fiber_id in changed_this_cycle:
@@ -208,9 +204,7 @@ class TierEngine:
         archive_cutoff = now - timedelta(days=self._config.cold_archive_days)
         # Re-query WARM (some may have been promoted above in dry_run scenario,
         # but in apply mode the promoted ones are now HOT)
-        warm_for_archive = await self._storage.find_typed_memories(
-            tier=MemoryTier.WARM, limit=1000
-        )
+        warm_for_archive = await self._storage.find_typed_memories(tier=MemoryTier.WARM, limit=1000)
         for mem in warm_for_archive:
             if mem.fiber_id in changed_this_cycle:
                 continue
@@ -273,9 +267,7 @@ class TierEngine:
         return report
 
 
-def _add_promotion_history(
-    mem: Any, change: TierChange, timestamp: datetime
-) -> Any:
+def _add_promotion_history(mem: Any, change: TierChange, timestamp: datetime) -> Any:
     """Add a tier change entry to promotion_history in metadata."""
     history = list(mem.metadata.get("promotion_history", []))
     history.append(

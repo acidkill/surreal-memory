@@ -217,9 +217,7 @@ async def _compute_score_breakdown(
                 if context_tags:
                     # Compare against top neuron's content tokens as proxy
                     content_tokens = {
-                        w.lower()
-                        for w in (neuron_obj.content or "").split()
-                        if len(w) > 2
+                        w.lower() for w in (neuron_obj.content or "").split() if len(w) > 2
                     }
                     tag_tokens = {str(t).lower() for t in context_tags}
                     if content_tokens and tag_tokens:
