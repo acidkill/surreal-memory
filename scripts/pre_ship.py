@@ -192,21 +192,25 @@ def check_imports() -> None:
 def check_tests() -> None:
     print("\n5. Fast Unit Tests")
 
-    result = run(
-        [
-            sys.executable,
-            "-m",
-            "pytest",
-            "tests/unit/",
-            "-x",
-            "-q",
-            "--timeout=30",
-            "--ignore=tests/unit/test_consolidation.py",
-            "-m",
-            "not stress",
-        ],
-        timeout=120,
-    )
+    try:
+        result = run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "tests/unit/",
+                "-x",
+                "-q",
+                "--timeout=30",
+                "--ignore=tests/unit/test_consolidation.py",
+                "-m",
+                "not stress",
+            ],
+            timeout=600,
+        )
+    except subprocess.TimeoutExpired:
+        check("pytest tests/unit/", False, "timed out after 600s")
+        return
     passed = result.returncode == 0
     # Extract summary line
     lines = result.stdout.strip().split("\n")
