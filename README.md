@@ -293,6 +293,14 @@ make verify               # Full CI gate
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
+## Acknowledgments
+
+Surreal-Memory is built on top of [**NeuralMemory**](https://github.com/nhadaututtheky/neural-memory) by [nhadaututtheky](https://github.com/nhadaututtheky) — an exceptional graph-based memory system for AI agents. The core architecture (neurons, synapses, fibers, spreading activation, consolidation, compression, and the 53-tool MCP interface) is entirely their work.
+
+Surreal-Memory extends it with a SurrealDB storage backend and a community plugin that makes all advanced features available for free.
+
+> If you find Surreal-Memory useful, please also star the [original NeuralMemory project](https://github.com/nhadaututtheky/neural-memory).
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
