@@ -1286,7 +1286,8 @@ class SurrealDBStorage(NeuralStorage):
         def _cnt(rows: list[Any]) -> int:
             return int(rows[0].get("c", 0)) if rows else 0
 
-        def _max(rows: list[Any]) -> int:
+
+        def _max(rows: list) -> int:
             return int(rows[0].get("sequence", 0)) if rows else 0
 
         return {
