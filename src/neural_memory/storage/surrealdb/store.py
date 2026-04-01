@@ -54,8 +54,13 @@ def _parse_datetime(val: Any) -> datetime | None:
 def _row_to_neuron(row: dict[str, Any]) -> Neuron:
     """Convert a SurrealDB neuron record to a Neuron."""
     meta = dict(row.get("metadata") or {})
+    rid = row["id"]
+    neuron_id = f"{rid.table_name}:{rid.id}" if hasattr(rid, "table_name") else str(rid)
+    # Strip table prefix for consistency
+    if ":" in neuron_id:
+        neuron_id = neuron_id.split(":", 1)[1]
     return Neuron(
-        id=str(row["id"]),
+        id=neuron_id,
         type=NeuronType(row["type"]),
         content=str(row["content"]),
         metadata=meta,
@@ -67,8 +72,13 @@ def _row_to_neuron(row: dict[str, Any]) -> Neuron:
 
 def _row_to_neuron_state(row: dict[str, Any]) -> NeuronState:
     """Convert a SurrealDB neuron_state record to NeuronState."""
+    nid = row.get("neuron_id", "")
+    if hasattr(nid, "record_id"):
+        nid = str(nid.record_id)
+    else:
+        nid = str(nid)
     return NeuronState(
-        neuron_id=str(row["neuron_id"]),
+        neuron_id=nid,
         activation_level=float(row.get("activation_level", 0.0)),
         access_frequency=int(row.get("access_frequency", 0)),
         last_activated=_parse_datetime(row.get("last_activated")),
@@ -84,8 +94,12 @@ def _row_to_neuron_state(row: dict[str, Any]) -> NeuronState:
 def _row_to_synapse(row: dict[str, Any]) -> Synapse:
     """Convert a SurrealDB synapse record to Synapse."""
 
+    rid = row["id"]
+    syn_id = f"{rid.table_name}:{rid.id}" if hasattr(rid, "table_name") else str(rid)
+    if ":" in syn_id:
+        syn_id = syn_id.split(":", 1)[1]
     syn = Synapse(
-        id=str(row["id"]),
+        id=syn_id,
         type=SynapseType(row["type"]),
         source_id=str(row.get("source_id", "")),
         target_id=str(row.get("target_id", "")),
@@ -101,8 +115,12 @@ def _row_to_synapse(row: dict[str, Any]) -> Synapse:
 
 def _row_to_fiber(row: dict[str, Any]) -> Fiber:
     """Convert a SurrealDB fiber record to Fiber."""
+    rid = row["id"]
+    fiber_id = f"{rid.table_name}:{rid.id}" if hasattr(rid, "table_name") else str(rid)
+    if ":" in fiber_id:
+        fiber_id = fiber_id.split(":", 1)[1]
     return Fiber(
-        id=str(row["id"]),
+        id=fiber_id,
         neuron_ids=set(row.get("neuron_ids") or []),
         synapse_ids=set(row.get("synapse_ids") or []),
         anchor_neuron_id=str(row.get("anchor_neuron_id", "")),
@@ -160,10 +178,9 @@ class SurrealDBStorage(NeuralStorage):
 
     async def initialize(self) -> None:
         """Connect to SurrealDB and apply schema."""
-        from surrealdb import Surreal
+        from surrealdb import AsyncSurreal
 
-        self._conn = Surreal(self._url)
-        await self._conn.connect()
+        self._conn = AsyncSurreal(self._url)
         await self._conn.signin({"username": self._user, "password": self._password})
         await self._conn.use(self._namespace, self._database)
         await ensure_schema(self._conn)
@@ -231,32 +248,32 @@ class SurrealDBStorage(NeuralStorage):
         embedding_vec = meta.pop("_embedding", None)
 
         record_data: dict[str, Any] = {
-            "id": f"neuron:{sid}",
+            "id": sid,
             "brain_id": brain_id,
             "type": neuron.type.value,
             "content": neuron.content,
             "content_hash": neuron.content_hash,
             "metadata": meta,
             "ephemeral": neuron.ephemeral,
-            "created_at": neuron.created_at.isoformat(),
-            "updated_at": utcnow().isoformat(),
+            "created_at": neuron.created_at,
+            "updated_at": utcnow(),
         }
         if embedding_vec is not None:
             record_data["embedding_vec"] = list(embedding_vec)
 
-        await conn.create(f"neuron:{sid}", record_data)
+        await conn.insert("neuron", record_data)
 
         # Create initial state
         state_data = {
-            "id": f"neuron_state:{sid}",
+            "id": f"state_{sid}",
             "neuron_id": neuron.id,
             "brain_id": brain_id,
             "activation_level": 0.0,
             "access_frequency": 0,
-            "created_at": neuron.created_at.isoformat(),
+            "created_at": neuron.created_at,
         }
         try:
-            await conn.create(f"neuron_state:{sid}", state_data)
+            await conn.insert("neuron_state", state_data)
         except Exception:
             pass
 
@@ -271,7 +288,7 @@ class SurrealDBStorage(NeuralStorage):
         try:
             result = await conn.select(f"neuron:{sid}")
             if result:
-                return _row_to_neuron(result)
+                return _row_to_neuron(result[0] if isinstance(result, list) else result)
         except Exception:
             pass
         return None
@@ -382,12 +399,12 @@ class SurrealDBStorage(NeuralStorage):
             "content_hash": neuron.content_hash,
             "metadata": meta,
             "ephemeral": neuron.ephemeral,
-            "updated_at": utcnow().isoformat(),
+            "updated_at": utcnow(),
         }
         if embedding_vec is not None:
             update_data["embedding_vec"] = list(embedding_vec)
 
-        await conn.update(f"neuron:{sid}", update_data)
+        await conn.merge(f"neuron:{sid}", update_data)
         await self._record_change_internal("neuron", neuron.id, "update", neuron)
 
     async def delete_neuron(self, neuron_id: str) -> bool:
@@ -436,7 +453,7 @@ class SurrealDBStorage(NeuralStorage):
         try:
             result = await conn.select(f"neuron_state:{sid}")
             if result:
-                return _row_to_neuron_state(result)
+                return _row_to_neuron_state(result[0] if isinstance(result, list) else result)
         except Exception:
             pass
         return None
@@ -454,11 +471,11 @@ class SurrealDBStorage(NeuralStorage):
             "homeostatic_target": state.homeostatic_target,
         }
         if state.last_activated:
-            update_data["last_activated"] = state.last_activated.isoformat()
+            update_data["last_activated"] = state.last_activated
         if state.refractory_until:
-            update_data["refractory_until"] = state.refractory_until.isoformat()
+            update_data["refractory_until"] = state.refractory_until
 
-        await conn.update(f"neuron_state:{sid}", update_data)
+        await conn.merge(f"neuron_state:{sid}", update_data)
 
     # ================================================================
     # Synapse Operations
@@ -473,7 +490,7 @@ class SurrealDBStorage(NeuralStorage):
         st = _to_surreal_id(synapse.target_id)
 
         record_data: dict[str, Any] = {
-            "id": f"synapse:{sid}",
+            "id": sid,
             "brain_id": brain_id,
             "type": synapse.type.value,
             "source_id": synapse.source_id,
@@ -481,10 +498,10 @@ class SurrealDBStorage(NeuralStorage):
             "weight": synapse.weight,
             "direction": synapse.direction,
             "metadata": dict(synapse.metadata),
-            "created_at": synapse.created_at.isoformat(),
+            "created_at": synapse.created_at,
             "reinforced_count": synapse.reinforced_count,
         }
-        await conn.create(f"synapse:{sid}", record_data)
+        await conn.insert("synapse", record_data)
 
         # Create graph edge for traversal
         try:
@@ -506,7 +523,7 @@ class SurrealDBStorage(NeuralStorage):
         try:
             result = await conn.select(f"synapse:{sid}")
             if result:
-                return _row_to_synapse(result)
+                return _row_to_synapse(result[0] if isinstance(result, list) else result)
         except Exception:
             pass
         return None
@@ -551,9 +568,9 @@ class SurrealDBStorage(NeuralStorage):
             "reinforced_count": synapse.reinforced_count,
         }
         if synapse.last_activated:
-            update_data["last_activated"] = synapse.last_activated.isoformat()
+            update_data["last_activated"] = synapse.last_activated
 
-        await conn.update(f"synapse:{sid}", update_data)
+        await conn.merge(f"synapse:{sid}", update_data)
         await self._record_change_internal("synapse", synapse.id, "update", synapse)
 
     async def delete_synapse(self, synapse_id: str) -> bool:
@@ -655,7 +672,7 @@ class SurrealDBStorage(NeuralStorage):
         fid = _to_surreal_id(fiber.id)
 
         record_data: dict[str, Any] = {
-            "id": f"fiber:{fid}",
+            "id": fid,
             "brain_id": brain_id,
             "neuron_ids": list(fiber.neuron_ids),
             "synapse_ids": list(fiber.synapse_ids),
@@ -672,18 +689,18 @@ class SurrealDBStorage(NeuralStorage):
             "metadata": dict(fiber.metadata),
             "compression_tier": fiber.compression_tier,
             "pinned": fiber.pinned,
-            "created_at": fiber.created_at.isoformat(),
+            "created_at": fiber.created_at,
         }
         if fiber.last_conducted:
-            record_data["last_conducted"] = fiber.last_conducted.isoformat()
+            record_data["last_conducted"] = fiber.last_conducted
         if fiber.time_start:
-            record_data["time_start"] = fiber.time_start.isoformat()
+            record_data["time_start"] = fiber.time_start
         if fiber.time_end:
-            record_data["time_end"] = fiber.time_end.isoformat()
+            record_data["time_end"] = fiber.time_end
         if fiber.last_ghost_shown_at:
-            record_data["last_ghost_shown_at"] = fiber.last_ghost_shown_at.isoformat()
+            record_data["last_ghost_shown_at"] = fiber.last_ghost_shown_at
 
-        await conn.create(f"fiber:{fid}", record_data)
+        await conn.insert("fiber", record_data)
         await self._record_change_internal("fiber", fiber.id, "insert")
         return fiber.id
 
@@ -693,7 +710,7 @@ class SurrealDBStorage(NeuralStorage):
         try:
             result = await conn.select(f"fiber:{fid}")
             if result:
-                return _row_to_fiber(result)
+                return _row_to_fiber(result[0] if isinstance(result, list) else result)
         except Exception:
             pass
         return None
@@ -760,15 +777,15 @@ class SurrealDBStorage(NeuralStorage):
             "pinned": fiber.pinned,
         }
         if fiber.last_conducted:
-            update_data["last_conducted"] = fiber.last_conducted.isoformat()
+            update_data["last_conducted"] = fiber.last_conducted
         if fiber.time_start:
-            update_data["time_start"] = fiber.time_start.isoformat()
+            update_data["time_start"] = fiber.time_start
         if fiber.time_end:
-            update_data["time_end"] = fiber.time_end.isoformat()
+            update_data["time_end"] = fiber.time_end
         if fiber.last_ghost_shown_at:
-            update_data["last_ghost_shown_at"] = fiber.last_ghost_shown_at.isoformat()
+            update_data["last_ghost_shown_at"] = fiber.last_ghost_shown_at
 
-        await conn.update(f"fiber:{fid}", update_data)
+        await conn.merge(f"fiber:{fid}", update_data)
         await self._record_change_internal("fiber", fiber.id, "update")
 
     async def delete_fiber(self, fiber_id: str) -> bool:
@@ -804,17 +821,17 @@ class SurrealDBStorage(NeuralStorage):
         bid = _to_surreal_id(brain.id)
 
         record_data: dict[str, Any] = {
-            "id": f"brain:{bid}",
+            "id": bid,
             "name": brain.name,
             "config": dict(brain.metadata),
             "metadata": dict(brain.metadata),
-            "created_at": brain.created_at.isoformat(),
-            "updated_at": brain.updated_at.isoformat(),
+            "created_at": brain.created_at,
+            "updated_at": brain.updated_at,
         }
         try:
-            await conn.create(f"brain:{bid}", record_data)
+            await conn.insert("brain", record_data)
         except Exception:
-            await conn.update(f"brain:{bid}", record_data)
+            await conn.merge(f"brain:{bid}", record_data)
 
     async def get_brain(self, brain_id: str) -> Brain | None:
         conn = self._ensure_conn()
@@ -822,12 +839,15 @@ class SurrealDBStorage(NeuralStorage):
         try:
             result = await conn.select(f"brain:{bid}")
             if result:
+                r = result[0] if isinstance(result, list) else result
+                rid = r["id"]
+                bid_str = str(rid.id) if hasattr(rid, "id") else str(rid).split(":")[-1]
                 return Brain(
-                    id=str(result["id"]).split(":")[-1],
-                    name=str(result["name"]),
-                    metadata=dict(result.get("metadata") or {}),
-                    created_at=_parse_datetime(result.get("created_at")) or utcnow(),
-                    updated_at=_parse_datetime(result.get("updated_at")) or utcnow(),
+                    id=str(bid_str),
+                    name=str(r["name"]),
+                    metadata=dict(r.get("metadata") or {}),
+                    created_at=_parse_datetime(r.get("created_at")) or utcnow(),
+                    updated_at=_parse_datetime(r.get("updated_at")) or utcnow(),
                 )
         except Exception:
             pass
@@ -954,11 +974,10 @@ class SurrealDBStorage(NeuralStorage):
         limit: int = 10,
         type_filter: NeuronType | None = None,
     ) -> list[tuple[Neuron, float]]:
-        """Find neurons by vector similarity using SurrealDB KNN."""
+        """Find neurons by vector similarity using SurrealDB KNN operator."""
         brain_id = self._get_brain_id()
         conditions = [
             "brain_id = $brain_id",
-            "embedding_vec IS NOT NONE",
         ]
         params: dict[str, Any] = {
             "brain_id": brain_id,
@@ -970,9 +989,10 @@ class SurrealDBStorage(NeuralStorage):
             params["ntype"] = type_filter.value
 
         where = " AND ".join(conditions)
+        # SurrealDB KNN syntax: WHERE embedding_vec <|k, ef|> $vec
         rows = await self._query(
-            f"SELECT *, vector::distance::knn(embedding_vec, $vec) AS score "
-            f"FROM neuron WHERE {where} ORDER BY score ASC LIMIT {int(limit)}",
+            f"SELECT *, vector::distance::knn() AS score "
+            f"FROM neuron WHERE {where} AND embedding_vec <|{int(limit)},100|> $vec",
             **params,
         )
 
@@ -1027,19 +1047,19 @@ class SurrealDBStorage(NeuralStorage):
         self._change_seq += 1
         change_id = f"change_{self._change_seq}_{uuid4().hex[:8]}"
         record = {
-            "id": f"change_log:{change_id}",
+            "id": change_id,
             "brain_id": brain_id,
             "entity_type": entity_type,
             "entity_id": entity_id,
             "operation": operation,
             "device_id": device_id,
             "payload": payload,
-            "changed_at": utcnow().isoformat(),
+            "changed_at": utcnow(),
             "synced": False,
             "sequence": self._change_seq,
         }
         try:
-            await conn.create(f"change_log:{change_id}", record)
+            await conn.insert("change_log", record)
         except Exception:
             pass
 
@@ -1056,18 +1076,18 @@ class SurrealDBStorage(NeuralStorage):
         self._change_seq += 1
         change_id = f"change_{self._change_seq}_{uuid4().hex[:8]}"
         record = {
-            "id": f"change_log:{change_id}",
+            "id": change_id,
             "brain_id": brain_id,
             "entity_type": entity_type,
             "entity_id": entity_id,
             "operation": operation,
             "device_id": device_id,
             "payload": payload,
-            "changed_at": utcnow().isoformat(),
+            "changed_at": utcnow(),
             "synced": False,
             "sequence": self._change_seq,
         }
-        await conn.create(f"change_log:{change_id}", record)
+        await conn.insert("change_log", record)
         return self._change_seq
 
     async def get_changes_since(self, sequence: int = 0, limit: int = 1000) -> list[Any]:
@@ -1130,7 +1150,7 @@ class SurrealDBStorage(NeuralStorage):
         for r in rows:
             cid = str(r.get("id", ""))
             try:
-                await self._conn.update(cid, {"synced": True})
+                await self._conn.merge(cid, {"synced": True})
                 count += 1
             except Exception:
                 pass
@@ -1196,7 +1216,7 @@ class SurrealDBStorage(NeuralStorage):
             bid=brain_id,
         )
         last_seq_rows = await self._query(
-            "SELECT MAX(sequence) AS max_seq FROM change_log WHERE brain_id = $bid GROUP ALL",
+            "SELECT sequence FROM change_log WHERE brain_id = $bid ORDER BY sequence DESC LIMIT 1",
             bid=brain_id,
         )
 
@@ -1204,7 +1224,7 @@ class SurrealDBStorage(NeuralStorage):
             return int(rows[0].get("c", 0)) if rows else 0
 
         def _max(rows: list) -> int:
-            return int(rows[0].get("max_seq", 0)) if rows else 0
+            return int(rows[0].get("sequence", 0)) if rows else 0
 
         return {
             "total": _cnt(total_rows),
@@ -1222,24 +1242,23 @@ class SurrealDBStorage(NeuralStorage):
         conn = self._ensure_conn()
         did = _to_surreal_id(device_id)
 
-        from neural_memory.sync.device import DeviceRecord
+        from neural_memory.sync.device import DeviceInfo
 
         record = {
-            "id": f"device:{brain_id}_{did}",
+            "id": f"{brain_id}_{did}",
             "device_id": device_id,
             "brain_id": brain_id,
             "device_name": device_name,
-            "registered_at": utcnow().isoformat(),
+            "registered_at": utcnow(),
             "last_sync_sequence": 0,
         }
         try:
-            await conn.create(f"device:{brain_id}_{did}", record)
+            await conn.insert("device", record)
         except Exception:
-            await conn.update(f"device:{brain_id}_{did}", record)
+            await conn.merge(f"device:{brain_id}_{did}", record)
 
-        return DeviceRecord(
+        return DeviceInfo(
             device_id=device_id,
-            brain_id=brain_id,
             device_name=device_name,
             registered_at=utcnow(),
         )
@@ -1250,15 +1269,13 @@ class SurrealDBStorage(NeuralStorage):
         try:
             result = await self._conn.select(f"device:{brain_id}_{did}")
             if result:
-                from neural_memory.sync.device import DeviceRecord
+                r = result[0] if isinstance(result, list) else result
+                from neural_memory.sync.device import DeviceInfo
 
-                return DeviceRecord(
-                    device_id=str(result.get("device_id", device_id)),
-                    brain_id=brain_id,
-                    device_name=str(result.get("device_name", "")),
-                    registered_at=_parse_datetime(result.get("registered_at")) or utcnow(),
-                    last_sync_at=_parse_datetime(result.get("last_sync_at")),
-                    last_sync_sequence=int(result.get("last_sync_sequence", 0)),
+                return DeviceInfo(
+                    device_id=str(r.get("device_id", device_id)),
+                    device_name=str(r.get("device_name", "")),
+                    registered_at=_parse_datetime(r.get("registered_at")) or utcnow(),
                 )
         except Exception:
             pass
@@ -1270,16 +1287,13 @@ class SurrealDBStorage(NeuralStorage):
             "SELECT * FROM device WHERE brain_id = $brain_id ORDER BY registered_at ASC",
             brain_id=brain_id,
         )
-        from neural_memory.sync.device import DeviceRecord
+        from neural_memory.sync.device import DeviceInfo
 
         return [
-            DeviceRecord(
+            DeviceInfo(
                 device_id=str(r.get("device_id", "")),
-                brain_id=brain_id,
                 device_name=str(r.get("device_name", "")),
                 registered_at=_parse_datetime(r.get("registered_at")) or utcnow(),
-                last_sync_at=_parse_datetime(r.get("last_sync_at")),
-                last_sync_sequence=int(r.get("last_sync_sequence", 0)),
             )
             for r in rows
         ]
@@ -1288,10 +1302,10 @@ class SurrealDBStorage(NeuralStorage):
         brain_id = self._get_brain_id()
         did = _to_surreal_id(device_id)
         try:
-            await self._conn.update(
+            await self._conn.merge(
                 f"device:{brain_id}_{did}",
                 {
-                    "last_sync_at": utcnow().isoformat(),
+                    "last_sync_at": utcnow(),
                     "last_sync_sequence": last_sync_sequence,
                 },
             )
@@ -1330,12 +1344,18 @@ class SurrealDBStorage(NeuralStorage):
                 buckets.setdefault(prefix, []).append(eid)
 
         conn = self._ensure_conn()
+        # Build lookup for updated_at by entity ID
+        updated_lookup = {}
+        for row in rows:
+            eid_raw = str(row.get("id", "")).split(":")[-1]
+            updated_lookup[eid_raw] = str(row.get("updated_at", ""))
+
         # Compute and store bucket hashes
         for prefix, ids in sorted(buckets.items()):
             ids_sorted = sorted(ids)
             leaf_hashes = []
             for eid in ids_sorted:
-                updated = str(r.get("updated_at", ""))
+                updated = updated_lookup.get(eid, "")
                 leaf_hash = sha256(f"{eid}|{updated}".encode()).hexdigest()
                 leaf_hashes.append(leaf_hash)
 
@@ -1343,21 +1363,21 @@ class SurrealDBStorage(NeuralStorage):
             merkle_id = f"{brain_id}_{entity_type}_{prefix}"
 
             try:
-                await conn.create(
-                    f"merkle_hash:{_to_surreal_id(merkle_id)}",
+                await conn.insert(
+                    "merkle_hash",
                     {
-                        "id": f"merkle_hash:{_to_surreal_id(merkle_id)}",
+                        "id": _to_surreal_id(merkle_id),
                         "brain_id": brain_id,
                         "entity_type": entity_type,
                         "prefix": prefix,
                         "hash": bucket_hash,
-                        "computed_at": utcnow().isoformat(),
+                        "computed_at": utcnow(),
                     },
                 )
             except Exception:
-                await conn.update(
+                await conn.merge(
                     f"merkle_hash:{_to_surreal_id(merkle_id)}",
-                    {"hash": bucket_hash, "computed_at": utcnow().isoformat()},
+                    {"hash": bucket_hash, "computed_at": utcnow()},
                 )
 
         # Compute root from bucket hashes
@@ -1420,14 +1440,14 @@ class SurrealDBStorage(NeuralStorage):
     async def update_neuron_lifecycle(self, neuron_id: str, lifecycle_state: str) -> None:
         sid = _to_surreal_id(neuron_id)
         try:
-            await self._conn.update(f"neuron:{sid}", {"lifecycle_state": lifecycle_state})
+            await self._conn.merge(f"neuron:{sid}", {"lifecycle_state": lifecycle_state})
         except Exception:
             pass
 
     async def update_neuron_frozen(self, neuron_id: str, frozen: bool) -> None:
         sid = _to_surreal_id(neuron_id)
         try:
-            await self._conn.update(f"neuron:{sid}", {"frozen": frozen})
+            await self._conn.merge(f"neuron:{sid}", {"frozen": frozen})
         except Exception:
             pass
 

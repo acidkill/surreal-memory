@@ -1616,7 +1616,7 @@ class MigrationJobStatus(BaseModel):
 class StorageStatusResponse(BaseModel):
     """Current storage backend status."""
 
-    current_backend: Literal["sqlite", "infinitydb"]
+    current_backend: Literal["sqlite", "infinitydb", "surrealdb"]
     pro_installed: bool
     is_pro_license: bool
     sqlite_exists: bool
