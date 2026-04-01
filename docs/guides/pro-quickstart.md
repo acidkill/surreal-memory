@@ -1,74 +1,75 @@
-# Pro Quickstart
+# Advanced Features Quickstart
 
-You installed Pro. Here's how to make it work for you in 5 minutes.
+Surreal-Memory includes all features at no cost — no license keys, no paid tiers. The built-in community plugin provides vector search, smart merge, and directional compression automatically.
+
+This guide covers the advanced features that become available when using SurrealDB as your storage backend.
 
 ---
 
-## 1. Install and activate
+## 1. Install with SurrealDB
 
 ```bash
-pip install neural-memory-pro
-nmem pro activate YOUR_LICENSE_KEY
+pip install neural-memory[surrealdb]
 ```
 
-> Don't have a license key? [Purchase here →](https://nhadaututtheky.github.io/neural-memory/landing/pricing/)
+Or with Docker:
 
-Verify activation:
+```bash
+docker compose -f docker-compose.surrealdb.yml up -d
+```
+
+Verify the community plugin is active:
 
 ```bash
 nmem pro status
 ```
 
 ```
-Pro: Active
-Backend: SQLite (InfinityDB available)
-License: valid (expires 2026-04-26)
-Features: cone_query, smart_merge, directional_compress, auto_tier
+Plugin: neural-memory-community v1.0.0
+Backend: SurrealDB
+Features: cone_query, smart_merge, directional_compress
 ```
-
-At this point, Pro tools (cone queries, smart merge, directional compression) are already available. But recall still uses SQLite keyword matching. To unlock semantic recall, you need to enable InfinityDB.
 
 ---
 
-## 2. Enable InfinityDB
+## 2. Enable SurrealDB Backend
 
-InfinityDB is Pro's semantic search engine — it's what makes recall work by **meaning** instead of keywords. Enabling it requires an explicit opt-in because it migrates your data.
+SurrealDB provides document + graph + vector search in one database. To enable it:
 
 Edit your config:
 
 ```toml
 # ~/.neuralmemory/config.toml
-storage_backend = "infinitydb"
+storage_backend = "surrealdb"
 ```
 
 Or via CLI:
 
 ```bash
-nmem config set storage_backend infinitydb
+nmem config set storage_backend surrealdb
 ```
 
-**Restart your MCP server** (or CLI session). On first startup, Neural Memory automatically migrates your existing neurons from SQLite to InfinityDB. This may take a few minutes for large brains (>50K neurons).
+Then configure the connection:
 
-After migration, verify:
-
-```bash
-nmem pro status
+```toml
+# ~/.neuralmemory/config.toml
+[surrealdb]
+url = "http://localhost:8001"
+user = "root"
+pass = "neuralmemory"
+namespace = "neural_memory"
+database = "default"
 ```
 
-```
-Pro: Active
-Backend: InfinityDB
-License: valid (expires 2026-04-26)
-Features: cone_query, smart_merge, directional_compress, auto_tier
-```
+**Restart your MCP server** (or CLI session). Existing memories are auto-migrated from SQLite to SurrealDB on first startup.
 
-> **Your SQLite database is preserved** — both databases coexist. If you ever downgrade, Neural Memory falls back to SQLite automatically. No data loss.
+> **Your SQLite database is preserved** — both databases coexist. If you switch back, Surreal-Memory falls back to SQLite automatically. No data loss.
 
 ---
 
 ## 3. Your first semantic recall
 
-Free tier matches keywords. Pro with InfinityDB matches **meaning**.
+SQLite matches keywords. SurrealDB matches **meaning**.
 
 ```bash
 # Store some memories
@@ -76,7 +77,7 @@ nmem remember "We chose PostgreSQL over MySQL for better JSON support"
 nmem remember "JWT rotation was added to fix the session hijack vulnerability"
 nmem remember "Alice suggested rate limiting after the DDoS incident"
 
-# Free would need exact keywords. Pro finds semantic matches:
+# Keyword search finds exact matches. Vector search finds semantic matches:
 nmem recall "database decisions"       # finds PostgreSQL memory
 nmem recall "security improvements"    # finds JWT + rate limiting
 ```
@@ -97,7 +98,7 @@ Default threshold is `0.75`. Lower = more results, higher = more relevant.
 
 ## 4. Check your storage tiers
 
-Pro automatically manages memory lifecycle across 5 tiers:
+Surreal-Memory automatically manages memory lifecycle across 5 tiers:
 
 | Tier | Format | Size | When |
 |------|--------|------|------|
@@ -169,60 +170,57 @@ nmem sync              # manual
 nmem sync --auto       # auto after every remember/recall
 ```
 
-Pro sync uses **Merkle delta** — only changes are transmitted. A brain with 100K neurons syncs in under 2 seconds.
+Sync uses **Merkle delta** — only changes are transmitted. A brain with 100K neurons syncs in under 2 seconds.
 
 ---
 
-## What changed from Free
+## Feature Comparison
 
-| Aspect | Before (Free) | After (Pro) |
-|--------|---------------|-------------|
-| Storage engine | SQLite + FTS5 | InfinityDB (HNSW vectors) |
-| Recall method | Keyword matching | Semantic similarity |
+| Aspect | SQLite (default) | SurrealDB (advanced) |
+|--------|------------------|---------------------|
+| Storage engine | SQLite + FTS5 | SurrealDB (doc + graph + vector) |
+| Recall method | Keyword matching | Semantic similarity + graph traversal |
 | Consolidation | O(N²) brute force | O(N x k) Smart Merge |
 | Compression | Text-level trimming | 5-tier vector lifecycle |
-| New MCP tools | — | `nmem_cone_query`, `nmem_tier_info`, `nmem_pro_merge` |
+| MCP tools | 53 tools | 53 tools + cone_query, tier_info, pro_merge |
+| Setup | Built-in, zero config | Requires SurrealDB instance |
 
-**Everything else stays the same.** All 52 free tools still work. Your existing memories are preserved — when you enable InfinityDB (step 2), they're auto-migrated on first startup.
+**Everything stays the same.** All 53 MCP tools work with both backends. Your existing memories are preserved — when you switch to SurrealDB, they're auto-migrated on first startup.
 
 ---
 
 ## Troubleshooting
 
-### "Pro: Inactive" after install
+### Community plugin not detected
 
 ```bash
-# Check if the package is installed
-pip show neural-memory-pro
+# Verify SurrealDB extra is installed
+pip show neural-memory | grep surrealdb
 
-# Re-activate license
-nmem pro activate YOUR_LICENSE_KEY
-
-# Check license status
-nmem pro status --verbose
+# Reinstall with SurrealDB support
+pip install neural-memory[surrealdb]
 ```
 
 ### Recall quality didn't improve
 
-Make sure you've enabled InfinityDB (step 2). If `nmem pro status` still shows `Backend: SQLite`, the config change didn't take effect. After enabling, InfinityDB needs to index your existing neurons — this may take a few minutes for large brains (>50K neurons). Check progress:
+Make sure SurrealDB backend is active. If `nmem pro status` shows `Backend: SQLite`, the config change didn't take effect. Verify in `~/.neuralmemory/config.toml`:
 
 ```bash
-nmem_tier_info    # shows indexing progress
+nmem config get storage_backend    # should show "surrealdb"
 ```
 
-### Want to downgrade?
+### Want to switch back to SQLite?
 
 ```bash
-pip uninstall neural-memory-pro
+nmem config set storage_backend sqlite
 ```
 
-Your data stays intact. Neural Memory falls back to SQLite + FTS5 automatically. No data loss, no migration needed.
+Your data stays intact in both databases. No data loss, no migration needed.
 
 ---
 
 ## Next steps
 
-- [Full Pro comparison →](https://nhadaututtheky.github.io/neural-memory/landing/pro/)
+- [All Features →](https://nhadaututtheky.github.io/neural-memory/landing/pro/)
 - [Cloud Sync setup →](https://nhadaututtheky.github.io/neural-memory/guides/cloud-sync/)
 - [Brain Health guide →](https://nhadaututtheky.github.io/neural-memory/guides/brain-health/)
-- [Pricing & plans →](https://nhadaututtheky.github.io/neural-memory/landing/pricing/)

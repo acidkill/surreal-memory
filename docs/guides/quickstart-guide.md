@@ -1,6 +1,6 @@
 ---
 title: Quickstart Guide
-description: Get Neural Memory running in under 2 minutes with a single command.
+description: Get Surreal-Memory running in under 2 minutes with a single command.
 ---
 
 # Quickstart Guide
@@ -27,8 +27,9 @@ Get a fully functional AI memory system in **one command**. No 26-step manual se
     <div class="qs-step__number">1</div>
     <div class="qs-step__title">Install</div>
     <div class="qs-step__desc">
-      <code>pip install neural-memory</code><br>
-      Python 3.11+, works on Windows, Linux, macOS.
+      <code>pip install neural-memory[surrealdb]</code><br>
+      Python 3.11+, works on Windows, Linux, macOS.<br>
+      Includes the SurrealDB community plugin with all features unlocked.
     </div>
   </div>
   <div class="qs-step qs-reveal">
@@ -36,7 +37,7 @@ Get a fully functional AI memory system in **one command**. No 26-step manual se
     <div class="qs-step__title">Set Up Everything</div>
     <div class="qs-step__desc">
       <code>nmem init --full</code><br>
-      Config, brain, MCP, hooks, embeddings, dedup — all automatic.
+      Config, brain, MCP, hooks, embeddings, dedup, SurrealDB — all automatic.
     </div>
   </div>
   <div class="qs-step qs-reveal">
@@ -51,11 +52,14 @@ Get a fully functional AI memory system in **one command**. No 26-step manual se
 
 ## What You Get
 
+All features included — no paid tiers, no license keys. The community plugin unlocks everything.
+
 <div class="qs-stats qs-reveal">
   <div class="qs-stat"><span class="qs-stat__value">46</span> MCP tools</div>
   <div class="qs-stat"><span class="qs-stat__value">11</span> diagnostic checks</div>
   <div class="qs-stat"><span class="qs-stat__value">3</span> auto-installed hooks</div>
   <div class="qs-stat">Semantic search via embeddings</div>
+  <div class="qs-stat">Vector search via SurrealDB</div>
   <div class="qs-stat">Duplicate detection</div>
 </div>
 
@@ -94,6 +98,7 @@ Something wrong? Run `nmem doctor --fix` to auto-remediate hooks, dedup, and emb
     <div class="qs-feature__desc">
       Retrieve by meaning, not keywords.
       Spreading activation finds related memories across your graph.
+      Vector search powered by SurrealDB for high-accuracy similarity matching.
       <br><code>nmem_recall("caching strategy")</code>
     </div>
   </div>
@@ -121,6 +126,7 @@ Something wrong? Run `nmem doctor --fix` to auto-remediate hooks, dedup, and emb
 |------|------|-----|
 | Config | Creates `~/.neuralmemory/config.toml` | Central settings for brain, embedding, dedup |
 | Brain | Creates `default.db` SQLite database | Your memory graph lives here |
+| SurrealDB | Starts via `docker-compose.surrealdb.yml` | Vector search backend for similarity queries |
 | MCP | Registers in Claude Code + Cursor | AI tools can use your brain |
 | Hooks | Installs PreCompact, Stop, PostToolUse | Captures memories automatically |
 | Embeddings | Auto-detects best provider | Semantic search (find by meaning) |
@@ -129,7 +135,35 @@ Something wrong? Run `nmem doctor --fix` to auto-remediate hooks, dedup, and emb
 
 Without `--full`, run `nmem init` for the basics, then `nmem setup embeddings` separately.
 
+## Running SurrealDB
+
+Start the SurrealDB backend with Docker:
+
+```bash
+docker compose -f docker-compose.surrealdb.yml up -d
+```
+
+This launches SurrealDB with the schema and vector index pre-configured. The community plugin (`neural-memory[surrealdb]`) connects automatically.
+
+To stop:
+
+```bash
+docker compose -f docker-compose.surrealdb.yml down
+```
+
 ## Power User Features
+
+All features below are included free via the community plugin — no upgrade required.
+
+### Vector Search
+
+SurrealDB-powered vector similarity search across all stored memories:
+
+```python
+nmem_recall("database migration strategy", depth=2)
+```
+
+The SurrealDB backend indexes every memory as a vector embedding, enabling sub-millisecond similarity queries across your entire graph.
 
 ### Cognitive Reasoning
 
