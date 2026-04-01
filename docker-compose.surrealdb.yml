@@ -1,5 +1,3 @@
-version: '3.8'
-
 # Neural Memory + SurrealDB + Cloudflare Sync Hub
 # Usage:
 #   cp .env.example .env   # edit with your keys
@@ -19,7 +17,7 @@ services:
     volumes:
       - surrealdb_data:/surrealdb/data
     healthcheck:
-      test: ["CMD", "surreal", "isready", "--endpoint", "http://localhost:8001"]
+      test: ["CMD", "/surreal", "isready", "--endpoint", "http://localhost:8001"]
       interval: 10s
       timeout: 5s
       retries: 10
