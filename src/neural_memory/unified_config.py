@@ -1386,7 +1386,8 @@ class UnifiedConfig:
             device_id=raw_device_id,
             sync=SyncConfig.from_dict(sync_data),
             storage_backend=_validate_storage_backend(
-                str(data.get("storage_backend") or sync_data.get("storage_backend") or "sqlite")
+                os.environ.get("NEURAL_MEMORY_STORAGE")
+                or str(data.get("storage_backend") or sync_data.get("storage_backend") or "sqlite")
             ),
             falkordb=FalkorDBConfig.from_dict(data.get("falkordb", {})),
             postgres=PostgresConfig.from_dict(data.get("postgres", {})),
