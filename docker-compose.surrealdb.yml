@@ -1,0 +1,81 @@
+version: '3.8'
+
+# Neural Memory + SurrealDB + Cloudflare Sync Hub
+# Usage:
+#   cp .env.example .env   # edit with your keys
+#   docker compose -f docker-compose.surrealdb.yml up -d
+#
+# Dashboard:  http://localhost:8000/ui
+# API:        http://localhost:8000
+# Health:     http://localhost:8000/health
+# SurrealDB:  http://localhost:8001 (internal only)
+
+services:
+  surrealdb:
+    image: surrealdb/surrealdb:latest
+    command: start --user root --pass neuralmemory --bind 0.0.0.0:8001
+    ports:
+      - "8001:8001"
+    volumes:
+      - surrealdb_data:/surrealdb/data
+    healthcheck:
+      test: ["CMD", "surreal", "isready", "--endpoint", "http://localhost:8001"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+  neural-memory:
+    build:
+      context: .
+      dockerfile: Dockerfile.surrealdb
+    ports:
+      - "8000:8000"
+      - "8765:8765"
+    environment:
+      # Core
+      - NEURALMEMORY_DIR=/data
+      - NMEM_BRAIN=${NMEM_BRAIN:-default}
+      - NMEM_HOST=0.0.0.0
+      - NMEM_PORT=8000
+
+      # SurrealDB
+      - NEURAL_MEMORY_STORAGE=surrealdb
+      - SURREALDB_URL=http://surrealdb:8001
+      - SURREALDB_USER=${SURREALDB_USER:-root}
+      - SURREALDB_PASS=${SURREALDB_PASS:-neuralmemory}
+      - SURREALDB_NS=neural_memory
+      - SURREALDB_DB=default
+
+      # Embedding (Gemini 2.0)
+      - NEURAL_MEMORY_EMBEDDING_ENABLED=true
+      - NEURAL_MEMORY_EMBEDDING_PROVIDER=gemini
+      - NEURAL_MEMORY_EMBEDDING_MODEL=${NEURAL_MEMORY_EMBEDDING_MODEL:-gemini-embedding-exp-03-07}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+
+      # Cloud Sync
+      - NMEM_SYNC_ENABLED=true
+      - NMEM_SYNC_AUTO=true
+      - NMEM_HUB_URL=https://neural-memory-sync-hub.toni-nowak84.workers.dev
+      - NMEM_API_KEY=${NMEM_API_KEY:-nmk_62dc037a994abcc0e492e73377c474ae}
+
+      # Encryption (optional)
+      - NMEM_ENCRYPTION_ENABLED=${NMEM_ENCRYPTION_ENABLED:-false}
+      - NMEM_ENCRYPTION_KEYS_DIR=/data/keys
+
+      # MCP — use stdio transport: each tool spawns `nmem-mcp` directly
+      # Port 8765 exposed for optional HTTP transport: nmem-mcp --http 8765
+      # Claude Code: claude mcp add --scope user neural-memory -- nmem-mcp
+      # opencode: add to opencode MCP config (see below)
+
+    depends_on:
+      surrealdb:
+        condition: service_healthy
+    volumes:
+      - nm_data:/data
+    restart: unless-stopped
+
+volumes:
+  surrealdb_data:
+  nm_data:

@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 # Known dimensions per model
 _MODEL_DIMENSIONS: dict[str, int] = {
     "gemini-embedding-001": 3072,
+    "gemini-embedding-exp-03-07": 3072,
     "text-embedding-004": 768,
 }
 

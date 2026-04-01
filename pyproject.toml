@@ -57,6 +57,9 @@ postgres = [
     "asyncpg>=0.29.0",
     "pgvector>=0.2.0",
 ]
+surrealdb = [
+    "surrealdb>=0.4.0",
+]
 encryption = [
     "cryptography>=46.0.5",
 ]
@@ -115,7 +118,7 @@ integration = [
     "neural-memory[chromadb,mem0]",
 ]
 all = [
-    "neural-memory[server,falkordb,nlp,integration]",
+    "neural-memory[server,surrealdb,embeddings-gemini,nlp,integration]",
 ]
 dev = [
     "pytest>=7.0",

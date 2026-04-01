@@ -43,6 +43,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     _logger = logging.getLogger(__name__)
 
+    # Register community plugin for full Pro features (no license required)
+    try:
+        from neural_memory.plugins import has_pro, register
+        from neural_memory.plugins.community import CommunityPlugin
+
+        if not has_pro():
+            register(CommunityPlugin())
+            _logger.info("Community plugin registered — Pro features enabled")
+    except Exception:
+        _logger.debug("Community plugin registration skipped", exc_info=True)
+
     storage = await get_shared_storage()
     app.state.storage = storage
     app.state.startup_time = time.monotonic()

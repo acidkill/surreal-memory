@@ -727,7 +727,7 @@ def _sanitize_sync_id(value: str) -> str:
     return cleaned
 
 
-_VALID_STORAGE_BACKENDS = {"sqlite", "falkordb", "postgres", "infinitydb"}
+_VALID_STORAGE_BACKENDS = {"sqlite", "falkordb", "postgres", "infinitydb", "surrealdb"}
 
 
 def _validate_storage_backend(value: str) -> str:
@@ -1889,6 +1889,10 @@ async def get_shared_storage(brain_name: str | None = None) -> NeuralStorage:
     else:
         name = brain_name
 
+    # SurrealDB backend
+    if config.storage_backend == "surrealdb":
+        return await _get_surrealdb_storage(config, name)
+
     # InfinityDB backend (Pro plugin)
     if config.storage_backend == "infinitydb":
         return await _get_infinitydb_storage(config, name)
@@ -2033,6 +2037,48 @@ async def _get_infinitydb_storage(config: UnifiedConfig, name: str) -> NeuralSto
         _storage_cache[cache_key] = result
         logger.info("InfinityDB storage initialized for brain '%s'", name)
         return result
+
+
+_surrealdb_storage: NeuralStorage | None = None
+
+
+async def _get_surrealdb_storage(config: UnifiedConfig, name: str) -> NeuralStorage:
+    """Create or return cached SurrealDBStorage."""
+    global _surrealdb_storage
+
+    from neural_memory.core.brain import Brain
+    from neural_memory.storage.surrealdb import SurrealDBStorage
+
+    if _surrealdb_storage is not None:
+        _surrealdb_storage.set_brain(name)
+        return _surrealdb_storage
+
+    emb_dim = 3072  # Gemini 2.0 default
+    if config.embedding.enabled and config.embedding.model:
+        from neural_memory.engine.embedding.gemini_embedding import _MODEL_DIMENSIONS
+
+        emb_dim = _MODEL_DIMENSIONS.get(config.embedding.model, 3072)
+
+    storage = SurrealDBStorage(
+        url=os.getenv("SURREALDB_URL", "http://localhost:8001"),
+        namespace=os.getenv("SURREALDB_NS", "neural_memory"),
+        database=os.getenv("SURREALDB_DB", "default"),
+        user=os.getenv("SURREALDB_USER", "root"),
+        password=os.getenv("SURREALDB_PASS", "root"),
+        embedding_dim=emb_dim,
+    )
+    await storage.initialize()
+
+    # Ensure brain exists
+    brain = await storage.get_brain(name)
+    if brain is None:
+        brain = Brain.create(name)
+        await storage.save_brain(brain)
+
+    storage.set_brain(name)
+    _surrealdb_storage = storage
+    logger.info("SurrealDB storage initialized for brain '%s'", name)
+    return storage
 
 
 async def _get_falkordb_storage(config: UnifiedConfig, name: str) -> NeuralStorage:

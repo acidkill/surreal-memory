@@ -7,7 +7,7 @@ compatibility_flags = ["nodejs_compat"]
 [[d1_databases]]
 binding = "SYNC_DB"
 database_name = "neural-memory-sync"
-database_id = "22d4d1da-d4b9-4a98-9392-9005da01baab"
+database_id = "359518de-a552-4484-ab75-dfbaea3a7e31"
 
 # R2 Bucket (for brain snapshots — Phase 1 placeholder)
 # [[r2_buckets]]

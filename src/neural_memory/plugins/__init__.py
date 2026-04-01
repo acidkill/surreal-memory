@@ -55,6 +55,15 @@ def discover() -> list[ProPlugin]:
     except Exception:
         logger.debug("Plugin discovery failed", exc_info=True)
 
+    # Register community plugin if no commercial Pro plugin found
+    if not _plugins:
+        try:
+            from neural_memory.plugins.community import CommunityPlugin
+
+            register(CommunityPlugin())
+        except Exception:
+            logger.debug("Community plugin not available", exc_info=True)
+
     _discovered = True
     return _plugins
 
