@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "neural-memory"
+name = "surreal-memory"
 version = "4.24.0"
 description = "Reflex-based memory system for AI agents - retrieval through activation, not search"
 readme = "README.md"
@@ -71,7 +71,7 @@ nlp-vi = [
     "pyvi>=0.1",
 ]
 nlp = [
-    "neural-memory[nlp-en,nlp-vi]",
+    "surreal-memory[nlp-en,nlp-vi]",
 ]
 chromadb = [
     "chromadb>=0.4.0",
@@ -115,10 +115,10 @@ embeddings-gemini = [
     "google-genai>=1.0",
 ]
 integration = [
-    "neural-memory[chromadb,mem0]",
+    "surreal-memory[chromadb,mem0]",
 ]
 all = [
-    "neural-memory[server,surrealdb,embeddings-gemini,nlp,integration]",
+    "surreal-memory[server,surrealdb,embeddings-gemini,nlp,integration]",
 ]
 dev = [
     "pytest>=7.0",
@@ -221,6 +221,7 @@ ignore = [
 "src/neural_memory/utils/config.py" = ["S104"]   # configurable bind address
 "src/neural_memory/utils/simhash.py" = ["S324"]  # MD5 for fingerprint, not crypto
 "src/neural_memory/storage/sqlite_*.py" = ["S608"] # SQL with hardcoded column names
+"src/neural_memory/storage/surrealdb/**" = ["S608", "S107"] # SurrealDB queries + default credentials
 "src/neural_memory/cli/**" = ["T201", "S603", "S607", "S310"]  # CLI: print, subprocess, url open
 "src/neural_memory/storage/falkordb/**" = ["DTZ901"]  # naive UTC datetimes by design
 "src/neural_memory/safety/sensitive.py" = ["S105"] # pattern names, not actual secrets

@@ -17,7 +17,7 @@ from uuid import uuid4
 from neural_memory.core.brain import Brain, BrainSnapshot
 from neural_memory.core.fiber import Fiber
 from neural_memory.core.neuron import Neuron, NeuronState, NeuronType
-from neural_memory.core.synapse import Synapse, SynapseType
+from neural_memory.core.synapse import Direction, Synapse, SynapseType
 from neural_memory.storage.base import NeuralStorage
 from neural_memory.storage.surrealdb.schema import ensure_schema
 from neural_memory.utils.timeutils import utcnow
@@ -104,7 +104,7 @@ def _row_to_synapse(row: dict[str, Any]) -> Synapse:
         source_id=str(row.get("source_id", "")),
         target_id=str(row.get("target_id", "")),
         weight=float(row.get("weight", 1.0)),
-        direction=str(row.get("direction", "forward")),
+        direction=Direction(str(row.get("direction", "forward"))),
         metadata=dict(row.get("metadata") or {}),
         created_at=_parse_datetime(row.get("created_at")) or utcnow(),
         last_activated=_parse_datetime(row.get("last_activated")),
@@ -650,8 +650,8 @@ class SurrealDBStorage(NeuralStorage):
 
         while queue and len(queue[0][1]) < max_hops:
             current_id, path = queue.pop(0)
-            direction = "both" if bidirectional else "out"
-            neighbors = await self.get_neighbors(current_id, direction=direction)
+            dir_literal: Literal["out", "in", "both"] = "both" if bidirectional else "out"
+            neighbors = await self.get_neighbors(current_id, direction=dir_literal)
 
             for neighbor, synapse in neighbors:
                 if neighbor.id == target_id:
@@ -858,17 +858,54 @@ class SurrealDBStorage(NeuralStorage):
         if brain is None:
             raise ValueError(f"Brain {brain_id} not found")
 
-        neurons = await self.find_neurons(limit=100000)
-        synapses = await self.get_synapses()
-        fibers = await self.get_fibers(limit=100000)
+        raw_neurons = await self.find_neurons(limit=100000)
+        raw_synapses = await self.get_synapses()
+        raw_fibers = await self.get_fibers(limit=100000)
 
-        from neural_memory.core.brain import BrainSnapshot
+        neurons: list[dict[str, Any]] = [
+            {
+                "id": n.id,
+                "type": n.type.value,
+                "content": n.content,
+                "metadata": dict(n.metadata),
+                "created_at": n.created_at.isoformat(),
+            }
+            for n in raw_neurons
+        ]
+        synapses: list[dict[str, Any]] = [
+            {
+                "id": s.id,
+                "source_id": s.source_id,
+                "target_id": s.target_id,
+                "type": s.type.value,
+                "weight": s.weight,
+                "direction": s.direction.value,
+                "metadata": dict(s.metadata),
+            }
+            for s in raw_synapses
+        ]
+        fibers: list[dict[str, Any]] = [
+            {
+                "id": f.id,
+                "neuron_ids": list(f.neuron_ids),
+                "synapse_ids": list(f.synapse_ids),
+                "anchor_neuron_id": f.anchor_neuron_id,
+                "pathway": f.pathway,
+                "conductivity": f.conductivity,
+                "salience": f.salience,
+            }
+            for f in raw_fibers
+        ]
 
         return BrainSnapshot(
-            brain=brain,
+            brain_id=brain_id,
+            brain_name=brain.name,
+            exported_at=utcnow(),
+            version="0.1.0",
             neurons=neurons,
             synapses=synapses,
             fibers=fibers,
+            config=dict(brain.metadata),
         )
 
     async def import_brain(
@@ -876,30 +913,56 @@ class SurrealDBStorage(NeuralStorage):
         snapshot: BrainSnapshot,
         target_brain_id: str | None = None,
     ) -> str:
-        bid = target_brain_id or snapshot.brain.id
+        bid = target_brain_id or snapshot.brain_id
         self.set_brain(bid)
 
         brain = Brain(
             id=bid,
-            name=snapshot.brain.name,
-            metadata=snapshot.brain.metadata,
+            name=snapshot.brain_name,
+            metadata=dict(snapshot.config),
         )
         await self.save_brain(brain)
 
-        for neuron in snapshot.neurons:
+        for nd in snapshot.neurons:
             try:
+                neuron = Neuron(
+                    id=str(nd.get("id", "")),
+                    type=NeuronType(nd["type"]),
+                    content=str(nd["content"]),
+                    metadata=dict(nd.get("metadata") or {}),
+                    created_at=_parse_datetime(nd.get("created_at")) or utcnow(),
+                )
                 await self.add_neuron(neuron)
             except Exception:
                 pass
 
-        for synapse in snapshot.synapses:
+        for sd in snapshot.synapses:
             try:
+                synapse = Synapse(
+                    id=str(sd.get("id", "")),
+                    source_id=str(sd.get("source_id", "")),
+                    target_id=str(sd.get("target_id", "")),
+                    type=SynapseType(sd["type"]),
+                    weight=float(sd.get("weight", 1.0)),
+                    direction=Direction(str(sd.get("direction", "forward"))),
+                    metadata=dict(sd.get("metadata") or {}),
+                    created_at=_parse_datetime(sd.get("created_at")) or utcnow(),
+                )
                 await self.add_synapse(synapse)
             except Exception:
                 pass
 
-        for fiber in snapshot.fibers:
+        for fd in snapshot.fibers:
             try:
+                fiber = Fiber(
+                    id=str(fd.get("id", "")),
+                    neuron_ids=set(fd.get("neuron_ids") or []),
+                    synapse_ids=set(fd.get("synapse_ids") or []),
+                    anchor_neuron_id=str(fd.get("anchor_neuron_id", "")),
+                    pathway=list(fd.get("pathway") or []),
+                    conductivity=float(fd.get("conductivity", 1.0)),
+                    salience=float(fd.get("salience", 0.0)),
+                )
                 await self.add_fiber(fiber)
             except Exception:
                 pass
@@ -924,7 +987,7 @@ class SurrealDBStorage(NeuralStorage):
             bid=brain_id,
         )
 
-        def _count(rows: list) -> int:
+        def _count(rows: list[Any]) -> int:
             if rows and len(rows) > 0:
                 return int(rows[0].get("c", 0))
             return 0
@@ -1110,8 +1173,8 @@ class SurrealDBStorage(NeuralStorage):
                     entity_id=str(r.get("entity_id", "")),
                     operation=str(r.get("operation", "")),
                     device_id=str(r.get("device_id", "")),
-                    changed_at=_parse_datetime(r.get("changed_at")) or utcnow(),
-                    payload=r.get("payload"),
+                    changed_at=str(r.get("changed_at", "")),
+                    payload=r.get("payload") or {},
                 )
             )
         return changes
@@ -1133,8 +1196,8 @@ class SurrealDBStorage(NeuralStorage):
                 entity_id=str(r.get("entity_id", "")),
                 operation=str(r.get("operation", "")),
                 device_id=str(r.get("device_id", "")),
-                changed_at=_parse_datetime(r.get("changed_at")) or utcnow(),
-                payload=r.get("payload"),
+                changed_at=str(r.get("changed_at", "")),
+                payload=r.get("payload") or {},
             )
             for r in rows
         ]
@@ -1220,8 +1283,9 @@ class SurrealDBStorage(NeuralStorage):
             bid=brain_id,
         )
 
-        def _cnt(rows: list) -> int:
+        def _cnt(rows: list[Any]) -> int:
             return int(rows[0].get("c", 0)) if rows else 0
+
 
         def _max(rows: list) -> int:
             return int(rows[0].get("sequence", 0)) if rows else 0

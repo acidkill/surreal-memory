@@ -1,4 +1,4 @@
-# Neural Memory + SurrealDB + Cloudflare Sync Hub
+# SurrealMemory + SurrealDB + Cloudflare Sync Hub
 # Usage:
 #   cp .env.example .env   # edit with your keys
 #   docker compose -f docker-compose.surrealdb.yml up -d
@@ -24,7 +24,7 @@ services:
       start_period: 5s
     restart: unless-stopped
 
-  neural-memory:
+  surreal-memory:
     build:
       context: .
       dockerfile: Dockerfile.surrealdb
@@ -64,7 +64,7 @@ services:
 
       # MCP — use stdio transport: each tool spawns `nmem-mcp` directly
       # Port 8765 exposed for optional HTTP transport: nmem-mcp --http 8765
-      # Claude Code: claude mcp add --scope user neural-memory -- nmem-mcp
+      # Claude Code: claude mcp add --scope user surreal-memory -- nmem-mcp
       # opencode: add to opencode MCP config (see below)
 
     depends_on:
