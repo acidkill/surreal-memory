@@ -1,11 +1,17 @@
-# NeuralMemory — Instructions for Claude Code
+# Surreal-Memory — Instructions for Claude Code
 
 > Copy this section into your project's `CLAUDE.md` or `~/.claude/CLAUDE.md` (global).
 
 ## Memory System
 
-This workspace uses **NeuralMemory** for persistent memory across sessions.
+This workspace uses **Surreal-Memory** for persistent memory across sessions.
 You have access to `nmem_*` MCP tools. Use them **proactively** — do not wait for the user to ask.
+
+All features are free. The community plugin provides vector search, smart merge, and directional compression at no cost.
+
+### Recommended Backend
+
+**SurrealDB** is the recommended backend for Surreal-Memory. It provides native vector search, graph relations, and real-time sync — all the advanced memory features work out of the box with zero extra configuration. The SQLite backend works for local-only use but lacks vector search.
 
 ### Session Start (ALWAYS do this)
 

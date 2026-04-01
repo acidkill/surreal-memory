@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Neural Memory Pro — Semantic Brain for AI Agents</title>
-  <meta name="description" content="Upgrade from keyword search to semantic understanding. InfinityDB replaces SQLite with HNSW vector search, 5-tier compression, and neural graph traversal.">
+  <meta name="description" content="Graph-based persistent memory for AI agents powered by SurrealDB. Document + graph + vector search in one database. All features free.">
 
   <!-- Open Graph -->
   <meta property="og:title" content="Neural Memory Pro">
@@ -646,7 +646,7 @@
   </div>
   <div id="label-engine" class="cluster-label" data-feature="engine">
     <span class="dot" style="background:var(--cyan)"></span>
-    InfinityDB Engine
+    SurrealDB Engine
   </div>
   <div id="label-pricing" class="cluster-label" data-feature="pricing">
     <span class="dot" style="background:var(--pulse)"></span>
@@ -1299,7 +1299,7 @@
             </div>
           </div>
           <table class="compare-table">
-            <tr><th></th><th>Free (SQLite)</th><th>Pro (InfinityDB)</th></tr>
+            <tr><th></th><th>Free (SQLite)</th><th>Pro (SurrealDB)</th></tr>
             <tr><td>Recall</td><td>Keyword (FTS5)</td><td style="color:var(--violet)">Semantic (HNSW)</td></tr>
             <tr><td>Speed (10K)</td><td>~500ms</td><td style="color:var(--violet)">&lt;5ms</td></tr>
             <tr><td>Scale</td><td>~50K</td><td style="color:var(--violet)">2M+</td></tr>
@@ -1310,7 +1310,7 @@
           </table>
           <div style="margin-top:20px">
             <div class="code-block">
-              <span style="color:var(--text-muted)">$</span> <span style="color:var(--emerald)">pip install</span> <span style="color:var(--violet)">neural-memory-pro</span>
+              <span style="color:var(--text-muted)">$</span> <span style="color:var(--emerald)">pip install</span> <span style="color:var(--violet)">neural-memory[surrealdb]</span>
             </div>
             <p style="font-size:13px">Auto-registers via entry points. All 52 free tools keep working. Three new tools appear automatically.</p>
           </div>
@@ -1344,7 +1344,7 @@
               <div class="period">or $89/year (save $19) &bull; 219,000 VND/thang</div>
               <ul>
                 <li><span class="check">&#10003;</span> Everything in Free</li>
-                <li><span class="check">&#10003;</span> <strong style="color:var(--text)">InfinityDB engine</strong> (HNSW)</li>
+                <li><span class="check">&#10003;</span> <strong style="color:var(--text)">SurrealDB engine</strong> (HNSW)</li>
                 <li><span class="check">&#10003;</span> <strong style="color:var(--text)">Cone Queries</strong></li>
                 <li><span class="check">&#10003;</span> <strong style="color:var(--text)">Smart Merge</strong></li>
                 <li><span class="check">&#10003;</span> <strong style="color:var(--text)">Directional Compression</strong></li>
@@ -1379,7 +1379,7 @@
               <div style="color:var(--text-muted)"># 1. Activate (just one command)</div>
               <div><span style="color:var(--emerald)">nmem shared activate</span> --key <span style="color:var(--violet)">NM-PRO-XXXX-XXXX-XXXX</span></div>
               <br>
-              <div style="color:var(--text-muted)"># 2. Optional: upgrade to InfinityDB</div>
+              <div style="color:var(--text-muted)"># 2. Optional: upgrade to SurrealDB</div>
               <div><span style="color:var(--emerald)">nmem storage status</span></div>
               <div><span style="color:var(--emerald)">nmem migrate infinitydb</span></div>
               <div><span style="color:var(--emerald)">nmem storage switch infinitydb</span></div>

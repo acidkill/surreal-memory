@@ -1,6 +1,6 @@
-# How NeuralMemory Works
+# How Surreal-Memory Works
 
-NeuralMemory uses a fundamentally different approach to memory retrieval than traditional search or RAG systems.
+Surreal-Memory uses a fundamentally different approach to memory retrieval than traditional search or RAG systems, powered by SurrealDB's multi-model engine (document + graph + vector).
 
 ## The Core Idea
 
@@ -13,7 +13,7 @@ SELECT * FROM memories WHERE content LIKE '%Alice%' ORDER BY similarity DESC
 
 Instead, thinking of "Alice" *activates* related memories - her face, your last conversation, the project you worked on together. These emerge through **association**, not **search**.
 
-NeuralMemory replicates this process:
+Surreal-Memory replicates this process:
 
 ```
 Query: "What did Alice suggest?"
@@ -43,6 +43,62 @@ Query: "What did Alice suggest?"
 │ 5. Extract Context  │  → "Alice suggested rate limiting"
 └─────────────────────┘
 ```
+
+## SurrealDB Architecture
+
+Surreal-Memory uses **SurrealDB** as its primary storage backend, leveraging all three of its query models in a single database:
+
+### Document Store
+
+Neurons, fibers, and synapses are stored as structured documents with typed fields, indexes, and metadata. This provides fast lookups by content, type, brain ID, and time range.
+
+```
+┌─────────────────────────────────────────┐
+│ SurrealDB Document Layer                │
+│                                         │
+│  neuron        → content, type, hash,   │
+│                  metadata, embeddings    │
+│  neuron_state  → activation, decay,     │
+│                  thresholds             │
+│  fiber         → pathway, conductivity, │
+│                  salience, tags         │
+│  typed_memory  → priority, tags,        │
+│                  trust, expiry          │
+└─────────────────────────────────────────┘
+```
+
+### Graph Queries
+
+Synapses are stored as SurrealDB graph edges using `RELATE`, enabling native graph traversal and path finding between neurons. A single query can traverse multi-hop relationships without multiple round-trips.
+
+```
+neuron:Alice ──connects_to──► neuron:Meeting ──connects_to──► neuron:RateLimiting
+      │                            │
+      └── type: DISCUSSED ────────┘── type: SUGGESTED_BY
+```
+
+Graph operations used by Surreal-Memory:
+- **Neighbor lookup** - Find all neurons connected to a given neuron (in/out/both directions)
+- **Path finding** - BFS shortest-path between two neurons across multi-hop synapse chains
+- **Traversal with filtering** - Filter by synapse type, weight, or direction during traversal
+
+### HNSW Vector Search
+
+The community plugin enables SurrealDB's native HNSW (Hierarchical Navigable Small World) vector search for semantic recall. Neurons store embedding vectors, and the `vector::distance::knn()` function finds nearest neighbors by similarity.
+
+```
+Query embedding: [0.12, -0.34, 0.56, ...]
+         │
+         ▼
+  SurrealDB KNN search
+  SELECT *, vector::distance::knn() AS score
+  FROM neuron WHERE embedding_vec <|10,100|> $vec
+         │
+         ▼
+  Ranked results by semantic similarity
+```
+
+This powers **cone queries** - a retrieval strategy that combines vector similarity with graph traversal for high-precision semantic recall.
 
 ## Key Components
 
@@ -88,14 +144,14 @@ When you store a memory:
 nmem remember "Met Alice at coffee shop to discuss API design, she suggested rate limiting"
 ```
 
-NeuralMemory:
+Surreal-Memory:
 
 1. **Extracts entities** - Alice, coffee shop, API design, rate limiting
 2. **Extracts temporal context** - (uses current time if not specified)
 3. **Identifies relationships** - Alice DISCUSSED API design, Alice SUGGESTED rate limiting
-4. **Creates neurons** - One for each entity/concept
-5. **Creates synapses** - Typed connections between neurons
-6. **Bundles into fiber** - Groups everything into a coherent memory
+4. **Creates neurons** - One document per entity/concept in SurrealDB
+5. **Creates synapses** - Graph edges (`RELATE`) between neuron documents
+6. **Bundles into fiber** - Groups everything into a coherent memory pathway
 
 ## Retrieval Process
 
@@ -105,7 +161,7 @@ When you query:
 nmem recall "What did Alice suggest last Tuesday?"
 ```
 
-NeuralMemory (reflex mode, default in v0.6.0+):
+Surreal-Memory (reflex mode):
 
 1. **Parses query** - Identifies "last Tuesday" as time hint, "Alice" as entity, "suggest" as action hint
 2. **Finds anchors (time-first)** - Locates time neurons first (weight 1.0), then entities (0.8), then actions (0.6)
@@ -118,7 +174,7 @@ NeuralMemory (reflex mode, default in v0.6.0+):
 
 ## Activation Dynamics
 
-### Reflex Mode (v0.6.0+, default)
+### Reflex Mode (default)
 
 Activation spreads along **fiber pathways** with trail decay:
 
@@ -142,6 +198,22 @@ Distance-based decay through BFS:
 
 ```
 activation(hop) = initial * decay_factor^hop
+```
+
+### Cone Queries (vector-boosted)
+
+The community plugin adds cone queries that combine HNSW vector similarity with graph traversal:
+
+```
+Query embedding ──► KNN search ──► top-k candidates
+                                            │
+                                            ▼
+                                   Graph traversal from
+                                   each candidate neuron
+                                            │
+                                            ▼
+                                   Merged activation scores
+                                   (vector similarity * graph proximity)
 ```
 
 ## Depth Levels
@@ -185,20 +257,34 @@ Original: [20 detailed neurons about Tuesday meeting]
 Compressed: [1 summary neuron: "API design meeting with Alice"]
 ```
 
+### Smart Merge
+
+The community plugin provides embedding-based neuron consolidation. Near-duplicate neurons (cosine similarity > 0.95) are automatically detected and merged, keeping the more-accessed neuron as the canonical version.
+
+### Directional Compression
+
+Multi-axis semantic compression preserves entity relationships when summarizing content:
+- **Summary level** - Keeps top sentences ranked by entity density
+- **Essence level** - Keeps only entity-containing sentences
+
 ## Comparison with RAG
 
-| Aspect | RAG | NeuralMemory |
-|--------|-----|--------------|
-| Data model | Flat chunks | Neural graph |
-| Retrieval | Similarity search | Spreading activation |
-| Relationships | Implicit | Explicit typed synapses |
+| Aspect | RAG | Surreal-Memory |
+|--------|-----|----------------|
+| Data model | Flat chunks | Neural graph in multi-model DB |
+| Retrieval | Similarity search only | Spreading activation + vector + graph traversal |
+| Storage | Separate vector DB + doc store | Single SurrealDB instance (document + graph + vector) |
+| Relationships | Implicit (chunk proximity) | Explicit typed synapses (graph edges) |
 | Temporal | Metadata filter | First-class neurons |
-| Multi-hop | Multiple queries | Single traversal |
-| Memory lifecycle | Static | Dynamic decay/reinforce |
+| Multi-hop | Multiple queries / LLM calls | Single graph traversal query |
+| Memory lifecycle | Static | Dynamic decay/reinforce/compress |
+| Semantic search | External embedding index | Native HNSW in SurrealDB |
+| Path finding | Not supported | Native BFS via graph edges |
+| Deduplication | Manual | Smart merge via embedding similarity |
 
-## Smart Context Optimization (v2.6.0+)
+## Smart Context Optimization
 
-When you request context (`nmem_context`), NeuralMemory doesn't just return the most recent memories. It uses a **5-factor composite scoring** system to select the most relevant items:
+When you request context (`nmem_context`), Surreal-Memory doesn't just return the most recent memories. It uses a **5-factor composite scoring** system to select the most relevant items:
 
 ```
 Score = 0.30 * activation     # How recently/actively recalled
@@ -217,9 +303,9 @@ After scoring, the pipeline:
 
 This ensures you get the most relevant, diverse context within your token limit.
 
-## Recall Pattern Learning (v2.6.0+)
+## Recall Pattern Learning
 
-NeuralMemory learns from your query patterns. When you repeatedly look up related topics in sequence (e.g., "authentication" followed by "middleware"), the system detects these co-occurrence patterns and materializes them as CONCEPT neurons connected by BEFORE synapses.
+Surreal-Memory learns from your query patterns. When you repeatedly look up related topics in sequence (e.g., "authentication" followed by "middleware"), the system detects these co-occurrence patterns and materializes them as CONCEPT neurons connected by BEFORE synapses.
 
 ```
 Session 1: recall "auth"     → recall "middleware"
@@ -231,11 +317,11 @@ Session 3: recall "tokens"   → recall "middleware setup"
            CONCEPT("auth") ──BEFORE──► CONCEPT("middleware")
 ```
 
-On subsequent recalls, NeuralMemory suggests **related queries** by following these learned patterns, helping you discover information you frequently need together.
+On subsequent recalls, Surreal-Memory suggests **related queries** by following these learned patterns, helping you discover information you frequently need together.
 
-## Proactive Alerts (v2.6.0+)
+## Proactive Alerts
 
-NeuralMemory monitors brain health and creates persistent alerts when issues are detected:
+Surreal-Memory monitors brain health and creates persistent alerts when issues are detected:
 
 - **High neuron/fiber/synapse count** — Brain needs consolidation
 - **Low connectivity** — Neurons are isolated, needs enrichment
@@ -244,13 +330,25 @@ NeuralMemory monitors brain health and creates persistent alerts when issues are
 
 Alerts follow a lifecycle: `active → seen → acknowledged → resolved`. They're surfaced as a `pending_alerts` count in regular tool responses, and can be managed via `nmem_alerts`.
 
+## Community Plugin
+
+The community plugin unlocks advanced features at no cost:
+
+- **Cone queries** - HNSW vector search via SurrealDB's native `vector::distance::knn()`
+- **Smart merge** - Embedding-based neuron consolidation (deduplication)
+- **Directional compression** - Multi-axis semantic preservation during summarization
+- **SurrealDB storage backend** - Multi-model storage with document, graph, and vector in one database
+- **Merkle delta sync** - Efficient multi-device synchronization
+
+The plugin is auto-discovered at server startup. No license key or configuration required.
+
 ## Training from External Sources
 
-Beyond encoding individual memories, NeuralMemory can learn domain knowledge from structured sources.
+Beyond encoding individual memories, Surreal-Memory can learn domain knowledge from structured sources.
 
-### Database Schema Training (v1.6.0+)
+### Database Schema Training
 
-NeuralMemory can learn to understand database structure by training from schema metadata:
+Surreal-Memory can learn to understand database structure by training from schema metadata:
 
 ```
 SQLite Database
@@ -283,3 +381,7 @@ SQLite Database
 This enables queries like:
 - "How are orders related to customers?" → Traces FK relationships
 - "Which tables have audit trails?" → Recalls detected patterns
+
+### Documentation Training
+
+Surreal-Memory can train from markdown documentation files, parsing them into semantic chunks with heading hierarchy, encoding them through the NLP pipeline, and running consolidation to create domain-specific expert brains.

@@ -1,13 +1,8 @@
-# NeuralMemory
+# Surreal-Memory
 
 <p align="center">
-  <strong>Reflex-based memory system for AI agents</strong><br>
-  <em>Retrieval through activation, not search</em>
-</p>
-
-<p align="center">
-  <a href="https://neuralmemory.theio.vn/landing/pro-landing.html" target="_blank"><img src="https://img.shields.io/badge/Neural_Memory_Pro-6366f1?style=for-the-badge&logo=lightning&logoColor=white" alt="Neural Memory Pro"></a>
-  <a href="https://buymeacoffee.com/vietnamit"><img src="https://img.shields.io/badge/Buy%20Me%20A%20Coffee-ffdd00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me A Coffee"></a>
+  <strong>Graph-based brain memory powered by SurrealDB</strong><br>
+  <em>Document + graph + vector in one database. Zero LLM calls. Fully offline.</em>
 </p>
 
 <p align="center">
@@ -19,9 +14,11 @@
 
 ---
 
-## What is NeuralMemory?
+## What is Surreal-Memory?
 
-NeuralMemory stores experiences as interconnected neurons and recalls them through **spreading activation** - mimicking how the human brain works. Instead of searching a database, memories are retrieved through associative recall.
+Surreal-Memory stores experiences as interconnected neurons and recalls them through **spreading activation** -- mimicking how the human brain works. Instead of searching a database, memories are retrieved through associative recall.
+
+Powered by **SurrealDB**, every memory lives in a single multi-model database that provides document storage, graph traversal, and vector search out of the box. No separate vector store, no embedding API, no LLM calls required.
 
 ```bash
 # Store a memory
@@ -29,27 +26,28 @@ nmem remember "Fixed auth bug with null check in login.py:42"
 
 # Recall through association
 nmem recall "auth bug fix"
-# → "Fixed auth bug with null check in login.py:42"
+# -> "Fixed auth bug with null check in login.py:42"
 ```
 
 ## Why Not RAG / Vector Search?
 
-| Aspect | RAG / Vector Search | NeuralMemory |
-|--------|---------------------|--------------|
-| **Model** | Search Engine | Human Brain |
-| **LLM/Embedding** | Required (embedding API calls) | **None** — pure algorithmic graph traversal |
+| Aspect | RAG / Vector Search | Surreal-Memory |
+|--------|---------------------|----------------|
+| **Database** | Separate vector store + document DB | **SurrealDB** -- document, graph, and vector in one |
+| **LLM/Embedding** | Required (embedding API calls) | **None** -- pure algorithmic graph traversal |
 | **Query** | "Find similar text" | "Recall through association" |
 | **Structure** | Flat chunks + embeddings | Neural graph + synapses |
 | **Relationships** | None (just similarity) | Explicit: `CAUSED_BY`, `LEADS_TO` |
 | **Temporal** | Timestamp filter | Time as first-class neurons |
 | **Multi-hop** | Multiple queries needed | Natural graph traversal |
-| **API Cost** | ~$0.02/1K queries | **$0.00** — fully offline |
+| **API Cost** | ~$0.02/1K queries | **$0.00** -- fully offline |
+| **Infrastructure** | Pinecone/Weaviate + Postgres | **Single SurrealDB instance** |
 
 !!! example "Example: Causal Query"
     **Query:** "Why did Tuesday's outage happen?"
 
     - **RAG**: Returns "JWT caused outage" (missing *why* we used JWT)
-    - **NeuralMemory**: Traces `outage ← CAUSED_BY ← JWT ← SUGGESTED_BY ← Alice` → full causal chain
+    - **Surreal-Memory**: Traces `outage <- CAUSED_BY <- JWT <- SUGGESTED_BY <- Alice` -> full causal chain
 
 ## The Problem
 
@@ -69,7 +67,7 @@ AI agents face fundamental memory limitations:
 | **Persistent memory** | Survives across sessions |
 | **Efficient retrieval** | Inject only relevant context, not everything |
 | **Shareable brains** | Export/import patterns like Git repos |
-| **Real-time sharing** | Multi-agent collaboration |
+| **Real-time sharing** | Multi-agent collaboration via SurrealDB sync |
 | **Project-bounded** | Optimize for active project timeframes |
 
 ## Quick Start
@@ -77,16 +75,23 @@ AI agents face fundamental memory limitations:
 ### Installation
 
 ```bash
-pip install neural-memory
+pip install neural-memory[surrealdb]
 ```
 
 With optional features:
 
 ```bash
-pip install neural-memory[server]   # FastAPI server + Web UI
-pip install neural-memory[nlp-vi]   # Vietnamese NLP
-pip install neural-memory[all]      # All features
+pip install neural-memory[server]        # FastAPI server + Web UI
+pip install neural-memory[surrealdb,server]  # SurrealDB + Web UI
+pip install neural-memory[all]           # All features
 ```
+
+!!! tip "SurrealDB Required"
+    The SurrealDB backend requires a running SurrealDB instance. The easiest way is Docker:
+
+    ```bash
+    docker compose -f docker-compose.surrealdb.yml up -d
+    ```
 
 ### Basic Usage
 
@@ -111,12 +116,18 @@ pip install neural-memory[all]      # All features
     ```python
     import asyncio
     from neural_memory import Brain
-    from neural_memory.storage import InMemoryStorage
+    from neural_memory.storage.surrealdb import SurrealDBStorage
     from neural_memory.engine.encoder import MemoryEncoder
     from neural_memory.engine.retrieval import ReflexPipeline
 
     async def main():
-        storage = InMemoryStorage()
+        storage = SurrealDBStorage(
+            url="http://localhost:8000",
+            namespace="memory",
+            database="my_project",
+        )
+        await storage.connect()
+
         brain = Brain.create("my_brain")
         await storage.save_brain(brain)
         storage.set_brain(brain.id)
@@ -158,13 +169,13 @@ pip install neural-memory[all]      # All features
 
 ## VS Code Extension
 
-Install the NeuralMemory extension for a visual brain explorer directly in your editor:
+Install the Surreal-Memory extension for a visual brain explorer directly in your editor:
 
-- **Memory Tree View** — Browse neurons grouped by type in the activity bar
-- **Graph Explorer** — Interactive Cytoscape.js force-directed graph
-- **CodeLens** — Memory counts on functions/classes, comment trigger detection
-- **Encode & Recall** — Store and query memories from the command palette
-- **Real-time Sync** — WebSocket updates for tree, graph, and status bar
+- **Memory Tree View** -- Browse neurons grouped by type in the activity bar
+- **Graph Explorer** -- Interactive Cytoscape.js force-directed graph
+- **CodeLens** -- Memory counts on functions/classes, comment trigger detection
+- **Encode & Recall** -- Store and query memories from the command palette
+- **Real-time Sync** -- WebSocket updates for tree, graph, and status bar
 
 ```bash
 cd vscode-extension && npm run build
@@ -183,26 +194,64 @@ nmem serve
 
 ## Features
 
-- **Reflex Activation** - Trail-based retrieval through fiber pathways with conductivity (v0.6.0+)
-- **Co-Activation** - Hebbian binding detects neurons activated by multiple sources (v0.6.0+)
-- **Time-First Anchoring** - Time neurons as primary anchors for temporally-aware recall (v0.6.0+)
-- **Spreading Activation** - Neural graph-based retrieval (classic mode)
-- **Multi-language** - English + Vietnamese support
-- **Typed Memories** - fact, decision, todo, insight, etc.
-- **Priority System** - 0-10 priority levels
-- **Expiry/TTL** - Auto-expire temporary memories
-- **Project Scoping** - Organize memories by project
-- **Sensitive Content Detection** - Auto-detect secrets, PII
-- **Memory Decay** - Ebbinghaus forgetting curve
-- **Brain Sharing** - Export, import, merge brains
-- **DB-to-Brain Training** - Teach brains to understand database schemas (v1.6.0+)
-- **AI Agent Skills** - Composable memory-intake, memory-audit, memory-evolution workflows (v1.6.0+)
-- **Smart Context Optimizer** - 5-factor composite scoring + SimHash dedup + token budgeting (v2.6.0+)
-- **Proactive Alerts** - Persistent brain health alerts with lifecycle management (v2.6.0+)
-- **Recall Pattern Learning** - Topic co-occurrence mining + follow-up suggestions (v2.6.0+)
-- **Adaptive Recall** - Bayesian depth priors that learn optimal retrieval depth per entity (v2.8.0+)
-- **Tiered Memory Compression** - Age-based compression preserving entity graph structure (v2.8.0+)
-- **Multi-Device Sync** - Hub-and-spoke incremental sync with neural-aware conflict resolution (v2.8.0+)
+### SurrealDB Multi-Model Backend
+
+- **Document storage** -- Neurons stored as rich, typed records with full metadata
+- **Graph traversal** -- Synapses as native SurrealDB graph edges, queried with graph queries
+- **Vector search** -- HNSW cone queries via SurrealDB's built-in `vector::distance::knn()`
+- **Single database** -- No separate vector store, no embedding service, one SurrealDB instance
+
+### Community Plugin (Free)
+
+All advanced features are provided by the built-in **CommunityPlugin** at no cost:
+
+- **Cone queries** -- HNSW vector search for semantic similarity retrieval
+- **Smart merge** -- Embedding-based consolidation of near-duplicate neurons
+- **Directional compression** -- Multi-axis semantic compression preserving entity relationships
+- **Merkle delta sync** -- Efficient multi-device synchronization with conflict resolution
+
+!!! success "100% Free, No Paywalls"
+    There is no paid tier, no license key, and no feature gate. Every feature listed on this page -- including vector search, cloud sync, smart merge, and the web dashboard -- works out of the box.
+
+### Cognitive Memory
+
+- **Reflex Activation** -- Trail-based retrieval through fiber pathways with conductivity
+- **Co-Activation** -- Hebbian binding detects neurons activated by multiple sources
+- **Time-First Anchoring** -- Time neurons as primary anchors for temporally-aware recall
+- **Spreading Activation** -- Neural graph-based retrieval (classic mode)
+- **Adaptive Recall** -- Bayesian depth priors that learn optimal retrieval depth per entity
+- **Memory Decay** -- Ebbinghaus forgetting curve for natural forgetting
+
+### Knowledge & Reasoning
+
+- **Typed Memories** -- fact, decision, todo, insight, error, workflow, and more
+- **Priority System** -- 0-10 priority levels with automatic scoring
+- **Expiry/TTL** -- Auto-expire temporary memories
+- **Project Scoping** -- Organize memories by project with isolated brain contexts
+- **DB-to-Brain Training** -- Teach brains to understand database schemas
+- **Codebase Indexing** -- Scan source files and create neurons for functions, classes, imports
+
+### Collaboration & Sync
+
+- **Multi-Device Sync** -- Hub-and-spoke incremental sync with neural-aware conflict resolution
+- **Brain Sharing** -- Export, import, merge, and transplant brains between projects
+- **Real-time Collaboration** -- Multiple agents reading and writing to the same SurrealDB instance
+
+### Observability
+
+- **Smart Context Optimizer** -- 5-factor composite scoring + SimHash dedup + token budgeting
+- **Proactive Alerts** -- Persistent brain health alerts with lifecycle management
+- **Recall Pattern Learning** -- Topic co-occurrence mining + follow-up suggestions
+- **Brain Health Diagnostics** -- Purity score, grade, component metrics, and actionable warnings
+- **Evolution Tracking** -- Maturation progress, learning plasticity, and proficiency level
+
+### Integrations
+
+- **MCP Server** -- First-class Model Context Protocol integration for Claude and other AI agents
+- **VS Code Extension** -- Visual brain explorer in your editor
+- **Web Dashboard** -- Interactive brain visualization with Cytoscape.js
+- **FastAPI Server** -- REST API + WebSocket for custom integrations
+- **CLI** -- Full command-line interface for scripting and automation
 
 ## Next Steps
 
@@ -212,7 +261,7 @@ nmem serve
 
     ---
 
-    Install NeuralMemory and get started in minutes
+    Install Surreal-Memory and get started in minutes
 
     [:octicons-arrow-right-24: Install](getting-started/installation.md)
 
@@ -228,7 +277,7 @@ nmem serve
 
     ---
 
-    Understand how NeuralMemory works
+    Understand how spreading activation and SurrealDB work together
 
     [:octicons-arrow-right-24: Concepts](concepts/how-it-works.md)
 
