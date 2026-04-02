@@ -33,22 +33,38 @@ def _to_surreal_id(record_id: str) -> str:
 def _from_surreal_id(surreal_id: str) -> str:
     """Extract the original ID from a SurrealDB record ID like 'neuron:abc_def'."""
     if ":" in surreal_id:
-        return surreal_id.rsplit(":", 1)[1]
-    return surreal_id
+        surreal_id = surreal_id.rsplit(":", 1)[1]
+    return surreal_id.replace("_", "-")
 
 
 def _parse_datetime(val: Any) -> datetime | None:
-    """Parse a SurrealDB datetime value to Python datetime."""
+    """Parse a SurrealDB datetime value to Python datetime (naive for consistency)."""
     if val is None:
         return None
     if isinstance(val, datetime):
+        # Convert to naive datetime for consistency across codebase
+        if val.tzinfo is not None:
+            return val.replace(tzinfo=None)
         return val
     if isinstance(val, str):
         try:
-            return datetime.fromisoformat(val.replace("Z", "+00:00"))
+            parsed = datetime.fromisoformat(val.replace("Z", "+00:00"))
+            # Convert to naive datetime
+            if parsed.tzinfo is not None:
+                return parsed.replace(tzinfo=None)
+            return parsed
         except (ValueError, AttributeError):
             return None
     return None
+
+
+def _ensure_naive(dt: datetime) -> datetime:
+    """Convert datetime to naive (no timezone) for comparison."""
+    if dt is None:
+        return datetime.min
+    if dt.tzinfo is not None:
+        return dt.replace(tzinfo=None)
+    return dt
 
 
 def _row_to_neuron(row: dict[str, Any]) -> Neuron:
@@ -56,9 +72,10 @@ def _row_to_neuron(row: dict[str, Any]) -> Neuron:
     meta = dict(row.get("metadata") or {})
     rid = row["id"]
     neuron_id = f"{rid.table_name}:{rid.id}" if hasattr(rid, "table_name") else str(rid)
-    # Strip table prefix for consistency
+    # Strip table prefix and convert underscores back to dashes
     if ":" in neuron_id:
         neuron_id = neuron_id.split(":", 1)[1]
+    neuron_id = neuron_id.replace("_", "-")
     return Neuron(
         id=neuron_id,
         type=NeuronType(row["type"]),
@@ -98,11 +115,14 @@ def _row_to_synapse(row: dict[str, Any]) -> Synapse:
     syn_id = f"{rid.table_name}:{rid.id}" if hasattr(rid, "table_name") else str(rid)
     if ":" in syn_id:
         syn_id = syn_id.split(":", 1)[1]
+    syn_id = syn_id.replace("_", "-")
+    source_id = str(row.get("source_id", "")).replace("_", "-")
+    target_id = str(row.get("target_id", "")).replace("_", "-")
     syn = Synapse(
         id=syn_id,
         type=SynapseType(row["type"]),
-        source_id=str(row.get("source_id", "")),
-        target_id=str(row.get("target_id", "")),
+        source_id=source_id,
+        target_id=target_id,
         weight=float(row.get("weight", 1.0)),
         direction=Direction(str(row.get("direction", "forward"))),
         metadata=dict(row.get("metadata") or {}),
@@ -287,8 +307,8 @@ class SurrealDBStorage(NeuralStorage):
         sid = _to_surreal_id(neuron_id)
         try:
             result = await conn.select(f"neuron:{sid}")
-            if result:
-                return _row_to_neuron(result[0] if isinstance(result, list) else result)
+            if result and isinstance(result, list) and len(result) > 0:
+                return _row_to_neuron(result[0])
         except Exception:
             pass
         return None
@@ -297,13 +317,19 @@ class SurrealDBStorage(NeuralStorage):
         if not neuron_ids:
             return {}
         brain_id = self._get_brain_id()
-        sids = [_to_surreal_id(nid) for nid in neuron_ids]
-        id_list = ", ".join(f"'neuron:{s}'" for s in sids)
-        rows = await self._query(
-            f"SELECT * FROM [{id_list}] WHERE brain_id = $brain_id",
-            brain_id=brain_id,
-        )
-        return {str(r["id"]).split(":")[-1]: _row_to_neuron(r) for r in rows}
+        # Use direct select for each ID (more reliable than IN query with params)
+        results: dict[str, Neuron] = {}
+        for nid in neuron_ids:
+            sid = _to_surreal_id(nid)
+            try:
+                result = await self._conn.select(f"neuron:{sid}")
+                if result and isinstance(result, list) and len(result) > 0:
+                    neuron = _row_to_neuron(result[0])
+                    # Use the converted ID as key
+                    results[nid] = neuron
+            except Exception:
+                pass
+        return results
 
     async def find_neurons(
         self,
@@ -416,7 +442,7 @@ class SurrealDBStorage(NeuralStorage):
         await self._query(
             "DELETE synapse WHERE brain_id = $brain_id AND (source_id = $nid OR target_id = $nid)",
             brain_id=brain_id,
-            nid=neuron_id,
+            nid=sid,
         )
         # Delete related edges
         await self._query(
@@ -493,8 +519,8 @@ class SurrealDBStorage(NeuralStorage):
             "id": sid,
             "brain_id": brain_id,
             "type": synapse.type.value,
-            "source_id": synapse.source_id,
-            "target_id": synapse.target_id,
+            "source_id": ss,
+            "target_id": st,
             "weight": synapse.weight,
             "direction": synapse.direction,
             "metadata": dict(synapse.metadata),
@@ -605,7 +631,7 @@ class SurrealDBStorage(NeuralStorage):
             conditions.append("target_id = $nid")
         else:
             conditions.append("(source_id = $nid OR target_id = $nid)")
-        params["nid"] = neuron_id
+        params["nid"] = _to_surreal_id(neuron_id)
 
         if synapse_types:
             type_vals = [t.value for t in synapse_types]
@@ -745,10 +771,18 @@ class SurrealDBStorage(NeuralStorage):
             fibers = [f for f in fibers if tags.issubset(f.tags)]
         if time_overlaps:
             start, end = time_overlaps
+            # Normalize to naive UTC for comparison
+            if start.tzinfo is not None:
+                start = start.replace(tzinfo=None)
+            if end.tzinfo is not None:
+                end = end.replace(tzinfo=None)
             fibers = [
                 f
                 for f in fibers
-                if f.time_start and f.time_end and f.time_start <= end and f.time_end >= start
+                if f.time_start
+                and f.time_end
+                and _ensure_naive(f.time_start) <= end
+                and _ensure_naive(f.time_end) >= start
             ]
         if metadata_key:
             fibers = [f for f in fibers if metadata_key in f.metadata]
@@ -818,10 +852,9 @@ class SurrealDBStorage(NeuralStorage):
 
     async def save_brain(self, brain: Brain) -> None:
         conn = self._ensure_conn()
-        bid = _to_surreal_id(brain.id)
 
         record_data: dict[str, Any] = {
-            "id": bid,
+            "id": brain.id,  # Use original ID to avoid underscore conversion
             "name": brain.name,
             "config": dict(brain.metadata),
             "metadata": dict(brain.metadata),
@@ -830,25 +863,45 @@ class SurrealDBStorage(NeuralStorage):
         }
         try:
             await conn.insert("brain", record_data)
-        except Exception:
-            await conn.merge(f"brain:{bid}", record_data)
+        except Exception as e:
+            # Try to update existing record
+            try:
+                await conn.merge(f"brain:{brain.id}", record_data)
+            except Exception:
+                # Query and update if merge also fails
+                rows = await self._query(
+                    "SELECT * FROM brain WHERE id = $id", id=f"brain:{brain.id}"
+                )
+                if rows:
+                    for field, value in record_data.items():
+                        await self._query(
+                            f"UPDATE brain:{brain.id} SET {field} = $value", value=value
+                        )
 
     async def get_brain(self, brain_id: str) -> Brain | None:
         conn = self._ensure_conn()
-        bid = _to_surreal_id(brain_id)
         try:
-            result = await conn.select(f"brain:{bid}")
-            if result:
-                r = result[0] if isinstance(result, list) else result
-                rid = r["id"]
-                bid_str = str(rid.id) if hasattr(rid, "id") else str(rid).split(":")[-1]
-                return Brain(
-                    id=str(bid_str),
-                    name=str(r["name"]),
-                    metadata=dict(r.get("metadata") or {}),
-                    created_at=_parse_datetime(r.get("created_at")) or utcnow(),
-                    updated_at=_parse_datetime(r.get("updated_at")) or utcnow(),
-                )
+            # Query all brains and filter manually (string matching in SurrealDB is problematic)
+            rows = await self._query("SELECT * FROM brain")
+            if rows and len(rows) > 0:
+                target_prefix = f"brain:{brain_id}"
+                for r in rows:
+                    rid = r["id"]
+                    # Compare record ID string
+                    rid_str = str(rid) if not hasattr(rid, "id") else f"brain:{rid.id}"
+                    if brain_id in rid_str or rid_str.endswith(f":{brain_id}"):
+                        bid_str = (
+                            str(rid.id).replace("_", "-")
+                            if hasattr(rid, "id")
+                            else str(rid).split(":")[-1].replace("_", "-")
+                        )
+                        return Brain(
+                            id=bid_str,
+                            name=str(r["name"]),
+                            metadata=dict(r.get("metadata") or {}),
+                            created_at=_parse_datetime(r.get("created_at")) or utcnow(),
+                            updated_at=_parse_datetime(r.get("updated_at")) or utcnow(),
+                        )
         except Exception:
             pass
         return None
@@ -1061,7 +1114,8 @@ class SurrealDBStorage(NeuralStorage):
 
         results: list[tuple[Neuron, float]] = []
         for r in rows:
-            score = float(r.pop("score", 0.0))
+            raw_score = r.pop("score", None)
+            score = float(raw_score) if raw_score is not None else 0.0
             # SurrealDB returns distance (lower = more similar), convert to similarity
             similarity = 1.0 / (1.0 + score) if score >= 0 else 0.0
             results.append((_row_to_neuron(r), similarity))
@@ -1234,7 +1288,7 @@ class SurrealDBStorage(NeuralStorage):
 
         # Check what's already seeded
         existing = await self._query(
-            "SELECT DISTINCT entity_id FROM change_log WHERE brain_id = $brain_id AND operation = 'insert'",
+            "SELECT entity_id FROM change_log WHERE brain_id = $brain_id AND operation = 'insert' GROUP BY entity_id",
             brain_id=brain_id,
         )
         existing_ids = {str(r.get("entity_id", "")) for r in existing}

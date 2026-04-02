@@ -36,6 +36,7 @@ DEFINE INDEX idx_neuron_brain    ON neuron FIELDS brain_id;
 DEFINE INDEX idx_neuron_type     ON neuron FIELDS brain_id, type;
 DEFINE INDEX idx_neuron_hash     ON neuron FIELDS brain_id, content_hash;
 DEFINE INDEX idx_neuron_content  ON neuron FIELDS brain_id, content;
+DEFINE INDEX idx_neuron_embedding ON neuron FIELDS embedding_vec HNSW DIMENSION 3072 DIST COSINE;
 
 -- Neuron activation states
 DEFINE TABLE neuron_state SCHEMAFULL;
@@ -106,7 +107,7 @@ DEFINE FIELD config      ON brain TYPE object DEFAULT {{}};
 DEFINE FIELD metadata    ON brain TYPE object DEFAULT {{}};
 DEFINE FIELD created_at  ON brain TYPE datetime DEFAULT time::now();
 DEFINE FIELD updated_at  ON brain TYPE datetime DEFAULT time::now();
-DEFINE INDEX idx_brain_name ON brain FIELDS name UNIQUE;
+-- Removed unique index on name - multiple brains can have same name
 
 -- Change log (for multi-device sync)
 DEFINE TABLE change_log SCHEMAFULL;
