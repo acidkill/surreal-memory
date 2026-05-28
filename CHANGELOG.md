@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.1] — 2026-05-28
+
+### Added
+- **Project-aware memory hooks** — SessionStart, PreCompact, and Stop hooks scope
+  captured memories to the current project (git repo basename as `project_id`);
+  SessionStart injects only the current project's memories.
+- **Task-context hook** — new `smem-hook-task-context` entry point persists a rich,
+  structured per-task note as one project-scoped `context` memory.
+- **SurrealDB Project entity** — `add_project` / `get_project` / `get_project_by_name`
+  / `list_projects` / `update_project` / `delete_project` restored on the SurrealDB
+  backend (parity broken by the v2.0.0 SurrealDB-only refactor); new `project` table,
+  schema version 5.
+- `get_project_memories` declared on the `NeuralStorage` base interface.
+
+### Fixed
+- **Connection close** — `SurrealDBStorage.close()` tolerates transports that don't
+  implement `close()` (the HTTP connection raises `NotImplementedError`), fixing a
+  long-running MCP server degrading to "No brain configured".
+- **CLI regression** — restored `surreal_memory/utils/sandbox.py`; `smem` no longer
+  fails with `ModuleNotFoundError` (regression from the v2.0.0 refactor).
+- **Embedding pipeline hardening** — retry/backoff, embedding-capability probe, and
+  removal of a decommissioned default model.
+- **Latent recall bug** — save hooks persist the verbatim text as the fiber summary,
+  so SessionStart actually injects context (previously `fiber.summary`/`essence` were
+  always `None`).
+- Cross-backend parity test fixture (`connect()` → `initialize()`, and skip when the
+  optional `surrealdb` package is absent).
+
+### Documentation
+- README: new **Embeddings** section (Gemini `gemini-embedding-001` recommended; local
+  `sentence-transformers` `all-MiniLM-L6-v2` / `paraphrase-multilingual-MiniLM-L12-v2`
+  as the no-API-key fallback; Ollama / OpenAI / OpenRouter; `auto` detection).
+- Fixed rename-rot ("What's Different From NeuralMemory?", `~/.neuralmemory` migration)
+  and corrected counts: 15 memory types, 41 synapse types, 5500+ tests.
+- INSTALL_PROMPT: fixed stale repository URLs; Gemini recommended (not required) with a
+  documented local no-key path.
+- `.env.example`, `AGENTS.md`, `CONTRIBUTING.md` corrections.
+
+## [2.0.0] — 2026-05-27
+
 ### Removed — InfinityDB Pro chain + SQLite/InMemory demoted to test fixtures (BREAKING)
 
 Surreal-Memory is now **SurrealDB-only** on the public surface. The
