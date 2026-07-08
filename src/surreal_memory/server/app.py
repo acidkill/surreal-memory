@@ -586,21 +586,33 @@ def create_app(
         capped_limit = min(limit, 2000)
         edge_cap = 4000
 
-        synapses = await storage.get_all_synapses()
-        total_synapses = len(synapses)
-
-        # Degree count → rank neurons by connectivity, take the densest core.
-        degree: dict[str, int] = {}
-        for s in synapses:
-            degree[s.source_id] = degree.get(s.source_id, 0) + 1
-            degree[s.target_id] = degree.get(s.target_id, 0) + 1
-        ranked_ids = sorted(degree, key=lambda nid: degree[nid], reverse=True)
-        selected_ids = set(ranked_ids[offset : offset + capped_limit])
-
-        # Edge-first: keep edges with both endpoints in the dense set (cap payload).
-        visible_synapses = [
-            s for s in synapses if s.source_id in selected_ids and s.target_id in selected_ids
-        ][:edge_cap]
+        # Degree ranking + edge fetch via DB aggregates/graph traversal when the
+        # backend supports it (SurrealDB). Loading all ~185k synapses into Python
+        # just to rank/filter them was ~10 s of the graph view's 30 s+ hang.
+        get_degrees = getattr(storage, "get_synapse_degrees", None)
+        get_edges = getattr(storage, "get_edges_for_neurons", None)
+        if get_degrees is not None and get_edges is not None:
+            degree: dict[str, int] = await get_degrees()
+            # Each edge contributes once to its in-group and once to its out-group.
+            total_synapses = sum(degree.values()) // 2
+            ranked_ids = sorted(degree, key=lambda nid: degree[nid], reverse=True)
+            selected_ids = set(ranked_ids[offset : offset + capped_limit])
+            # Indexed ->synapse traversal fetches only the selected core's edges.
+            core_edges = await get_edges(list(selected_ids))
+            visible_synapses = [s for s in core_edges if s.target_id in selected_ids][:edge_cap]
+        else:
+            synapses = await storage.get_all_synapses()
+            total_synapses = len(synapses)
+            degree = {}
+            for s in synapses:
+                degree[s.source_id] = degree.get(s.source_id, 0) + 1
+                degree[s.target_id] = degree.get(s.target_id, 0) + 1
+            ranked_ids = sorted(degree, key=lambda nid: degree[nid], reverse=True)
+            selected_ids = set(ranked_ids[offset : offset + capped_limit])
+            # Edge-first: keep edges with both endpoints in the dense set (cap payload).
+            visible_synapses = [
+                s for s in synapses if s.source_id in selected_ids and s.target_id in selected_ids
+            ][:edge_cap]
 
         # Nodes = every endpoint the visible edges reference, plus the selected core.
         endpoint_ids = {s.source_id for s in visible_synapses} | {
@@ -608,11 +620,19 @@ def create_app(
         }
         node_ids = endpoint_ids | selected_ids
 
-        # No id-batch store method exists; index all neurons in Python (~4.6k is fine).
-        all_neurons = await storage.find_neurons(limit=100000)
-        by_id = {n.id: n for n in all_neurons}
-        neurons = [by_id[nid] for nid in node_ids if nid in by_id]
-        total_neurons = len(degree) or len(all_neurons)
+        # Fetch ONLY the nodes we render, without the embedding vector. Loading all
+        # ~64k neurons here (each carrying a 1024-float embedding_vec) was the graph
+        # view's 30 s+ hang; node_ids is a few thousand at most.
+        find_by_ids = getattr(storage, "find_neurons_by_ids", None)
+        if find_by_ids is not None:
+            neurons = await find_by_ids(list(node_ids), include_embedding=False)
+        else:
+            all_neurons = await storage.find_neurons(limit=100000)
+            by_id = {n.id: n for n in all_neurons}
+            neurons = [by_id[nid] for nid in node_ids if nid in by_id]
+        # Isolated neurons never render in the graph, so the connected-node count
+        # (len(degree)) is the graph's universe; the true brain total is on /stats.
+        total_neurons = len(degree)
 
         fibers = await storage.get_fibers(limit=1000)
 

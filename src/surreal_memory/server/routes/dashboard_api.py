@@ -94,13 +94,10 @@ async def get_stats() -> DashboardStats:
         """Analyze a single brain using its own per-brain storage."""
         try:
             brain_storage = await get_shared_storage(brain_name=name)
-            stats = await brain_storage.get_stats(name)
-            nc = stats.get("neuron_count", 0)
-            sc = stats.get("synapse_count", 0)
-            fc = stats.get("fiber_count", 0)
 
             grade = "F"
             purity = 0.0
+            nc = sc = fc = 0
             try:
                 from surreal_memory.engine.diagnostics import DiagnosticsEngine
 
@@ -108,8 +105,18 @@ async def get_stats() -> DashboardStats:
                 report = await diag.analyze(name)
                 grade = report.grade
                 purity = report.purity_score
+                # The report already carries the counts (via get_enhanced_stats),
+                # so a separate get_stats here would just repeat the same three
+                # count queries per brain.
+                nc = report.neuron_count
+                sc = report.synapse_count
+                fc = report.fiber_count
             except Exception:
                 logger.debug("Diagnostics failed for brain %s", name, exc_info=True)
+                stats = await brain_storage.get_stats(name)
+                nc = stats.get("neuron_count", 0)
+                sc = stats.get("synapse_count", 0)
+                fc = stats.get("fiber_count", 0)
 
             return BrainSummary(
                 id=name,
@@ -379,7 +386,25 @@ async def get_timeline(
     end: str | None = Query(default=None, description="ISO datetime end"),
 ) -> TimelineResponse:
     """Get chronological list of memories for timeline visualization."""
-    neurons = await storage.find_neurons(limit=min(limit, 2000))
+    # Push the time window into the DB when both bounds are given, and never fetch
+    # the embedding_vec — the timeline uses only id/content/type/created_at/metadata,
+    # so dragging the 1024-float vector per row was pure waste.
+    from datetime import datetime as _dt
+
+    def _iso(s: str | None) -> _dt | None:
+        if not s:
+            return None
+        try:
+            return _dt.fromisoformat(s)
+        except ValueError:
+            return None
+
+    start_dt = _iso(start)
+    end_dt = _iso(end)
+    time_range = (start_dt, end_dt) if start_dt and end_dt else None
+    neurons = await storage.find_neurons(
+        limit=min(limit, 2000), time_range=time_range, include_embedding=False
+    )
 
     entries: list[TimelineEntry] = []
     for n in neurons:
@@ -444,7 +469,9 @@ async def get_daily_stats(
     end = now
 
     # Use public API: find_neurons with time_range
-    neurons = await storage.find_neurons(time_range=(start, end), limit=1000)
+    neurons = await storage.find_neurons(
+        time_range=(start, end), limit=1000, include_embedding=False
+    )
 
     # Aggregate neurons by day
     days_map: dict[str, DailyStatsEntry] = {}

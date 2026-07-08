@@ -601,6 +601,7 @@ class SurrealDBStorage(
         limit: int = 100,
         offset: int = 0,
         ephemeral: bool | None = None,
+        include_embedding: bool = True,
     ) -> list[Neuron]:
         brain_id = self._get_brain_id()
         conditions = ["brain_id = $brain_id"]
@@ -629,11 +630,42 @@ class SurrealDBStorage(
             params["ephemeral"] = ephemeral
 
         where = " AND ".join(conditions)
+        # OMIT the 1024-3072-float embedding_vec when the caller doesn't need it
+        # (dashboard graph/timeline). It is ~4-8 KB/row, so dragging it over tens of
+        # thousands of rows is the single biggest dashboard slowdown after a re-embed.
+        projection = "SELECT *" if include_embedding else "SELECT * OMIT embedding_vec"
         rows = await self._query(
-            f"SELECT * FROM neuron WHERE {where} ORDER BY id LIMIT {int(limit)} START {int(offset)}",
+            f"{projection} FROM neuron WHERE {where} ORDER BY id LIMIT {int(limit)} START {int(offset)}",
             **params,
         )
         return [_row_to_neuron(r) for r in rows]
+
+    async def find_neurons_by_ids(
+        self, neuron_ids: list[str], include_embedding: bool = False
+    ) -> list[Neuron]:
+        """Fetch specific neurons by id in one query, omitting the embedding by
+        default. Used by the graph view, which needs only a few thousand nodes out
+        of tens of thousands and never uses the vector."""
+        if not neuron_ids:
+            return []
+        # Convert to SurrealDB record ids and keep only injection-safe names
+        # (alphanumeric + underscore), since they are interpolated into FROM.
+        safe = [
+            sid
+            for nid in neuron_ids
+            for sid in (_to_surreal_id(nid),)
+            if sid and all(c.isalnum() or c == "_" for c in sid)
+        ]
+        if not safe:
+            return []
+        projection = "SELECT *" if include_embedding else "SELECT * OMIT embedding_vec"
+        out: list[Neuron] = []
+        # Chunk to keep the FROM record-id list a sane query size.
+        for i in range(0, len(safe), 1000):
+            things = ", ".join(f"neuron:{s}" for s in safe[i : i + 1000])
+            rows = await self._query(f"{projection} FROM {things}")
+            out.extend(_row_to_neuron(r) for r in rows)
+        return out
 
     async def suggest_neurons(
         self,
@@ -2029,10 +2061,100 @@ class SurrealDBStorage(
         )
         return [_row_to_neuron_state(r) for r in rows]
 
-    async def get_all_synapses(self) -> list[Synapse]:
-        brain_id = self._get_brain_id()
+    async def count_activated_neuron_states(self, brain_id: str | None = None) -> int:
+        """Count neuron_states with access_frequency > 0 via a DB aggregate.
+
+        Diagnostics used to load every neuron_state (~64k rows) just to count the
+        activated ones — a multi-second scan on the dashboard. This does it in a
+        single ``count() … GROUP ALL`` (~0.4 s)."""
+        bid = brain_id or self._get_brain_id()
         rows = await self._query(
-            "SELECT * FROM synapse WHERE brain_id = $brain_id",
+            "SELECT count() AS c FROM neuron_state"
+            " WHERE brain_id = $bid AND access_frequency > 0 GROUP ALL",
+            bid=bid,
+        )
+        return int(rows[0].get("c", 0)) if rows else 0
+
+    async def get_connected_neuron_ids(self, brain_id: str | None = None) -> set[str]:
+        """Return the set of neuron ids that are an endpoint of any synapse.
+
+        Uses ``GROUP BY in`` / ``GROUP BY out`` on the native RELATE edge (the
+        `source_id`/`target_id` fields are computed, so `array::group` on them
+        yields nothing — but the real `in`/`out` record links group fine). This
+        replaces loading ~185k Synapse objects (~10 s) for the orphan-rate metric
+        with two distinct-key scans (~2 s total)."""
+        bid = brain_id or self._get_brain_id()
+        connected: set[str] = set()
+        for field in ("in", "out"):
+            rows = await self._query(
+                f"SELECT VALUE {field} FROM synapse WHERE brain_id = $bid GROUP BY {field}",
+                bid=bid,
+            )
+            for rid in rows:
+                connected.add(_from_surreal_id(str(rid)))
+        return connected
+
+    async def get_synapse_degrees(self, brain_id: str | None = None) -> dict[str, int]:
+        """Per-neuron synapse degree via DB ``GROUP BY`` on the RELATE endpoints.
+
+        Replaces loading every synapse into Python just to count endpoints
+        (the dashboard graph's ranking step). Note: grouping must target the
+        real ``in``/``out`` record links — the ``source_id``/``target_id``
+        fields are computed and do not aggregate."""
+        bid = brain_id or self._get_brain_id()
+        degree: dict[str, int] = {}
+        for field in ("in", "out"):
+            rows = await self._query(
+                f"SELECT {field} AS nid, count() AS deg FROM synapse"
+                f" WHERE brain_id = $bid GROUP BY {field}",
+                bid=bid,
+            )
+            for r in rows:
+                nid = _endpoint_to_id(r.get("nid"))
+                if nid:
+                    degree[nid] = degree.get(nid, 0) + int(r.get("deg", 0) or 0)
+        return degree
+
+    async def get_edges_for_neurons(self, neuron_ids: list[str]) -> list[Synapse]:
+        """Outgoing synapses of the given neurons via the indexed graph traversal.
+
+        ``->synapse`` on a record id uses the RELATE edge index, so fetching the
+        edges of a few thousand selected nodes is sub-second — versus ~10 s for a
+        full ``SELECT * FROM synapse`` table scan with 185k+ edges."""
+        if not neuron_ids:
+            return []
+        safe = [
+            sid
+            for nid in neuron_ids
+            for sid in (_to_surreal_id(nid),)
+            if sid and all(c.isalnum() or c == "_" for c in sid)
+        ]
+        edges: list[Synapse] = []
+        for i in range(0, len(safe), 500):
+            things = ", ".join(f"neuron:{s}" for s in safe[i : i + 500])
+            rows = await self._query(
+                "SELECT id, ->synapse.{id, out, type, weight, direction, created_at} AS edges"
+                f" FROM {things}"
+            )
+            for row in rows:
+                src = row.get("id")
+                for e in row.get("edges") or []:
+                    d = dict(e)
+                    d["in"] = src
+                    try:
+                        edges.append(_row_to_synapse(d))
+                    except Exception:
+                        continue
+        return edges
+
+    async def get_all_synapses(self, include_metadata: bool = True) -> list[Synapse]:
+        brain_id = self._get_brain_id()
+        # OMIT the metadata blob when the caller (e.g. the dashboard graph) only
+        # needs endpoints/type/weight — it roughly halves the transfer for the
+        # ~185k-row synapse scan.
+        projection = "SELECT *" if include_metadata else "SELECT * OMIT metadata"
+        rows = await self._query(
+            f"{projection} FROM synapse WHERE brain_id = $brain_id",
             brain_id=brain_id,
         )
         return [_row_to_synapse(r) for r in rows]

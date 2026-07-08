@@ -192,6 +192,7 @@ class SQLiteNeuronMixin:
         limit: int = 100,
         offset: int = 0,
         ephemeral: bool | None = None,
+        include_embedding: bool = True,
     ) -> list[Neuron]:
         # Cache shortcut for exact-match lookups (most repeated pattern)
         if content_exact is not None and content_contains is None and time_range is None:

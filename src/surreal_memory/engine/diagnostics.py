@@ -513,11 +513,16 @@ class DiagnosticsEngine:
         if neuron_count == 0:
             return 0.0
 
-        all_synapses = await self._storage.get_all_synapses()
-        connected: set[str] = set()
-        for s in all_synapses:
-            connected.add(s.source_id)
-            connected.add(s.target_id)
+        # Prefer the DB-side distinct-endpoints aggregate over loading ~185k
+        # Synapse objects (that scan was seconds of the dashboard's slowness).
+        get_connected = getattr(self._storage, "get_connected_neuron_ids", None)
+        if get_connected is not None:
+            connected: set[str] = set(await get_connected())
+        else:
+            connected = set()
+            for s in await self._storage.get_all_synapses():
+                connected.add(s.source_id)
+                connected.add(s.target_id)
 
         # Also count neurons that belong to fibers as connected
         if fibers:
@@ -536,8 +541,13 @@ class DiagnosticsEngine:
         if neuron_count == 0:
             return 0.0
 
-        states = await self._storage.get_all_neuron_states()
-        activated_count = sum(1 for s in states if s.access_frequency > 0)
+        # DB aggregate instead of loading every neuron_state (~64k rows).
+        count_active = getattr(self._storage, "count_activated_neuron_states", None)
+        if count_active is not None:
+            activated_count = int(await count_active())
+        else:
+            states = await self._storage.get_all_neuron_states()
+            activated_count = sum(1 for s in states if s.access_frequency > 0)
         return activated_count / max(neuron_count, 1)
 
     @staticmethod

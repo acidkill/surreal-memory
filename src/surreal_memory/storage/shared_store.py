@@ -201,6 +201,7 @@ class SharedStorage(SharedFiberBrainMixin, NeuralStorage):
         limit: int = 100,
         offset: int = 0,
         ephemeral: bool | None = None,
+        include_embedding: bool = True,
     ) -> list[Neuron]:
         """Find neurons matching criteria."""
         params: dict[str, Any] = {"limit": limit, "offset": offset}
