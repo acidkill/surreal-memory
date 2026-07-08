@@ -370,19 +370,20 @@ class TestSqliteRerankerPersistence:
             await store.close()
 
 
-class TestMigrateLayersReranker:
-    """`_migrate_brain_runtime_config` layers config.toml [reranker] onto an
-    already-stored brain, so enabling reranking takes effect without recreating
-    a brain (and reaches recall via the persisted config)."""
+class TestMigrateDoesNotTouchReranker:
+    """Reranker config is deployment/runtime config read from the app config at
+    recall time, NOT persisted per-brain. ``_migrate_brain_runtime_config`` must
+    leave the stored brain's reranker fields untouched — otherwise a reranker-off
+    client (e.g. the web-UI container) would flip the flag on the shared brain for
+    everyone (the reranker-flip bug)."""
 
     @pytest.mark.asyncio
-    async def test_layers_reranker_onto_existing_brain(self, tmp_path: Path) -> None:
+    async def test_migrate_does_not_enable_reranker(self, tmp_path: Path) -> None:
         store = SQLiteStorage(tmp_path / "m.db")
         await store.initialize()
         try:
             brain = Brain.create(name="legacy")  # reranker off by default
             await store.save_brain(brain)
-            assert (await store.get_brain(brain.id)).config.reranker_enabled is False
 
             config = replace(
                 UnifiedConfig(data_dir=tmp_path),
@@ -390,30 +391,33 @@ class TestMigrateLayersReranker:
             )
             await _migrate_brain_runtime_config(store, brain, config)
 
+            # The app config's reranker is NOT forced onto the stored brain.
             reloaded = await store.get_brain(brain.id)
-            assert reloaded.config.reranker_enabled is True
-            assert reloaded.config.reranker_endpoint == ENDPOINT
+            assert reloaded.config.reranker_enabled is False
+            assert reloaded.config.reranker_endpoint == ""
         finally:
             await store.close()
 
     @pytest.mark.asyncio
-    async def test_migration_is_idempotent_noop_when_matching(self, tmp_path: Path) -> None:
+    async def test_migrate_does_not_disable_reranker(self, tmp_path: Path) -> None:
+        # The exact reranker-flip scenario: the shared brain has reranker ON (set
+        # by another client), and this client's app config has it OFF. Migration
+        # must NOT disable it on the shared brain.
         store = SQLiteStorage(tmp_path / "n.db")
         await store.initialize()
         try:
             brain = Brain.create(
-                name="already",
+                name="shared",
                 config=BrainConfig(reranker_enabled=True, reranker_endpoint=ENDPOINT),
             )
             await store.save_brain(brain)
-            stored_before = await store.get_brain(brain.id)
+            stored = await store.get_brain(brain.id)
 
             config = replace(
                 UnifiedConfig(data_dir=tmp_path),
-                reranker=RerankerConfig(enabled=True, endpoint=ENDPOINT),
+                reranker=RerankerConfig(enabled=False, endpoint=""),  # this client: off
             )
-            # Stored brain already matches config → no change / no error.
-            await _migrate_brain_runtime_config(store, stored_before, config)
+            await _migrate_brain_runtime_config(store, stored, config)
 
             after = await store.get_brain(brain.id)
             assert after.config.reranker_enabled is True

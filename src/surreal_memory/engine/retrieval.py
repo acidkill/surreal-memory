@@ -495,15 +495,24 @@ class ReflexPipeline:
                     logger.debug("Deferred write flush failed (non-critical)", exc_info=True)
             return _early_result
 
-        # 4.9 Cross-encoder reranking (optional post-SA refinement)
-        if self._config.reranker_enabled and len(activations) > 1:
+        # 4.9 Cross-encoder reranking (optional post-SA refinement).
+        # Reranking is deployment/runtime config, NOT per-brain state — read it
+        # from the effective app config so each client (CLI, MCP, web UI) uses its
+        # OWN endpoint. Persisting it on the (shared) brain made a reranker-off
+        # client — e.g. the web-UI container — flip the flag for everyone on
+        # connect (the reranker-flip bug). The brain's reranker_* fields are kept
+        # for compatibility but are no longer the source of truth here.
+        from surreal_memory.unified_config import get_config as _get_app_config
+
+        _rr = _get_app_config().reranker
+        if _rr.enabled and len(activations) > 1:
             try:
                 from surreal_memory.engine.reranker import reranker_available
 
                 # The config endpoint (config.toml [reranker].endpoint) makes
                 # reranking available even when neither the env endpoint nor an
                 # in-process CrossEncoder is present, so gate on it explicitly.
-                config_endpoint = (self._config.reranker_endpoint or "").strip()
+                config_endpoint = (_rr.endpoint or "").strip()
                 if config_endpoint or reranker_available():
                     from surreal_memory.engine.reranker import rerank_activations
 
@@ -515,7 +524,7 @@ class ReflexPipeline:
                             key=lambda x: x[1].activation_level,
                             reverse=True,
                         )
-                    ][: self._config.reranker_max_candidates]
+                    ][: _rr.max_candidates]
                     neuron_batch = await self._storage.get_neurons_batch(top_nids)
                     neuron_contents = {
                         nid: n.content for nid, n in neuron_batch.items() if n.content
@@ -526,12 +535,12 @@ class ReflexPipeline:
                             query,
                             activations,
                             neuron_contents,
-                            model_name=self._config.reranker_model,
-                            blend_weight=self._config.reranker_blend_weight,
-                            min_score=self._config.reranker_min_score,
-                            max_candidates=self._config.reranker_max_candidates,
+                            model_name=_rr.model_name,
+                            blend_weight=_rr.blend_weight,
+                            min_score=_rr.min_score,
+                            max_candidates=_rr.max_candidates,
                             limit=50,
-                            endpoint=self._config.reranker_endpoint,
+                            endpoint=_rr.endpoint,
                         )
                         logger.debug(
                             "Reranked %d → %d activations",

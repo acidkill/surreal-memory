@@ -380,7 +380,8 @@ Surreal-Memory uses SurrealDB (a multi-model document + graph + vector engine) a
 
 ### Q: Does Surreal-Memory use LLMs or embeddings?
 
-**No.** Surreal-Memory does **not** call any LLM or embedding API for encoding or retrieval. This is a common misconception.
+**Not by default — and never an LLM.** The core engine does **not** require any LLM or
+embedding API for encoding or retrieval. This is a common misconception.
 
 | Operation | How it works |
 |-----------|-------------|
@@ -395,7 +396,22 @@ This means:
 - **Fully offline** — works without internet after install
 - **Deterministic** — same query on same brain = same results (no model randomness)
 
-The only AI involvement is the *agent itself* (Claude, GPT, etc.) deciding when to call Surreal-Memory tools. The memory system is pure algorithmic graph traversal.
+Two **optional** layers sit on top of that deterministic core, off by default:
+
+- **Embeddings** — SurrealDB HNSW vector search for semantic similarity when wording
+  differs. See [Embeddings](../README.md#embeddings) for providers (Gemini, OpenAI,
+  OpenRouter, local `sentence-transformers`, Ollama).
+- **Cross-encoder reranking** — a `config.toml [reranker]` precision pass that
+  rescores spreading-activation candidates, blended with the activation level. See
+  [Reranking](../README.md#reranking). Never an LLM — a small cross-encoder classifier
+  that scores relevance, not a text generator.
+
+Neither is required, and recall works identically without them — they only sharpen
+results when wording diverges from what was stored.
+
+The only *generative* AI involvement is the agent itself (Claude, GPT, etc.) deciding
+when to call Surreal-Memory tools. The memory system's own retrieval logic is pure
+algorithmic graph traversal, with the above two opt-in neural refinements.
 
 ### Q: What are the performance benchmarks?
 

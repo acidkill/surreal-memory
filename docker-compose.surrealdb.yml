@@ -44,6 +44,10 @@ services:
     ports:
       - "8000:8000"
       - "8765:8765"
+    # Reach the host's llamastash (OpenAI-compatible bge-m3 embeddings) from
+    # inside the container via host.docker.internal → OPENAI_BASE_URL below.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       # Core
       - SURREAL_MEMORY_DIR=/data
@@ -65,13 +69,17 @@ services:
       - SURREALDB_NS=surreal_memory
       - SURREALDB_DB=default
 
-      # Embedding (Gemini)
-      - SURREAL_MEMORY_EMBEDDING_ENABLED=true
-      - SURREAL_MEMORY_EMBEDDING_PROVIDER=gemini
-      # gemini-embedding-001 is the current 3072-dim default. The old
-      # gemini-embedding-exp-03-07 is experimental/deprecated — do not use.
-      - SURREAL_MEMORY_EMBEDDING_MODEL=${SURREAL_MEMORY_EMBEDDING_MODEL:-gemini-embedding-001}
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      # Embedding — local BGE (bge-m3, 1024-dim) via the OpenAI-compatible
+      # llamastash endpoint. Inherits from .env; the container reaches the host's
+      # llamastash through host.docker.internal (see extra_hosts below), so the
+      # host's 127.0.0.1 base URL is overridden here with the container route.
+      - SURREAL_MEMORY_EMBEDDING_ENABLED=${SURREAL_MEMORY_EMBEDDING_ENABLED:-true}
+      - SURREAL_MEMORY_EMBEDDING_PROVIDER=${SURREAL_MEMORY_EMBEDDING_PROVIDER:-openai}
+      - SURREAL_MEMORY_EMBEDDING_MODEL=${SURREAL_MEMORY_EMBEDDING_MODEL:-bge-m3-FP16}
+      - SURREAL_MEMORY_EMBEDDING_DIMENSION=${SURREAL_MEMORY_EMBEDDING_DIMENSION:-1024}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL_CONTAINER:-http://host.docker.internal:11435/v1}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-sk-noauth}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
 
       # Cloud Sync
       - SURREAL_MEMORY_SYNC_ENABLED=true

@@ -123,6 +123,23 @@ binding_strength = co_fire_count / total_anchor_sets
 
 The highest-scoring connected region is extracted as the result, with co-activated neurons ranked highest.
 
+### 6. Cross-Encoder Reranking (optional) :material-new-box:{ .new }
+
+When `[reranker].enabled = true` in `config.toml`, the pipeline over-fetches SA
+candidates and reranks them with a cross-encoder that scores each `(query, memory)`
+pair for relevance:
+
+```python
+blended_score = blend_weight * rerank_score + (1 - blend_weight) * activation_level
+```
+
+- Runs over HTTP against an OpenAI-compatible `/rerank` endpoint (e.g. llamastash /
+  llama.cpp) or, if unset, an in-process `sentence-transformers` `CrossEncoder`.
+- The activation level always contributes to the final score (`blend_weight` defaults
+  to `0.7`, so activation keeps a `0.3` floor), and any reranker error falls back to
+  the unmodified spreading-activation ordering — reranking never breaks recall.
+- Off by default; see [Reranking](../../README.md#reranking) for setup.
+
 ## Configuration
 
 ### Brain Config

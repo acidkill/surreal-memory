@@ -4,7 +4,7 @@
 > Every item passes the VISION.md 4-question test + brain test.
 > ZERO LLM dependency — pure algorithmic, regex, graph-based.
 
-**Current state**: v2.0.0 — 53 MCP tools, 5500+ tests, schema v38, SurrealDB backend (SQLite/InMemory retained only as test fixtures), neuroscience engine (10 brain-inspired algorithms), tiered memory loading (HOT/WARM/COLD).
+**Current state**: v2.0.0 — 56 MCP tools, 5500+ tests, schema v38, SurrealDB backend (SQLite/InMemory retained only as test fixtures), neuroscience engine (10 brain-inspired algorithms), tiered memory loading (HOT/WARM/COLD).
 **Architecture**: Spreading activation reflex engine, biological memory model, MCP standard.
 
 ---
@@ -51,6 +51,7 @@
 | IDE rules generator (Cursor, Windsurf, Cline, Gemini, AGENTS.md) | v4.6 | — |
 | Cascading retrieval with fiber summary tier | v4.3 | — |
 | HuggingFace Spaces chatbot (ReflexPipeline, no LLM) | v4.3 | — |
+| Config-driven cross-encoder reranking (HTTP or in-process, blended with SA score) | v2.7.0 | Attention refinement |
 
 ---
 
@@ -84,7 +85,7 @@
 
 **Scope**: 3 sub-phases (plan: `.rune/plan-brain-quality.md`)
 - [ ] C1+C2: Domain entity types + structured data encoding (regex-based, no LLM)
-- [ ] C3: Cross-encoder reranking (optional `bge-reranker` post-SA refinement)
+- [x] C3: Cross-encoder reranking (optional `bge-reranker-v2-m3` post-SA refinement, HTTP or in-process) — **shipped v2.7.0**
 - [ ] C4: Agent visualization (`smem_visualize` → Vega-Lite/markdown/ASCII charts)
 - **Brain test**: Kế toán nhớ "ROE" khác "Paris" → Yes
 

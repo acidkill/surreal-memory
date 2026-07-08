@@ -220,6 +220,7 @@ All advanced features are provided by the built-in **CommunityPlugin** at no cos
 - **Time-First Anchoring** -- Time neurons as primary anchors for temporally-aware recall
 - **Spreading Activation** -- Neural graph-based retrieval (classic mode)
 - **Adaptive Recall** -- Bayesian depth priors that learn optimal retrieval depth per entity
+- **Cross-Encoder Reranking** -- optional config-driven precision pass over SA candidates (HTTP or in-process), blended with activation level
 - **Memory Decay** -- Ebbinghaus forgetting curve for natural forgetting
 
 ### Knowledge & Reasoning

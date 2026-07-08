@@ -154,6 +154,7 @@ Everything else — sessions, context loading, habit tracking, maintenance — w
 
 - **Encoding Pipeline** — composable async steps: extract entities → create neurons → link synapses → bundle into fibers
 - **Reflex Retrieval** — spreading activation through the neuron graph, combined with SurrealDB vector search when available
+- **Reranking** — optional cross-encoder pass over-fetches SA candidates and blends relevance score with activation level for higher recall precision
 - **Consolidation** — merges similar neurons, reinforces strong paths, prunes weak ones
 - **Compression** — 5-tier lifecycle: full → summary → essence → ghost → metadata
 
@@ -195,6 +196,7 @@ Sync uses **Merkle delta** — only diffs travel, not the full brain.
 - **15 memory types** — fact, decision, error, insight, preference, workflow, instruction, and more
 - **Spreading activation** — memories surface by association, not keyword match
 - **Vector search** — SurrealDB HNSW for semantic similarity (when embeddings are configured)
+- **Cross-encoder reranking** — optional config-driven precision pass, HTTP (shared inference server) or in-process, blended with the activation score
 - **Cognitive reasoning** — hypothesize, submit evidence, make predictions, verify with Bayesian confidence
 
 #### Knowledge Ingestion
@@ -250,6 +252,31 @@ Set the provider to `auto` to pick the best available option at runtime
 
 > Embeddings use **one** model per brain — switching models changes vector
 > dimensions and invalidates existing vectors. Pick a provider before ingesting at scale.
+
+---
+
+## Reranking
+
+Spreading activation over-fetches candidates; an optional cross-encoder reranker then
+scores each `(query, memory)` pair for relevance and blends that score with the
+activation level (`blend_weight`, default `0.7`) for a final precision pass. Off by
+default — recall works the same without it.
+
+```toml
+[reranker]
+enabled = true
+endpoint = "http://127.0.0.1:11435/v1"   # OpenAI-compatible /rerank (e.g. llamastash)
+model_name = "BAAI/bge-reranker-v2-m3"
+blend_weight = 0.7
+```
+
+- **HTTP mode** (`endpoint` set) — runs on a shared inference server (e.g. llama.cpp /
+  llamastash on GPU), no `torch` dependency needed locally. Falls back to the
+  `SURREAL_MEMORY_RERANKER_ENDPOINT` env var when `endpoint` is unset.
+- **In-process mode** (no endpoint) — loads a local `sentence-transformers` `CrossEncoder`.
+  Install with `pip install "surreal-memory[reranker]"`.
+- Reranking never breaks recall — any error falls back to the spreading-activation
+  ordering unchanged.
 
 ---
 

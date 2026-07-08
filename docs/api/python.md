@@ -77,6 +77,18 @@ config = BrainConfig(
 )
 ```
 
+`BrainConfig` also carries optional cross-encoder reranking fields (off by default;
+see [Reranking](../../README.md#reranking)), persisted per-brain since v2.7.0:
+
+```python
+config = BrainConfig(
+    reranker_enabled=True,
+    reranker_endpoint="http://127.0.0.1:11435/v1",  # HTTP mode; unset = in-process CrossEncoder
+    reranker_model="BAAI/bge-reranker-v2-m3",
+    reranker_blend_weight=0.7,   # reranker weight; SA activation gets 1 - this
+)
+```
+
 ### Neuron
 
 Atomic unit of information.

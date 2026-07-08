@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.1] — 2026-07-08
+
+### Fixed
+
+- **Reranker no longer flip-flops on a shared brain.** Reranking is
+  deployment/runtime config, but 2.7.0 persisted it onto the per-brain
+  `BrainConfig` and re-applied it on every connect. With multiple clients on one
+  brain (e.g. the CLI/MCP with reranking on and the web-UI container with it off),
+  whichever connected last flipped the flag for everyone. Reranking is now read
+  from the effective **app config** at recall time (`ReflexPipeline`), and
+  `_migrate_brain_runtime_config` no longer touches the brain's reranker fields —
+  each client uses its own endpoint independently.
+
+### Changed
+
+- **Docker Compose defaults to local BGE embeddings.** `docker-compose.surrealdb.yml`
+  no longer hard-codes Gemini; it inherits the embedding provider/model/dimension
+  from `.env` (defaulting to the OpenAI-compatible `bge-m3` on llamastash, 1024-dim)
+  and reaches the host's llamastash via `host.docker.internal`, so the web UI and
+  the CLI/MCP share one local embedding backend.
+
 ## [2.7.0] — 2026-07-07
 
 ### Added

@@ -2130,12 +2130,12 @@ async def _migrate_brain_runtime_config(
     must never break recall.
     """
     try:
+        # NOTE: reranker config is intentionally NOT layered onto the brain here.
+        # It is deployment/runtime config, read from the app config at recall time
+        # (see ReflexPipeline). Persisting it on a shared brain let a reranker-off
+        # client (e.g. the web-UI container) flip the flag for everyone on
+        # connect — the reranker-flip bug. Only [brain] extras are migrated.
         overrides = config.brain.runtime_overrides()
-        # Also layer config.toml [reranker] onto the stored brain so reranking is
-        # driven by app config (issue: reranker BrainConfig fields were never
-        # persisted, so the feature was dead code). Always applied; the diff check
-        # below no-ops when the stored brain already matches.
-        overrides.update(reranker_brain_config_overrides(config.reranker))
         if not overrides:
             return
 
