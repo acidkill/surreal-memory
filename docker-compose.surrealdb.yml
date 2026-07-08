@@ -41,43 +41,41 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.surrealdb
-    ports:
-      - "8000:8000"
-      - "8765:8765"
-    # Reach the host's llamastash (OpenAI-compatible bge-m3 embeddings) from
-    # inside the container via host.docker.internal → OPENAI_BASE_URL below.
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    # Host networking: the app shares the host's loopback, so it reaches the
+    # host-local llamastash (embeddings + reranker on 127.0.0.1:11435) directly —
+    # no host.docker.internal, and llamastash never has to bind a docker bridge
+    # (smaller exposure). SurrealDB stays on the bridge; the app reaches it via
+    # the published host port 8001. Note: `ports:` is invalid under host net —
+    # the app binds SURREAL_MEMORY_HOST:SURREAL_MEMORY_PORT on the host itself.
+    network_mode: host
     environment:
       # Core
       - SURREAL_MEMORY_DIR=/data
       - SURREAL_MEMORY_BRAIN=${SURREAL_MEMORY_BRAIN:-default}
-      - SURREAL_MEMORY_HOST=0.0.0.0
+      # Loopback-only bind: the dashboard is reachable solely from this machine.
+      # Set SURREAL_MEMORY_HOST=0.0.0.0 in .env to expose it on the LAN.
+      - SURREAL_MEMORY_HOST=${SURREAL_MEMORY_HOST:-127.0.0.1}
       - SURREAL_MEMORY_PORT=8000
-      # Dashboard access gate (require_local_request): /api/dashboard answers
-      # only localhost or these CIDRs. Inside Docker the browser's request
-      # reaches the container from the bridge gateway (172.18.0.x), not
-      # 127.0.0.1, so the bridge subnet must be trusted or every dashboard
-      # API call returns 403. Override in .env to narrow/extend.
-      - SURREAL_MEMORY_TRUSTED_NETWORKS=${SURREAL_MEMORY_TRUSTED_NETWORKS:-172.18.0.0/16}
+      # Dashboard access gate (require_local_request): under host networking the
+      # browser reaches the app from 127.0.0.1, which is always trusted — the
+      # docker-bridge CIDR is no longer needed. Kept overridable for LAN setups.
+      - SURREAL_MEMORY_TRUSTED_NETWORKS=${SURREAL_MEMORY_TRUSTED_NETWORKS:-}
 
-      # SurrealDB
+      # SurrealDB — via its published host port (no docker DNS under host net).
       - SURREAL_MEMORY_STORAGE=surrealdb
-      - SURREALDB_URL=http://surrealdb:8001
+      - SURREALDB_URL=${SURREALDB_URL:-http://127.0.0.1:8001}
       - SURREALDB_USER=${SURREALDB_USER:-root}
       - SURREALDB_PASS=${SURREALDB_PASS:-surrealmemory}
       - SURREALDB_NS=surreal_memory
       - SURREALDB_DB=default
 
       # Embedding — local BGE (bge-m3, 1024-dim) via the OpenAI-compatible
-      # llamastash endpoint. Inherits from .env; the container reaches the host's
-      # llamastash through host.docker.internal (see extra_hosts below), so the
-      # host's 127.0.0.1 base URL is overridden here with the container route.
+      # llamastash endpoint on the host loopback (shared under host networking).
       - SURREAL_MEMORY_EMBEDDING_ENABLED=${SURREAL_MEMORY_EMBEDDING_ENABLED:-true}
       - SURREAL_MEMORY_EMBEDDING_PROVIDER=${SURREAL_MEMORY_EMBEDDING_PROVIDER:-openai}
       - SURREAL_MEMORY_EMBEDDING_MODEL=${SURREAL_MEMORY_EMBEDDING_MODEL:-bge-m3-FP16}
       - SURREAL_MEMORY_EMBEDDING_DIMENSION=${SURREAL_MEMORY_EMBEDDING_DIMENSION:-1024}
-      - OPENAI_BASE_URL=${OPENAI_BASE_URL_CONTAINER:-http://host.docker.internal:11435/v1}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL_CONTAINER:-http://127.0.0.1:11435/v1}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-sk-noauth}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
 
