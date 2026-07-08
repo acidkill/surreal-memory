@@ -12,6 +12,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.2] — 2026-07-08
+
+### Fixed
+
+- **Dashboard is fast again on large, fully-embedded brains.** After a full
+  re-embed every neuron row carries a 1024-float `embedding_vec`, and the
+  dashboard's `SELECT *` scans dragged those vectors (plus two unbounded
+  full-table scans) into Python — Overview took ~27 s and the Graph view 40 s+
+  on a 64k-neuron / 185k-synapse brain. Now:
+  - `find_neurons(include_embedding=False)` projects `SELECT * OMIT embedding_vec`;
+    the timeline and daily-stats endpoints use it (and push the time window into
+    the query).
+  - The graph view no longer loads every neuron and synapse: node degree is
+    aggregated in the DB (`GROUP BY in/out` on the RELATE edge), the selected
+    core's edges come from the indexed `->synapse` graph traversal, and only the
+    rendered nodes are fetched (`find_neurons_by_ids`, no vectors).
+  - Diagnostics (health grade/purity) replaces its unbounded synapse and
+    neuron_state scans with DB aggregates (`get_connected_neuron_ids`,
+    `count_activated_neuron_states`) and no longer duplicates the count queries.
+
+### Changed
+
+- **The web-UI container runs on host networking** (`docker-compose.surrealdb.yml`).
+  The app shares the host loopback, so it reaches host-local services —
+  llamastash embeddings/reranker on `127.0.0.1:11435` and SurrealDB via its
+  published `127.0.0.1:8001` — without `host.docker.internal` and without
+  binding llamastash to a docker bridge (smaller exposure). The dashboard now
+  binds loopback-only by default (`SURREAL_MEMORY_HOST=127.0.0.1`); set it to
+  `0.0.0.0` in `.env` to expose it on the LAN.
+
 ## [2.7.1] — 2026-07-08
 
 ### Fixed
