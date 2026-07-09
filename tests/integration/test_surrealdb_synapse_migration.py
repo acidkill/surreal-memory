@@ -19,8 +19,10 @@ from __future__ import annotations
 import asyncio
 import os
 import uuid
+from collections.abc import AsyncGenerator, Iterator
 
 import pytest
+import pytest_asyncio
 
 from surreal_memory.core.brain import Brain
 from surreal_memory.core.fiber import Fiber
@@ -31,18 +33,83 @@ from surreal_memory.storage.surrealdb.store import SurrealDBStorage, _to_surreal
 SURREALDB_URL = os.getenv("SURREALDB_URL")
 SURREALDB_USER = os.getenv("SURREALDB_USER", "root")
 SURREALDB_PASS = os.getenv("SURREALDB_PASS", "root")
-SURREALDB_NS = os.getenv("SURREALDB_NS", "smem_it")
+# The live station database — throwaway ``it_<hex>`` test brains must NEVER be
+# created here. This suite used to read the generic ``SURREALDB_NS``, so a run
+# that inherited the station's ``SURREALDB_NS=surreal_memory`` leaked residue
+# ``it_<hex>`` databases straight into the live station DB (the same class of
+# test-isolation bug fixed in PR #47). The tests now run in a dedicated,
+# ephemeral namespace that can never be the station namespace and is cleaned up
+# in teardown. A dedicated QA container may pin the namespace via
+# ``SURREALDB_IT_NS``; otherwise we mint a unique one per session and drop it
+# wholesale when the session ends.
+_STATION_NS = "surreal_memory"
+_PINNED_NS = os.getenv("SURREALDB_IT_NS")
+SURREALDB_NS = _PINNED_NS or f"smem_it_{uuid.uuid4().hex[:8]}"
 
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(
         not SURREALDB_URL, reason="requires SURREALDB_URL (live SurrealDB >= 3.2.0)"
     ),
+    pytest.mark.skipif(
+        SURREALDB_NS == _STATION_NS,
+        reason=(
+            f"refusing to run against the station namespace {_STATION_NS!r}: "
+            "unset SURREALDB_IT_NS or point it at an isolated namespace"
+        ),
+    ),
 ]
 
 
-def _fresh_db() -> str:
-    return "it_" + uuid.uuid4().hex[:12]
+@pytest_asyncio.fixture
+async def fresh_db() -> AsyncGenerator[str, None]:
+    """Yield a throwaway ``it_<hex>`` database name in the isolated test
+    namespace and drop it (``REMOVE DATABASE``) on teardown — even if the test
+    body raises — so no residue brains survive in any shared or station DB.
+    """
+    database = "it_" + uuid.uuid4().hex[:12]
+    try:
+        yield database
+    finally:
+        conn = await _raw_conn(database)
+        try:
+            await conn.query(f"REMOVE DATABASE IF EXISTS `{database}`")
+        finally:
+            close = getattr(conn, "close", None)
+            if close is not None:
+                await close()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _reap_ephemeral_namespace() -> Iterator[None]:
+    """Best-effort sweep: when the namespace was auto-minted for this run, drop
+    it wholesale after the session so empty ``smem_it_*`` namespaces don't
+    accumulate on the server. Skipped when ``SURREALDB_IT_NS`` pins a
+    caller-owned namespace (e.g. a dedicated QA container) — ``fresh_db`` already
+    drops each database there, so the namespace itself is left intact. Never
+    fails an otherwise-green run.
+    """
+    yield
+    if not SURREALDB_URL or _PINNED_NS or SURREALDB_NS == _STATION_NS:
+        return
+
+    async def _reap() -> None:
+        from surrealdb import AsyncSurreal
+
+        conn = AsyncSurreal(SURREALDB_URL)
+        await conn.signin({"username": SURREALDB_USER, "password": SURREALDB_PASS})
+        try:
+            await conn.use(SURREALDB_NS, "reap")
+            await conn.query(f"REMOVE NAMESPACE IF EXISTS `{SURREALDB_NS}`")
+        finally:
+            close = getattr(conn, "close", None)
+            if close is not None:
+                await close()
+
+    try:
+        asyncio.run(_reap())
+    except Exception:  # cleanup must never fail an otherwise-green run
+        pass
 
 
 async def _raw_conn(database: str):
@@ -132,8 +199,10 @@ def _syn_key(d: dict) -> str:
 
 
 @pytest.mark.asyncio
-async def test_v7_upgrade_preserves_count_ids_endpoints_export_and_merkle() -> None:
-    db = _fresh_db()
+async def test_v7_upgrade_preserves_count_ids_endpoints_export_and_merkle(
+    fresh_db: str,
+) -> None:
+    db = fresh_db
     conn = await _raw_conn(db)
     brain = Brain.create(name="upgrade-brain")
 
@@ -218,8 +287,8 @@ def _neuron_id(export, content: str) -> str:
 
 
 @pytest.mark.asyncio
-async def test_second_initialize_is_noop() -> None:
-    db = _fresh_db()
+async def test_second_initialize_is_noop(fresh_db: str) -> None:
+    db = fresh_db
     conn = await _raw_conn(db)
     brain = Brain.create(name="noop-brain")
     seeder = _store(db)
@@ -243,8 +312,8 @@ async def test_second_initialize_is_noop() -> None:
 
 
 @pytest.mark.asyncio
-async def test_two_parallel_apply_migrations_run_exactly_once() -> None:
-    db = _fresh_db()
+async def test_two_parallel_apply_migrations_run_exactly_once(fresh_db: str) -> None:
+    db = fresh_db
     conn = await _raw_conn(db)
     brain = Brain.create(name="parallel-brain")
     seeder = _store(db)
@@ -275,8 +344,8 @@ async def test_two_parallel_apply_migrations_run_exactly_once() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fresh_db_is_v8_directly_no_backup() -> None:
-    db = _fresh_db()
+async def test_fresh_db_is_v8_directly_no_backup(fresh_db: str) -> None:
+    db = fresh_db
     conn = await _raw_conn(db)
     brain = Brain.create(name="fresh-brain")
 
