@@ -211,3 +211,57 @@ class TestGetAllSynapsesProjection:
         await st.get_all_synapses()
         (sql,) = _queries(conn)
         assert sql.startswith("SELECT * FROM synapse")
+
+
+# --------------------------------------------------------------------------- #
+# brain_id inline literal (index usage) — 2.7.3
+# --------------------------------------------------------------------------- #
+class TestBrainLiteral:
+    def test_valid_brain_id_is_quoted(self):
+        from surreal_memory.storage.surrealdb.store import _brain_literal
+
+        assert _brain_literal("default") == '"default"'
+        assert _brain_literal("it_2c80122dbe75") == '"it_2c80122dbe75"'
+        assert _brain_literal("my-brain.v2") == '"my-brain.v2"'
+
+    def test_injection_shaped_brain_id_rejected(self):
+        import pytest
+
+        from surreal_memory.storage.surrealdb.store import _brain_literal
+
+        for bad in ['a" OR "1"="1', "a; DELETE neuron", "a b", 'a"']:
+            with pytest.raises(ValueError):
+                _brain_literal(bad)
+
+
+class TestGetStatsInline:
+    async def test_counts_inline_brain_id_for_index(self):
+        st, conn = _store_with_mock_conn()
+        await st.get_stats("default")
+        sqls = _queries(conn)
+        # brain_id inlined as a literal (uses the index) — never parameterized,
+        # which in SurrealDB 3.2.0 falls back to a full table scan.
+        assert all('brain_id = "default"' in s for s in sqls)
+        assert not any("$bid" in s or "$brain_id" in s for s in sqls)
+        assert {s.split("FROM ")[1].split(" ")[0] for s in sqls} == {
+            "neuron",
+            "synapse",
+            "fiber",
+        }
+
+
+class TestEnhancedStatsSkipNeuronTypes:
+    async def test_skip_neuron_types_omits_neuron_group_by(self):
+        st, conn = _store_with_mock_conn()
+        await st.get_enhanced_stats("default", include_neuron_types=False)
+        sqls = _queries(conn)
+        # The pricey `FROM neuron … GROUP BY type` scan must NOT run.
+        assert not any("FROM neuron" in s and "GROUP BY type" in s for s in sqls)
+        # The synapse-type stats (needed for diversity) still run.
+        assert any("FROM synapse" in s and "GROUP BY type" in s for s in sqls)
+
+    async def test_default_includes_neuron_types(self):
+        st, conn = _store_with_mock_conn()
+        await st.get_enhanced_stats("default")
+        sqls = _queries(conn)
+        assert any("FROM neuron" in s and "GROUP BY type" in s for s in sqls)

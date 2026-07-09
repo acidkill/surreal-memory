@@ -224,7 +224,9 @@ class SQLiteStorage(
                 "project_count": row["project_count"] if row else 0,
             }
 
-    async def get_enhanced_stats(self, brain_id: str) -> dict[str, Any]:
+    async def get_enhanced_stats(
+        self, brain_id: str, include_neuron_types: bool = True
+    ) -> dict[str, Any]:
         conn = self._ensure_read_conn()
         basic_stats = await self.get_stats(brain_id)
 

@@ -12,6 +12,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.3] — 2026-07-09
+
+### Fixed
+
+- **Dashboard endpoints are now fast on the large station brain** (follow-up to
+  2.7.2, measured on 64k neurons / 266k synapses):
+  - Parameterized `WHERE brain_id = $bid` defeated the `brain_id` index in
+    SurrealDB 3.2.0 (only an inline literal uses it), so `count() … GROUP ALL`
+    full-scanned the vector-laden neuron table (~2.5 s → 0.01 s). `get_stats`
+    now inlines the validated brain_id and runs the counts concurrently.
+  - Diagnostics skips the unused neuron type-breakdown (~2.6 s), runs its
+    independent reads concurrently (`asyncio.gather`), and only fully analyzes
+    the active brain in `/api/dashboard/stats`.
+  - Net: `/api/dashboard/stats` ~27 s -> ~2.8 s, `/api/graph` 40 s+ -> ~4 s,
+    `/api/dashboard/timeline` ~3 s -> ~0.06 s.
+- **The web-UI container binds loopback only again**: `Dockerfile.surrealdb`
+  hardcoded `uvicorn --host 0.0.0.0`, overriding the compose
+  `SURREAL_MEMORY_HOST=127.0.0.1`. The CMD now honours `SURREAL_MEMORY_HOST` /
+  `SURREAL_MEMORY_PORT`.
+
 ## [2.7.2] — 2026-07-08
 
 ### Fixed

@@ -91,42 +91,51 @@ async def get_stats() -> DashboardStats:
     active_name = cfg.current_brain
 
     async def _analyze_brain(name: str) -> BrainSummary:
-        """Analyze a single brain using its own per-brain storage."""
+        """Summarize a single brain.
+
+        Only the ACTIVE brain gets the full DiagnosticsEngine.analyze (grade +
+        purity); every other brain returns just its counts. The overview shows
+        the active brain's grade at the top (health_grade) and the per-brain
+        grade has its own home (the /brains endpoint + the Health page), so
+        running the multi-second analyze for every brain was pure waste — a
+        station carrying integration-test residue brains paid a full diagnostic
+        pass for each of them on every overview load.
+        """
+        is_active = name == active_name
         try:
             brain_storage = await get_shared_storage(brain_name=name)
 
-            grade = "F"
-            purity = 0.0
-            nc = sc = fc = 0
-            try:
-                from surreal_memory.engine.diagnostics import DiagnosticsEngine
+            if is_active:
+                try:
+                    from surreal_memory.engine.diagnostics import DiagnosticsEngine
 
-                diag = DiagnosticsEngine(brain_storage)
-                report = await diag.analyze(name)
-                grade = report.grade
-                purity = report.purity_score
-                # The report already carries the counts (via get_enhanced_stats),
-                # so a separate get_stats here would just repeat the same three
-                # count queries per brain.
-                nc = report.neuron_count
-                sc = report.synapse_count
-                fc = report.fiber_count
-            except Exception:
-                logger.debug("Diagnostics failed for brain %s", name, exc_info=True)
-                stats = await brain_storage.get_stats(name)
-                nc = stats.get("neuron_count", 0)
-                sc = stats.get("synapse_count", 0)
-                fc = stats.get("fiber_count", 0)
+                    diag = DiagnosticsEngine(brain_storage)
+                    report = await diag.analyze(name)
+                    return BrainSummary(
+                        id=name,
+                        name=name,
+                        neuron_count=report.neuron_count,
+                        synapse_count=report.synapse_count,
+                        fiber_count=report.fiber_count,
+                        grade=report.grade,
+                        purity_score=report.purity_score,
+                        is_active=True,
+                    )
+                except Exception:
+                    logger.debug("Diagnostics failed for active brain %s", name, exc_info=True)
 
+            # Inactive brain (or active-brain diagnostics failure): counts only.
+            # "—" flags grade as "not computed here" rather than a real F.
+            stats = await brain_storage.get_stats(name)
             return BrainSummary(
                 id=name,
                 name=name,
-                neuron_count=nc,
-                synapse_count=sc,
-                fiber_count=fc,
-                grade=grade,
-                purity_score=purity,
-                is_active=name == active_name,
+                neuron_count=stats.get("neuron_count", 0),
+                synapse_count=stats.get("synapse_count", 0),
+                fiber_count=stats.get("fiber_count", 0),
+                grade="F" if is_active else "—",
+                purity_score=0.0,
+                is_active=is_active,
             )
         except Exception:
             # Surface at WARNING (not debug): swallowing this silently made the
@@ -134,7 +143,7 @@ async def get_stats() -> DashboardStats:
             # storage/config misconfiguration. Keep returning a placeholder so
             # one bad brain does not break the whole dashboard.
             logger.warning("Brain analysis failed for %s", name, exc_info=True)
-            return BrainSummary(id=name, name=name, is_active=name == active_name)
+            return BrainSummary(id=name, name=name, is_active=is_active)
 
     # Analyze brains sequentially, NOT via asyncio.gather: the SurrealDB backend
     # shares one storage singleton with a mutable current-brain pointer, so

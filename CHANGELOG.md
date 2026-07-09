@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.3] — 2026-07-09
+
+### Fixed
+
+- **Dashboard endpoints are now fast on the large station brain.** Follow-up to
+  2.7.2 after measuring the real bottlenecks on 64k neurons / 266k synapses:
+  - **Parameterized `brain_id` defeated the index.** SurrealDB 3.2.0's planner
+    only uses the `brain_id` index for an *inline literal* — `WHERE brain_id = $bid`
+    fell back to a full table scan, turning `count() … GROUP ALL` on the neuron
+    table (each row carrying a 1024-float vector) from 0.01 s into ~2.5 s.
+    `get_stats` now inlines the (strictly validated) brain_id and runs the three
+    counts concurrently. This was the single biggest dashboard cost.
+  - **Diagnostics skips the neuron type-breakdown** (`get_enhanced_stats(include_neuron_types=False)`)
+    — a ~2.6 s `GROUP BY type` scan the health metrics never read.
+  - **Independent reads run concurrently** (`asyncio.gather`): the diagnostics
+    fibers/connected/activation reads, the connected-neuron `in`/`out` scans, and
+    the graph's degree `in`/`out` scans (measured ~1.6x on the shared connection).
+  - **Only the active brain gets full diagnostics** in `/api/dashboard/stats`;
+    other brains report counts only, so a station carrying integration-test
+    residue brains no longer pays a full diagnostic pass for each.
+
+  Net on the station: `/api/dashboard/stats` ~27 s -> ~2.8 s, `/api/graph` 40 s+ ->
+  ~4 s, `/api/dashboard/timeline` ~3 s -> ~0.06 s.
+
+- **The web-UI container binds loopback only again.** `Dockerfile.surrealdb`
+  hardcoded `uvicorn --host 0.0.0.0`, which silently overrode the compose stack's
+  `SURREAL_MEMORY_HOST=127.0.0.1` (added in 2.7.2 for host networking) and exposed
+  the dashboard on every interface. The CMD now honours `SURREAL_MEMORY_HOST` /
+  `SURREAL_MEMORY_PORT`.
+
 ## [2.7.2] — 2026-07-08
 
 ### Fixed

@@ -308,8 +308,12 @@ class HybridStorage:
     async def get_stats(self, brain_id: str) -> dict[str, int]:
         return await self._local.get_stats(brain_id)
 
-    async def get_enhanced_stats(self, brain_id: str) -> dict[str, Any]:
-        return await self._local.get_enhanced_stats(brain_id)
+    async def get_enhanced_stats(
+        self, brain_id: str, include_neuron_types: bool = True
+    ) -> dict[str, Any]:
+        return await self._local.get_enhanced_stats(
+            brain_id, include_neuron_types=include_neuron_types
+        )
 
     async def clear(self, brain_id: str) -> None:
         await self._local.clear(brain_id)

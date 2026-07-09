@@ -421,7 +421,9 @@ class InMemoryStorage(
             "project_count": len(self._projects[brain_id]),
         }
 
-    async def get_enhanced_stats(self, brain_id: str) -> dict[str, Any]:
+    async def get_enhanced_stats(
+        self, brain_id: str, include_neuron_types: bool = True
+    ) -> dict[str, Any]:
         basic_stats = await self.get_stats(brain_id)
 
         # Hot neurons by access frequency

@@ -7,6 +7,7 @@ Supports both MCP and CLI exposure.
 
 from __future__ import annotations
 
+import asyncio
 import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -322,8 +323,14 @@ class DiagnosticsEngine:
         if hasattr(self._storage, "set_brain"):
             self._storage.set_brain(brain_id)
 
-        # Gather base data
-        enhanced = await self._storage.get_enhanced_stats(brain_id)
+        # Gather base data. Skip the neuron-type breakdown — it is the priciest
+        # query on a large brain (~2.6 s / 64k neurons) and none of the health
+        # metrics below read it. Backends whose get_enhanced_stats predates the
+        # flag fall back to the full call.
+        try:
+            enhanced = await self._storage.get_enhanced_stats(brain_id, include_neuron_types=False)
+        except TypeError:
+            enhanced = await self._storage.get_enhanced_stats(brain_id)
         neuron_count: int = enhanced.get("neuron_count", 0)
         synapse_count: int = enhanced.get("synapse_count", 0)
         fiber_count: int = enhanced.get("fiber_count", 0)
@@ -335,15 +342,26 @@ class DiagnosticsEngine:
         # Compute individual metrics
         synapse_stats = enhanced.get("synapse_stats", {})
 
-        # Fetch fibers once for freshness + diagnostics
-        fibers = await self._storage.get_fibers(limit=10000)
+        # The remaining DB-bound reads are independent, so run them concurrently
+        # rather than serially (measured ~1.6x on the shared HTTP connection).
+        # orphan-rate needs both fibers and the connected-neuron set, so fetch
+        # the set here and hand it in (avoids a second scan inside the compute).
+        get_connected = getattr(self._storage, "get_connected_neuron_ids", None)
+
+        async def _connected_or_none() -> set[str] | None:
+            return await get_connected() if get_connected is not None else None
+
+        fibers, consolidation_ratio, activation_efficiency, connected = await asyncio.gather(
+            self._storage.get_fibers(limit=10000),
+            self._compute_consolidation_ratio(fiber_count),
+            self._compute_activation_efficiency(neuron_count),
+            _connected_or_none(),
+        )
 
         connectivity = self._compute_connectivity(synapse_count, neuron_count)
         diversity = self._compute_diversity(synapse_stats)
         freshness = self._compute_freshness(fibers)
-        consolidation_ratio = await self._compute_consolidation_ratio(fiber_count)
-        orphan_rate = await self._compute_orphan_rate(neuron_count, fibers)
-        activation_efficiency = await self._compute_activation_efficiency(neuron_count)
+        orphan_rate = await self._compute_orphan_rate(neuron_count, fibers, connected=connected)
         recall_confidence = self._compute_recall_confidence(synapse_stats)
 
         # Compute purity score
@@ -500,7 +518,10 @@ class DiagnosticsEngine:
         return len(semantic_records) / fiber_count
 
     async def _compute_orphan_rate(
-        self, neuron_count: int, fibers: list[Any] | None = None
+        self,
+        neuron_count: int,
+        fibers: list[Any] | None = None,
+        connected: set[str] | None = None,
     ) -> float:
         """Compute fraction of neurons with no synapses AND no fiber membership.
 
@@ -513,16 +534,21 @@ class DiagnosticsEngine:
         if neuron_count == 0:
             return 0.0
 
-        # Prefer the DB-side distinct-endpoints aggregate over loading ~185k
-        # Synapse objects (that scan was seconds of the dashboard's slowness).
-        get_connected = getattr(self._storage, "get_connected_neuron_ids", None)
-        if get_connected is not None:
-            connected: set[str] = set(await get_connected())
+        # The caller may hand in the connected-neuron set (computed concurrently
+        # with the other reads). Otherwise fetch it: prefer the DB-side
+        # distinct-endpoints aggregate over loading ~185k Synapse objects (that
+        # scan was seconds of the dashboard's slowness).
+        if connected is None:
+            get_connected = getattr(self._storage, "get_connected_neuron_ids", None)
+            if get_connected is not None:
+                connected = set(await get_connected())
+            else:
+                connected = set()
+                for s in await self._storage.get_all_synapses():
+                    connected.add(s.source_id)
+                    connected.add(s.target_id)
         else:
-            connected = set()
-            for s in await self._storage.get_all_synapses():
-                connected.add(s.source_id)
-                connected.add(s.target_id)
+            connected = set(connected)
 
         # Also count neurons that belong to fibers as connected
         if fibers:

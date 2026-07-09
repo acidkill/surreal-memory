@@ -485,7 +485,7 @@ class TestVersionBump:
     def test_version_is_current(self) -> None:
         import surreal_memory
 
-        assert surreal_memory.__version__ == "2.7.2"
+        assert surreal_memory.__version__ == "2.7.3"
 
 
 class TestPackageIntegrity:

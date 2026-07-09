@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
+import re
 from datetime import datetime
 from hashlib import sha256
 from typing import Any, Literal
@@ -94,6 +95,24 @@ def _to_surreal_id(record_id: str) -> str:
     if ":" in record_id:
         record_id = record_id.rsplit(":", 1)[1]
     return record_id.replace("-", "_")
+
+
+_BRAIN_ID_SAFE = re.compile(r"^[a-zA-Z0-9_.\-]+$")
+
+
+def _brain_literal(brain_id: str) -> str:
+    """Return ``brain_id`` as a safe inline SurrealQL string literal.
+
+    SurrealDB 3.2.0's planner only uses the ``brain_id`` index when the value is
+    an inline literal — a parameterized ``WHERE brain_id = $bid`` falls back to a
+    full table scan. On the 64k-neuron table (each row carrying a 1024-float
+    vector) that turned ``count() … GROUP ALL`` from 0.01 s into ~2.5 s, and it
+    was the single biggest cost behind the dashboard's stats endpoint. brain_id
+    is validated to a strict charset, so inlining it is injection-safe.
+    """
+    if not _BRAIN_ID_SAFE.match(brain_id):
+        raise ValueError(f"unsafe brain_id for inline query: {brain_id!r}")
+    return f'"{brain_id}"'
 
 
 def _from_surreal_id(surreal_id: str) -> str:
@@ -1430,17 +1449,14 @@ class SurrealDBStorage(
     # ================================================================
 
     async def get_stats(self, brain_id: str) -> dict[str, int]:
-        neuron_rows = await self._query(
-            "SELECT count() AS c FROM neuron WHERE brain_id = $bid GROUP ALL",
-            bid=brain_id,
-        )
-        synapse_rows = await self._query(
-            "SELECT count() AS c FROM synapse WHERE brain_id = $bid GROUP ALL",
-            bid=brain_id,
-        )
-        fiber_rows = await self._query(
-            "SELECT count() AS c FROM fiber WHERE brain_id = $bid GROUP ALL",
-            bid=brain_id,
+        # Inline the (validated) brain_id so the count() aggregates use the
+        # brain_id index instead of a full scan — see _brain_literal. The three
+        # scans are independent, so run them concurrently.
+        lit = _brain_literal(brain_id)
+        neuron_rows, synapse_rows, fiber_rows = await asyncio.gather(
+            self._query(f"SELECT count() AS c FROM neuron WHERE brain_id = {lit} GROUP ALL"),
+            self._query(f"SELECT count() AS c FROM synapse WHERE brain_id = {lit} GROUP ALL"),
+            self._query(f"SELECT count() AS c FROM fiber WHERE brain_id = {lit} GROUP ALL"),
         )
 
         def _count(rows: list[Any]) -> int:
@@ -1454,15 +1470,22 @@ class SurrealDBStorage(
             "fiber_count": _count(fiber_rows),
         }
 
-    async def get_enhanced_stats(self, brain_id: str) -> dict[str, Any]:
+    async def get_enhanced_stats(
+        self, brain_id: str, include_neuron_types: bool = True
+    ) -> dict[str, Any]:
         stats = await self.get_stats(brain_id)
 
-        # Neuron type breakdown
-        type_rows = await self._query(
-            "SELECT type, count() AS c FROM neuron WHERE brain_id = $bid GROUP BY type",
-            bid=brain_id,
-        )
-        type_counts = {str(r.get("type", "unknown")): int(r.get("c", 0)) for r in type_rows}
+        # Neuron type breakdown. This GROUP BY over the whole neuron table is the
+        # single most expensive query on a large brain (~2.6 s for 64k neurons)
+        # and DiagnosticsEngine never reads it — so callers that only need the
+        # health metrics pass include_neuron_types=False to skip it entirely.
+        type_counts: dict[str, int] = {}
+        if include_neuron_types:
+            type_rows = await self._query(
+                "SELECT type, count() AS c FROM neuron WHERE brain_id = $bid GROUP BY type",
+                bid=brain_id,
+            )
+            type_counts = {str(r.get("type", "unknown")): int(r.get("c", 0)) for r in type_rows}
 
         # Synapse stats by type — required by DiagnosticsEngine for diversity
         # (Shannon entropy over by_type counts) and recall_confidence (avg_weight).
@@ -2084,14 +2107,20 @@ class SurrealDBStorage(
         replaces loading ~185k Synapse objects (~10 s) for the orphan-rate metric
         with two distinct-key scans (~2 s total)."""
         bid = brain_id or self._get_brain_id()
-        connected: set[str] = set()
-        for field in ("in", "out"):
-            rows = await self._query(
+
+        async def _endpoints(field: str) -> list[Any]:
+            return await self._query(
                 f"SELECT VALUE {field} FROM synapse WHERE brain_id = $bid GROUP BY {field}",
                 bid=bid,
             )
-            for rid in rows:
-                connected.add(_from_surreal_id(str(rid)))
+
+        # The two distinct-endpoint scans are independent, so run them
+        # concurrently — on a large brain this ~halves the wall time (measured
+        # 2.5 s -> ~1.3 s) versus scanning in then out.
+        in_rows, out_rows = await asyncio.gather(_endpoints("in"), _endpoints("out"))
+        connected: set[str] = set()
+        for rid in (*in_rows, *out_rows):
+            connected.add(_from_surreal_id(str(rid)))
         return connected
 
     async def get_synapse_degrees(self, brain_id: str | None = None) -> dict[str, int]:
@@ -2102,17 +2131,21 @@ class SurrealDBStorage(
         real ``in``/``out`` record links — the ``source_id``/``target_id``
         fields are computed and do not aggregate."""
         bid = brain_id or self._get_brain_id()
-        degree: dict[str, int] = {}
-        for field in ("in", "out"):
-            rows = await self._query(
+
+        async def _degree(field: str) -> list[Any]:
+            return await self._query(
                 f"SELECT {field} AS nid, count() AS deg FROM synapse"
                 f" WHERE brain_id = $bid GROUP BY {field}",
                 bid=bid,
             )
-            for r in rows:
-                nid = _endpoint_to_id(r.get("nid"))
-                if nid:
-                    degree[nid] = degree.get(nid, 0) + int(r.get("deg", 0) or 0)
+
+        # The in/out degree scans are independent — run them concurrently.
+        in_rows, out_rows = await asyncio.gather(_degree("in"), _degree("out"))
+        degree: dict[str, int] = {}
+        for r in (*in_rows, *out_rows):
+            nid = _endpoint_to_id(r.get("nid"))
+            if nid:
+                degree[nid] = degree.get(nid, 0) + int(r.get("deg", 0) or 0)
         return degree
 
     async def get_edges_for_neurons(self, neuron_ids: list[str]) -> list[Synapse]:

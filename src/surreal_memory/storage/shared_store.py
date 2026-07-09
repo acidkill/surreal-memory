@@ -425,7 +425,9 @@ class SharedStorage(SharedFiberBrainMixin, NeuralStorage):
             "fiber_count": result.get("fiber_count", 0),
         }
 
-    async def get_enhanced_stats(self, brain_id: str) -> dict[str, Any]:
+    async def get_enhanced_stats(
+        self, brain_id: str, include_neuron_types: bool = True
+    ) -> dict[str, Any]:
         """Get enhanced brain statistics via API."""
         result = await self._request("GET", f"/brain/{brain_id}/stats")
         return result

@@ -712,7 +712,9 @@ class NeuralStorage(ABC):
         ...
 
     @abstractmethod
-    async def get_enhanced_stats(self, brain_id: str) -> dict[str, Any]:
+    async def get_enhanced_stats(
+        self, brain_id: str, include_neuron_types: bool = True
+    ) -> dict[str, Any]:
         """
         Get enhanced statistics for a brain.
 

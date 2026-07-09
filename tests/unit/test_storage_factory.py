@@ -314,7 +314,9 @@ class TestHybridStorage:
         local.get_stats.assert_awaited_once_with("brain-1")
 
         await storage.get_enhanced_stats("brain-1")  # type: ignore[union-attr]
-        local.get_enhanced_stats.assert_awaited_once_with("brain-1")
+        local.get_enhanced_stats.assert_awaited_once_with(
+            "brain-1", include_neuron_types=True
+        )
 
         await storage.clear("brain-1")  # type: ignore[union-attr]
         local.clear.assert_awaited_once_with("brain-1")
