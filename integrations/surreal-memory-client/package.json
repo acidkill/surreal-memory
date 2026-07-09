@@ -1,6 +1,6 @@
 {
   "name": "@acidkill/surreal-memory-client",
-  "version": "2.7.3",
+  "version": "2.7.4",
   "description": "TypeScript client for the Surreal-Memory REST API — typed access to brains, neurons, synapses, fibers, recall, and sync.",
   "type": "module",
   "main": "dist/index.cjs",

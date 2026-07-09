@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.4] — 2026-07-09
+
+### Changed
+
+- **Dashboard overview and graph are cached per brain for a short window**, so
+  repeat loads are instant. The grade/purity (a full `DiagnosticsEngine.analyze`)
+  and the graph payload each aggregate over the whole synapse graph — a few
+  seconds on a large brain that no index removes — but both are slow-moving, so
+  recomputing them on every request was waste. The overview's neuron/synapse/fiber
+  counts stay live (they're cheap, indexed `count()`); only the multi-second
+  grade/purity and the graph structure are cached. TTL is configurable via
+  `SURREAL_MEMORY_DASHBOARD_CACHE_TTL` (seconds, default 60); set it to `0` to
+  disable caching entirely.
+
 ## [2.7.3] — 2026-07-09
 
 ### Fixed
