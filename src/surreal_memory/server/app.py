@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from surreal_memory import __version__
+from surreal_memory.server.dashboard_cache import TTLCache
 from surreal_memory.server.models import HealthResponse, ReadyResponse
 from surreal_memory.server.routes import (
     brain_router,
@@ -31,6 +32,12 @@ from surreal_memory.storage.sqlite_schema import SCHEMA_VERSION
 
 # Static files directory
 STATIC_DIR = Path(__file__).parent / "static"
+
+# The graph view aggregates degree over the whole synapse graph + fetches the
+# dense core's nodes/edges — a few seconds on a large brain. The graph structure
+# is slow-moving, so cache the built payload per (brain, limit, offset) for a
+# short window (see dashboard_cache).
+_GRAPH_CACHE = TTLCache()
 
 
 @asynccontextmanager
@@ -586,6 +593,19 @@ def create_app(
         capped_limit = min(limit, 2000)
         edge_cap = 4000
 
+        # Serve a recently-built graph for this (brain, limit, offset) from cache.
+        _brain_id = "default"
+        _get_bid = getattr(storage, "_get_brain_id", None)
+        if _get_bid is not None:
+            try:
+                _brain_id = _get_bid()
+            except Exception:
+                pass
+        _cache_key = f"graph:{_brain_id}:{limit}:{offset}"
+        _cached_graph = _GRAPH_CACHE.get(_cache_key)
+        if _cached_graph is not None:
+            return dict(_cached_graph)
+
         # Degree ranking + edge fetch via DB aggregates/graph traversal when the
         # backend supports it (SurrealDB). Loading all ~185k synapses into Python
         # just to rank/filter them was ~10 s of the graph view's 30 s+ hang.
@@ -636,7 +656,7 @@ def create_app(
 
         fibers = await storage.get_fibers(limit=1000)
 
-        return {
+        payload = {
             "neurons": [
                 {
                     "id": n.id,
@@ -673,6 +693,8 @@ def create_app(
                 "fiber_count": len(fibers),
             },
         }
+        _GRAPH_CACHE.set(_cache_key, payload)
+        return payload
 
     # React SPA dist directory
     spa_dist = STATIC_DIR / "dist"

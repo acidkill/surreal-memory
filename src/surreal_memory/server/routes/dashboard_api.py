@@ -9,10 +9,32 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+from surreal_memory.server.dashboard_cache import TTLCache
 from surreal_memory.server.dependencies import get_storage, require_local_request
 from surreal_memory.storage.base import NeuralStorage
 
 logger = logging.getLogger(__name__)
+
+# Full diagnostics (grade/purity) aggregates over the whole synapse graph — a few
+# seconds on a large brain. The grade is slow-moving, so cache it per brain for a
+# short window; the overview's counts are computed live (cheap) around it.
+_GRADE_CACHE = TTLCache()
+
+
+async def _cached_grade_purity(storage: NeuralStorage, brain_name: str) -> tuple[str, float]:
+    """Return (grade, purity) for a brain, cached per brain for the TTL window."""
+    key = f"grade:{brain_name}"
+    cached = _GRADE_CACHE.get(key)
+    if cached is not None:
+        grade, purity = cached
+        return str(grade), float(purity)
+    from surreal_memory.engine.diagnostics import DiagnosticsEngine
+
+    report = await DiagnosticsEngine(storage).analyze(brain_name)
+    result = (report.grade, report.purity_score)
+    _GRADE_CACHE.set(key, result)
+    return result
+
 
 router = APIRouter(
     prefix="/api/dashboard",
@@ -105,36 +127,27 @@ async def get_stats() -> DashboardStats:
         try:
             brain_storage = await get_shared_storage(brain_name=name)
 
+            # Counts are cheap (indexed count()) — always compute them live so the
+            # neuron/synapse/fiber numbers are never stale.
+            stats = await brain_storage.get_stats(name)
+            grade = "—"
+            purity = 0.0
             if is_active:
+                # Grade/purity is the multi-second part — served from the per-brain
+                # TTL cache (recomputed at most once per window).
                 try:
-                    from surreal_memory.engine.diagnostics import DiagnosticsEngine
-
-                    diag = DiagnosticsEngine(brain_storage)
-                    report = await diag.analyze(name)
-                    return BrainSummary(
-                        id=name,
-                        name=name,
-                        neuron_count=report.neuron_count,
-                        synapse_count=report.synapse_count,
-                        fiber_count=report.fiber_count,
-                        grade=report.grade,
-                        purity_score=report.purity_score,
-                        is_active=True,
-                    )
+                    grade, purity = await _cached_grade_purity(brain_storage, name)
                 except Exception:
                     logger.debug("Diagnostics failed for active brain %s", name, exc_info=True)
-
-            # Inactive brain (or active-brain diagnostics failure): counts only.
-            # "—" flags grade as "not computed here" rather than a real F.
-            stats = await brain_storage.get_stats(name)
+                    grade = "F"
             return BrainSummary(
                 id=name,
                 name=name,
                 neuron_count=stats.get("neuron_count", 0),
                 synapse_count=stats.get("synapse_count", 0),
                 fiber_count=stats.get("fiber_count", 0),
-                grade="F" if is_active else "—",
-                purity_score=0.0,
+                grade=grade,
+                purity_score=purity,
                 is_active=is_active,
             )
         except Exception:
