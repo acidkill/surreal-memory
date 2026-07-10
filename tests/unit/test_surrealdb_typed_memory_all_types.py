@@ -40,7 +40,7 @@ async def surrealdb_storage():  # type: ignore[no-untyped-def]
     from surreal_memory.storage.surrealdb.store import SurrealDBStorage
 
     storage = SurrealDBStorage(url=SURREALDB_URL)
-    await storage.connect()
+    await storage.initialize()
     brain = Brain.create(name="all-types-roundtrip")
     await storage.save_brain(brain)
     storage.set_brain(brain.id)
