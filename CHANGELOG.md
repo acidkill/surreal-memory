@@ -7,7 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [2.7.4] — 2026-07-09
+## [2.7.4] — 2026-07-11
+
+### Performance
+
+- **`recall` is now index-backed end-to-end (≈25s → ≈8s on a 65k-neuron /
+  295k-synapse brain).** Two hot-path scans dominated a deep recall, pushing it
+  against the MCP client's 30s tool timeout (which is why the CLI, with no
+  timeout, still returned while the MCP tool "didn't respond"):
+  - **Content lookup full-scanned the neuron table.** `find_neurons` matched
+    `content` with `CONTAINS`, a case-sensitive substring scan (~2.9s/call, ~10
+    calls per recall). A BM25 `FULLTEXT` index (`idx_neuron_content_fts`, with a
+    lowercase analyzer) plus the `@@` operator brings this to ~0.9ms. Matching is
+    now case-insensitive — a net improvement for keyword/entity recall.
+    `suggest_neurons` keeps `CONTAINS` (prefix autocomplete needs substring).
+  - **Neighbor traversal full-scanned the synapse table.**
+    `get_neighbors(direction='both')` matched `(in = .. OR out = ..)`, and an
+    `OR` across two indexed columns disables `idx_synapse_in`/`idx_synapse_out`
+    (~950ms/call, ~26 per recall). Each direction is now queried with its own
+    indexed equality and merged (dedup by id), preserving the inline `in.*/out.*`
+    neighbour fetch: ~38ms.
 
 ### Changed
 
@@ -20,6 +39,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   grade/purity and the graph structure are cached. TTL is configurable via
   `SURREAL_MEMORY_DASHBOARD_CACHE_TTL` (seconds, default 60); set it to `0` to
   disable caching entirely.
+
+### Fixed
+
+- **Broken SurrealDB test fixture** — the all-types-roundtrip fixture called
+  `SurrealDBStorage.connect()`, which does not exist (the method is
+  `initialize()`); it errored whenever a live SurrealDB was configured.
 
 ## [2.7.3] — 2026-07-09
 
