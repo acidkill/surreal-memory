@@ -14,6 +14,12 @@ SCHEMA_SQL = """
 -- Surreal-Memory SurrealDB Schema
 -- ============================================================
 
+-- Full-text analyzer for neuron.content search (the @@ operator). Defined
+-- before the index that uses it. Tokenizes on whitespace/class and lowercases,
+-- so keyword/entity lookups become case-insensitive and index-backed instead of
+-- full-scanning with CONTAINS.
+DEFINE ANALYZER IF NOT EXISTS smem_content TOKENIZERS blank, class FILTERS lowercase, ascii;
+
 -- Neurons (primary memory units)
 DEFINE TABLE neuron SCHEMAFULL;
 DEFINE FIELD id              ON neuron TYPE string;
@@ -36,6 +42,7 @@ DEFINE INDEX idx_neuron_brain    ON neuron FIELDS brain_id;
 DEFINE INDEX idx_neuron_type     ON neuron FIELDS brain_id, type;
 DEFINE INDEX idx_neuron_hash     ON neuron FIELDS brain_id, content_hash;
 DEFINE INDEX idx_neuron_content  ON neuron FIELDS brain_id, content;
+DEFINE INDEX IF NOT EXISTS idx_neuron_content_fts ON neuron FIELDS content FULLTEXT ANALYZER smem_content BM25;
 -- idx_neuron_embedding (HNSW) is defined dynamically in ensure_schema() with the
 -- configured embedding dimension, so the vector index always matches the model.
 

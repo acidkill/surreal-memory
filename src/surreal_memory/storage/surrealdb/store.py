@@ -635,7 +635,12 @@ class SurrealDBStorage(
             params["content_exact"] = content_exact
 
         if content_contains is not None:
-            conditions.append("content CONTAINS $content_contains")
+            # Full-text match (@@) via the BM25 index instead of a CONTAINS
+            # substring scan: 0.9ms vs 2.9s on a 65k-neuron brain. The analyzer
+            # lowercases, so matching is case-insensitive (a net improvement for
+            # keyword/entity lookups); it is token-based rather than arbitrary
+            # substring, which is the intended semantics for concept recall.
+            conditions.append("content @@ $content_contains")
             params["content_contains"] = content_contains
 
         if time_range is not None:
@@ -927,56 +932,65 @@ class SurrealDBStorage(
         min_weight: float | None = None,
     ) -> list[tuple[Neuron, Synapse]]:
         brain_id = self._get_brain_id()
+        base_params: dict[str, Any] = {
+            "brain_id": brain_id,
+            "nid": _to_surreal_id(neuron_id),
+        }
 
-        conditions = ["brain_id = $brain_id"]
-        params: dict[str, Any] = {"brain_id": brain_id}
-
-        if direction == "out":
-            conditions.append("in = type::record('neuron', $nid)")
-        elif direction == "in":
-            conditions.append("out = type::record('neuron', $nid)")
-        else:
-            conditions.append(
-                "(in = type::record('neuron', $nid) OR out = type::record('neuron', $nid))"
-            )
-        params["nid"] = _to_surreal_id(neuron_id)
-
+        extra: list[str] = []
         if synapse_types:
-            type_vals = [t.value for t in synapse_types]
-            type_list = ", ".join(f"'{t}'" for t in type_vals)
-            conditions.append(f"type IN [{type_list}]")
-
+            type_list = ", ".join(f"'{t.value}'" for t in synapse_types)
+            extra.append(f"type IN [{type_list}]")
         if min_weight is not None:
-            conditions.append("weight >= $min_weight")
-            params["min_weight"] = min_weight
+            extra.append("weight >= $min_weight")
+            base_params["min_weight"] = min_weight
 
-        where = " AND ".join(conditions)
-        # Inline both endpoint neurons via the native edge links (in.*/out.*) so a
-        # single query returns the neighbour records — kills the N+1 get_neuron
-        # call that ran once per edge before the RELATION migration.
-        syn_rows = await self._query(
-            f"SELECT *, in.* AS in_neuron, out.* AS out_neuron FROM synapse WHERE {where}",
-            **params,
-        )
+        # Query each edge direction with its own indexed equality (idx_synapse_in
+        # / idx_synapse_out). A combined ``in = .. OR out = ..`` disables the
+        # index and full-scans the whole synapse table (~950ms/call vs ~2ms). in
+        # is the source endpoint (outgoing edges), out the target (incoming).
+        edge_cols: list[str] = []
+        if direction in ("out", "both"):
+            edge_cols.append("in")
+        if direction in ("in", "both"):
+            edge_cols.append("out")
 
+        seen: set[str] = set()
         results: list[tuple[Neuron, Synapse]] = []
-        for sr in syn_rows:
-            syn = _row_to_synapse(sr)
-            # The neighbour is the endpoint that is not the queried neuron. Use the
-            # domain helper so a row that (defensively) touches neither end is
-            # skipped rather than silently resolving to the wrong endpoint.
-            other_id = syn.other_end(neuron_id)
-            if other_id is None:
-                continue
-            neighbor_row = (
-                sr.get("out_neuron") if other_id == syn.target_id else sr.get("in_neuron")
+        for col in edge_cols:
+            conditions = [
+                "brain_id = $brain_id",
+                f"{col} = type::record('neuron', $nid)",
+                *extra,
+            ]
+            where = " AND ".join(conditions)
+            # Inline both endpoint neurons via the native edge links (in.*/out.*)
+            # so a single query returns the neighbour records — kills the N+1
+            # get_neuron call that ran once per edge before the RELATION migration.
+            syn_rows = await self._query(
+                f"SELECT *, in.* AS in_neuron, out.* AS out_neuron FROM synapse WHERE {where}",
+                **base_params,
             )
-            neighbor = _row_to_neuron(neighbor_row) if neighbor_row else None
-            if neighbor is None:
-                # Orphan endpoint or inline missing — fall back to a direct fetch.
-                neighbor = await self.get_neuron(other_id)
-            if neighbor is not None:
-                results.append((neighbor, syn))
+            for sr in syn_rows:
+                syn = _row_to_synapse(sr)
+                if syn.id in seen:
+                    continue
+                seen.add(syn.id)
+                # The neighbour is the endpoint that is not the queried neuron.
+                # Use the domain helper so a row that (defensively) touches
+                # neither end is skipped rather than resolving to the wrong end.
+                other_id = syn.other_end(neuron_id)
+                if other_id is None:
+                    continue
+                neighbor_row = (
+                    sr.get("out_neuron") if other_id == syn.target_id else sr.get("in_neuron")
+                )
+                neighbor = _row_to_neuron(neighbor_row) if neighbor_row else None
+                if neighbor is None:
+                    # Orphan endpoint or inline missing — fall back to direct fetch.
+                    neighbor = await self.get_neuron(other_id)
+                if neighbor is not None:
+                    results.append((neighbor, syn))
         return results
 
     @property
