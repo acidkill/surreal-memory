@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.8.0] — 2026-07-11
+
 ### Removed
 
 - **Vietnamese language support and the cross-language "translation" layer**
@@ -20,6 +22,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[nlp-vi]` extra (`underthesea` / `pyvi`). Embedding-level multilingual recall is
   unaffected — it is a property of the embedding model, not the extraction layer. See
   [architecture/vietnamese-removal.md](architecture/vietnamese-removal.md).
+
+### Fixed
+
+- **Auto-mode keyword/concept extraction** — clause-boundary-aware bigrams and a
+  Polish stop-word set; the Vietnamese stop-word set is gone (English-only).
+- **`SurrealDBStorage` reconnects after a dropped transport**, not only on a 401,
+  so long-lived MCP/CLI clients survive a DB restart instead of returning `-32000`.
+
+### Security
+
+- **Hardened `_to_surreal_id` against record-id / SurQL injection** — every
+  character outside `[A-Za-z0-9_]` is folded to `_`, with a fail-closed
+  `_safe_brain_id` guard, consolidating 13 duplicated sanitisers into one.
 
 ## [2.7.4] — 2026-07-11
 
