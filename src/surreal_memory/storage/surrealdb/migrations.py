@@ -515,31 +515,34 @@ async def _migrate_7_to_8(conn: Any) -> None:
         await _phase_verifying(conn, state)
 
 
-# Additive schema-v9 DDL (validity fields, source.trust, retrieval_trace table).
-# Idempotent: re-running DEFINE statements is safe. Mirrors the same statements in
+# Additive schema-v9 DDL (validity fields, source.trust, retrieval_trace table),
+# as individual statements. Applied one-by-one (like schema.ensure_schema) so a
+# re-run over already-defined fields is tolerated instead of aborting the batch:
+# SurrealDB raises "already exists" on a bare re-DEFINE, and a single multi-statement
+# query would fail the whole batch on the first such field. Mirrors the statements in
 # schema.SCHEMA_SQL so a fresh ensure_schema build and a migrated DB converge.
-_V9_DDL = """
-DEFINE FIELD valid_from    ON typed_memory TYPE option<datetime>;
-DEFINE FIELD valid_until   ON typed_memory TYPE option<datetime>;
-DEFINE FIELD superseded_by ON typed_memory TYPE option<string>;
-DEFINE INDEX idx_typed_valid   ON typed_memory FIELDS brain_id, valid_until;
-DEFINE INDEX idx_typed_expires ON typed_memory FIELDS brain_id, expires_at;
-DEFINE FIELD trust ON source TYPE option<float>;
-DEFINE TABLE retrieval_trace SCHEMAFULL;
-DEFINE FIELD id           ON retrieval_trace TYPE string;
-DEFINE FIELD brain_id     ON retrieval_trace TYPE string;
-DEFINE FIELD session_id   ON retrieval_trace TYPE option<string>;
-DEFINE FIELD query        ON retrieval_trace TYPE string DEFAULT '';
-DEFINE FIELD depth_used   ON retrieval_trace TYPE int DEFAULT 0;
-DEFINE FIELD mode         ON retrieval_trace TYPE string DEFAULT '';
-DEFINE FIELD confidence   ON retrieval_trace TYPE float DEFAULT 0.0;
-DEFINE FIELD latency_ms   ON retrieval_trace TYPE float DEFAULT 0.0;
-DEFINE FIELD fiber_ids    ON retrieval_trace TYPE array<string> DEFAULT [];
-DEFINE FIELD payload      ON retrieval_trace TYPE object FLEXIBLE DEFAULT {};
-DEFINE FIELD created_at   ON retrieval_trace TYPE datetime DEFAULT time::now();
-DEFINE INDEX idx_trace_brain   ON retrieval_trace FIELDS brain_id;
-DEFINE INDEX idx_trace_created ON retrieval_trace FIELDS brain_id, created_at;
-"""
+_V9_DDL: tuple[str, ...] = (
+    "DEFINE FIELD valid_from    ON typed_memory TYPE option<datetime>",
+    "DEFINE FIELD valid_until   ON typed_memory TYPE option<datetime>",
+    "DEFINE FIELD superseded_by ON typed_memory TYPE option<string>",
+    "DEFINE INDEX idx_typed_valid   ON typed_memory FIELDS brain_id, valid_until",
+    "DEFINE INDEX idx_typed_expires ON typed_memory FIELDS brain_id, expires_at",
+    "DEFINE FIELD trust ON source TYPE option<float>",
+    "DEFINE TABLE retrieval_trace SCHEMAFULL",
+    "DEFINE FIELD id           ON retrieval_trace TYPE string",
+    "DEFINE FIELD brain_id     ON retrieval_trace TYPE string",
+    "DEFINE FIELD session_id   ON retrieval_trace TYPE option<string>",
+    "DEFINE FIELD query        ON retrieval_trace TYPE string DEFAULT ''",
+    "DEFINE FIELD depth_used   ON retrieval_trace TYPE int DEFAULT 0",
+    "DEFINE FIELD mode         ON retrieval_trace TYPE string DEFAULT ''",
+    "DEFINE FIELD confidence   ON retrieval_trace TYPE float DEFAULT 0.0",
+    "DEFINE FIELD latency_ms   ON retrieval_trace TYPE float DEFAULT 0.0",
+    "DEFINE FIELD fiber_ids    ON retrieval_trace TYPE array<string> DEFAULT []",
+    "DEFINE FIELD payload      ON retrieval_trace TYPE object FLEXIBLE DEFAULT {}",
+    "DEFINE FIELD created_at   ON retrieval_trace TYPE datetime DEFAULT time::now()",
+    "DEFINE INDEX idx_trace_brain   ON retrieval_trace FIELDS brain_id",
+    "DEFINE INDEX idx_trace_created ON retrieval_trace FIELDS brain_id, created_at",
+)
 
 
 async def _migrate_8_to_9(conn: Any) -> None:
@@ -547,9 +550,17 @@ async def _migrate_8_to_9(conn: Any) -> None:
 
     Adds TypedMemory validity fields (+ indexes), Source.trust, and the
     retrieval_trace table. Pure idempotent DDL — no data movement, no resumable
-    state (unlike 7->8). Safe to run twice; stamps version 9 on completion.
+    state (unlike 7->8). Statements run individually and an "already exists"
+    re-DEFINE is skipped, so the migration is safe to run twice. Stamps v9 last.
     """
-    await conn.query(_V9_DDL)
+    for stmt in _V9_DDL:
+        try:
+            await conn.query(stmt + ";")
+        except Exception as exc:
+            if "already exists" in str(exc).lower():
+                logger.debug("v9 migration statement skipped (already exists): %s", stmt[:80])
+            else:
+                logger.warning("v9 migration statement failed: %s (%s)", stmt[:80], exc)
     await _stamp_version(conn, TARGET_VERSION)
 
 

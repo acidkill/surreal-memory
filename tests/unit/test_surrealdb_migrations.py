@@ -103,12 +103,29 @@ class TestDetectVersion:
         assert await M.detect_db_version(conn) == 8
 
     @pytest.mark.asyncio
-    async def test_relation_table_is_v8(self):
+    async def test_relation_table_without_trace_is_v8(self):
+        # Relation synapse but no v9-only retrieval_trace table -> still needs the 8->9 migration.
         conn = ScriptedConn()
         conn.route("SELECT version FROM schema_meta:version", [])
         conn.route(
             "INFO FOR DB",
             {"tables": {"synapse": "DEFINE TABLE synapse TYPE RELATION IN neuron OUT neuron"}},
+        )
+        assert await M.detect_db_version(conn) == M.RELATION_SYNAPSE_VERSION
+
+    @pytest.mark.asyncio
+    async def test_relation_table_with_trace_is_v9(self):
+        # Relation synapse + retrieval_trace table => fully at TARGET_VERSION (v9).
+        conn = ScriptedConn()
+        conn.route("SELECT version FROM schema_meta:version", [])
+        conn.route(
+            "INFO FOR DB",
+            {
+                "tables": {
+                    "synapse": "DEFINE TABLE synapse TYPE RELATION IN neuron OUT neuron",
+                    "retrieval_trace": "DEFINE TABLE retrieval_trace SCHEMAFULL",
+                }
+            },
         )
         assert await M.detect_db_version(conn) == M.TARGET_VERSION
 
@@ -429,15 +446,15 @@ class TestApplyMigrations:
     @pytest.mark.asyncio
     async def test_already_migrated_is_noop(self, monkeypatch):
         conn = ScriptedConn()
-        conn.route("SELECT version FROM schema_meta:version", [{"version": 8}])
+        conn.route("SELECT version FROM schema_meta:version", [{"version": M.TARGET_VERSION}])
         result = await M.apply_migrations(conn)
-        assert result == 8
+        assert result == M.TARGET_VERSION
         assert not any("REMOVE TABLE" in s for s in conn.sqls())
 
     @pytest.mark.asyncio
     async def test_lock_contention_but_peer_finished_returns_noop(self, monkeypatch):
         """Second concurrent caller: can't get lock, but peer already migrated → return 8."""
-        versions = iter([[], [{"version": 8}]])  # 1st detect: unmigrated; 2nd: migrated
+        versions = iter([[], [{"version": M.TARGET_VERSION}]])  # 1st: unmigrated; 2nd: migrated
 
         conn = ScriptedConn()
         conn.route("SELECT version FROM schema_meta:version", lambda s, p: next(versions, []))
@@ -457,7 +474,7 @@ class TestApplyMigrations:
         monkeypatch.setattr(M.asyncio, "sleep", no_sleep)
 
         result = await M.apply_migrations(conn)
-        assert result == 8
+        assert result == M.TARGET_VERSION
 
     @pytest.mark.asyncio
     async def test_lock_released_after_migration(self, monkeypatch):

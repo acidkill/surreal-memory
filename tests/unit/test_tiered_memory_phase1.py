@@ -164,7 +164,7 @@ class TestSchemaMigration:
     def test_migration_exists(self) -> None:
         from surreal_memory.storage.sqlite_schema import MIGRATIONS, SCHEMA_VERSION
 
-        assert SCHEMA_VERSION == 38
+        assert SCHEMA_VERSION == 39
         assert (36, 37) in MIGRATIONS
         assert (37, 38) in MIGRATIONS
         stmts = MIGRATIONS[(36, 37)]
