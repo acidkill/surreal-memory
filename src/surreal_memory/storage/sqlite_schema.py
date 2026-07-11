@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Schema version for migrations
-SCHEMA_VERSION = 38
+SCHEMA_VERSION = 39
 
 # â”€â”€ Migrations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Each entry maps (from_version -> to_version) with a list of SQL statements.
@@ -636,6 +636,35 @@ MIGRATIONS: dict[tuple[int, int], list[str]] = {
         # Fix L1: Promote pre-v37 BOUNDARY memories from default 'warm' to 'hot'
         "UPDATE typed_memories SET tier = 'hot' WHERE memory_type = 'boundary' AND tier != 'hot'",
     ],
+    (38, 39): [
+        # Schema v9: per-fact validity + supersession, source trust, retrieval traces.
+        "ALTER TABLE typed_memories ADD COLUMN valid_from TEXT",
+        "ALTER TABLE typed_memories ADD COLUMN valid_until TEXT",
+        "ALTER TABLE typed_memories ADD COLUMN superseded_by TEXT",
+        "CREATE INDEX IF NOT EXISTS idx_typed_memories_valid "
+        "ON typed_memories(brain_id, valid_until)",
+        "CREATE INDEX IF NOT EXISTS idx_typed_memories_expires "
+        "ON typed_memories(brain_id, expires_at)",
+        "ALTER TABLE sources ADD COLUMN trust REAL DEFAULT NULL",
+        "CREATE TABLE IF NOT EXISTS retrieval_traces ("
+        " id TEXT NOT NULL,"
+        " brain_id TEXT NOT NULL,"
+        " session_id TEXT,"
+        " query TEXT DEFAULT '',"
+        " depth_used INTEGER DEFAULT 0,"
+        " mode TEXT DEFAULT '',"
+        " confidence REAL DEFAULT 0.0,"
+        " latency_ms REAL DEFAULT 0.0,"
+        " fiber_ids TEXT DEFAULT '[]',"
+        " payload TEXT DEFAULT '{}',"
+        " created_at TEXT NOT NULL,"
+        " PRIMARY KEY (brain_id, id),"
+        " FOREIGN KEY (brain_id) REFERENCES brains(id) ON DELETE CASCADE"
+        ")",
+        "CREATE INDEX IF NOT EXISTS idx_retrieval_traces_brain ON retrieval_traces(brain_id)",
+        "CREATE INDEX IF NOT EXISTS idx_retrieval_traces_created "
+        "ON retrieval_traces(brain_id, created_at)",
+    ],
 }
 
 
@@ -888,6 +917,9 @@ CREATE TABLE IF NOT EXISTS typed_memories (
     trust_score REAL DEFAULT NULL,
     source TEXT DEFAULT NULL,
     tier TEXT DEFAULT 'warm',
+    valid_from TEXT,  -- Schema v9: when this fact started being true
+    valid_until TEXT,  -- Schema v9: when this fact stopped being true (superseded/expired)
+    superseded_by TEXT,  -- Schema v9: fiber_id of the fact that replaced this one
     PRIMARY KEY (brain_id, fiber_id),
     FOREIGN KEY (brain_id, fiber_id) REFERENCES fibers(brain_id, id) ON DELETE CASCADE,
     FOREIGN KEY (brain_id) REFERENCES brains(id) ON DELETE CASCADE,
@@ -898,6 +930,7 @@ CREATE INDEX IF NOT EXISTS idx_typed_memories_project ON typed_memories(brain_id
 CREATE INDEX IF NOT EXISTS idx_typed_memories_expires ON typed_memories(brain_id, expires_at);
 CREATE INDEX IF NOT EXISTS idx_typed_memories_trust ON typed_memories(brain_id, trust_score);
 CREATE INDEX IF NOT EXISTS idx_typed_memories_tier ON typed_memories(brain_id, tier);
+CREATE INDEX IF NOT EXISTS idx_typed_memories_valid ON typed_memories(brain_id, valid_until);
 
 -- Projects table
 CREATE TABLE IF NOT EXISTS projects (
@@ -1212,12 +1245,32 @@ CREATE TABLE IF NOT EXISTS sources (
     metadata TEXT DEFAULT '{}',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
+    trust REAL DEFAULT NULL,  -- Schema v9: manual source-level trust override in [0,1]
     PRIMARY KEY (brain_id, id),
     FOREIGN KEY (brain_id) REFERENCES brains(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_sources_type ON sources(brain_id, source_type);
 CREATE INDEX IF NOT EXISTS idx_sources_status ON sources(brain_id, status);
 CREATE INDEX IF NOT EXISTS idx_sources_name ON sources(brain_id, name);
+
+-- Retrieval traces (queryable recall provenance / telemetry) [schema v9]
+CREATE TABLE IF NOT EXISTS retrieval_traces (
+    id TEXT NOT NULL,
+    brain_id TEXT NOT NULL,
+    session_id TEXT,
+    query TEXT DEFAULT '',
+    depth_used INTEGER DEFAULT 0,
+    mode TEXT DEFAULT '',
+    confidence REAL DEFAULT 0.0,
+    latency_ms REAL DEFAULT 0.0,
+    fiber_ids TEXT DEFAULT '[]',  -- JSON array
+    payload TEXT DEFAULT '{}',  -- JSON object
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (brain_id, id),
+    FOREIGN KEY (brain_id) REFERENCES brains(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_retrieval_traces_brain ON retrieval_traces(brain_id);
+CREATE INDEX IF NOT EXISTS idx_retrieval_traces_created ON retrieval_traces(brain_id, created_at);
 
 -- Session summaries for session intelligence
 CREATE TABLE IF NOT EXISTS session_summaries (

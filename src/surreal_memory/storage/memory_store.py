@@ -20,6 +20,7 @@ from surreal_memory.core.fiber import Fiber
 from surreal_memory.core.memory_types import TypedMemory
 from surreal_memory.core.neuron import Neuron, NeuronState, NeuronType
 from surreal_memory.core.project import Project
+from surreal_memory.core.retrieval_trace import RetrievalTrace
 from surreal_memory.core.synapse import Synapse, SynapseType
 from surreal_memory.engine.brain_versioning import BrainVersion
 from surreal_memory.storage.base import NeuralStorage
@@ -48,6 +49,7 @@ class InMemoryStorage(
         self._brains: dict[str, Brain] = {}
         self._co_activations: dict[str, list[dict[str, Any]]] = defaultdict(list)
         self._action_events: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        self._retrieval_traces: dict[str, list[RetrievalTrace]] = defaultdict(list)
         self._versions: dict[str, dict[str, tuple[BrainVersion, str]]] = defaultdict(dict)
         self._review_schedules: dict[str, dict[str, Any]] = defaultdict(dict)
         self._keyword_df: dict[str, dict[str, int]] = defaultdict(dict)
@@ -690,6 +692,53 @@ class InMemoryStorage(
             e for e in self._action_events[brain_id] if e["created_at"] >= older_than
         ]
         return original_count - len(self._action_events[brain_id])
+
+    async def add_retrieval_trace(self, trace: RetrievalTrace) -> str:
+        brain_id = self._get_brain_id()
+        self._retrieval_traces[brain_id].append(trace)
+        return trace.id
+
+    async def get_retrieval_trace(self, trace_id: str) -> RetrievalTrace | None:
+        brain_id = self._get_brain_id()
+        for trace in self._retrieval_traces[brain_id]:
+            if trace.id == trace_id:
+                return trace
+        return None
+
+    async def find_retrieval_traces(
+        self,
+        fiber_id: str | None = None,
+        query_contains: str | None = None,
+        since: datetime | None = None,
+        limit: int = 20,
+    ) -> list[RetrievalTrace]:
+        brain_id = self._get_brain_id()
+        needle = query_contains.lower() if query_contains is not None else None
+        results = [
+            trace
+            for trace in self._retrieval_traces[brain_id]
+            if (fiber_id is None or fiber_id in trace.fiber_ids)
+            and (needle is None or needle in trace.query.lower())
+            and (since is None or trace.created_at >= since)
+        ]
+        results.sort(key=lambda t: t.created_at, reverse=True)
+        return results[:limit]
+
+    async def prune_retrieval_traces(
+        self,
+        retention_days: int | None = None,
+        max_traces: int | None = None,
+    ) -> int:
+        brain_id = self._get_brain_id()
+        traces = self._retrieval_traces[brain_id]
+        original = len(traces)
+        if retention_days is not None:
+            cutoff = utcnow() - timedelta(days=retention_days)
+            traces = [t for t in traces if t.created_at >= cutoff]
+        if max_traces is not None and len(traces) > max_traces:
+            traces = sorted(traces, key=lambda t: t.created_at, reverse=True)[:max_traces]
+        self._retrieval_traces[brain_id] = traces
+        return original - len(traces)
 
     # ========== Version Operations ==========
 

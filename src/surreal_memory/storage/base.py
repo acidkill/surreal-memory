@@ -7,11 +7,14 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from surreal_memory.core.alert import Alert
     from surreal_memory.core.brain import Brain, BrainSnapshot
     from surreal_memory.core.fiber import Fiber
     from surreal_memory.core.memory_types import MemoryType, Priority, TypedMemory
     from surreal_memory.core.neuron import Neuron, NeuronState, NeuronType
+    from surreal_memory.core.retrieval_trace import RetrievalTrace
     from surreal_memory.core.review_schedule import ReviewSchedule
     from surreal_memory.core.synapse import Synapse, SynapseType
     from surreal_memory.engine.brain_versioning import BrainVersion
@@ -883,6 +886,34 @@ class NeuralStorage(ABC):
         """
         raise NotImplementedError
 
+    async def get_typed_memories_batch(self, fiber_ids: Sequence[str]) -> dict[str, TypedMemory]:
+        """Fetch typed memories for many fibers at once (brain-scoped).
+
+        Args:
+            fiber_ids: Fiber IDs to look up
+
+        Returns:
+            Mapping of fiber_id -> TypedMemory for those that exist (missing skipped)
+        """
+        raise NotImplementedError
+
+    async def get_expiring_memories(
+        self, within_days: int = 7, limit: int = 200
+    ) -> list[TypedMemory]:
+        """Get typed memories expiring within N days across the whole brain.
+
+        Returns only memories that are NOT yet expired but WILL expire within the
+        window, soonest first, capped at ``limit``.
+
+        Args:
+            within_days: Days from now to check
+            limit: Maximum number of results
+
+        Returns:
+            List of TypedMemory objects expiring within the window
+        """
+        raise NotImplementedError
+
     async def get_expiring_memory_count(self, within_days: int = 7) -> int:
         """Count typed memories expiring within N days for current brain.
 
@@ -1140,6 +1171,50 @@ class NeuralStorage(ABC):
 
         Returns:
             Number of events pruned
+        """
+        raise NotImplementedError
+
+    async def add_retrieval_trace(self, trace: RetrievalTrace) -> str:
+        """Persist a retrieval trace. Returns the trace ID."""
+        raise NotImplementedError
+
+    async def get_retrieval_trace(self, trace_id: str) -> RetrievalTrace | None:
+        """Get a retrieval trace by its ID within the current brain."""
+        raise NotImplementedError
+
+    async def find_retrieval_traces(
+        self,
+        fiber_id: str | None = None,
+        query_contains: str | None = None,
+        since: datetime | None = None,
+        limit: int = 20,
+    ) -> list[RetrievalTrace]:
+        """Find retrieval traces matching filters, newest first.
+
+        Args:
+            fiber_id: Only traces whose fiber_ids contain this id
+            query_contains: Case-insensitive substring match on the query
+            since: Only traces created at/after this time
+            limit: Maximum results
+
+        Returns:
+            List of matching RetrievalTrace, newest first
+        """
+        raise NotImplementedError
+
+    async def prune_retrieval_traces(
+        self,
+        retention_days: int | None = None,
+        max_traces: int | None = None,
+    ) -> int:
+        """Prune retrieval traces by age and/or total count (delete-oldest).
+
+        Args:
+            retention_days: Remove traces older than this many days (None = skip)
+            max_traces: Keep at most this many newest traces (None = skip)
+
+        Returns:
+            Number of traces removed
         """
         raise NotImplementedError
 

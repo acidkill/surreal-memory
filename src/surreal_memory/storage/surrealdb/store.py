@@ -30,6 +30,7 @@ from surreal_memory.storage.surrealdb.depth_priors import SurrealDBDepthPriorsMi
 from surreal_memory.storage.surrealdb.keyword_entity import SurrealDBKeywordEntityMixin
 from surreal_memory.storage.surrealdb.maturation import SurrealDBMaturationMixin
 from surreal_memory.storage.surrealdb.projects import SurrealDBProjectsMixin
+from surreal_memory.storage.surrealdb.retrieval_trace import SurrealDBRetrievalTraceMixin
 from surreal_memory.storage.surrealdb.review_schedules import SurrealDBReviewSchedulesMixin
 from surreal_memory.storage.surrealdb.schema import ensure_schema
 from surreal_memory.storage.surrealdb.sources import SurrealDBSourcesMixin
@@ -330,6 +331,7 @@ def _row_to_fiber(row: dict[str, Any]) -> Fiber:
 
 class SurrealDBStorage(
     SurrealDBTypedMemoryMixin,
+    SurrealDBRetrievalTraceMixin,
     SurrealDBProjectsMixin,
     SurrealDBSourcesMixin,
     SurrealDBAlertsMixin,

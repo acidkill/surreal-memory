@@ -43,8 +43,8 @@ class SQLiteSourcesMixin:
         await conn.execute(
             """INSERT INTO sources
                (id, brain_id, name, source_type, version, effective_date,
-                expires_at, status, file_hash, metadata, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                expires_at, status, file_hash, metadata, created_at, updated_at, trust)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 source.id,
                 source.brain_id,
@@ -58,6 +58,7 @@ class SQLiteSourcesMixin:
                 json.dumps(source.metadata),
                 source.created_at.isoformat(),
                 source.updated_at.isoformat(),
+                source.trust,
             ),
         )
         await conn.commit()
@@ -243,4 +244,5 @@ def _row_to_source(row: dict[str, Any]) -> Source:
         metadata=metadata,
         created_at=_parse_dt(row.get("created_at")) or utcnow(),
         updated_at=_parse_dt(row.get("updated_at")) or utcnow(),
+        trust=(float(row["trust"]) if row.get("trust") is not None else None),
     )

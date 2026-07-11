@@ -7,7 +7,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 SCHEMA_SQL = """
 -- ============================================================
@@ -155,9 +155,14 @@ DEFINE FIELD tier          ON typed_memory TYPE string DEFAULT 'warm';
 DEFINE FIELD metadata      ON typed_memory TYPE object FLEXIBLE DEFAULT {};
 DEFINE FIELD created_at    ON typed_memory TYPE datetime DEFAULT time::now();
 DEFINE FIELD updated_at    ON typed_memory TYPE datetime DEFAULT time::now();
-DEFINE INDEX idx_typed_brain ON typed_memory FIELDS brain_id;
-DEFINE INDEX idx_typed_type  ON typed_memory FIELDS brain_id, memory_type;
-DEFINE INDEX idx_typed_fiber ON typed_memory FIELDS brain_id, fiber_id UNIQUE;
+DEFINE FIELD valid_from    ON typed_memory TYPE option<datetime>;
+DEFINE FIELD valid_until   ON typed_memory TYPE option<datetime>;
+DEFINE FIELD superseded_by ON typed_memory TYPE option<string>;
+DEFINE INDEX idx_typed_brain   ON typed_memory FIELDS brain_id;
+DEFINE INDEX idx_typed_type    ON typed_memory FIELDS brain_id, memory_type;
+DEFINE INDEX idx_typed_fiber   ON typed_memory FIELDS brain_id, fiber_id UNIQUE;
+DEFINE INDEX idx_typed_valid   ON typed_memory FIELDS brain_id, valid_until;
+DEFINE INDEX idx_typed_expires ON typed_memory FIELDS brain_id, expires_at;
 
 -- Projects (named scopes for grouping memories)
 DEFINE TABLE project SCHEMALESS;
@@ -181,8 +186,25 @@ DEFINE FIELD file_hash      ON source TYPE string DEFAULT '';
 DEFINE FIELD metadata       ON source TYPE object FLEXIBLE DEFAULT {};
 DEFINE FIELD created_at     ON source TYPE datetime DEFAULT time::now();
 DEFINE FIELD updated_at     ON source TYPE datetime DEFAULT time::now();
+DEFINE FIELD trust          ON source TYPE option<float>;
 DEFINE INDEX idx_source_brain ON source FIELDS brain_id;
 DEFINE INDEX idx_source_name  ON source FIELDS brain_id, name;
+
+-- Retrieval traces (queryable recall provenance / telemetry)
+DEFINE TABLE retrieval_trace SCHEMAFULL;
+DEFINE FIELD id           ON retrieval_trace TYPE string;
+DEFINE FIELD brain_id     ON retrieval_trace TYPE string;
+DEFINE FIELD session_id   ON retrieval_trace TYPE option<string>;
+DEFINE FIELD query        ON retrieval_trace TYPE string DEFAULT '';
+DEFINE FIELD depth_used   ON retrieval_trace TYPE int DEFAULT 0;
+DEFINE FIELD mode         ON retrieval_trace TYPE string DEFAULT '';
+DEFINE FIELD confidence   ON retrieval_trace TYPE float DEFAULT 0.0;
+DEFINE FIELD latency_ms   ON retrieval_trace TYPE float DEFAULT 0.0;
+DEFINE FIELD fiber_ids    ON retrieval_trace TYPE array<string> DEFAULT [];
+DEFINE FIELD payload      ON retrieval_trace TYPE object FLEXIBLE DEFAULT {};
+DEFINE FIELD created_at   ON retrieval_trace TYPE datetime DEFAULT time::now();
+DEFINE INDEX idx_trace_brain   ON retrieval_trace FIELDS brain_id;
+DEFINE INDEX idx_trace_created ON retrieval_trace FIELDS brain_id, created_at;
 
 -- Alerts (system-generated warnings and recommendations)
 DEFINE TABLE alerts SCHEMAFULL;

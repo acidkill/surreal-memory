@@ -60,6 +60,7 @@ def _row_to_source(row: dict[str, Any]) -> Source:
         metadata=metadata,
         created_at=_parse_datetime(row.get("created_at")) or utcnow(),
         updated_at=_parse_datetime(row.get("updated_at")) or utcnow(),
+        trust=(float(row["trust"]) if row.get("trust") is not None else None),
     )
 
 
@@ -100,6 +101,7 @@ class SurrealDBSourcesMixin:
             "metadata": dict(source.metadata),
             "created_at": source.created_at,
             "updated_at": source.updated_at,
+            "trust": source.trust,
         }
 
         content_data = {k: v for k, v in record_data.items() if k != "id"}

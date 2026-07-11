@@ -193,6 +193,25 @@ def row_to_typed_memory(row: aiosqlite.Row) -> TypedMemory:
     except (IndexError, KeyError):
         pass
 
+    # validity/supersession fields added in schema v39 — handle missing columns gracefully
+    valid_from = None
+    valid_until = None
+    superseded_by = None
+    try:
+        _vf = row["valid_from"]
+        valid_from = datetime.fromisoformat(_vf) if _vf else None
+    except (IndexError, KeyError):
+        pass
+    try:
+        _vu = row["valid_until"]
+        valid_until = datetime.fromisoformat(_vu) if _vu else None
+    except (IndexError, KeyError):
+        pass
+    try:
+        superseded_by = row["superseded_by"]
+    except (IndexError, KeyError):
+        pass
+
     return TypedMemory(
         fiber_id=row["fiber_id"],
         memory_type=MemoryType(row["memory_type"]),
@@ -206,6 +225,9 @@ def row_to_typed_memory(row: aiosqlite.Row) -> TypedMemory:
         trust_score=trust_score,
         source=source,
         tier=tier,
+        valid_from=valid_from,
+        valid_until=valid_until,
+        superseded_by=superseded_by,
     )
 
 

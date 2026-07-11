@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -14,7 +15,7 @@ from surreal_memory.core.memory_types import (
     TypedMemory,
 )
 from surreal_memory.storage.sqlite_row_mappers import provenance_to_dict
-from surreal_memory.storage.surrealdb._ids import _to_surreal_id
+from surreal_memory.storage.surrealdb._ids import _safe_brain_id, _to_surreal_id
 from surreal_memory.utils.timeutils import utcnow
 
 logger = logging.getLogger(__name__)
@@ -93,6 +94,9 @@ def _row_to_typed_memory(row: dict[str, Any]) -> TypedMemory:
         trust_score=trust_score,
         source=row.get("source"),
         tier=str(row.get("tier") or "warm"),
+        valid_from=_parse_datetime(row.get("valid_from")),
+        valid_until=_parse_datetime(row.get("valid_until")),
+        superseded_by=(str(row["superseded_by"]) if row.get("superseded_by") is not None else None),
     )
 
 
@@ -135,6 +139,9 @@ class SurrealDBTypedMemoryMixin:
             "project_id": typed_memory.project_id,
             "expires_at": typed_memory.expires_at,
             "tier": typed_memory.tier,
+            "valid_from": typed_memory.valid_from,
+            "valid_until": typed_memory.valid_until,
+            "superseded_by": typed_memory.superseded_by,
             "metadata": full_metadata,
             "created_at": typed_memory.created_at,
             "updated_at": utcnow(),
@@ -213,6 +220,40 @@ class SurrealDBTypedMemoryMixin:
 
         return memories
 
+    async def get_typed_memories_batch(self, fiber_ids: Sequence[str]) -> dict[str, TypedMemory]:
+        ids = list(fiber_ids)
+        if not ids:
+            return {}
+        brain_id = self._get_brain_id()
+        # Inline the validated brain_id literal so the brain_id index is used
+        # (a $bind falls back to a full table scan on SurrealDB 3.2.0).
+        lit = f'"{_safe_brain_id(brain_id)}"'
+        rows = await self._query(
+            f"SELECT * FROM typed_memory WHERE brain_id = {lit} AND fiber_id IN $fids",
+            fids=ids,
+        )
+        result: dict[str, TypedMemory] = {}
+        for r in rows:
+            tm = _row_to_typed_memory(r)
+            result[tm.fiber_id] = tm
+        return result
+
+    async def get_expiring_memories(
+        self, within_days: int = 7, limit: int = 200
+    ) -> list[TypedMemory]:
+        brain_id = self._get_brain_id()
+        capped = min(int(limit), 1000)
+        lit = f'"{_safe_brain_id(brain_id)}"'
+        deadline = utcnow() + timedelta(days=within_days)
+        rows = await self._query(
+            f"SELECT * FROM typed_memory WHERE brain_id = {lit} "
+            "AND expires_at IS NOT NONE AND expires_at > time::now() "
+            "AND expires_at <= $deadline "
+            f"ORDER BY expires_at ASC LIMIT {capped}",
+            deadline=deadline,
+        )
+        return [_row_to_typed_memory(r) for r in rows]
+
     async def count_typed_memories(
         self,
         tier: str | None = None,
@@ -267,6 +308,9 @@ class SurrealDBTypedMemoryMixin:
                 "project_id": typed_memory.project_id,
                 "expires_at": typed_memory.expires_at,
                 "tier": typed_memory.tier,
+                "valid_from": typed_memory.valid_from,
+                "valid_until": typed_memory.valid_until,
+                "superseded_by": typed_memory.superseded_by,
                 "metadata": full_metadata,
                 "updated_at": utcnow(),
             },

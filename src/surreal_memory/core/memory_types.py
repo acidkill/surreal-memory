@@ -322,9 +322,9 @@ class TypedMemory:
 
     def with_validity(
         self,
-        valid_from: datetime | None = _UNSET,  # type: ignore[assignment]
-        valid_until: datetime | None = _UNSET,  # type: ignore[assignment]
-        superseded_by: str | None = _UNSET,  # type: ignore[assignment]
+        valid_from: datetime | None = _UNSET,
+        valid_until: datetime | None = _UNSET,
+        superseded_by: str | None = _UNSET,
     ) -> TypedMemory:
         """Return a new TypedMemory with updated validity fields.
 

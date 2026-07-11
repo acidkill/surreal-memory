@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Sequence
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -42,8 +43,8 @@ class SQLiteTypedMemoryMixin:
             """INSERT OR REPLACE INTO typed_memories
                (fiber_id, brain_id, memory_type, priority, provenance,
                 expires_at, project_id, tags, metadata, created_at,
-                trust_score, source, tier)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                trust_score, source, tier, valid_from, valid_until, superseded_by)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 typed_memory.fiber_id,
                 brain_id,
@@ -58,6 +59,9 @@ class SQLiteTypedMemoryMixin:
                 typed_memory.trust_score,
                 typed_memory.source,
                 typed_memory.tier,
+                typed_memory.valid_from.isoformat() if typed_memory.valid_from else None,
+                typed_memory.valid_until.isoformat() if typed_memory.valid_until else None,
+                typed_memory.superseded_by,
             ),
         )
         await conn.commit()
@@ -160,7 +164,8 @@ class SQLiteTypedMemoryMixin:
         cursor = await conn.execute(
             """UPDATE typed_memories SET memory_type = ?, priority = ?,
                provenance = ?, expires_at = ?, project_id = ?,
-               tags = ?, metadata = ?, trust_score = ?, source = ?, tier = ?
+               tags = ?, metadata = ?, trust_score = ?, source = ?, tier = ?,
+               valid_from = ?, valid_until = ?, superseded_by = ?
                WHERE fiber_id = ? AND brain_id = ?""",
             (
                 typed_memory.memory_type.value,
@@ -173,6 +178,9 @@ class SQLiteTypedMemoryMixin:
                 typed_memory.trust_score,
                 typed_memory.source,
                 typed_memory.tier,
+                typed_memory.valid_from.isoformat() if typed_memory.valid_from else None,
+                typed_memory.valid_until.isoformat() if typed_memory.valid_until else None,
+                typed_memory.superseded_by,
                 typed_memory.fiber_id,
                 brain_id,
             ),
@@ -258,6 +266,43 @@ class SQLiteTypedMemoryMixin:
         async with conn.execute(query, params) as cursor:
             rows = await cursor.fetchall()
             return [row_to_typed_memory(row) for row in rows]
+
+    async def get_typed_memories_batch(self, fiber_ids: Sequence[str]) -> dict[str, TypedMemory]:
+        ids = list(fiber_ids)
+        if not ids:
+            return {}
+        conn = self._ensure_conn()
+        brain_id = self._get_brain_id()
+        placeholders = ",".join("?" for _ in ids)
+        result: dict[str, TypedMemory] = {}
+        async with conn.execute(
+            f"SELECT * FROM typed_memories WHERE brain_id = ? AND fiber_id IN ({placeholders})",
+            [brain_id, *ids],
+        ) as cursor:
+            rows = await cursor.fetchall()
+        for row in rows:
+            tm = row_to_typed_memory(row)
+            result[tm.fiber_id] = tm
+        return result
+
+    async def get_expiring_memories(
+        self, within_days: int = 7, limit: int = 200
+    ) -> list[TypedMemory]:
+        conn = self._ensure_conn()
+        brain_id = self._get_brain_id()
+        capped = min(int(limit), 1000)
+        now = utcnow()
+        now_iso = now.isoformat()
+        deadline_iso = (now + timedelta(days=within_days)).isoformat()
+        async with conn.execute(
+            """SELECT * FROM typed_memories
+               WHERE brain_id = ? AND expires_at IS NOT NULL
+                 AND expires_at > ? AND expires_at <= ?
+               ORDER BY expires_at ASC LIMIT ?""",
+            (brain_id, now_iso, deadline_iso, capped),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [row_to_typed_memory(row) for row in rows]
 
     async def get_expiring_memory_count(self, within_days: int = 7) -> int:
         conn = self._ensure_conn()

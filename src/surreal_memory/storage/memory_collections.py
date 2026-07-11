@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime, timedelta
 from typing import Literal
 
@@ -255,6 +256,25 @@ class InMemoryCollectionsMixin:
             and tm.expires_at is not None
             and now < tm.expires_at <= deadline
         ]
+
+    async def get_typed_memories_batch(self, fiber_ids: Sequence[str]) -> dict[str, TypedMemory]:
+        brain_id = self._get_brain_id()
+        store = self._typed_memories[brain_id]
+        return {fid: store[fid] for fid in fiber_ids if fid in store}
+
+    async def get_expiring_memories(
+        self, within_days: int = 7, limit: int = 200
+    ) -> list[TypedMemory]:
+        brain_id = self._get_brain_id()
+        now = utcnow()
+        deadline = now + timedelta(days=within_days)
+        expiring = [
+            tm
+            for tm in self._typed_memories[brain_id].values()
+            if tm.expires_at is not None and now < tm.expires_at <= deadline
+        ]
+        expiring.sort(key=lambda tm: tm.expires_at or now)
+        return expiring[:limit]
 
     async def get_expiring_memory_count(self, within_days: int = 7) -> int:
         brain_id = self._get_brain_id()

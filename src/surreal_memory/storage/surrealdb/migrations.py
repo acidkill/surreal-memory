@@ -43,8 +43,9 @@ from surreal_memory.storage.surrealdb.schema import SCHEMA_VERSION, SYNAPSE_V8_D
 
 logger = logging.getLogger(__name__)
 
-TARGET_VERSION = SCHEMA_VERSION  # 8
-SOURCE_VERSION = TARGET_VERSION - 1  # 7 (flat synapse table)
+TARGET_VERSION = SCHEMA_VERSION  # 9
+SOURCE_VERSION = 7  # flat synapse table (pre 7->8 migration)
+RELATION_SYNAPSE_VERSION = 8  # synapse became a RELATION table in the 7->8 migration
 
 BACKUP_TABLE = "synapse_migration_backup"
 BATCH_SIZE = 500
@@ -189,10 +190,13 @@ async def detect_db_version(conn: Any) -> int:
         tables = info[0].get("tables") or {}
 
     synapse_def = tables.get("synapse", "") if isinstance(tables, dict) else ""
+    has_trace = isinstance(tables, dict) and "retrieval_trace" in tables
     if not synapse_def:
-        return TARGET_VERSION  # fresh DB — ensure_schema already built v8
+        return TARGET_VERSION  # fresh DB — ensure_schema already built the latest schema
     if "TYPE RELATION" in str(synapse_def):
-        return TARGET_VERSION  # already migrated
+        # Relation synapse = v8 or newer. The v9-only retrieval_trace table tells a
+        # v9 DB apart from a v8 DB that still needs the additive 8->9 migration.
+        return TARGET_VERSION if has_trace else RELATION_SYNAPSE_VERSION
     return SOURCE_VERSION  # flat/NORMAL table — needs the 7->8 migration
 
 
@@ -466,7 +470,7 @@ async def _phase_verifying(conn: Any, state: dict[str, Any]) -> None:
             f"(old_count={old_count}, skipped={skipped}). Originals preserved in '{BACKUP_TABLE}'."
         )
 
-    await _stamp_version(conn, TARGET_VERSION)
+    await _stamp_version(conn, RELATION_SYNAPSE_VERSION)
     state["phase"] = PHASE_DONE
     await _save_state(conn, state)
     logger.info(
@@ -511,8 +515,49 @@ async def _migrate_7_to_8(conn: Any) -> None:
         await _phase_verifying(conn, state)
 
 
+# Additive schema-v9 DDL (validity fields, source.trust, retrieval_trace table).
+# Idempotent: re-running DEFINE statements is safe. Mirrors the same statements in
+# schema.SCHEMA_SQL so a fresh ensure_schema build and a migrated DB converge.
+_V9_DDL = """
+DEFINE FIELD valid_from    ON typed_memory TYPE option<datetime>;
+DEFINE FIELD valid_until   ON typed_memory TYPE option<datetime>;
+DEFINE FIELD superseded_by ON typed_memory TYPE option<string>;
+DEFINE INDEX idx_typed_valid   ON typed_memory FIELDS brain_id, valid_until;
+DEFINE INDEX idx_typed_expires ON typed_memory FIELDS brain_id, expires_at;
+DEFINE FIELD trust ON source TYPE option<float>;
+DEFINE TABLE retrieval_trace SCHEMAFULL;
+DEFINE FIELD id           ON retrieval_trace TYPE string;
+DEFINE FIELD brain_id     ON retrieval_trace TYPE string;
+DEFINE FIELD session_id   ON retrieval_trace TYPE option<string>;
+DEFINE FIELD query        ON retrieval_trace TYPE string DEFAULT '';
+DEFINE FIELD depth_used   ON retrieval_trace TYPE int DEFAULT 0;
+DEFINE FIELD mode         ON retrieval_trace TYPE string DEFAULT '';
+DEFINE FIELD confidence   ON retrieval_trace TYPE float DEFAULT 0.0;
+DEFINE FIELD latency_ms   ON retrieval_trace TYPE float DEFAULT 0.0;
+DEFINE FIELD fiber_ids    ON retrieval_trace TYPE array<string> DEFAULT [];
+DEFINE FIELD payload      ON retrieval_trace TYPE object FLEXIBLE DEFAULT {};
+DEFINE FIELD created_at   ON retrieval_trace TYPE datetime DEFAULT time::now();
+DEFINE INDEX idx_trace_brain   ON retrieval_trace FIELDS brain_id;
+DEFINE INDEX idx_trace_created ON retrieval_trace FIELDS brain_id, created_at;
+"""
+
+
+async def _migrate_8_to_9(conn: Any) -> None:
+    """Additive schema-v9 migration.
+
+    Adds TypedMemory validity fields (+ indexes), Source.trust, and the
+    retrieval_trace table. Pure idempotent DDL — no data movement, no resumable
+    state (unlike 7->8). Safe to run twice; stamps version 9 on completion.
+    """
+    await conn.query(_V9_DDL)
+    await _stamp_version(conn, TARGET_VERSION)
+
+
 # Registry mirrors sqlite_schema.MIGRATIONS: {(from, to): migrate_callable}.
-MIGRATIONS = {(SOURCE_VERSION, TARGET_VERSION): _migrate_7_to_8}
+MIGRATIONS = {
+    (SOURCE_VERSION, RELATION_SYNAPSE_VERSION): _migrate_7_to_8,  # (7, 8)
+    (RELATION_SYNAPSE_VERSION, TARGET_VERSION): _migrate_8_to_9,  # (8, 9)
+}
 
 
 # --------------------------------------------------------------------------- #
