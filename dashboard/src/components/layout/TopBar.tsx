@@ -1,4 +1,4 @@
-import { SidebarSimple, Sun, Moon, Monitor, Globe, Question } from "@phosphor-icons/react"
+import { SidebarSimple, Sun, Moon, Monitor, Question } from "@phosphor-icons/react"
 import { Button } from "@/components/ui/button"
 import { useLayoutStore } from "@/stores/useLayoutStore"
 import { useStats, useHealthCheck } from "@/api/hooks/useDashboard"
@@ -22,15 +22,9 @@ export function TopBar() {
   const { sidebarOpen, toggleSidebar, theme, cycleTheme } = useLayoutStore()
   const { data: stats } = useStats()
   const { data: healthCheck } = useHealthCheck()
-  const { t, i18n } = useTranslation()
+  const { t } = useTranslation()
 
   const ThemeIcon = themeIcons[theme]
-  const currentLang = i18n.language?.startsWith("vi") ? "vi" : "en"
-
-  const toggleLanguage = () => {
-    const next = currentLang === "vi" ? "en" : "vi"
-    i18n.changeLanguage(next)
-  }
 
   return (
     <header className="sticky top-0 z-20 flex h-14 items-center gap-4 border-b border-border bg-background/80 px-4 backdrop-blur-sm">
@@ -79,18 +73,6 @@ export function TopBar() {
         >
           <Question className="size-4" />
         </a>
-      </Button>
-
-      {/* Language toggle */}
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={toggleLanguage}
-        className="gap-1.5 px-2 text-xs font-medium"
-        aria-label="Switch language"
-      >
-        <Globe className="size-3.5" />
-        {currentLang === "vi" ? "VI" : "EN"}
       </Button>
 
       {/* Theme toggle */}
