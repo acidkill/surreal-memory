@@ -98,7 +98,7 @@ class TestMemoryEncryptor:
         from surreal_memory.safety.encryption import MemoryEncryptor
 
         encryptor = MemoryEncryptor(keys_dir=tmp_path)
-        content = "mật khẩu: p@$$w0rd_安全_🔐"
+        content = "hasło: p@$$w0rd_安全_🔐"
         result = encryptor.encrypt(content, "default")
         assert encryptor.decrypt(result.ciphertext, "default") == content
 

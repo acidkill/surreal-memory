@@ -165,25 +165,6 @@ class TestEncodingFlow:
         assert result2.fiber is not None
 
     @pytest.mark.asyncio
-    async def test_encode_vietnamese_content(self, storage: InMemoryStorage) -> None:
-        """Test encoding Vietnamese content."""
-        brain = await storage.get_brain(storage._current_brain_id)  # type: ignore
-        assert brain is not None
-
-        encoder = MemoryEncoder(storage, brain.config)
-
-        result = await encoder.encode(
-            "Chiều nay 3h uống cà phê ở Viva với Minh",
-            timestamp=datetime(2024, 2, 4, 15, 0),
-        )
-
-        # Should create neurons
-        assert len(result.neurons_created) > 0
-
-        # Should create fiber
-        assert result.fiber is not None
-
-    @pytest.mark.asyncio
     async def test_fiber_has_time_bounds(self, storage: InMemoryStorage) -> None:
         """Test that created fiber has time bounds."""
         brain = await storage.get_brain(storage._current_brain_id)  # type: ignore

@@ -579,7 +579,6 @@ class TestNmemRecallWithBudget:
             patch.object(server, "_get_maintenance_hint", return_value=None),
             patch.object(server, "get_update_hint", return_value=None),
             patch.object(server, "_check_onboarding", return_value=None),
-            patch.object(server, "_check_cross_language_hint", return_value=None),
             patch.object(server, "_surface_pending_alerts", return_value={}),
             patch.object(server, "_record_tool_action"),
             patch("surreal_memory.engine.retrieval.ReflexPipeline") as mock_pipeline_cls,

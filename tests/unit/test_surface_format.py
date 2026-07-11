@@ -54,7 +54,7 @@ depth_available: [surface, detail, deep]
   →root_cause→ "auto-created attrs always truthy"
   →fix→ "explicitly mock config.encryption"
 
-[p1] User prefers Vietnamese chat (preference) {p:9}
+[p1] User prefers concise answers (preference) {p:9}
 
 # ── CLUSTERS ───────────────────────────────────────
 # Auto-detected topic groups
@@ -516,27 +516,27 @@ def test_trim_cleans_up_cluster_refs():
 
 
 def test_utf8_entity_names():
-    """Parse .nm with Vietnamese entity names."""
+    """Parse .nm with non-ASCII (UTF-8) entity names."""
     text = """\
 ---
-brain: vietnamese
+brain: demo
 updated: 2026-01-01T00:00:00
 ---
 
 # ── GRAPH ──────────────────────────────────────────
 
-[d1] Chọn PostgreSQL cho thanh toán (decision) {p:8}
-  →caused→ "Cần ACID cho giao dịch"
+[d1] Wybór PostgreSQL dla płatności (decision) {p:8}
+  →caused→ "Potrzeba ACID dla transakcji"
 
 # ── META ───────────────────────────────────────────
 
 coverage: 0.5
-top_entities: [PostgreSQL, Thanh toán, Redis]
+top_entities: [PostgreSQL, Płatności, Redis]
 """
     surface = parse(text)
-    assert surface.graph[0].node.content == "Chọn PostgreSQL cho thanh toán"
-    assert surface.graph[0].edges[0].target_text == "Cần ACID cho giao dịch"
-    # Note: Vietnamese in top_entities may have spaces — parser handles this
+    assert surface.graph[0].node.content == "Wybór PostgreSQL dla płatności"
+    assert surface.graph[0].edges[0].target_text == "Potrzeba ACID dla transakcji"
+    # Note: non-ASCII entities in top_entities may have spaces — parser handles this
 
 
 # ── Frozen Immutability ────────────────────────────

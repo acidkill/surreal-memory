@@ -733,19 +733,19 @@ class TestFTS:
         assert results[0].content == "API design patterns for REST"
 
     @pytest.mark.asyncio
-    async def test_fts_unicode_vietnamese(self, storage: SQLiteStorage) -> None:
-        """Test that Vietnamese diacritics removal matches both accented and unaccented forms."""
-        n1 = Neuron.create(type=NeuronType.CONCEPT, content="Tôi thích uống cà phê buổi sáng")
-        n2 = Neuron.create(type=NeuronType.CONCEPT, content="Ca phe is coffee in Vietnamese")
+    async def test_fts_unicode_accent_insensitive(self, storage: SQLiteStorage) -> None:
+        """Test that diacritics removal matches both accented and unaccented forms."""
+        n1 = Neuron.create(type=NeuronType.CONCEPT, content="Un café au résumé naïve")
+        n2 = Neuron.create(type=NeuronType.CONCEPT, content="A cafe is coffee in French")
         await storage.add_neuron(n1)
         await storage.add_neuron(n2)
 
-        # With remove_diacritics=2, "cà phê" matches both accented and unaccented forms
-        results = await storage.find_neurons(content_contains="cà phê")
+        # With remove_diacritics=2, "café" matches both accented and unaccented forms
+        results = await storage.find_neurons(content_contains="café")
         assert len(results) == 2
 
         # Unaccented query also matches the accented content
-        results = await storage.find_neurons(content_contains="ca phe")
+        results = await storage.find_neurons(content_contains="cafe")
         assert len(results) == 2
 
     @pytest.mark.asyncio

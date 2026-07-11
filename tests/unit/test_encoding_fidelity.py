@@ -1,7 +1,7 @@
 """Tests for Phase D — Encoding Fidelity.
 
 Covers:
-- Token normalizer (Vietnamese compound, diacritics stripping)
+- Token normalizer (English pass-through)
 - FTS5 phrase query builder
 - Phrase match heuristic
 - Raw keyword storage in anchor neuron metadata
@@ -17,53 +17,13 @@ import pytest
 from surreal_memory.engine.token_normalizer import (
     build_fts_phrase_query,
     normalize_for_search,
-    normalize_vietnamese_compound,
     should_use_phrase_match,
 )
-
-# ── Vietnamese compound normalization ────────────────────────────
-
-
-class TestNormalizeVietnameseCompound:
-    def test_space_to_underscore(self) -> None:
-        result = normalize_vietnamese_compound("doanh thu")
-        assert "doanh thu" in result
-        assert "doanh_thu" in result
-
-    def test_underscore_to_space(self) -> None:
-        result = normalize_vietnamese_compound("doanh_thu")
-        assert "doanh_thu" in result
-        assert "doanh thu" in result
-
-    def test_single_word(self) -> None:
-        result = normalize_vietnamese_compound("hello")
-        assert result == ["hello"]
-
-    def test_empty(self) -> None:
-        result = normalize_vietnamese_compound("")
-        assert result == []
-
-    def test_no_separator(self) -> None:
-        result = normalize_vietnamese_compound("shorttrend")
-        assert result == ["shorttrend"]
-
 
 # ── Full search normalization ────────────────────────────────────
 
 
 class TestNormalizeForSearch:
-    def test_vietnamese_with_diacritics(self) -> None:
-        result = normalize_for_search("tự thân")
-        assert "tự thân" in result
-        assert "tự_thân" in result
-        # Diacritics-stripped variant
-        assert "tu than" in result
-
-    def test_vietnamese_compound_variants(self) -> None:
-        result = normalize_for_search("doanh thu")
-        assert "doanh thu" in result
-        assert "doanh_thu" in result
-
     def test_english_no_extra_variants(self) -> None:
         result = normalize_for_search("authentication")
         assert result == ["authentication"]
@@ -75,13 +35,6 @@ class TestNormalizeForSearch:
     def test_lowercased(self) -> None:
         result = normalize_for_search("API")
         assert all(v == v.lower() for v in result)
-
-    def test_diacritics_stripped_compound(self) -> None:
-        result = normalize_for_search("lợi nhuận")
-        assert "lợi nhuận" in result
-        assert "lợi_nhuận" in result
-        assert "loi nhuan" in result
-        assert "loi_nhuan" in result
 
 
 # ── FTS5 phrase query builder ────────────────────────────────────
@@ -109,12 +62,6 @@ class TestBuildFtsPhraseQuery:
 
 
 class TestShouldUsePhraseMatch:
-    def test_vietnamese_compound(self) -> None:
-        assert should_use_phrase_match("tự thân") is True
-
-    def test_vietnamese_three_words(self) -> None:
-        assert should_use_phrase_match("lợi nhuận ròng") is True
-
     def test_single_word(self) -> None:
         assert should_use_phrase_match("test") is False
 

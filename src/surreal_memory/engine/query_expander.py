@@ -1,4 +1,4 @@
-"""Smart query expansion — synonym, abbreviation, and cross-language expansion.
+"""Smart query expansion — synonym and abbreviation expansion.
 
 Expands query keywords at retrieval time so that keyword anchor search
 finds more relevant neurons without requiring embedding. All maps are
@@ -33,15 +33,6 @@ _SYNONYM_GROUPS: tuple[frozenset[str], ...] = (
     frozenset({"loss", "deficit", "shortfall"}),
     frozenset({"asset", "holding", "portfolio"}),
     frozenset({"liability", "debt", "obligation"}),
-    # Vietnamese — general
-    frozenset({"chi phí", "phí", "giá", "chi phi"}),
-    frozenset({"doanh thu", "thu nhập", "doanh_thu", "thu_nhap"}),
-    frozenset({"lỗi", "sự cố", "su co", "loi"}),
-    frozenset({"triển khai", "trien khai"}),
-    frozenset({"cấu hình", "cau hinh"}),
-    frozenset({"người dùng", "tài khoản", "nguoi dung", "tai khoan"}),
-    frozenset({"lợi nhuận", "lãi", "loi nhuan"}),
-    frozenset({"thua lỗ", "lỗ", "thua lo"}),
 )
 
 # Build reverse lookup: word → frozenset (computed once at import)
@@ -84,34 +75,6 @@ ABBREVIATION_MAP: dict[str, str] = {
 _REVERSE_ABBREVIATION: dict[str, str] = {_full: _abbr for _abbr, _full in ABBREVIATION_MAP.items()}
 
 
-# ── Cross-language map ───────────────────────────────────────────
-# Bidirectional pairs: EN ↔ VI keyword hints for non-embedding recall.
-
-_CROSS_LANG_PAIRS: tuple[tuple[str, str], ...] = (
-    ("cost", "chi phí"),
-    ("error", "lỗi"),
-    ("deploy", "triển khai"),
-    ("revenue", "doanh thu"),
-    ("decision", "quyết định"),
-    ("pattern", "mẫu"),
-    ("workflow", "quy trình"),
-    ("profit", "lợi nhuận"),
-    ("loss", "thua lỗ"),
-    ("user", "người dùng"),
-    ("config", "cấu hình"),
-    ("test", "kiểm thử"),
-    ("database", "cơ sở dữ liệu"),
-    ("account", "tài khoản"),
-    ("memory", "bộ nhớ"),
-)
-
-# Build bidirectional lookup: word → list of cross-language equivalents
-CROSS_LANG_MAP: dict[str, list[str]] = {}
-for _en, _vi in _CROSS_LANG_PAIRS:
-    CROSS_LANG_MAP.setdefault(_en.lower(), []).append(_vi.lower())
-    CROSS_LANG_MAP.setdefault(_vi.lower(), []).append(_en.lower())
-
-
 # ── Public API ───────────────────────────────────────────────────
 
 
@@ -120,11 +83,10 @@ def expand_terms(
     *,
     enable_synonyms: bool = True,
     enable_abbreviations: bool = True,
-    enable_cross_language: bool = True,
     max_per_term: int = 5,
     custom_synonyms: dict[str, list[str]] | None = None,
 ) -> list[str]:
-    """Expand keywords with synonyms, abbreviations, and cross-language hints.
+    """Expand keywords with synonyms and abbreviations.
 
     Returns a flat deduplicated list of expanded keywords (original + expansions).
     Never mutates the input list.
@@ -133,7 +95,6 @@ def expand_terms(
         keywords: Original keywords to expand.
         enable_synonyms: Enable synonym lookup.
         enable_abbreviations: Enable abbreviation expansion.
-        enable_cross_language: Enable cross-language hints.
         max_per_term: Max expansions per original term.
         custom_synonyms: Optional user-provided synonym groups.
 
@@ -162,7 +123,7 @@ def expand_terms(
 
         expansions: list[str] = []
 
-        # Vietnamese compound: space ↔ underscore
+        # Compound token variant: space ↔ underscore
         if " " in kw_lower:
             underscore_variant = kw_lower.replace(" ", "_")
             expansions.append(underscore_variant)
@@ -193,12 +154,6 @@ def expand_terms(
             abbr = _REVERSE_ABBREVIATION.get(kw_lower)
             if abbr:
                 expansions.append(abbr)
-
-        # Cross-language expansion
-        if enable_cross_language:
-            cross = CROSS_LANG_MAP.get(kw_lower)
-            if cross:
-                expansions.extend(cross)
 
         # Deduplicate and cap
         added = 0

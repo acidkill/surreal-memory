@@ -134,7 +134,6 @@ class TestEditTierWiring:
         handler._record_tool_action = AsyncMock()
         handler._check_onboarding = AsyncMock(return_value=None)
         handler._surface_pending_alerts = AsyncMock(return_value=None)
-        handler._check_cross_language_hint = AsyncMock(return_value=None)
 
         return handler, storage
 

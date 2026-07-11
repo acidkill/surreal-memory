@@ -101,7 +101,6 @@ _MEMORY_MARKER_RE = re.compile(
     r"|(?:lesson learned|takeaway|key insight|turns out|realized|discovered)"
     r"|(?:TODO|FIXME|need to|should|must|remember to)"
     r"|(?:prefer|always use|never use|don't use|avoid)"
-    r"|(?:quyết định|chọn|lỗi|sửa|bài học|hóa ra|cần phải)"
     r"|(?:saved|committed|pushed|deployed|released|shipped)"
     r"|(?:v\d+\.\d+)"
 )
@@ -224,8 +223,8 @@ async def _embedding_dedup(
 ) -> list[dict[str, Any]]:
     """Remove semantic near-duplicates using embedding cosine similarity.
 
-    Effective for Vietnamese text where different word forms produce
-    different simhashes but carry the same meaning.
+    Effective where different word forms produce different simhashes but
+    carry the same meaning.
 
     Falls back gracefully (returns original list) if no embedding
     provider is available.

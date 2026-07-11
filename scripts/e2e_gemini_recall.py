@@ -1,4 +1,4 @@
-"""E2E test: Train motorcycle manual PDF → Recall in English & Vietnamese via Gemini embeddings."""
+"""E2E test: Train motorcycle manual PDF → Recall in English via Gemini embeddings."""
 
 from __future__ import annotations
 
@@ -28,9 +28,9 @@ QUERIES = [
     ("EN", "How to change oil on KTM motorcycle?"),
     ("EN", "What is the recommended tire pressure?"),
     ("EN", "engine coolant specifications"),
-    ("VI", "áp suất lốp xe bao nhiêu?"),
-    ("VI", "cách thay dầu nhớt xe KTM"),
-    ("VI", "hệ thống phanh xe hoạt động thế nào?"),
+    ("EN", "How does the brake system work?"),
+    ("EN", "What tire size is recommended?"),
+    ("EN", "What type of oil is suitable for the bike?"),
 ]
 
 

@@ -61,7 +61,7 @@ _DATE_PATTERNS = (
 )
 
 _CURRENCY_PATTERN = re.compile(
-    r"^(?:[\$€£¥₫₹]\s*[\d,]+\.?\d*|[\d,]+\.?\d*\s*(?:VND|USD|EUR|GBP|JPY|đ|₫))$",
+    r"^(?:[\$€£¥₹]\s*[\d,]+\.?\d*|[\d,]+\.?\d*\s*(?:VND|USD|EUR|GBP|JPY))$",
     re.IGNORECASE,
 )
 

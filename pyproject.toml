@@ -60,12 +60,8 @@ encryption = [
 nlp-en = [
     "spacy>=3.6",
 ]
-nlp-vi = [
-    "underthesea>=6.0",
-    "pyvi>=0.1",
-]
 nlp = [
-    "surreal-memory[nlp-en,nlp-vi]",
+    "surreal-memory[nlp-en]",
 ]
 chromadb = [
     "chromadb>=0.4.0",
@@ -244,8 +240,6 @@ plugins = ["pydantic.mypy"]
 [[tool.mypy.overrides]]
 module = [
     "networkx.*",
-    "underthesea.*",
-    "pyvi.*",
     "chromadb.*",
     "mem0.*",
     "cognee.*",
@@ -293,7 +287,6 @@ markers = [
     "integration: tests requiring a live external service (e.g. SurrealDB via SURREALDB_URL)",
 ]
 filterwarnings = [
-    "ignore::DeprecationWarning:pyvi",
     "ignore::DeprecationWarning:numpy",
     "ignore:dtype:DeprecationWarning",
     "ignore:coroutine .* was never awaited:RuntimeWarning",

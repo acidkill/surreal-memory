@@ -70,7 +70,7 @@ def _format_inline(inp: CitationInput) -> str:
     """Compact in-text citation: [source/detail]."""
     meta = inp.metadata or {}
 
-    # Legal: [BLDS 2015, Điều 468]
+    # Legal: [SOX 2002, Article 301]
     if inp.source_type == "law":
         article = meta.get("article", "")
         year = _extract_year(inp)
@@ -78,7 +78,7 @@ def _format_inline(inp: CitationInput) -> str:
         if year:
             parts[0] = f"{inp.source_name} {year}"
         if article:
-            parts.append(f"Điều {article}")
+            parts.append(f"Article {article}")
         return f"[{', '.join(parts)}]"
 
     # Accounting/ledger: [Source, date, category]

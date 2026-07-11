@@ -1,4 +1,4 @@
-"""E2E test: Train motorcycle manual → Recall in English & Vietnamese via Ollama bge-m3 embeddings."""
+"""E2E test: Train motorcycle manual → Recall in English via Ollama bge-m3 embeddings."""
 
 from __future__ import annotations
 
@@ -25,113 +25,113 @@ BASE_QUERIES = [
     ("EN", "How to change oil on KTM motorcycle?"),
     ("EN", "What is the recommended tire pressure?"),
     ("EN", "engine coolant specifications"),
-    ("VI", "áp suất lốp xe bao nhiêu?"),
-    ("VI", "cách thay dầu nhớt xe KTM"),
-    ("VI", "hệ thống phanh xe hoạt động thế nào?"),
+    ("EN", "How does the brake system work?"),
+    ("EN", "What tire size is recommended?"),
+    ("EN", "What type of oil is suitable for the bike?"),
 ]
 
-# 100 Vietnamese queries (same as Gemini 100vi test)
-VI_QUERIES: list[tuple[str, str]] = [
-    ("oil", "cách thay dầu nhớt xe KTM"),
-    ("oil", "loại dầu nhớt nào phù hợp cho xe KTM"),
-    ("oil", "khi nào cần thay dầu động cơ"),
-    ("oil", "dung tích dầu nhớt xe là bao nhiêu"),
-    ("oil", "bước kiểm tra mức dầu nhớt"),
-    ("oil", "dầu nhớt tổng hợp hay khoáng cho xe mô tô"),
-    ("oil", "thay lọc dầu nhớt như thế nào"),
-    ("oil", "độ nhớt dầu khuyến nghị SAE bao nhiêu"),
-    ("oil", "dầu nhớt hộp số và dầu động cơ khác nhau không"),
-    ("oil", "tần suất thay dầu nhớt xe máy"),
-    ("tire", "áp suất lốp xe bao nhiêu"),
-    ("tire", "cách kiểm tra áp suất lốp"),
-    ("tire", "khi nào cần thay lốp xe"),
-    ("tire", "loại lốp nào phù hợp cho xe KTM"),
-    ("tire", "kích thước lốp trước và lốp sau"),
-    ("tire", "hệ thống cảm biến áp suất lốp TPMS hoạt động thế nào"),
-    ("tire", "áp suất lốp khi chở hai người"),
-    ("tire", "cách thay lốp xe mô tô"),
-    ("tire", "lốp xe mòn một bên là do nguyên nhân gì"),
-    ("tire", "nhiệt độ ảnh hưởng áp suất lốp thế nào"),
-    ("brake", "hệ thống phanh xe hoạt động thế nào"),
-    ("brake", "cách kiểm tra má phanh"),
-    ("brake", "khi nào cần thay dầu phanh"),
-    ("brake", "loại dầu phanh nào phù hợp DOT mấy"),
-    ("brake", "hệ thống ABS trên xe hoạt động ra sao"),
-    ("brake", "cách xả gió hệ thống phanh"),
-    ("brake", "phanh trước và phanh sau khác nhau thế nào"),
-    ("brake", "đèn cảnh báo phanh sáng là sao"),
-    ("brake", "độ dày má phanh tối thiểu bao nhiêu"),
-    ("brake", "cách điều chỉnh tay phanh"),
-    ("engine", "thông số kỹ thuật động cơ xe KTM"),
-    ("engine", "nhiệt độ hoạt động bình thường của động cơ"),
-    ("engine", "cách khởi động xe khi trời lạnh"),
-    ("engine", "tiếng kêu lạ từ động cơ là do đâu"),
-    ("engine", "hệ thống làm mát động cơ hoạt động thế nào"),
-    ("engine", "nước làm mát loại nào phù hợp"),
-    ("engine", "công suất tối đa của xe là bao nhiêu"),
-    ("engine", "momen xoắn cực đại bao nhiêu"),
-    ("engine", "tốc độ vòng tua máy tối đa"),
-    ("engine", "hệ thống phun nhiên liệu EFI"),
-    ("elec", "cách thay ắc quy xe"),
-    ("elec", "loại ắc quy phù hợp cho xe"),
-    ("elec", "kiểm tra hệ thống sạc ắc quy"),
-    ("elec", "đèn báo trên bảng đồng hồ nghĩa là gì"),
-    ("elec", "cách thay bóng đèn pha"),
-    ("elec", "hệ thống đánh lửa hoạt động thế nào"),
-    ("elec", "cầu chì xe nằm ở đâu"),
-    ("elec", "cách kiểm tra bugi xe máy"),
-    ("elec", "khoảng cách khe hở bugi bao nhiêu"),
-    ("elec", "sạc ắc quy bằng cách nào"),
-    ("chain", "cách căng xích xe"),
-    ("chain", "khi nào cần thay xích xe"),
-    ("chain", "loại dầu bôi trơn xích nào tốt"),
-    ("chain", "độ chùng xích tiêu chuẩn bao nhiêu"),
-    ("chain", "cách vệ sinh xích xe"),
-    ("chain", "nhông sên đĩa thay cùng lúc không"),
-    ("chain", "số răng nhông trước và nhông sau"),
-    ("chain", "cách kiểm tra độ mòn xích"),
-    ("chain", "xích DID hay RK tốt hơn"),
-    ("chain", "tần suất bôi trơn xích bao lâu"),
-    ("susp", "cách điều chỉnh giảm xóc trước"),
-    ("susp", "độ cứng giảm xóc phù hợp bao nhiêu"),
-    ("susp", "giảm xóc sau có điều chỉnh được không"),
-    ("susp", "áp suất nitơ giảm xóc bao nhiêu"),
-    ("susp", "khi nào cần thay dầu giảm xóc"),
-    ("susp", "chiều cao yên xe bao nhiêu"),
-    ("susp", "trọng lượng tối đa xe chịu được"),
-    ("susp", "hành trình giảm xóc trước bao nhiêu mm"),
-    ("susp", "cách kiểm tra giảm xóc bị hỏng"),
-    ("susp", "giảm xóc nguyên bản có tốt không"),
-    ("maint", "lịch bảo dưỡng định kỳ xe KTM"),
-    ("maint", "những mục kiểm tra trước khi chạy xe"),
-    ("maint", "cách thay lọc gió"),
-    ("maint", "khi nào cần vệ sinh kim phun"),
-    ("maint", "dung tích bình xăng bao nhiêu lít"),
-    ("maint", "loại xăng phù hợp RON bao nhiêu"),
-    ("maint", "cách rửa xe đúng cách"),
-    ("maint", "bảo quản xe khi không sử dụng lâu"),
-    ("maint", "momen siết bu lông bánh xe bao nhiêu"),
-    ("maint", "cách tháo và lắp bánh xe"),
-    ("safety", "trang bị an toàn cần thiết khi lái xe"),
-    ("safety", "cách sử dụng chế độ lái khác nhau"),
-    ("safety", "hệ thống kiểm soát lực kéo TCS"),
-    ("safety", "cách lái xe an toàn trong mưa"),
-    ("safety", "tốc độ tối đa xe chạy được"),
-    ("safety", "cách vận hành xe đúng cách cho người mới"),
-    ("safety", "chế độ lái sport và street khác nhau thế nào"),
-    ("safety", "hệ thống chống trượt hoạt động ra sao"),
-    ("safety", "cách đỗ xe an toàn dùng chân chống"),
-    ("safety", "quy trình tắt máy đúng cách"),
-    ("clutch", "cách điều chỉnh tay côn"),
-    ("clutch", "ly hợp trượt là gì"),
-    ("clutch", "khi nào cần thay lá côn"),
-    ("clutch", "hành trình tự do tay côn bao nhiêu"),
-    ("clutch", "hộp số quickshifter hoạt động thế nào"),
-    ("clutch", "cách sang số mượt mà nhất"),
-    ("clutch", "xe có mấy số"),
-    ("clutch", "dầu ly hợp và dầu phanh dùng chung không"),
-    ("clutch", "tiếng kêu khi nhả côn là bình thường không"),
-    ("clutch", "cách kiểm tra cáp côn"),
+# 100 English recall queries (same as Gemini 100-query test)
+RECALL_QUERIES: list[tuple[str, str]] = [
+    ("oil", "how to change engine oil on KTM motorcycle"),
+    ("oil", "which engine oil is suitable for KTM motorcycle"),
+    ("oil", "when should the engine oil be changed"),
+    ("oil", "what is the engine oil capacity"),
+    ("oil", "steps to check the engine oil level"),
+    ("oil", "synthetic or mineral oil for the motorcycle"),
+    ("oil", "how to replace the oil filter"),
+    ("oil", "what SAE oil viscosity is recommended"),
+    ("oil", "is gearbox oil different from engine oil"),
+    ("oil", "how often to change the motorcycle oil"),
+    ("tire", "what is the tire pressure"),
+    ("tire", "how to check tire pressure"),
+    ("tire", "when should the tires be replaced"),
+    ("tire", "which tires are suitable for KTM motorcycle"),
+    ("tire", "front and rear tire sizes"),
+    ("tire", "how does the TPMS tire pressure sensor system work"),
+    ("tire", "tire pressure when carrying two people"),
+    ("tire", "how to change a motorcycle tire"),
+    ("tire", "what causes a tire to wear on one side"),
+    ("tire", "how does temperature affect tire pressure"),
+    ("brake", "how does the brake system work"),
+    ("brake", "how to check the brake pads"),
+    ("brake", "when should the brake fluid be changed"),
+    ("brake", "which brake fluid DOT rating is suitable"),
+    ("brake", "how does the ABS system work"),
+    ("brake", "how to bleed the brake system"),
+    ("brake", "how do front and rear brakes differ"),
+    ("brake", "what does the brake warning light mean"),
+    ("brake", "what is the minimum brake pad thickness"),
+    ("brake", "how to adjust the brake lever"),
+    ("engine", "KTM motorcycle engine specifications"),
+    ("engine", "normal engine operating temperature"),
+    ("engine", "how to start the bike in cold weather"),
+    ("engine", "what causes unusual noise from the engine"),
+    ("engine", "how does the engine cooling system work"),
+    ("engine", "which coolant type is suitable"),
+    ("engine", "what is the maximum power of the bike"),
+    ("engine", "what is the maximum torque"),
+    ("engine", "what is the maximum engine rpm"),
+    ("engine", "how does the EFI fuel injection system work"),
+    ("elec", "how to replace the battery"),
+    ("elec", "which battery type is suitable for the bike"),
+    ("elec", "how to check the battery charging system"),
+    ("elec", "what do the dashboard indicator lights mean"),
+    ("elec", "how to replace the headlight bulb"),
+    ("elec", "how does the ignition system work"),
+    ("elec", "where are the fuses located"),
+    ("elec", "how to check the spark plug"),
+    ("elec", "what is the spark plug gap"),
+    ("elec", "how to charge the battery"),
+    ("chain", "how to tension the chain"),
+    ("chain", "when should the chain be replaced"),
+    ("chain", "which chain lubricant is best"),
+    ("chain", "what is the standard chain slack"),
+    ("chain", "how to clean the chain"),
+    ("chain", "should the sprockets and chain be replaced together"),
+    ("chain", "number of teeth on front and rear sprockets"),
+    ("chain", "how to check chain wear"),
+    ("chain", "is a DID or RK chain better"),
+    ("chain", "how often to lubricate the chain"),
+    ("susp", "how to adjust the front suspension"),
+    ("susp", "what suspension stiffness is appropriate"),
+    ("susp", "can the rear suspension be adjusted"),
+    ("susp", "what nitrogen pressure for the suspension"),
+    ("susp", "when should the suspension oil be changed"),
+    ("susp", "what is the seat height"),
+    ("susp", "what is the maximum load capacity"),
+    ("susp", "what is the front suspension travel in mm"),
+    ("susp", "how to check for a damaged suspension"),
+    ("susp", "is the stock suspension any good"),
+    ("maint", "KTM periodic maintenance schedule"),
+    ("maint", "pre-ride inspection checklist"),
+    ("maint", "how to replace the air filter"),
+    ("maint", "when to clean the fuel injectors"),
+    ("maint", "what is the fuel tank capacity in liters"),
+    ("maint", "what fuel RON rating is suitable"),
+    ("maint", "how to wash the bike properly"),
+    ("maint", "how to store the bike for long periods"),
+    ("maint", "what is the wheel bolt torque"),
+    ("maint", "how to remove and install the wheel"),
+    ("safety", "essential safety gear for riding"),
+    ("safety", "how to use the different ride modes"),
+    ("safety", "how does the TCS traction control system work"),
+    ("safety", "how to ride safely in the rain"),
+    ("safety", "what is the top speed of the bike"),
+    ("safety", "how to operate the bike correctly for beginners"),
+    ("safety", "how do sport and street ride modes differ"),
+    ("safety", "how does the anti-slip system work"),
+    ("safety", "how to park safely using the side stand"),
+    ("safety", "the correct engine shutdown procedure"),
+    ("clutch", "how to adjust the clutch lever"),
+    ("clutch", "what is a slipper clutch"),
+    ("clutch", "when should the clutch plates be replaced"),
+    ("clutch", "what is the clutch lever free play"),
+    ("clutch", "how does the quickshifter gearbox work"),
+    ("clutch", "how to shift gears most smoothly"),
+    ("clutch", "how many gears does the bike have"),
+    ("clutch", "can clutch fluid and brake fluid be shared"),
+    ("clutch", "is noise when releasing the clutch normal"),
+    ("clutch", "how to check the clutch cable"),
 ]
 
 
@@ -207,7 +207,7 @@ async def main() -> None:
     emb_count = sum(1 for n in all_neurons if n.metadata.get("_embedding"))
     logger.info("  Neurons with embeddings: %d / %d", emb_count, len(all_neurons))
 
-    # --- Step 3: Base recall (3 EN + 3 VI) ---
+    # --- Step 3: Base recall (6 EN) ---
     logger.info("Step 3: Testing base recall (6 queries)")
 
     from surreal_memory.engine.retrieval import ReflexPipeline
@@ -227,7 +227,7 @@ async def main() -> None:
             base_results.append((lang, q, -1, 0.0, f"ERROR: {e}"))
 
     print("\n" + "=" * 80)
-    print("E2E OLLAMA bge-m3 RECALL — BASE QUERIES (3 EN + 3 VI)")
+    print("E2E OLLAMA bge-m3 RECALL — BASE QUERIES (6 EN)")
     print("=" * 80)
     print(f"DB: {db_path}")
     print(f"Neurons: {len(all_neurons)} total, {emb_count} with embeddings")
@@ -246,13 +246,13 @@ async def main() -> None:
 
     print(f"\nBase result: {base_ok}/{len(BASE_QUERIES)} queries returned results")
 
-    # --- Step 4: 100 Vietnamese queries ---
-    logger.info("Step 4: Testing 100 Vietnamese queries")
+    # --- Step 4: 100 English queries ---
+    logger.info("Step 4: Testing 100 queries")
 
     results_data: list[dict] = []
     recall_start = time.time()
 
-    for i, (category, query) in enumerate(VI_QUERIES):
+    for i, (category, query) in enumerate(RECALL_QUERIES):
         try:
             r = await pipeline.query(query, max_tokens=3000)
             n_fibers = len(r.fibers_matched)
@@ -303,7 +303,7 @@ async def main() -> None:
 
     # --- Print 100vi results ---
     print("\n" + "=" * 90)
-    print("E2E OLLAMA bge-m3 RECALL — 100 VIETNAMESE QUERIES")
+    print("E2E OLLAMA bge-m3 RECALL — 100 QUERIES")
     print("=" * 90)
     print(f"Provider: ollama / bge-m3 | Threshold: {brain_config.embedding_similarity_threshold}")
     print(f"Recall time: {recall_elapsed:.1f}s ({recall_elapsed / total:.2f}s/query)")

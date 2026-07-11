@@ -139,14 +139,6 @@ class RecallHandler:
         def get_update_hint(self) -> dict[str, Any] | None:
             raise NotImplementedError
 
-        async def _check_cross_language_hint(
-            self,
-            query: str,
-            result: Any,
-            config: Any,
-        ) -> str | None:
-            raise NotImplementedError
-
         async def _surface_pending_alerts(self) -> dict[str, int] | None:
             raise NotImplementedError
 
@@ -813,15 +805,6 @@ class RecallHandler:
         onboarding = await self._check_onboarding()
         if onboarding:
             response["onboarding"] = onboarding
-
-        # Cross-language hint: suggest embedding when recall misses due to language mismatch
-        cross_lang_hint = await self._check_cross_language_hint(
-            query,
-            result,
-            brain.config,
-        )
-        if cross_lang_hint:
-            response["cross_language_hint"] = cross_lang_hint
 
         # Pro hint: when many fibers matched but results were truncated
         fibers_count = getattr(result, "fibers_matched", 0)

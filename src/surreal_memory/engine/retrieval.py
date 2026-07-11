@@ -878,7 +878,7 @@ class ReflexPipeline:
             return DepthLevel.CONTEXT
 
         # Check for context keywords
-        context_words = {"before", "after", "then", "trước", "sau", "rồi"}
+        context_words = {"before", "after", "then"}
         query_words = set(stimulus.raw_query.lower().split())
         if query_words & context_words:
             return DepthLevel.CONTEXT
@@ -1550,7 +1550,7 @@ class ReflexPipeline:
         # Expand keywords for better recall (morphological + smart expansion)
         expanded_keywords = self._expand_query_terms(list(stimulus.keywords[:5]))
 
-        # Smart query expansion: synonyms, abbreviations, cross-language
+        # Smart query expansion: synonyms, abbreviations
         from surreal_memory.engine.query_expander import expand_terms
         from surreal_memory.engine.token_normalizer import normalize_for_search
 
@@ -1558,14 +1558,10 @@ class ReflexPipeline:
             expanded_keywords,
             enable_synonyms=self._config.query_expansion_synonyms,
             enable_abbreviations=self._config.query_expansion_abbreviations,
-            enable_cross_language=(
-                self._config.query_expansion_cross_language
-                and self._embedding_provider is None  # skip if embedding handles cross-lang
-            ),
             max_per_term=self._config.query_expansion_max_per_term,
         )
 
-        # Token normalization: add Vietnamese compound + diacritics-stripped variants
+        # Token normalization: add compound + normalized token variants
         normalized: list[str] = []
         seen_kw: set[str] = set()
         for kw in expanded_keywords[:12]:
@@ -1601,7 +1597,7 @@ class ReflexPipeline:
                 limit=kw_limits.get(keyword, _default_kw_limit),
                 ephemeral=ephemeral_filter,
             )
-            for keyword in normalized[:15]  # cap at 15 (expanded with Vietnamese variants)
+            for keyword in normalized[:15]  # cap at 15 (expanded with token variants)
         ]
 
         entity_anchors: list[str] = []

@@ -115,10 +115,9 @@ class BrainConfig:
     idf_anchor_enabled: bool = False
     idf_anchor_min_limit: int = 1
     idf_anchor_max_limit: int = 5
-    # Query expansion (synonym, abbreviation, cross-language)
+    # Query expansion (synonym, abbreviation)
     query_expansion_synonyms: bool = True
     query_expansion_abbreviations: bool = True
-    query_expansion_cross_language: bool = True
     query_expansion_max_per_term: int = 5
     # Cross-encoder reranking (optional post-SA refinement)
     reranker_enabled: bool = False

@@ -42,24 +42,12 @@ class TestTriggerEngine:
         assert result.trigger_type == TriggerType.USER_LEAVING
         assert 1 in result.save_tiers and 2 in result.save_tiers and 3 in result.save_tiers
 
-    def test_user_leaving_vietnamese(self) -> None:
-        """Detect Vietnamese user-leaving patterns."""
-        result = check_triggers("ok tạm nghỉ nhé, mai làm tiếp", message_count=10)
-        assert result.triggered is True
-        assert result.trigger_type == TriggerType.USER_LEAVING
-
     def test_milestone_english(self) -> None:
         """Detect English milestone/workflow completion."""
         result = check_triggers("All tests pass, feature complete!", message_count=10)
         assert result.triggered is True
         assert result.trigger_type == TriggerType.WORKFLOW_END
         assert 1 in result.save_tiers and 2 in result.save_tiers
-
-    def test_milestone_vietnamese(self) -> None:
-        """Detect Vietnamese milestone patterns."""
-        result = check_triggers("hoàn thành rồi, deploy xong", message_count=10)
-        assert result.triggered is True
-        assert result.trigger_type == TriggerType.WORKFLOW_END
 
     def test_error_fixed(self) -> None:
         """Detect error-fixed patterns."""

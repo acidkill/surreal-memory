@@ -66,22 +66,6 @@ class TestCausalExtraction:
         leads = [r for r in relations if r.synapse_type == SynapseType.LEADS_TO]
         assert len(leads) >= 1
 
-    def test_extract_vietnamese_causal_vi(self) -> None:
-        """Vietnamese 'X vì Y' should produce CAUSED_BY relation."""
-        text = "Hệ thống bị lỗi vì server quá tải trong giờ cao điểm."
-        relations = self.extractor.extract(text, language="vi")
-
-        caused = [r for r in relations if r.synapse_type == SynapseType.CAUSED_BY]
-        assert len(caused) >= 1
-
-    def test_extract_vietnamese_causal_nen(self) -> None:
-        """Vietnamese 'X nên Y' should produce LEADS_TO relation."""
-        text = "Database bị chậm nên response time tăng đáng kể."
-        relations = self.extractor.extract(text, language="vi")
-
-        leads = [r for r in relations if r.synapse_type == SynapseType.LEADS_TO]
-        assert len(leads) >= 1
-
 
 class TestComparativeExtraction:
     """Test comparative relation pattern extraction."""
@@ -162,14 +146,6 @@ class TestSequentialExtraction:
         """'X followed by Y' should produce BEFORE relation."""
         text = "The build step was followed by automated testing."
         relations = self.extractor.extract(text)
-
-        before = [r for r in relations if r.synapse_type == SynapseType.BEFORE]
-        assert len(before) >= 1
-
-    def test_extract_vietnamese_sequential_sau_khi(self) -> None:
-        """Vietnamese 'sau khi X, Y' should produce BEFORE relation."""
-        text = "Sau khi deploy xong, chạy kiểm tra lại toàn bộ hệ thống."
-        relations = self.extractor.extract(text, language="vi")
 
         before = [r for r in relations if r.synapse_type == SynapseType.BEFORE]
         assert len(before) >= 1

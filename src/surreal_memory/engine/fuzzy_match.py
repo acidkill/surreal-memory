@@ -11,7 +11,7 @@ def levenshtein_distance(s1: str, s2: str) -> int:
     """Compute Levenshtein (edit) distance between two strings.
 
     Pure Python DP implementation.  Handles Unicode correctly
-    (Vietnamese diacritics count as single characters).
+    (multi-byte characters count as single characters).
 
     Args:
         s1: First string.

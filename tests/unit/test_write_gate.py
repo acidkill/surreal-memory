@@ -316,22 +316,6 @@ class TestRememberWriteGateIntegration:
 
 
 # ---------------------------------------------------------------------------
-# Vietnamese filler detection
-# ---------------------------------------------------------------------------
-
-
-class TestVietnameseFiller:
-    """Ensure Vietnamese filler words are caught."""
-
-    @pytest.mark.parametrize("content", ["xong", "Xong", "da", "vang", "hieu roi"])
-    def test_vietnamese_filler_detected(self, content: str) -> None:
-        assert _is_generic_filler(content) is True
-
-    def test_vietnamese_substantive_passes(self) -> None:
-        assert _is_generic_filler("xong roi, da test xong") is False
-
-
-# ---------------------------------------------------------------------------
 # Edge cases
 # ---------------------------------------------------------------------------
 

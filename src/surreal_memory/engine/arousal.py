@@ -1,13 +1,12 @@
-"""Arousal detection — multilingual emotional intensity scoring.
+"""Arousal detection — emotional intensity scoring.
 
 Complements EmotionStep (NLP-based sentiment → valence/emotion tags) with
 a fast regex scan that detects emotional *intensity* regardless of polarity.
 High-arousal memories (production incidents, breakthroughs, security issues)
 get encoding priority boosts and compression resistance.
 
-Supports multiple languages via keyword patterns (English, Vietnamese) and
-falls back to language-agnostic heuristics (punctuation density, caps ratio)
-for unsupported languages.
+Uses English keyword patterns and falls back to language-agnostic heuristics
+(punctuation density, caps ratio) for other text.
 
 Neuroscience basis: the amygdala tags memories with emotional significance,
 making them easier to recall (flashbulb effect) and more resistant to
@@ -24,7 +23,6 @@ from functools import lru_cache
 from typing import TYPE_CHECKING
 
 from surreal_memory.engine.pipeline import PipelineContext
-from surreal_memory.extraction.parser import detect_language
 
 if TYPE_CHECKING:
     from surreal_memory.core.brain import BrainConfig
@@ -32,88 +30,50 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# ── Language-specific pattern registries ────────────────────
-# To add a new language: add a key to _PATTERNS with "positive", "negative",
-# and "high_arousal" regex lists. detect_language() in extraction/parser.py
-# must also be updated to detect the new language.
-# Unsupported languages fall back to language-agnostic heuristics.
+# ── English keyword pattern registry ────────────────────
+# Text that doesn't match these keywords falls back to language-agnostic
+# heuristics (punctuation density, caps ratio).
 
-_PATTERNS: dict[str, dict[str, list[str]]] = {
-    "en": {
-        "positive": [
-            r"\bsolved\b",
-            r"\bfixed\b",
-            r"\bworks?\s+(?:well|great|perfectly)\b",
-            r"\bfinally\b",
-            r"\bbreakthrough\b",
-            r"\bsuccess(?:ful(?:ly)?)?\b",
-            r"\belegant\b",
-            r"\boptimal\b",
-            r"\bperfect(?:ly)?\b",
-        ],
-        "negative": [
-            r"\bbug\b",
-            r"\bcrash(?:ed|es|ing)?\b",
-            r"\bfail(?:ed|s|ure)?\b",
-            r"\bbroken\b",
-            r"\bfrustr",
-            r"\bwasted?\b",
-            r"\bpainful\b",
-            r"\bdanger(?:ous)?\b",
-            r"\bcritical\b",
-            r"\bsecurity\s+(?:vuln|issue|hole|breach)\b",
-        ],
-        "high_arousal": [
-            r"\b(?:CRITICAL|URGENT|BREAKING|IMPORTANT)\b",
-            r"!{2,}",
-            r"\bdata\s+loss\b",
-            r"\bproduction\s+(?:down|outage|incident)\b",
-            r"\bsecurity\s+(?:breach|vulnerability|exploit)\b",
-            r"\brollback\b",
-            r"\bhotfix\b",
-        ],
-    },
-    "vi": {
-        "positive": [
-            r"(?:^|\s)đã sửa(?:\s|$)",
-            r"(?:^|\s)hoạt động tốt(?:\s|$)",
-            r"(?:^|\s)thành công(?:\s|$)",
-            r"(?:^|\s)tuyệt vời(?:\s|$)",
-            r"(?:^|\s)đột phá(?:\s|$)",
-            r"(?:^|\s)hoàn hảo(?:\s|$)",
-            r"(?:^|\s)xuất sắc(?:\s|$)",
-            r"(?:^|\s)tối ưu(?:\s|$)",
-            r"(?:^|\s)cuối cùng(?:\s|$)",
-        ],
-        "negative": [
-            r"(?:^|\s)lỗi(?:\s|$)",
-            r"\bcrash(?:ed|es|ing)?\b",  # borrowed English in Vietnamese context
-            r"(?:^|\s)thất bại(?:\s|$)",
-            r"(?:^|\s)hỏng(?:\s|$)",
-            r"(?:^|\s)nguy hiểm(?:\s|$)",
-            r"(?:^|\s)lỗ hổng(?:\s|$)",
-            r"(?:^|\s)sự cố(?:\s|$)",
-            r"(?:^|\s)mất dữ liệu(?:\s|$)",
-            r"(?:^|\s)nghiêm trọng(?:\s|$)",
-            r"(?:^|\s)bảo mật(?:\s|$)",
-        ],
-        "high_arousal": [
-            r"(?:^|\s)(?:KHẨN CẤP|SỰ CỐ|MẤT DỮ LIỆU|NGHIÊM TRỌNG)(?:\s|$)",
-            r"!{2,}",
-            r"(?:^|\s)production\s+(?:down|sập)(?:\s|$)",
-            r"(?:^|\s)rollback(?:\s|$)",
-            r"(?:^|\s)hotfix(?:\s|$)",
-            r"(?:^|\s)cấp bách(?:\s|$)",
-            r"(?:^|\s)khẩn(?:\s|$)",
-        ],
-    },
+_PATTERNS: dict[str, list[str]] = {
+    "positive": [
+        r"\bsolved\b",
+        r"\bfixed\b",
+        r"\bworks?\s+(?:well|great|perfectly)\b",
+        r"\bfinally\b",
+        r"\bbreakthrough\b",
+        r"\bsuccess(?:ful(?:ly)?)?\b",
+        r"\belegant\b",
+        r"\boptimal\b",
+        r"\bperfect(?:ly)?\b",
+    ],
+    "negative": [
+        r"\bbug\b",
+        r"\bcrash(?:ed|es|ing)?\b",
+        r"\bfail(?:ed|s|ure)?\b",
+        r"\bbroken\b",
+        r"\bfrustr",
+        r"\bwasted?\b",
+        r"\bpainful\b",
+        r"\bdanger(?:ous)?\b",
+        r"\bcritical\b",
+        r"\bsecurity\s+(?:vuln|issue|hole|breach)\b",
+    ],
+    "high_arousal": [
+        r"\b(?:CRITICAL|URGENT|BREAKING|IMPORTANT)\b",
+        r"!{2,}",
+        r"\bdata\s+loss\b",
+        r"\bproduction\s+(?:down|outage|incident)\b",
+        r"\bsecurity\s+(?:breach|vulnerability|exploit)\b",
+        r"\brollback\b",
+        r"\bhotfix\b",
+    ],
 }
 
 
 @lru_cache(maxsize=4)
-def _compiled_patterns(lang: str, category: str) -> list[re.Pattern[str]]:
-    """Compile and cache patterns for a language + category."""
-    raw = _PATTERNS.get(lang, {}).get(category, [])
+def _compiled_patterns(category: str) -> list[re.Pattern[str]]:
+    """Compile and cache patterns for a category."""
+    raw = _PATTERNS.get(category, [])
     return [re.compile(p, re.IGNORECASE) for p in raw]
 
 
@@ -158,8 +118,8 @@ def compute_arousal(content: str) -> float:
     regardless of polarity. High arousal = emotionally charged content
     that the brain should encode more strongly.
 
-    Uses keyword patterns for supported languages (en, vi) and falls
-    back to language-agnostic heuristics for other languages.
+    Uses English keyword patterns and falls back to language-agnostic
+    heuristics for other text.
 
     Args:
         content: Text content to analyze.
@@ -170,12 +130,10 @@ def compute_arousal(content: str) -> float:
     if not content:
         return 0.0
 
-    lang = detect_language(content)
-
-    # Keyword-based scoring for supported languages
-    pos = sum(1 for p in _compiled_patterns(lang, "positive") if p.search(content))
-    neg = sum(1 for p in _compiled_patterns(lang, "negative") if p.search(content))
-    high = sum(1 for p in _compiled_patterns(lang, "high_arousal") if p.search(content))
+    # English keyword-based scoring
+    pos = sum(1 for p in _compiled_patterns("positive") if p.search(content))
+    neg = sum(1 for p in _compiled_patterns("negative") if p.search(content))
+    high = sum(1 for p in _compiled_patterns("high_arousal") if p.search(content))
 
     # Keyword arousal
     total = pos + neg + high * 2

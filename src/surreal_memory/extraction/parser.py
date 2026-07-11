@@ -81,41 +81,6 @@ class Stimulus:
         return len(self.time_hints) + len(self.entities) + len(self.keywords)
 
 
-# Vietnamese-specific diacritical characters (frozen set for fast lookup)
-_VI_CHARS = frozenset("àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ")
-
-# Characters unique to Vietnamese (not shared with French/Spanish/Portuguese)
-_VI_UNIQUE_CHARS = frozenset("ăắằẳẵặơờớởỡợưừứửữựđảẩẫậểễệỉĩỏổỗộủũỷỹỵ")
-
-# Common Vietnamese function words
-_VI_WORDS = frozenset({"của", "và", "là", "có", "được", "cho", "với", "này", "trong", "để", "các"})
-
-
-def detect_language(text: str) -> str:
-    """Detect whether text is Vietnamese or English.
-
-    Returns "vi" if text contains Vietnamese diacritics or common Vietnamese words,
-    otherwise returns "en".
-    """
-    text_lower = text.lower()
-    vi_count = sum(1 for c in text_lower if c in _VI_CHARS)
-
-    # Long text: 5% threshold for all Vietnamese diacritics
-    if len(text) >= 20 and vi_count > len(text) * 0.05:
-        return "vi"
-
-    # Short text: any uniquely-Vietnamese character is strong signal
-    if any(c in _VI_UNIQUE_CHARS for c in text_lower):
-        return "vi"
-
-    # Check for Vietnamese words
-    words = set(text_lower.split())
-    if words & _VI_WORDS:
-        return "vi"
-
-    return "en"
-
-
 class QueryParser:
     """
     Parser for decomposing queries into activation signals.
@@ -131,117 +96,58 @@ class QueryParser:
     # Intent detection patterns
     INTENT_PATTERNS: dict[QueryIntent, list[str]] = {
         QueryIntent.ASK_WHAT: [
-            # English
             r"what",
             r"which",
             r"tell me about",
-            # Vietnamese
-            r"gì",
-            r"cái gì",
-            r"điều gì",
-            r"chuyện gì",
-            r"việc gì",
         ],
         QueryIntent.ASK_WHERE: [
-            # English
             r"where",
             r"location",
             r"place",
-            # Vietnamese
-            r"ở đâu",
-            r"đâu",
-            r"chỗ nào",
-            r"nơi nào",
         ],
         QueryIntent.ASK_WHEN: [
-            # English
             r"when",
             r"what time",
-            # Vietnamese
-            r"khi nào",
-            r"lúc nào",
-            r"bao giờ",
-            r"mấy giờ",
         ],
         QueryIntent.ASK_WHO: [
-            # English
             r"who",
             r"whom",
-            # Vietnamese
-            r"ai",
-            r"người nào",
-            r"với ai",
         ],
         QueryIntent.ASK_WHY: [
-            # English
             r"why",
             r"reason",
             r"cause",
-            # Vietnamese
-            r"tại sao",
-            r"vì sao",
-            r"lý do",
         ],
         QueryIntent.ASK_HOW: [
-            # English
             r"how did",
             r"how was",
             r"how to",
-            # Vietnamese
-            r"như thế nào",
-            r"làm sao",
-            r"thế nào",
-            r"ra sao",
         ],
         QueryIntent.ASK_FEELING: [
-            # English
             r"how (?:did|do) (?:i|you) feel",
             r"feeling",
             r"emotion",
-            # Vietnamese
-            r"cảm thấy",
-            r"cảm xúc",
-            r"tâm trạng",
-            r"vui không",
-            r"buồn không",
         ],
         QueryIntent.ASK_PATTERN: [
-            # English
             r"usually",
             r"typically",
             r"pattern",
             r"often",
             r"always",
-            # Vietnamese
-            r"thường",
-            r"hay",
-            r"luôn",
-            r"mỗi khi",
         ],
         QueryIntent.CONFIRM: [
-            # English
             r"did (?:i|we|you)",
             r"was there",
             r"have (?:i|we|you)",
             r"is it true",
-            # Vietnamese
-            r"có phải",
-            r"đúng không",
-            r"phải không",
         ],
         QueryIntent.COMPARE: [
-            # English
             r"compare",
             r"difference",
             r"versus",
             r"vs",
             r"better",
             r"worse",
-            # Vietnamese
-            r"so sánh",
-            r"khác nhau",
-            r"giống nhau",
-            r"hơn",
         ],
     }
 
@@ -279,7 +185,7 @@ class QueryParser:
         Args:
             query: The query text
             reference_time: Reference time for temporal parsing
-            language: "vi", "en", or "auto"
+            language: "en" or "auto"
 
         Returns:
             Stimulus containing all extracted signals
@@ -287,9 +193,9 @@ class QueryParser:
         if reference_time is None:
             reference_time = utcnow()
 
-        # Detect language if auto
+        # English-only system: resolve "auto" to English
         if language == "auto":
-            language = self._detect_language(query)
+            language = "en"
 
         # Extract components
         time_hints = self._temporal.extract(query, reference_time, language)
@@ -311,10 +217,6 @@ class QueryParser:
             raw_query=query,
             language=language,
         )
-
-    def _detect_language(self, text: str) -> str:
-        """Simple language detection (delegates to module-level function)."""
-        return detect_language(text)
 
     # Specificity weights: more specific intents score higher per match
     # to avoid generic intents (ASK_WHAT) shadowing specific ones (ASK_PATTERN).
@@ -371,13 +273,13 @@ class QueryParser:
             return Perspective.COMPARE
 
         # Check for summary patterns
-        summary_patterns = ["summary", "summarize", "tóm tắt", "overview", "tổng kết"]
+        summary_patterns = ["summary", "summarize", "overview"]
         for pattern in summary_patterns:
             if pattern in query_lower:
                 return Perspective.SUMMARIZE
 
         # Check for analysis patterns
-        analysis_patterns = ["analyze", "understand", "explain", "phân tích", "giải thích"]
+        analysis_patterns = ["analyze", "understand", "explain"]
         for pattern in analysis_patterns:
             if pattern in query_lower:
                 return Perspective.ANALYZE

@@ -1324,27 +1324,6 @@ class TestAutoCapture:
         types = [d["type"] for d in detected]
         assert "insight" in types
 
-    def test_vietnamese_decision_pattern(self) -> None:
-        """Test Vietnamese decision pattern detection."""
-        text = "Quyết định dùng Redis thay vì Memcached cho hệ thống caching."
-        detected = analyze_text_for_memories(text, capture_decisions=True)
-        types = [d["type"] for d in detected]
-        assert "decision" in types
-
-    def test_vietnamese_insight_pattern(self) -> None:
-        """Test Vietnamese insight pattern detection."""
-        text = "Hóa ra lỗi do DNS resolution bị chậm khi kết nối database."
-        detected = analyze_text_for_memories(text, capture_insights=True)
-        types = [d["type"] for d in detected]
-        assert "insight" in types
-
-    def test_vietnamese_error_pattern(self) -> None:
-        """Test Vietnamese error pattern detection."""
-        text = "Lỗi do connection pool bị đầy khi có quá nhiều request đồng thời."
-        detected = analyze_text_for_memories(text, capture_errors=True)
-        types = [d["type"] for d in detected]
-        assert "error" in types
-
     def test_preference_pattern_i_prefer(self) -> None:
         """Test preference detection for explicit 'I prefer' statements."""
         text = "I prefer using PostgreSQL over MySQL for all new projects."
@@ -1376,27 +1355,6 @@ class TestAutoCapture:
     def test_preference_pattern_thats_wrong(self) -> None:
         """Test preference detection for 'that's wrong' correction."""
         text = "That's wrong, the timeout should be 30 seconds not 10."
-        detected = analyze_text_for_memories(text, capture_preferences=True)
-        types = [d["type"] for d in detected]
-        assert "preference" in types
-
-    def test_preference_pattern_vietnamese_thich(self) -> None:
-        """Test Vietnamese preference pattern 'thích/muốn'."""
-        text = "Mình thích dùng dark mode hơn khi code vào ban đêm."
-        detected = analyze_text_for_memories(text, capture_preferences=True)
-        types = [d["type"] for d in detected]
-        assert "preference" in types
-
-    def test_preference_pattern_vietnamese_dung(self) -> None:
-        """Test Vietnamese negative preference 'đừng bao giờ dùng'."""
-        text = "Đừng bao giờ dùng var trong JavaScript, luôn dùng const hoặc let."
-        detected = analyze_text_for_memories(text, capture_preferences=True)
-        types = [d["type"] for d in detected]
-        assert "preference" in types
-
-    def test_preference_pattern_vietnamese_correction(self) -> None:
-        """Test Vietnamese correction pattern 'sai rồi'."""
-        text = "Sai rồi, phải dùng async/await thay vì callback ở đây."
         detected = analyze_text_for_memories(text, capture_preferences=True)
         types = [d["type"] for d in detected]
         assert "preference" in types

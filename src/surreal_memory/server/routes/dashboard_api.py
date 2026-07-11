@@ -1318,8 +1318,7 @@ async def get_config_status(
                         label="Embedding Provider",
                         status="info",
                         description=(
-                            "Installed but disabled — enable for cross-language "
-                            "recall and semantic similarity"
+                            "Installed but disabled — enable for semantic similarity recall"
                         ),
                         command="Set [embedding] enabled = true in config.toml",
                         value="disabled",
@@ -1331,10 +1330,7 @@ async def get_config_status(
                         key="embedding",
                         label="Embedding Provider",
                         status="not_configured",
-                        description=(
-                            "Optional — enables cross-language recall and "
-                            "semantic similarity for better retrieval"
-                        ),
+                        description=("Optional — enables semantic similarity for better retrieval"),
                         command="pip install surreal-memory[embeddings]",
                         value="",
                     )

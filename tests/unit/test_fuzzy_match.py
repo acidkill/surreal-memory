@@ -45,11 +45,6 @@ class TestLevenshteinDistance:
     def test_completely_different(self) -> None:
         assert levenshtein_distance("abc", "xyz") == 3
 
-    def test_vietnamese_diacritics(self) -> None:
-        """Vietnamese diacritics count as single characters."""
-        # "lỗi" vs "loi": ỗ→o is 1 replacement = distance 1
-        assert levenshtein_distance("lỗi", "loi") == 1
-
     def test_unicode_characters(self) -> None:
         assert levenshtein_distance("café", "cafe") == 1
 

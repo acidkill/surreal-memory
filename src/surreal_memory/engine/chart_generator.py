@@ -26,13 +26,13 @@ CHART_TYPES = ("line", "bar", "pie", "scatter", "table", "timeline")
 
 # Patterns for extracting numeric values from content
 _NUMBER_PATTERN = re.compile(
-    r"(?:^|\s|=|:)\s*([+-]?\d[\d,]*\.?\d*)\s*(%|USD|VND|đ|k|K|M|B|tỷ|triệu)?",
+    r"(?:^|\s|=|:)\s*([+-]?\d[\d,]*\.?\d*)\s*(%|USD|VND|k|K|M|B)?",
 )
 _DATE_PATTERN = re.compile(
     r"\b(\d{4}[-/]\d{1,2}(?:[-/]\d{1,2})?|Q[1-4][/]\d{4}|\d{1,2}[/]\d{4})\b",
 )
 _KV_PATTERN = re.compile(
-    r"(?:^|\n)\s*[-•*]?\s*([^:=\n]{2,40})\s*[:=]\s*([+-]?\d[\d,]*\.?\d*)\s*(%|USD|VND|đ|k|K|M|B|tỷ|triệu)?",
+    r"(?:^|\n)\s*[-•*]?\s*([^:=\n]{2,40})\s*[:=]\s*([+-]?\d[\d,]*\.?\d*)\s*(%|USD|VND|k|K|M|B)?",
 )
 
 

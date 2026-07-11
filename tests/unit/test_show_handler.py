@@ -62,9 +62,6 @@ def _make_handler(brain_id: str = "test-brain"):
         async def _record_tool_action(self, action: str, detail: str) -> None:
             pass
 
-        async def _check_cross_language_hint(self, *args, **kwargs):
-            return None
-
     return TestHandler(), storage
 
 

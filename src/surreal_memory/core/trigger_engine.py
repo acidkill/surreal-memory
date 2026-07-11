@@ -56,9 +56,6 @@ USER_LEAVING_PATTERNS: list[re.Pattern[str]] = [
     ),
     re.compile(r"\b(?:i'm done|that's all|that's it|wrapping up|call it a day)\b", re.IGNORECASE),
     re.compile(r"\b(?:heading out|leaving now|going offline)\b", re.IGNORECASE),
-    # Vietnamese
-    re.compile(r"(?:tôi đi|tạm nghỉ|hết giờ|bye|tạm biệt|nghỉ thôi|đi ngủ)", re.IGNORECASE),
-    re.compile(r"(?:kết thúc|xong rồi đi|thôi nhé|hẹn gặp lại)", re.IGNORECASE),
 ]
 
 MILESTONE_PATTERNS: list[re.Pattern[str]] = [
@@ -70,9 +67,6 @@ MILESTONE_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"\b(?:pass test|tests? green|ci green|pipeline green)\b", re.IGNORECASE),
     re.compile(r"\b(?:feature complete|implementation complete|task complete)\b", re.IGNORECASE),
     re.compile(r"\b(?:lgtm|approved|ready to merge)\b", re.IGNORECASE),
-    # Vietnamese
-    re.compile(r"(?:xong|hoàn thành|đã xong|xong rồi|hoàn tất|đã hoàn thành)", re.IGNORECASE),
-    re.compile(r"(?:pass test|chạy được|build xong|deploy xong)", re.IGNORECASE),
 ]
 
 ERROR_FIXED_PATTERNS: list[re.Pattern[str]] = [
@@ -82,9 +76,6 @@ ERROR_FIXED_PATTERNS: list[re.Pattern[str]] = [
     ),
     re.compile(r"\b(?:bug fix|hotfix|fix applied|issue resolved)\b", re.IGNORECASE),
     re.compile(r"\b(?:no longer|not anymore|works now|working now)\b", re.IGNORECASE),
-    # Vietnamese
-    re.compile(r"(?:sửa xong|fix xong|đã sửa|đã fix|hết lỗi|không lỗi nữa)", re.IGNORECASE),
-    re.compile(r"(?:fix được rồi|chạy được rồi)", re.IGNORECASE),
 ]
 
 # Reuse decision patterns from auto_capture (imported at check time)
@@ -95,8 +86,6 @@ DECISION_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"(?:the )?decision(?: is)?[:\s]+.{5,}", re.IGNORECASE),
     re.compile(r"(?:we're |I'm )going (?:to|with)[:\s]+.{5,}", re.IGNORECASE),
     re.compile(r"let's (?:go with|use|choose)[:\s]+.{5,}", re.IGNORECASE),
-    # Vietnamese
-    re.compile(r"(?:quyết định|chọn|dùng|chuyển sang)[:\s]+.{5,}", re.IGNORECASE),
 ]
 
 # Minimum text length to avoid false positives

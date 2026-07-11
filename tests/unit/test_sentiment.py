@@ -180,41 +180,6 @@ class TestSentimentEmotionTags:
         assert isinstance(result.emotion_tags, frozenset)
 
 
-class TestSentimentVietnamese:
-    """Test Vietnamese sentiment extraction."""
-
-    def setup_method(self) -> None:
-        self.extractor = SentimentExtractor()
-
-    def test_positive_vi(self) -> None:
-        """Vietnamese positive text should return POSITIVE."""
-        result = self.extractor.extract("Hệ thống chạy rất tốt và ổn định.", language="vi")
-        assert result.valence == Valence.POSITIVE
-        assert result.positive_count > 0
-
-    def test_negative_vi(self) -> None:
-        """Vietnamese negative text should return NEGATIVE."""
-        result = self.extractor.extract("Server bị lỗi, chạy rất chậm và không ổn định.")
-        assert result.valence == Valence.NEGATIVE
-        assert result.negative_count > 0
-
-    def test_negation_vi(self) -> None:
-        """Vietnamese negator 'không' should flip sentiment."""
-        result = self.extractor.extract("Code không tệ, khá tốt.", language="vi")
-        assert result.positive_count >= 1
-
-    def test_auto_detect_vi(self) -> None:
-        """Auto language detection should recognize Vietnamese."""
-        result = self.extractor.extract("Hệ thống hoạt động tốt và hiệu quả.")
-        assert result.valence == Valence.POSITIVE
-
-    def test_intensifier_vi(self) -> None:
-        """Vietnamese intensifier 'rất' should boost intensity."""
-        result_plain = self.extractor.extract("Tốt.", language="vi")
-        result_intense = self.extractor.extract("Rất tốt.", language="vi")
-        assert result_intense.intensity >= result_plain.intensity
-
-
 class TestSentimentEdgeCases:
     """Test edge cases."""
 

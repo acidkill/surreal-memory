@@ -32,22 +32,22 @@ class TestInlineCitation:
 
     def test_law_with_article(self) -> None:
         inp = CitationInput(
-            source_name="BLDS",
+            source_name="Civil Code",
             source_type="law",
             source_version="2015",
             metadata={"article": "468"},
         )
         result = format_citation(inp, CitationFormat.INLINE)
-        assert result == "[BLDS 2015, Điều 468]"
+        assert result == "[Civil Code 2015, Article 468]"
 
     def test_law_without_article(self) -> None:
         inp = CitationInput(
-            source_name="BLDS",
+            source_name="Civil Code",
             source_type="law",
             source_version="2015",
         )
         result = format_citation(inp, CitationFormat.INLINE)
-        assert result == "[BLDS 2015]"
+        assert result == "[Civil Code 2015]"
 
     def test_law_with_effective_date_year(self) -> None:
         inp = CitationInput(
@@ -57,7 +57,7 @@ class TestInlineCitation:
             metadata={"article": "10"},
         )
         result = format_citation(inp, CitationFormat.INLINE)
-        assert result == "[Tax Code 2020, Điều 10]"
+        assert result == "[Tax Code 2020, Article 10]"
 
     def test_ledger_with_category(self) -> None:
         inp = CitationInput(
@@ -130,7 +130,7 @@ class TestFullCitation:
 
     def test_complete_reference(self) -> None:
         inp = CitationInput(
-            source_name="BLDS",
+            source_name="Civil Code",
             source_type="law",
             source_version="2015",
             effective_date="2015-01-01",
@@ -138,7 +138,7 @@ class TestFullCitation:
             metadata={"article": "468"},
         )
         result = format_citation(inp, CitationFormat.FULL)
-        assert "Source: BLDS" in result
+        assert "Source: Civil Code" in result
         assert "Type: law" in result
         assert "Version: 2015" in result
         assert "Effective: 2015-01-01" in result

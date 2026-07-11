@@ -19,7 +19,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from surreal_memory.engine.pipeline import PipelineContext
-from surreal_memory.extraction.parser import detect_language
 from surreal_memory.utils.simhash import hamming_distance, simhash
 
 if TYPE_CHECKING:
@@ -29,106 +28,66 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# ── Multilingual reversal detection patterns ──────────────
-# To add a new language: add entries to _NEGATION_PATTERNS,
-# _NEGATION_STOPWORDS, and _OPPOSITE_PAIRS_REGISTRY.
-# detect_language() in extraction/parser.py handles language detection.
+# ── Reversal detection patterns (English) ──────────────
 
-_NEGATION_PATTERNS: dict[str, re.Pattern[str]] = {
-    "en": re.compile(
-        r"\b(not|no|never|don'?t|doesn'?t|didn'?t|can'?t|cannot|won'?t|isn'?t|aren'?t|wasn'?t)\b",
-        re.IGNORECASE,
-    ),
-    "vi": re.compile(
-        r"(?:^|\s)(không|chưa|chẳng|đừng|không thể|chả|không bao giờ)(?:\s|$)",
-        re.IGNORECASE,
-    ),
+_NEGATION_PATTERN: re.Pattern[str] = re.compile(
+    r"\b(not|no|never|don'?t|doesn'?t|didn'?t|can'?t|cannot|won'?t|isn'?t|aren'?t|wasn'?t)\b",
+    re.IGNORECASE,
+)
+
+_NEGATION_STOPWORDS: set[str] = {
+    "not",
+    "don",
+    "doesn",
+    "didn",
+    "can",
+    "cannot",
+    "won",
+    "isn",
+    "aren",
+    "wasn",
 }
 
-_NEGATION_STOPWORDS: dict[str, set[str]] = {
-    "en": {"not", "don", "doesn", "didn", "can", "cannot", "won", "isn", "aren", "wasn"},
-    "vi": {"không", "chưa", "chẳng", "đừng", "chả", "thể", "bao", "giờ"},
-}
-
-_OPPOSITE_PAIRS_REGISTRY: dict[str, list[tuple[str, str]]] = {
-    "en": [
-        ("fast", "slow"),
-        ("good", "bad"),
-        ("works", "broken"),
-        ("stable", "unstable"),
-        ("safe", "unsafe"),
-        ("easy", "hard"),
-        ("simple", "complex"),
-        ("reliable", "unreliable"),
-        ("efficient", "inefficient"),
-        ("success", "failure"),
-    ],
-    "vi": [
-        ("nhanh", "chậm"),
-        ("tốt", "xấu"),
-        ("ổn định", "không ổn định"),
-        ("an toàn", "không an toàn"),
-        ("dễ", "khó"),
-        ("đơn giản", "phức tạp"),
-        ("thành công", "thất bại"),
-        ("hoạt động", "hỏng"),
-        ("hiệu quả", "không hiệu quả"),
-        ("tin cậy", "không tin cậy"),
-    ],
-}
+_OPPOSITE_PAIRS: list[tuple[str, str]] = [
+    ("fast", "slow"),
+    ("good", "bad"),
+    ("works", "broken"),
+    ("stable", "unstable"),
+    ("safe", "unsafe"),
+    ("easy", "hard"),
+    ("simple", "complex"),
+    ("reliable", "unreliable"),
+    ("efficient", "inefficient"),
+    ("success", "failure"),
+]
 
 
 def _detects_reversal(content_a: str, content_b: str) -> bool:
     """Detect if two texts express opposite claims about the same topic.
 
-    Supports English and Vietnamese via multilingual pattern registries.
     Checks for:
-      - Negation flip: "X works" vs "X doesn't work" / "X hoạt động" vs "X không hoạt động"
-      - Opposite adjectives: "X is fast" vs "X is slow" / "X nhanh" vs "X chậm"
+      - Negation flip: "X works" vs "X doesn't work"
+      - Opposite adjectives: "X is fast" vs "X is slow"
     """
     a_lower = content_a.lower()
     b_lower = content_b.lower()
 
-    # Detect language from combined content
-    lang = detect_language(content_a + " " + content_b)
-
-    # Get patterns for detected language (fall back to English)
-    neg_pattern = _NEGATION_PATTERNS.get(lang, _NEGATION_PATTERNS["en"])
-    stopwords = _NEGATION_STOPWORDS.get(lang, _NEGATION_STOPWORDS["en"])
-    opposite_pairs = _OPPOSITE_PAIRS_REGISTRY.get(lang, _OPPOSITE_PAIRS_REGISTRY["en"])
-
     # Negation flip: one has negation, the other doesn't,
     # but they share significant word overlap
-    a_has_neg = bool(neg_pattern.search(a_lower))
-    b_has_neg = bool(neg_pattern.search(b_lower))
+    a_has_neg = bool(_NEGATION_PATTERN.search(a_lower))
+    b_has_neg = bool(_NEGATION_PATTERN.search(b_lower))
 
     if a_has_neg != b_has_neg:
         # Check word overlap (excluding stop words / negations)
-        a_words = set(re.findall(r"\b\w{2,}\b", a_lower)) - stopwords
-        b_words = set(re.findall(r"\b\w{2,}\b", b_lower)) - stopwords
+        a_words = set(re.findall(r"\b\w{2,}\b", a_lower)) - _NEGATION_STOPWORDS
+        b_words = set(re.findall(r"\b\w{2,}\b", b_lower)) - _NEGATION_STOPWORDS
         if len(a_words & b_words) >= 2:
             return True
 
     # Opposite adjective pairs
-    for pos, neg in opposite_pairs:
+    for pos, neg in _OPPOSITE_PAIRS:
         if (pos in a_lower and neg in b_lower) or (neg in a_lower and pos in b_lower):
             return True
-
-    # Cross-language: also try English patterns if content is Vietnamese
-    # (Vietnamese devs often mix English terms like "crash", "bug", "works")
-    if lang == "vi":
-        en_neg = _NEGATION_PATTERNS["en"]
-        a_has_en_neg = bool(en_neg.search(a_lower))
-        b_has_en_neg = bool(en_neg.search(b_lower))
-        if a_has_en_neg != b_has_en_neg:
-            a_words = set(re.findall(r"\b\w{3,}\b", a_lower)) - _NEGATION_STOPWORDS["en"]
-            b_words = set(re.findall(r"\b\w{3,}\b", b_lower)) - _NEGATION_STOPWORDS["en"]
-            if len(a_words & b_words) >= 2:
-                return True
-
-        for pos, neg in _OPPOSITE_PAIRS_REGISTRY["en"]:
-            if (pos in a_lower and neg in b_lower) or (neg in a_lower and pos in b_lower):
-                return True
 
     return False
 

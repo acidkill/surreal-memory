@@ -142,34 +142,6 @@ def _build_causal_patterns() -> list[_PatternEntry]:
         )
     )
 
-    # Vietnamese: "X vì Y" → X CAUSED_BY Y
-    patterns.append(
-        (
-            re.compile(
-                r"(.{5,80}?)\s+(?:vì|do|bởi\s+vì)\s+(.{5,80}?)(?:\.|;|$)",
-                re.IGNORECASE,
-            ),
-            SynapseType.CAUSED_BY,
-            RelationType.CAUSAL,
-            0.80,
-            False,
-        )
-    )
-
-    # Vietnamese: "X nên Y" / "X cho nên Y" → X LEADS_TO Y
-    patterns.append(
-        (
-            re.compile(
-                r"(.{5,80}?)\s+(?:nên|cho\s+nên|vì\s+vậy|do\s+đó)\s+(.{5,80}?)(?:\.|;|$)",
-                re.IGNORECASE,
-            ),
-            SynapseType.LEADS_TO,
-            RelationType.CAUSAL,
-            0.80,
-            False,
-        )
-    )
-
     return patterns
 
 
@@ -212,49 +184,6 @@ def _build_comparative_patterns() -> list[_PatternEntry]:
             re.compile(
                 r"(.{3,60}?)\s+(?:unlike|different\s+from|contrary\s+to|opposed\s+to)"
                 r"\s+(.{3,60}?)(?:\.|;|,\s+(?:and|but)|$)",
-                re.IGNORECASE,
-            ),
-            SynapseType.CONTRADICTS,
-            RelationType.COMPARATIVE,
-            0.70,
-            False,
-        )
-    )
-
-    # Vietnamese: "X giống như Y" → SIMILAR_TO
-    patterns.append(
-        (
-            re.compile(
-                r"(.{3,60}?)\s+(?:giống\s+như|tương\s+tự|giống)\s+(.{3,60}?)(?:\.|;|$)",
-                re.IGNORECASE,
-            ),
-            SynapseType.SIMILAR_TO,
-            RelationType.COMPARATIVE,
-            0.75,
-            False,
-        )
-    )
-
-    # Vietnamese comparative pattern (hon = than)
-    patterns.append(
-        (
-            re.compile(
-                r"(.{3,60}?)\s+(?:\w+\s+hơn)\s+(.{3,60}?)(?:\.|;|$)",
-                re.IGNORECASE,
-            ),
-            SynapseType.SIMILAR_TO,
-            RelationType.COMPARATIVE,
-            0.65,
-            False,
-        )
-    )
-
-    # Vietnamese: "X khác với Y" → CONTRADICTS
-    patterns.append(
-        (
-            re.compile(
-                r"(.{3,60}?)\s+(?:khác\s+với|trái\s+ngược\s+với|ngược\s+lại\s+với)"
-                r"\s+(.{3,60}?)(?:\.|;|$)",
                 re.IGNORECASE,
             ),
             SynapseType.CONTRADICTS,
@@ -351,48 +280,6 @@ def _build_sequential_patterns() -> list[_PatternEntry]:
             SynapseType.BEFORE,
             RelationType.SEQUENTIAL,
             0.80,
-            False,
-        )
-    )
-
-    # Vietnamese: "trước khi X, Y" → Y BEFORE X
-    patterns.append(
-        (
-            re.compile(
-                r"trước\s+khi\s+(.{5,80}?)\s*[,;]\s*(.{5,80}?)(?:\.|;|$)",
-                re.IGNORECASE,
-            ),
-            SynapseType.BEFORE,
-            RelationType.SEQUENTIAL,
-            0.75,
-            True,  # reversed
-        )
-    )
-
-    # Vietnamese: "sau khi X, Y" → X BEFORE Y
-    patterns.append(
-        (
-            re.compile(
-                r"sau\s+khi\s+(.{5,80}?)\s*[,;]\s*(.{5,80}?)(?:\.|;|$)",
-                re.IGNORECASE,
-            ),
-            SynapseType.BEFORE,
-            RelationType.SEQUENTIAL,
-            0.75,
-            False,
-        )
-    )
-
-    # Vietnamese: "X rồi Y" / "X sau đó Y" → X BEFORE Y
-    patterns.append(
-        (
-            re.compile(
-                r"(.{5,80}?)\s+(?:rồi|sau\s+đó)\s+(.{5,80}?)(?:\.|;|$)",
-                re.IGNORECASE,
-            ),
-            SynapseType.BEFORE,
-            RelationType.SEQUENTIAL,
-            0.70,
             False,
         )
     )

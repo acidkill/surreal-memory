@@ -239,63 +239,6 @@ _STOP_WORDS_CONVERSATIONAL_EN: frozenset[str] = frozenset(
     }
 )
 
-# Vietnamese stop words
-STOP_WORDS_VI: frozenset[str] = frozenset(
-    {
-        "và",
-        "của",
-        "là",
-        "có",
-        "được",
-        "cho",
-        "với",
-        "này",
-        "trong",
-        "để",
-        "các",
-        "những",
-        "một",
-        "đã",
-        "tôi",
-        "bạn",
-        "anh",
-        "chị",
-        "em",
-        "ở",
-        "tại",
-        "khi",
-        "thì",
-        "mà",
-        "nếu",
-        "vì",
-        "cũng",
-        "như",
-        "từ",
-        "đến",
-        "lại",
-        "ra",
-        "vào",
-        "lên",
-        "xuống",
-        "rồi",
-        "sẽ",
-        "đang",
-        "vẫn",
-        "còn",
-        "chỉ",
-        "rất",
-        "quá",
-        "làm",
-        "gì",
-        "sao",
-        "nào",
-        "đâu",
-        "ai",
-        "bao",
-        "nhiêu",
-    }
-)
-
 # Polish stop words — conjunctions/particles, prepositions, pronouns,
 # auxiliary/copular verb forms, functional numerals, functional adverbs.
 # Both diacritic and ASCII forms included: live content is frequently typed
@@ -605,17 +548,10 @@ _STOP_WORDS_CONVERSATIONAL_PL: frozenset[str] = frozenset(
     }
 )
 
-# Combined stop words for backward compatibility
-# STOP_WORDS_VI is deliberately excluded here: several of its ASCII-only entries
-# (e.g. "ai", "em") collide with real English/Polish vocabulary and were silently
-# deleting them from every "auto"-mode extraction. The explicit "vi" branch of
-# _get_stop_words() below still returns STOP_WORDS_VI unchanged.
+# Combined stop words for backward compatibility ("auto" mode).
 STOP_WORDS: frozenset[str] = (
     STOP_WORDS_EN | _STOP_WORDS_CONVERSATIONAL_EN | STOP_WORDS_PL | _STOP_WORDS_CONVERSATIONAL_PL
 )
-
-# Vietnamese diacritical character pattern (unique to Vietnamese, not French)
-_VI_DIACRITICS = re.compile(r"[ăâđêôơưắằẳẵặấầẩẫậếềểễệốồổỗộớờởỡợứừửữự]")
 
 # Clause boundary: bigrams never pair words that cross one of these.
 # Em-dash is included — it sets off a parenthetical/separate clause the same as a
@@ -626,15 +562,8 @@ _VI_DIACRITICS = re.compile(r"[ăâđêôơưắằẳẵặấầẩẫậế�
 _CLAUSE_BOUNDARY = re.compile(r"[.,;:!?\n\r—]+")
 
 
-def _detect_vietnamese(text: str) -> bool:
-    """Detect if text contains Vietnamese based on diacritical characters."""
-    return bool(_VI_DIACRITICS.search(text.lower()))
-
-
 def _get_stop_words(language: str, text: str) -> frozenset[str]:
     """Get appropriate stop words for the detected language."""
-    if language == "vi":
-        return STOP_WORDS_VI
     if language == "en":
         return STOP_WORDS_EN | _STOP_WORDS_CONVERSATIONAL_EN
     if language == "pl":
@@ -646,36 +575,6 @@ def _get_stop_words(language: str, text: str) -> frozenset[str]:
         )
     # "auto" — use all
     return STOP_WORDS
-
-
-_PYVI_WARNED = False
-
-
-def _tokenize_vietnamese(text: str) -> str | None:
-    """Try to tokenize Vietnamese text using pyvi.
-
-    Returns tokenized text with compound words joined by underscores,
-    or None if pyvi is not available.
-    """
-    global _PYVI_WARNED
-    try:
-        import warnings
-
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=DeprecationWarning, module="pyvi")
-            warnings.filterwarnings("ignore", category=DeprecationWarning, module="numpy")
-            from pyvi import ViTokenizer
-
-            return ViTokenizer.tokenize(text)  # type: ignore[no-any-return]
-    except ImportError:
-        if not _PYVI_WARNED:
-            logger.warning(
-                "Vietnamese text detected but pyvi is not installed — "
-                "keyword extraction will produce low-quality bigrams. "
-                "Install with: pip install pyvi"
-            )
-            _PYVI_WARNED = True
-        return None
 
 
 @dataclass(frozen=True)
@@ -703,30 +602,19 @@ def extract_weighted_keywords(
     - Position: earlier words score higher (1.0 → 0.5 linear decay)
     - Bi-grams: adjacent non-stop-word pairs get averaged weight * 1.2 boost
 
-    For Vietnamese text, uses pyvi word segmentation to detect compound words
-    (e.g., "học sinh" → single keyword "học sinh" instead of separate "học", "sinh").
-
     Args:
         text: The text to extract from
         min_length: Minimum word length for unigrams
-        language: Language hint ("vi", "en", or "auto")
+        language: Language hint ("en", "pl", or "auto")
 
     Returns:
         List of WeightedKeyword sorted by weight descending
     """
-    is_vietnamese = language == "vi" or (language == "auto" and _detect_vietnamese(text))
     stop_words = _get_stop_words(language, text)
-
-    # For Vietnamese: try pyvi tokenization to detect compound words
-    tokenized_text = text
-    if is_vietnamese:
-        vi_tokenized = _tokenize_vietnamese(text)
-        if vi_tokenized is not None:
-            tokenized_text = vi_tokenized
 
     words: list[str] = []
     clause_of: list[int] = []
-    for clause_idx, clause in enumerate(_CLAUSE_BOUNDARY.split(tokenized_text.lower())):
+    for clause_idx, clause in enumerate(_CLAUSE_BOUNDARY.split(text.lower())):
         for w in re.findall(r"\b[a-zA-ZÀ-ỹ]+(?:_[a-zA-ZÀ-ỹ]+)*\b", clause):
             words.append(w)
             clause_of.append(clause_idx)
@@ -783,7 +671,7 @@ def extract_keywords(
     Args:
         text: The text to extract from
         min_length: Minimum word length
-        language: Language hint ("vi", "en", or "auto")
+        language: Language hint ("en", "pl", or "auto")
 
     Returns:
         List of keyword strings

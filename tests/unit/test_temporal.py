@@ -22,46 +22,6 @@ class TestTemporalExtractor:
         """Reference time for tests."""
         return datetime(2024, 2, 4, 14, 30, 0)
 
-    # Vietnamese tests
-
-    def test_vi_hom_nay(self, extractor: TemporalExtractor, ref_time: datetime) -> None:
-        """Test Vietnamese 'hôm nay' (today)."""
-        hints = extractor.extract("Hôm nay tôi đi làm", ref_time, language="vi")
-
-        assert len(hints) >= 1
-        hint = hints[0]
-        assert hint.original.lower() == "hôm nay"
-        assert hint.absolute_start.date() == ref_time.date()
-        assert hint.absolute_end.date() == ref_time.date()
-
-    def test_vi_hom_qua(self, extractor: TemporalExtractor, ref_time: datetime) -> None:
-        """Test Vietnamese 'hôm qua' (yesterday)."""
-        hints = extractor.extract("Hôm qua mưa to", ref_time, language="vi")
-
-        assert len(hints) >= 1
-        hint = hints[0]
-        yesterday = ref_time.date() - timedelta(days=1)
-        assert hint.absolute_start.date() == yesterday
-        assert hint.absolute_end.date() == yesterday
-
-    def test_vi_chieu_nay(self, extractor: TemporalExtractor, ref_time: datetime) -> None:
-        """Test Vietnamese 'chiều nay' (this afternoon)."""
-        hints = extractor.extract("Chiều nay họp", ref_time, language="vi")
-
-        assert len(hints) >= 1
-        hint = hints[0]
-        assert hint.absolute_start.hour >= 12
-        assert hint.absolute_end.hour <= 18
-
-    def test_vi_tuan_truoc(self, extractor: TemporalExtractor, ref_time: datetime) -> None:
-        """Test Vietnamese 'tuần trước' (last week)."""
-        hints = extractor.extract("Tuần trước đi du lịch", ref_time, language="vi")
-
-        assert len(hints) >= 1
-        hint = hints[0]
-        assert hint.absolute_start < ref_time
-        assert hint.granularity == TimeGranularity.DAY
-
     # English tests
 
     def test_en_today(self, extractor: TemporalExtractor, ref_time: datetime) -> None:
@@ -101,14 +61,6 @@ class TestTemporalExtractor:
         assert hint.granularity == TimeGranularity.DAY
 
     # Auto-detection tests
-
-    def test_auto_detects_vietnamese(
-        self, extractor: TemporalExtractor, ref_time: datetime
-    ) -> None:
-        """Test auto-detection finds Vietnamese patterns."""
-        hints = extractor.extract("Sáng nay uống cà phê", ref_time, language="auto")
-
-        assert len(hints) >= 1
 
     def test_auto_detects_english(self, extractor: TemporalExtractor, ref_time: datetime) -> None:
         """Test auto-detection finds English patterns."""

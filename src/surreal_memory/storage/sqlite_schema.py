@@ -567,9 +567,9 @@ MIGRATIONS: dict[tuple[int, int], list[str]] = {
         "CREATE INDEX IF NOT EXISTS idx_neurons_content ON neurons(brain_id, content)",
     ],
     (30, 31): [
-        # FTS5: enable diacritics removal for Vietnamese/multilingual recall.
-        # remove_diacritics=2 strips ALL diacritics (Vietnamese, Chinese pinyin, etc.)
-        # so "Tài khoản" matches queries "tai khoan" or "Tài khoản".
+        # FTS5: enable diacritics removal for accent-insensitive recall.
+        # remove_diacritics=2 strips ALL diacritics so accented content
+        # matches queries typed without accents (and vice versa).
         #
         # Rebuild neurons_fts: drop triggers → drop table → recreate → reindex
         "DROP TRIGGER IF EXISTS neurons_au",

@@ -113,7 +113,7 @@ class AutoConfig:
 
 @dataclass(frozen=True)
 class EmbeddingSettings:
-    """Settings for embedding-based cross-language recall."""
+    """Settings for embedding-based semantic recall."""
 
     enabled: bool = False
     provider: str = "sentence_transformer"

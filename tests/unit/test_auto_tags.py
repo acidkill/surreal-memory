@@ -154,23 +154,6 @@ class TestAutoTagGeneration:
             assert len(tag) >= 2, f"Tag '{tag}' is too short (min 2 chars)"
 
     @pytest.mark.asyncio
-    async def test_auto_tags_vietnamese_content(
-        self, encoder: tuple[MemoryEncoder, InMemoryStorage]
-    ) -> None:
-        """Vietnamese content should produce meaningful tags."""
-        enc, _storage = encoder
-
-        result = await enc.encode(
-            "Anh Minh quyết định dùng PostgreSQL cho dự án mới",
-            timestamp=datetime(2024, 2, 4, 15, 0),
-            language="vi",
-        )
-
-        tags_lower = {t.lower() for t in result.fiber.tags}
-        # Should extract Vietnamese entities/keywords
-        assert len(tags_lower) > 0, "Vietnamese content should produce auto-tags"
-
-    @pytest.mark.asyncio
     async def test_auto_tags_improve_clustering_potential(
         self, encoder: tuple[MemoryEncoder, InMemoryStorage]
     ) -> None:

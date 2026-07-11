@@ -46,9 +46,10 @@ class TestCheckContent:
         result = check_content(text)
         assert result.blocked is False
 
-    def test_legitimate_vietnamese_passes(self) -> None:
+    def test_legitimate_accented_latin_passes(self) -> None:
         text = (
-            "Quyết định dùng React thay vì Vue vì team đã quen với JSX và ecosystem lớn hơn nhiều."
+            "Décidé d'utiliser React plutôt que Vue car l'équipe connaît déjà JSX "
+            "et l'écosystème est beaucoup plus vaste et mature."
         )
         result = check_content(text)
         assert result.blocked is False

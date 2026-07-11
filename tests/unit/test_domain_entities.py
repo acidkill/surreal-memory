@@ -2,10 +2,10 @@
 
 Covers:
 - EntitySubtype enum definition
-- Financial metric extraction (Vietnamese + English)
+- Financial metric extraction (English)
 - Currency amount detection (multi-currency)
 - Fiscal period extraction
-- Legal regulation patterns (Vietnamese + English)
+- Legal regulation patterns (English)
 - Legal entity patterns
 - API endpoint extraction
 - Version detection
@@ -101,7 +101,7 @@ class TestFinancialExtraction:
         self.extractor = EntityExtractor()
 
     def test_roe_metric(self) -> None:
-        entities = self.extractor.extract("ROE = 12.8% cho quý này")
+        entities = self.extractor.extract("ROE = 12.8% for this quarter")
         subtypes = [e.subtype for e in entities if e.subtype]
         assert EntitySubtype.FINANCIAL_METRIC in subtypes
 
@@ -110,25 +110,15 @@ class TestFinancialExtraction:
         subtypes = [e.subtype for e in entities if e.subtype]
         assert EntitySubtype.FINANCIAL_METRIC in subtypes
 
-    def test_vietnamese_financial(self) -> None:
-        entities = self.extractor.extract("Doanh thu = 500 tỷ VND")
-        subtypes = [e.subtype for e in entities if e.subtype]
-        assert any(
-            s in (EntitySubtype.FINANCIAL_METRIC, EntitySubtype.CURRENCY_AMOUNT) for s in subtypes
-        )
-
     def test_currency_usd(self) -> None:
         entities = self.extractor.extract("Total investment: $25M")
         subtypes = [e.subtype for e in entities if e.subtype]
         assert EntitySubtype.CURRENCY_AMOUNT in subtypes
 
     def test_currency_vnd(self) -> None:
-        entities = self.extractor.extract("Chi phí: 500 triệu VND")
+        entities = self.extractor.extract("Budget: 25000 VND")
         subtypes = [e.subtype for e in entities if e.subtype]
-        # Should match either financial_metric or currency_amount
-        assert any(
-            s in (EntitySubtype.FINANCIAL_METRIC, EntitySubtype.CURRENCY_AMOUNT) for s in subtypes
-        )
+        assert EntitySubtype.CURRENCY_AMOUNT in subtypes
 
     def test_fiscal_period_quarter(self) -> None:
         entities = self.extractor.extract("Results for Q3 2024 are strong")
@@ -148,11 +138,6 @@ class TestLegalExtraction:
     def setup_method(self) -> None:
         self.extractor = EntityExtractor()
 
-    def test_vietnamese_regulation(self) -> None:
-        entities = self.extractor.extract("Theo Điều 468 BLDS")
-        subtypes = [e.subtype for e in entities if e.subtype]
-        assert EntitySubtype.REGULATION in subtypes
-
     def test_english_section(self) -> None:
         entities = self.extractor.extract("Under Section 301 of the SOX Act")
         subtypes = [e.subtype for e in entities if e.subtype]
@@ -162,11 +147,6 @@ class TestLegalExtraction:
         entities = self.extractor.extract("See Clause 5.2.1 for details")
         subtypes = [e.subtype for e in entities if e.subtype]
         assert EntitySubtype.CONTRACT_CLAUSE in subtypes
-
-    def test_legal_entity_vietnamese(self) -> None:
-        entities = self.extractor.extract("CTCP Vinamilk đã công bố")
-        subtypes = [e.subtype for e in entities if e.subtype]
-        assert EntitySubtype.LEGAL_ENTITY in subtypes
 
 
 # ── Technical Extraction ──────────────────────────────────────────
@@ -205,11 +185,11 @@ class TestHelpers:
         assert _detect_unit("12.8%") == "percent"
 
     def test_detect_unit_billion(self) -> None:
-        assert _detect_unit("500 tỷ") == "billion"
+        assert _detect_unit("500 billion") == "billion"
 
     def test_detect_unit_million(self) -> None:
         assert _detect_unit("25M") == "million"
-        assert _detect_unit("100 triệu") == "million"
+        assert _detect_unit("100 million") == "million"
 
     def test_detect_unit_empty(self) -> None:
         assert _detect_unit("42") == ""
@@ -219,8 +199,8 @@ class TestHelpers:
         assert _detect_currency("100 USD") == "USD"
 
     def test_detect_currency_vnd(self) -> None:
-        assert _detect_currency("500 triệu VND") == "VND"
-        assert _detect_currency("₫100") == "VND"
+        assert _detect_currency("500 VND") == "VND"
+        assert _detect_currency("25000 VND") == "VND"
 
     def test_detect_currency_eur(self) -> None:
         assert _detect_currency("€1.2B") == "EUR"
@@ -233,12 +213,6 @@ class TestHelpers:
 
 
 class TestBackwardCompatibility:
-    def test_existing_person_extraction_unchanged(self) -> None:
-        extractor = EntityExtractor()
-        entities = extractor.extract("Anh Nguyễn Văn A đã gọi")
-        person_entities = [e for e in entities if e.type == EntityType.PERSON]
-        assert len(person_entities) >= 1
-
     def test_existing_code_extraction_unchanged(self) -> None:
         extractor = EntityExtractor()
         entities = extractor.extract("The ReflexPipeline class handles retrieval")

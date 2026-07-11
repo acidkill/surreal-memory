@@ -23,7 +23,6 @@ STRIPPABLE_KEYS: frozenset[str] = frozenset(
         "maintenance_hint",
         "update_hint",
         "onboarding",
-        "cross_language_hint",
         "score_breakdown",
         "related_queries",
         "related_memories",

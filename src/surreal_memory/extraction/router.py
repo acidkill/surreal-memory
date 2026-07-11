@@ -92,13 +92,6 @@ class QueryRouter:
             "information",
             "details",
             "overview",
-            # Vietnamese
-            "về",
-            "liên quan",
-            "khái niệm",
-            "hiểu",
-            "giải thích",
-            "thông tin",
         ]
     )
 
@@ -118,18 +111,6 @@ class QueryRouter:
             "night",
             "recently",
             "earlier",
-            # Vietnamese
-            "khi nào",
-            "hôm qua",
-            "hôm nay",
-            "tuần trước",
-            "trước",
-            "sau",
-            "sáng",
-            "chiều",
-            "tối",
-            "gần đây",
-            "lúc",
         ]
     )
 
@@ -146,13 +127,6 @@ class QueryRouter:
             "effect",
             "consequence",
             "how come",
-            # Vietnamese
-            "tại sao",
-            "vì sao",
-            "lý do",
-            "nguyên nhân",
-            "kết quả",
-            "dẫn đến",
         ]
     )
 
@@ -168,12 +142,6 @@ class QueryRouter:
             "give me",
             "show me",
             "find",
-            # Vietnamese
-            "là gì",
-            "chính xác",
-            "cụ thể",
-            "cho tôi",
-            "tìm",
         ]
     )
 
@@ -190,13 +158,6 @@ class QueryRouter:
             "pattern",
             "tend to",
             "normally",
-            # Vietnamese
-            "thường",
-            "hay",
-            "luôn",
-            "thói quen",
-            "mỗi",
-            "xu hướng",
         ]
     )
 
@@ -212,12 +173,6 @@ class QueryRouter:
             "better",
             "worse",
             "same",
-            # Vietnamese
-            "so sánh",
-            "khác",
-            "giống",
-            "hơn",
-            "như",
         ]
     )
 
@@ -311,8 +266,6 @@ class QueryRouter:
             "what came after",
             "what came before",
             "what followed",
-            "gì xảy ra sau",
-            "gì xảy ra trước",
         }
     )
 
@@ -324,7 +277,6 @@ class QueryRouter:
             "what resulted",
             "led to what",
             "leads to what",
-            "dẫn đến gì",
         }
     )
 
@@ -349,9 +301,7 @@ class QueryRouter:
         elif primary == QueryType.TEMPORAL:
             if any(p in query_lower for p in self._EVENT_SEQ_PATTERNS):
                 metadata["traversal"] = "event_sequence"
-                metadata["direction"] = (
-                    "backward" if "before" in query_lower or "trước" in query_lower else "forward"
-                )
+                metadata["direction"] = "backward" if "before" in query_lower else "forward"
             else:
                 metadata["traversal"] = "temporal_range"
 

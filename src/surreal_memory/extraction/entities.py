@@ -28,13 +28,13 @@ class EntitySubtype(StrEnum):
 
     # Financial
     FINANCIAL_METRIC = "financial_metric"  # ROE, revenue, EBITDA, P/E
-    CURRENCY_AMOUNT = "currency_amount"  # $25M, 500 triệu VND
+    CURRENCY_AMOUNT = "currency_amount"  # $25M, €1.2B, 25000 USD
     FISCAL_PERIOD = "fiscal_period"  # Q1 2024, FY2025, H1/2024
 
     # Legal
-    REGULATION = "regulation"  # Điều 468 BLDS, Section 301 SOX
-    CONTRACT_CLAUSE = "contract_clause"  # Clause 5.2, Khoản 3
-    LEGAL_ENTITY = "legal_entity"  # CTCP, LLC, Ltd, GmbH
+    REGULATION = "regulation"  # Section 301 SOX, Article 5
+    CONTRACT_CLAUSE = "contract_clause"  # Clause 5.2
+    LEGAL_ENTITY = "legal_entity"  # LLC, Ltd, GmbH
 
     # Technical
     API_ENDPOINT = "api_endpoint"  # GET /api/v1/users, POST /webhook
@@ -72,47 +72,13 @@ class EntityExtractor:
     """
     Entity extractor using pattern matching.
 
-    For production use, consider using spaCy or underthesea
-    for better entity recognition. This provides basic
-    rule-based extraction as a fallback.
+    For production use, consider using spaCy for better entity
+    recognition. This provides basic rule-based extraction as a fallback.
     """
-
-    # Common Vietnamese person name prefixes
-    VI_PERSON_PREFIXES: frozenset[str] = frozenset(
-        {
-            "anh",
-            "chị",
-            "em",
-            "bạn",
-            "cô",
-            "chú",
-            "bác",
-            "ông",
-            "bà",
-            "thầy",
-            "cô giáo",
-            "mr",
-            "mrs",
-            "ms",
-            "miss",
-        }
-    )
 
     # Common location indicators
     LOCATION_INDICATORS: frozenset[str] = frozenset(
         {
-            # Vietnamese
-            "ở",
-            "tại",
-            "đến",
-            "từ",
-            "quán",
-            "cafe",
-            "cà phê",
-            "nhà hàng",
-            "công ty",
-            "văn phòng",
-            # English
             "at",
             "in",
             "to",
@@ -129,7 +95,7 @@ class EntityExtractor:
     # Pre-compiled location patterns (avoid recompilation in hot loop)
     _LOCATION_PATTERNS: dict[str, re.Pattern[str]] = {
         indicator: re.compile(
-            rf"\b{re.escape(indicator)}\s+([A-ZÀ-Ỹ][a-zà-ỹA-ZÀ-Ỹ\s]+?)(?:[,.]|\s+(?:với|và|to|with|for)|$)",
+            rf"\b{re.escape(indicator)}\s+([A-Z][a-zA-Z\s]+?)(?:[,.]|\s+(?:to|with|for)|$)",
             re.IGNORECASE,
         )
         for indicator in LOCATION_INDICATORS
@@ -146,76 +112,60 @@ class EntityExtractor:
     # File paths: src/surreal_memory/server.py, config.toml
     FILE_PATH_PATTERN = re.compile(r"(?:[\w.-]+/)+[\w.-]+\.\w+")
 
-    # Pattern for Vietnamese names (words after person prefixes)
-    VI_NAME_PATTERN = re.compile(
-        r"\b(?:anh|chị|em|bạn|cô|chú|bác|ông|bà)\s+([A-ZÀ-Ỹ][a-zà-ỹ]+(?:\s+[A-ZÀ-Ỹ][a-zà-ỹ]+)*)",
-        re.IGNORECASE,
-    )
-
     # ── Domain extraction patterns ──────────────────────────────────
 
     # Financial metrics: ROE, EBITDA, P/E, EPS, revenue, etc.
     FINANCIAL_METRIC_PATTERN = re.compile(
         r"\b(ROE|ROA|ROI|EBITDA|EPS|P/E|P/B|NPM|GPM|CAGR|WACC|"
         r"IRR|NPV|ROIC|FCF|D/E|"
-        r"doanh thu|lợi nhuận|chi phí|tổng tài sản|vốn chủ sở hữu|"
         r"revenue|profit|margin|earnings|net income|gross profit|"
         r"operating income|total assets|equity|debt)"
         r"\s*[=:≈]?\s*"
-        r"([\d.,]+\s*%?|[\d.,]+\s*(?:tỷ|triệu|nghìn|billion|million|thousand|[BMKbmk])?\b)?",
+        r"([\d.,]+\s*%?|[\d.,]+\s*(?:billion|million|thousand|[BMKbmk])?\b)?",
         re.IGNORECASE,
     )
 
-    # Currency amounts: $25M, 500 triệu VND, €1.2B, ¥100K
+    # Currency amounts: $25M, €1.2B, ¥100K, 25000 USD
     CURRENCY_AMOUNT_PATTERN = re.compile(
         r"(?:"
-        r"[\$€£¥₫]\s*[\d.,]+\s*(?:billion|million|thousand|[BMKbmk])?"  # $25M
-        r"|[\d.,]+\s*(?:tỷ|triệu|nghìn)\s*(?:VND|VNĐ|đồng|đ)?"  # 500 triệu VND
-        r"|[\d.,]+\s*(?:USD|EUR|GBP|JPY|VND|VNĐ)"  # 25000 USD
+        r"[\$€£¥]\s*[\d.,]+\s*(?:billion|million|thousand|[BMKbmk])?"  # $25M
+        r"|[\d.,]+\s*(?:USD|EUR|GBP|JPY|VND)"  # 25000 USD
         r"|[\d.,]+\s*(?:billion|million)\s*(?:USD|EUR|GBP|VND)?"  # 1.2 billion USD
         r")",
         re.IGNORECASE,
     )
 
-    # Fiscal periods: Q1 2024, FY2025, H1/2024, năm 2024
+    # Fiscal periods: Q1 2024, FY2025, H1/2024
     FISCAL_PERIOD_PATTERN = re.compile(
         r"\b(?:"
         r"Q[1-4]\s*[/.]?\s*\d{4}"  # Q1 2024, Q3/2024
         r"|FY\s*\d{4}"  # FY2025
         r"|H[12]\s*[/.]?\s*\d{4}"  # H1/2024
-        r"|(?:quý|năm tài chính|năm)\s+\d{4}"  # quý 2024, năm 2024
         r"|(?:fiscal\s+)?(?:year|quarter)\s+\d{4}"  # fiscal year 2024
         r")\b",
         re.IGNORECASE,
     )
 
-    # Legal: Điều 468 BLDS, Section 301 SOX, Article 5, Khoản 3
+    # Legal: Section 301 SOX, Article 5, Clause 3
     REGULATION_PATTERN = re.compile(
         r"\b(?:"
-        r"(?:Điều|Khoản|Mục)\s+\d+(?:\.\d+)*\s*(?:[A-ZÀ-Ỹ][a-zà-ỹA-ZÀ-Ỹ\s]*?)?"  # Điều 468 BLDS
-        r"|(?:Section|Article|Clause|Rule|Regulation)\s+\d+(?:\.\d+)*"
+        r"(?:Section|Article|Clause|Rule|Regulation)\s+\d+(?:\.\d+)*"
         r"(?:\s+(?:of\s+)?(?:the\s+)?[A-Z][A-Za-z\s]*?)?"  # Section 301 SOX
-        r"|(?:Nghị định|Thông tư|Luật)\s+\d+[/-]?\d*[/-]?(?:[A-ZĐ]+)?"  # Nghị định 123/2024
         r")\b",
         re.IGNORECASE,
     )
 
-    # Contract clauses: Clause 5.2, Khoản 3 Điều 12
+    # Contract clauses: Clause 5.2.1
     CONTRACT_CLAUSE_PATTERN = re.compile(
         r"\b(?:"
         r"(?:Clause|clause)\s+\d+(?:\.\d+)+"  # Clause 5.2.1
-        r"|Khoản\s+\d+\s+Điều\s+\d+"  # Khoản 3 Điều 12
-        r"|(?:Điểm|Point)\s+[a-z]\s+Khoản\s+\d+"  # Điểm a Khoản 3
         r")\b",
         re.IGNORECASE,
     )
 
-    # Legal entities: CTCP, LLC, Ltd, GmbH, Corp
+    # Legal entities: LLC, Ltd, GmbH, Corp
     LEGAL_ENTITY_PATTERN = re.compile(
-        r"\b(?:"
-        r"(?:CTCP|TNHH|Công ty\s+(?:TNHH|Cổ phần|CP))\s+[A-ZÀ-Ỹ][^\n,;]{2,40}"
-        r"|[A-Z][A-Za-z\s]+\s+(?:LLC|Ltd|Inc|Corp|GmbH|AG|S\.A\.|PLC|Co\.|Pty)"
-        r")\b",
+        r"\b[A-Z][A-Za-z\s]+\s+(?:LLC|Ltd|Inc|Corp|GmbH|AG|S\.A\.|PLC|Co\.|Pty)\b",
     )
 
     # API endpoints: GET /api/v1/users, POST /webhook
@@ -240,11 +190,10 @@ class EntityExtractor:
         Initialize the extractor.
 
         Args:
-            use_nlp: If True, try to use spaCy/underthesea (not implemented yet)
+            use_nlp: If True, try to use spaCy (not implemented yet)
         """
         self._use_nlp = use_nlp
         self._nlp_en: Any = None
-        self._nlp_vi: Any = None
 
         if use_nlp:
             self._init_nlp()
@@ -259,19 +208,6 @@ class EntityExtractor:
         except (ImportError, OSError):
             pass
 
-        # Try to load underthesea for Vietnamese
-        try:
-            import warnings
-
-            with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", category=DeprecationWarning)
-                warnings.filterwarnings("ignore", category=FutureWarning)
-                import underthesea
-
-            self._nlp_vi = underthesea
-        except ImportError:
-            pass
-
     def extract(
         self,
         text: str,
@@ -282,7 +218,8 @@ class EntityExtractor:
 
         Args:
             text: The text to extract from
-            language: "vi", "en", or "auto"
+            language: Accepted for backward compatibility; extraction is
+                English-only, so this argument is ignored.
 
         Returns:
             List of Entity objects
@@ -296,7 +233,6 @@ class EntityExtractor:
                 return nlp_entities
 
         # Fall back to pattern-based extraction
-        entities.extend(self._extract_vietnamese_names(text))
         entities.extend(self._extract_domain_entities(text))
         entities.extend(self._extract_code_entities(text, entities))
         entities.extend(self._extract_capitalized_words(text, entities))
@@ -319,7 +255,7 @@ class EntityExtractor:
         language: str,
     ) -> list[Entity] | None:
         """Try to extract using NLP models."""
-        if language in ("en", "auto") and self._nlp_en:
+        if self._nlp_en:
             doc = self._nlp_en(text)
             entities = []
             for ent in doc.ents:
@@ -337,34 +273,6 @@ class EntityExtractor:
             if entities:
                 return entities
 
-        if language in ("vi", "auto") and self._nlp_vi:
-            try:
-                ner_results = self._nlp_vi.ner(text)
-                entities = []
-                # Use cumulative offset to handle duplicate words
-                offset = 0
-                for word, tag in ner_results:
-                    if tag.startswith(("B-", "I-")):
-                        entity_type = self._map_underthesea_type(tag[2:])
-                        if entity_type:
-                            # Find position in text from current offset
-                            start = text.find(word, offset)
-                            if start >= 0:
-                                entities.append(
-                                    Entity(
-                                        text=word,
-                                        type=entity_type,
-                                        start=start,
-                                        end=start + len(word),
-                                        confidence=0.85,
-                                    )
-                                )
-                                offset = start + len(word)
-                if entities:
-                    return entities
-            except (ValueError, TypeError, AttributeError) as e:
-                logger.debug("Vietnamese NER failed: %s", e)
-
         return None
 
     def _map_spacy_type(self, label: str) -> EntityType | None:
@@ -380,33 +288,6 @@ class EntityExtractor:
             "EVENT": EntityType.EVENT,
         }
         return mapping.get(label)
-
-    def _map_underthesea_type(self, label: str) -> EntityType | None:
-        """Map underthesea NER label to EntityType."""
-        mapping = {
-            "PER": EntityType.PERSON,
-            "LOC": EntityType.LOCATION,
-            "ORG": EntityType.ORGANIZATION,
-        }
-        return mapping.get(label)
-
-    def _extract_vietnamese_names(self, text: str) -> list[Entity]:
-        """Extract Vietnamese person names."""
-        entities = []
-
-        for match in self.VI_NAME_PATTERN.finditer(text):
-            name = match.group(1)
-            entities.append(
-                Entity(
-                    text=name,
-                    type=EntityType.PERSON,
-                    start=match.start(1),
-                    end=match.end(1),
-                    confidence=0.8,
-                )
-            )
-
-        return entities
 
     def _extract_capitalized_words(
         self,
@@ -512,7 +393,7 @@ class EntityExtractor:
         """Extract financial, legal, and technical domain entities."""
         entities: list[Entity] = []
 
-        # Financial metrics (ROE = 12.8%, revenue = 500 tỷ)
+        # Financial metrics (ROE = 12.8%, revenue = 500 million)
         for match in self.FINANCIAL_METRIC_PATTERN.finditer(text):
             raw_val = match.group(2) or ""
             entities.append(
@@ -528,7 +409,7 @@ class EntityExtractor:
                 )
             )
 
-        # Currency amounts ($25M, 500 triệu VND)
+        # Currency amounts ($25M, 1.2 billion USD)
         for match in self.CURRENCY_AMOUNT_PATTERN.finditer(text):
             entities.append(
                 Entity(
@@ -557,7 +438,7 @@ class EntityExtractor:
                 )
             )
 
-        # Regulations (Điều 468 BLDS, Section 301)
+        # Regulations (Section 301 SOX, Article 5)
         for match in self.REGULATION_PATTERN.finditer(text):
             entities.append(
                 Entity(
@@ -571,7 +452,7 @@ class EntityExtractor:
                 )
             )
 
-        # Contract clauses (Clause 5.2, Khoản 3 Điều 12)
+        # Contract clauses (Clause 5.2.1)
         for match in self.CONTRACT_CLAUSE_PATTERN.finditer(text):
             entities.append(
                 Entity(
@@ -585,7 +466,7 @@ class EntityExtractor:
                 )
             )
 
-        # Legal entities (CTCP ABC, XYZ LLC)
+        # Legal entities (XYZ LLC, ABC Corp)
         for match in self.LEGAL_ENTITY_PATTERN.finditer(text):
             entities.append(
                 Entity(
@@ -670,11 +551,11 @@ def _detect_unit(value: str) -> str:
     v = value.strip().lower()
     if "%" in v:
         return "percent"
-    if any(w in v for w in ("tỷ", "billion", "b")):
+    if any(w in v for w in ("billion", "b")):
         return "billion"
-    if any(w in v for w in ("triệu", "million", "m")):
+    if any(w in v for w in ("million", "m")):
         return "million"
-    if any(w in v for w in ("nghìn", "thousand", "k")):
+    if any(w in v for w in ("thousand", "k")):
         return "thousand"
     return ""
 
@@ -690,8 +571,6 @@ def _detect_currency(text: str) -> str:
         return "GBP"
     if t.startswith("¥") or "JPY" in t.upper():
         return "JPY"
-    if t.startswith("₫") or any(w in t.upper() for w in ("VND", "VNĐ", "ĐỒNG")):
-        return "VND"
-    if any(w in t.lower() for w in ("tỷ", "triệu", "nghìn")):
+    if "VND" in t.upper():
         return "VND"
     return ""

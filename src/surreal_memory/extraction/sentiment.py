@@ -1,8 +1,7 @@
 """Lexicon-based sentiment extraction — no LLM dependency.
 
 Extracts emotional valence, intensity, and emotion tags from text
-using curated word lexicons with negation and intensifier handling.
-Supports English and Vietnamese.
+using curated English word lexicons with negation and intensifier handling.
 """
 
 from __future__ import annotations
@@ -202,82 +201,10 @@ _NEGATIVE_EN: frozenset[str] = frozenset(
     }
 )
 
-# --- Vietnamese lexicons ---
-
-_POSITIVE_VI: frozenset[str] = frozenset(
-    {
-        "tốt",
-        "hay",
-        "tuyệt",
-        "xuất sắc",
-        "hoàn hảo",
-        "vui",
-        "hạnh phúc",
-        "hài lòng",
-        "thoải mái",
-        "thành công",
-        "hoàn thành",
-        "xong",
-        "ổn",
-        "nhanh",
-        "mạnh",
-        "hiệu quả",
-        "ổn định",
-        "thích",
-        "yêu",
-        "đẹp",
-        "giỏi",
-        "khá",
-        "tiến bộ",
-        "cải thiện",
-        "sửa được",
-        "nhẹ nhàng",
-        "sạch",
-        "gọn",
-    }
-)
-
-_NEGATIVE_VI: frozenset[str] = frozenset(
-    {
-        "lỗi",
-        "hỏng",
-        "chết",
-        "sập",
-        "crash",
-        "thất bại",
-        "sai",
-        "bug",
-        "vấn đề",
-        "chậm",
-        "kẹt",
-        "treo",
-        "lag",
-        "đứng",
-        "buồn",
-        "lo",
-        "bực",
-        "khó chịu",
-        "mệt",
-        "tệ",
-        "xấu",
-        "dở",
-        "kém",
-        "yếu",
-        "phức tạp",
-        "rối",
-        "khó hiểu",
-        "nặng",
-        "nguy hiểm",
-        "rủi ro",
-        "deprecated",
-    }
-)
-
 # --- Negators ---
 
 _NEGATORS: frozenset[str] = frozenset(
     {
-        # English
         "not",
         "no",
         "never",
@@ -304,15 +231,6 @@ _NEGATORS: frozenset[str] = frozenset(
         "hardly",
         "barely",
         "scarcely",
-        # Vietnamese
-        "không",
-        "chưa",
-        "chẳng",
-        "chả",
-        "đừng",
-        "chưa từng",
-        "không hề",
-        "không bao giờ",
     }
 )
 
@@ -320,7 +238,6 @@ _NEGATORS: frozenset[str] = frozenset(
 
 _INTENSIFIERS: frozenset[str] = frozenset(
     {
-        # English
         "very",
         "extremely",
         "highly",
@@ -337,15 +254,6 @@ _INTENSIFIERS: frozenset[str] = frozenset(
         "remarkably",
         "exceptionally",
         "particularly",
-        # Vietnamese
-        "rất",
-        "cực",
-        "quá",
-        "siêu",
-        "vô cùng",
-        "hết sức",
-        "đặc biệt",
-        "thật sự",
     }
 )
 
@@ -360,8 +268,6 @@ _EMOTION_MAP: dict[str, frozenset[str]] = {
             "irritated",
             "angry",
             "furious",
-            "bực",
-            "khó chịu",
         }
     ),
     "satisfaction": frozenset(
@@ -373,8 +279,6 @@ _EMOTION_MAP: dict[str, frozenset[str]] = {
             "glad",
             "delighted",
             "proud",
-            "hài lòng",
-            "vui",
         }
     ),
     "confusion": frozenset(
@@ -385,8 +289,6 @@ _EMOTION_MAP: dict[str, frozenset[str]] = {
             "puzzling",
             "puzzled",
             "bewildered",
-            "khó hiểu",
-            "rối",
         }
     ),
     "excitement": frozenset(
@@ -409,8 +311,6 @@ _EMOTION_MAP: dict[str, frozenset[str]] = {
             "stressed",
             "nervous",
             "scared",
-            "lo",
-            "lo lắng",
         }
     ),
     "relief": frozenset(
@@ -420,8 +320,6 @@ _EMOTION_MAP: dict[str, frozenset[str]] = {
             "solved",
             "resolved",
             "fixed",
-            "sửa được",
-            "xong",
         }
     ),
     "disappointment": frozenset(
@@ -430,8 +328,6 @@ _EMOTION_MAP: dict[str, frozenset[str]] = {
             "let down",
             "underwhelming",
             "failed",
-            "thất vọng",
-            "thất bại",
         }
     ),
 }
@@ -446,18 +342,14 @@ del _emotion, _words, _word
 # Token pattern: split on whitespace and common punctuation
 _TOKEN_PATTERN = re.compile(r"[a-zA-ZÀ-ỹ']+")
 
-# Vietnamese detection: presence of common Vietnamese characters
-_VI_CHARS = re.compile(r"[ăâđêôơưàảãáạèẻẽéẹìỉĩíịòỏõóọùủũúụỳỷỹýỵ]", re.IGNORECASE)
-
 # Negation window: how many tokens ahead a negator affects
 _NEGATION_WINDOW = 2
 
 
 class SentimentExtractor:
-    """Extract sentiment from text using curated lexicons.
+    """Extract sentiment from text using curated English lexicons.
 
-    Supports English and Vietnamese with negation handling,
-    intensifier detection, and emotion tag mapping.
+    Handles negation, intensifier detection, and emotion tag mapping.
     """
 
     def extract(self, text: str, language: str = "auto") -> SentimentResult:
@@ -465,11 +357,12 @@ class SentimentExtractor:
 
         Args:
             text: Input text to analyze
-            language: Language hint ("en", "vi", or "auto")
+            language: Accepted for caller compatibility; ignored (English-only).
 
         Returns:
             SentimentResult with valence, intensity, and emotion tags
         """
+        del language  # English-only; retained in signature for caller compatibility
         if not text or len(text.strip()) < 3:
             return SentimentResult(
                 valence=Valence.NEUTRAL,
@@ -479,13 +372,8 @@ class SentimentExtractor:
                 negative_count=0,
             )
 
-        # Detect language
-        if language == "auto":
-            language = "vi" if _VI_CHARS.search(text) else "en"
-
-        # Select lexicons
-        positive_words = _POSITIVE_EN | (_POSITIVE_VI if language == "vi" else frozenset())
-        negative_words = _NEGATIVE_EN | (_NEGATIVE_VI if language == "vi" else frozenset())
+        positive_words = _POSITIVE_EN
+        negative_words = _NEGATIVE_EN
 
         # Tokenize
         tokens = _TOKEN_PATTERN.findall(text.lower())

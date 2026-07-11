@@ -413,7 +413,7 @@ class DocTrainer:
         if tc.consolidate and chunks_encoded > 0:
             enrichment_synapses = await self._run_enrichment()
 
-        # Store embeddings for anchor neurons (enables cross-language recall)
+        # Store embeddings for anchor neurons (enables semantic recall)
         if self._config.embedding_enabled and chunk_anchors:
             stored = await self._store_chunk_embeddings(chunk_anchors)
             if stored > 0:
@@ -605,9 +605,8 @@ class DocTrainer:
     ) -> int:
         """Batch-embed anchor neuron content and store in metadata['_embedding'].
 
-        This enables cross-language recall: the embedding captures semantic
-        meaning regardless of source language, so a Vietnamese query can match
-        English documentation via cosine similarity.
+        This enables semantic recall: the embedding captures meaning, so a
+        paraphrased query can match documentation via cosine similarity.
 
         Returns the number of neurons updated with embeddings.
         """

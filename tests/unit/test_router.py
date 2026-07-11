@@ -143,20 +143,6 @@ class TestQueryRouter:
         assert decision.primary == QueryType.TEMPORAL
         assert "has_time_hints" in decision.signals
 
-    def test_vietnamese_temporal_query(self, router: QueryRouter, parser: QueryParser) -> None:
-        """Test routing Vietnamese temporal query."""
-        stimulus = parser.parse("Hôm qua tôi làm gì?")
-        decision = router.route(stimulus)
-
-        assert decision.primary == QueryType.TEMPORAL
-
-    def test_vietnamese_causal_query(self, router: QueryRouter, parser: QueryParser) -> None:
-        """Test routing Vietnamese causal query."""
-        stimulus = parser.parse("Tại sao build bị lỗi?")
-        decision = router.route(stimulus)
-
-        assert decision.primary == QueryType.CAUSAL
-
     def test_suggested_depth_direct(self, router: QueryRouter, parser: QueryParser) -> None:
         """Test direct queries suggest shallow depth."""
         stimulus = parser.parse("What is the API key?")

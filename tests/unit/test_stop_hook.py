@@ -99,18 +99,6 @@ class TestHasMemoryMarkers:
     def test_committed_marker(self) -> None:
         assert _has_memory_markers("Committed the changes to main branch")
 
-    def test_vietnamese_decision(self) -> None:
-        assert _has_memory_markers("Quyết định dùng PostgreSQL thay vì MySQL")
-
-    def test_vietnamese_error(self) -> None:
-        assert _has_memory_markers("Lỗi do thiếu import module")
-
-    def test_vietnamese_lesson(self) -> None:
-        assert _has_memory_markers("Bài học rút ra từ lần deploy này")
-
-    def test_vietnamese_todo(self) -> None:
-        assert _has_memory_markers("Cần phải refactor lại module auth")
-
     def test_no_markers_generic_text(self) -> None:
         assert not _has_memory_markers("Let me read the file for you")
 
