@@ -183,6 +183,10 @@ def _cap_trust_score(trust: float | None, source: str) -> float | None:
     return min(trust, ceiling)
 
 
+# Sentinel for with_validity: distinguishes "argument omitted" from "explicitly set to None".
+_UNSET: Any = object()
+
+
 @dataclass(frozen=True)
 class TypedMemory:
     """A memory with type classification, priority, and lifecycle metadata.
@@ -201,6 +205,9 @@ class TypedMemory:
         created_at: Creation timestamp
         trust_score: Trust level 0.0-1.0 (None = unscored)
         source: Origin label (e.g. "user_input", "ai_inference", "import")
+        valid_from: When this fact started being true (None = since created_at)
+        valid_until: When this fact stopped being true (None = still valid / open-ended)
+        superseded_by: fiber_id of the fact that replaced this one (None = not superseded)
     """
 
     fiber_id: str
@@ -215,6 +222,9 @@ class TypedMemory:
     trust_score: float | None = None
     source: str | None = None
     tier: str = MemoryTier.WARM
+    valid_from: datetime | None = None
+    valid_until: datetime | None = None
+    superseded_by: str | None = None
 
     @classmethod
     def create(
@@ -292,6 +302,45 @@ class TypedMemory:
         delta = self.expires_at - utcnow()
         return max(0, delta.days)
 
+    @property
+    def is_superseded(self) -> bool:
+        """Whether this fact has been replaced by a newer one."""
+        return self.superseded_by is not None
+
+    def is_valid_at(self, dt: datetime) -> bool:
+        """Whether this fact was true at the given point in time.
+
+        valid_from defaults to created_at when unset; valid_until is an
+        exclusive upper bound (dt == valid_until is already invalid).
+        """
+        start = self.valid_from if self.valid_from is not None else self.created_at
+        if dt < start:
+            return False
+        if self.valid_until is not None and dt >= self.valid_until:
+            return False
+        return True
+
+    def with_validity(
+        self,
+        valid_from: datetime | None = _UNSET,  # type: ignore[assignment]
+        valid_until: datetime | None = _UNSET,  # type: ignore[assignment]
+        superseded_by: str | None = _UNSET,  # type: ignore[assignment]
+    ) -> TypedMemory:
+        """Return a new TypedMemory with updated validity fields.
+
+        Omitted arguments keep their current value; pass None explicitly to clear.
+        """
+        from dataclasses import replace
+
+        changes: dict[str, Any] = {}
+        if valid_from is not _UNSET:
+            changes["valid_from"] = valid_from
+        if valid_until is not _UNSET:
+            changes["valid_until"] = valid_until
+        if superseded_by is not _UNSET:
+            changes["superseded_by"] = superseded_by
+        return replace(self, **changes)
+
     def with_priority(self, priority: Priority | int) -> TypedMemory:
         """Create a new TypedMemory with updated priority."""
         if isinstance(priority, int):
@@ -309,6 +358,9 @@ class TypedMemory:
             trust_score=self.trust_score,
             source=self.source,
             tier=self.tier,
+            valid_from=self.valid_from,
+            valid_until=self.valid_until,
+            superseded_by=self.superseded_by,
         )
 
     def with_tier(self, tier: str) -> TypedMemory:
@@ -330,6 +382,9 @@ class TypedMemory:
             trust_score=self.trust_score,
             source=self.source,
             tier=effective_tier,
+            valid_from=self.valid_from,
+            valid_until=self.valid_until,
+            superseded_by=self.superseded_by,
         )
 
     def verify(self) -> TypedMemory:
@@ -345,6 +400,9 @@ class TypedMemory:
             metadata=self.metadata,
             created_at=self.created_at,
             tier=self.tier,
+            valid_from=self.valid_from,
+            valid_until=self.valid_until,
+            superseded_by=self.superseded_by,
         )
 
     def extend_expiry(self, days: int) -> TypedMemory:
@@ -361,6 +419,9 @@ class TypedMemory:
             metadata=self.metadata,
             created_at=self.created_at,
             tier=self.tier,
+            valid_from=self.valid_from,
+            valid_until=self.valid_until,
+            superseded_by=self.superseded_by,
         )
 
 

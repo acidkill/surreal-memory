@@ -54,6 +54,12 @@ class Source:
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at: datetime = field(default_factory=utcnow)
     updated_at: datetime = field(default_factory=utcnow)
+    trust: float | None = None
+
+    def __post_init__(self) -> None:
+        """Validate the trust score is within the 0.0-1.0 range when set."""
+        if self.trust is not None and not (0.0 <= self.trust <= 1.0):
+            raise ValueError(f"Source.trust must be in [0.0, 1.0], got {self.trust!r}")
 
     @classmethod
     def create(
@@ -68,6 +74,7 @@ class Source:
         file_hash: str = "",
         metadata: dict[str, Any] | None = None,
         source_id: str | None = None,
+        trust: float | None = None,
     ) -> Source:
         """Factory method — preferred over direct __init__."""
         return cls(
@@ -83,6 +90,7 @@ class Source:
             metadata=metadata or {},
             created_at=utcnow(),
             updated_at=utcnow(),
+            trust=trust,
         )
 
     def with_status(self, status: SourceStatus | str) -> Source:
@@ -96,6 +104,12 @@ class Source:
         from dataclasses import replace
 
         return replace(self, version=version, updated_at=utcnow())
+
+    def with_trust(self, trust: float | None) -> Source:
+        """Return new Source with updated trust score (validated to [0.0, 1.0])."""
+        from dataclasses import replace
+
+        return replace(self, trust=trust, updated_at=utcnow())
 
     @property
     def is_active(self) -> bool:
