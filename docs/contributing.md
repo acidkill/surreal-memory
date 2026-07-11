@@ -83,7 +83,7 @@ make verify
 <!-- AUTO-GENERATED from .env.example — do not edit this table manually -->
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `SURREAL_MEMORY_STORAGE` | No | `sqlite` | Storage backend: `sqlite` or `surrealdb` |
+| `SURREAL_MEMORY_STORAGE` | No | `sqlite` | Storage backend: `sqlite`/`memory` (test fixtures) or `surrealdb` (production backend) |
 | `SURREAL_MEMORY_DIR` | No | `~/.surrealmemory/` | Data directory override |
 | `SURREAL_MEMORY_BRAIN` | No | `default` | Active brain name |
 | `SURREAL_MEMORY_HOST` | No | `127.0.0.1` | REST server bind host |
@@ -214,7 +214,7 @@ src/surreal_memory/
 ├── extraction/    # NLP utilities (Parser, Temporal, etc.)
 ├── storage/       # Storage backends
 │   ├── surrealdb/ # SurrealDB backend (primary — 163 methods across 10 mixins)
-│   ├── sqlite_*.py# SQLite backend (default local)
+│   ├── sqlite_*.py# SQLite/InMemory backends (test fixtures only — not the production backend)
 │   └── surrealdb/ # SurrealDB backend (recommended)
 ├── mcp/           # MCP server for Claude (56 tools, ~30 handler files)
 ├── server/        # FastAPI REST server + dashboard static files

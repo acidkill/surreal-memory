@@ -10,7 +10,7 @@ Surreal-Memory is an open-source MCP server that gives AI coding agents persiste
 
 Core idea: memories are stored as typed neurons connected by 41 typed synapses (CAUSED_BY, LEADS_TO, RESOLVED_BY, CONTRADICTS, etc.). Recall works by activating seed neurons and letting activation spread through the graph, naturally surfacing related memories through association — closer to how the brain retrieves context than cosine similarity over a flat embedding store.
 
-No embedding API calls needed for core recall — it's pure algorithmic graph traversal. Embeddings are optional for cross-language search (supports Ollama, sentence-transformers, Gemini, OpenAI). Core encode + recall costs $0.00 per query.
+No embedding API calls needed for core recall — it's pure algorithmic graph traversal. Embeddings are optional for semantic (vector) search (supports Ollama, sentence-transformers, Gemini, OpenAI). Core encode + recall costs $0.00 per query.
 
 Backed by SurrealDB's multi-model engine (document + graph + vector HNSW in one database — no separate vector store). 56 MCP tools, 5,500+ tests, 67%+ CI coverage, Python 3.11+, MIT.
 

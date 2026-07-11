@@ -1,3 +1,5 @@
+> **⚠️ HISTORICAL (V1).** Superseded by the SurrealDB-only architecture — see docs/architecture/overview.md. SQLite is now a test fixture only, not the storage backend.
+
 # Extended Surreal-Memory Architecture (v1.0 Vision)
 
 > [!IMPORTANT]

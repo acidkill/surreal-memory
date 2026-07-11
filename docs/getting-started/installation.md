@@ -14,7 +14,7 @@ Install directly from the repository with all SurrealDB and embedding extras:
 
 ```bash
 pipx install \
-  "surreal-memory[surrealdb,embeddings-gemini,server] @ git+https://github.com/acidkill/surreal-memory-surrealdb-version.git"
+  "surreal-memory[surrealdb,embeddings-gemini,server] @ git+https://github.com/acidkill/surreal-memory.git"
 ```
 
 ### From PyPI
@@ -28,8 +28,8 @@ pip install surreal-memory[surrealdb,embeddings-gemini]
 Surreal-Memory requires a running SurrealDB instance. The included Docker Compose file starts everything in one command:
 
 ```bash
-git clone https://github.com/acidkill/surreal-memory-surrealdb-version.git
-cd surreal-memory-surrealdb-version
+git clone https://github.com/acidkill/surreal-memory.git
+cd surreal-memory
 cp .env.example .env          # edit with your GEMINI_API_KEY
 docker compose -f docker-compose.surrealdb.yml up -d
 ```
@@ -44,7 +44,7 @@ Dashboard at http://localhost:8000/ui, health at http://localhost:8000/health.
 
 | Extra | Installs | When to use |
 |-------|----------|-------------|
-| `surrealdb` | `surrealdb>=0.4.0` | **Required** for graph + vector features |
+| `surrealdb` | `surrealdb>=2.0.0,<3.0.0` | **Required** for graph + vector features |
 | `embeddings-gemini` | `google-genai>=1.0` | Semantic search via Gemini embeddings |
 | `embeddings-openai` | `openai>=1.0` | Semantic search via OpenAI embeddings |
 | `server` | FastAPI + uvicorn | REST API + web dashboard |
@@ -56,7 +56,7 @@ Dashboard at http://localhost:8000/ui, health at http://localhost:8000/health.
 Example — install with encryption and document training:
 
 ```bash
-pipx install "surreal-memory[surrealdb,embeddings-gemini,server,encryption,extract] @ git+https://github.com/acidkill/surreal-memory-surrealdb-version.git"
+pipx install "surreal-memory[surrealdb,embeddings-gemini,server,encryption,extract] @ git+https://github.com/acidkill/surreal-memory.git"
 ```
 
 ## Development Installation
@@ -64,8 +64,8 @@ pipx install "surreal-memory[surrealdb,embeddings-gemini,server,encryption,extra
 For contributing to this repository or running tests:
 
 ```bash
-git clone https://github.com/acidkill/surreal-memory-surrealdb-version.git
-cd surreal-memory-surrealdb-version
+git clone https://github.com/acidkill/surreal-memory.git
+cd surreal-memory
 pip install -e ".[dev,surrealdb,embeddings-gemini,server]"
 ```
 

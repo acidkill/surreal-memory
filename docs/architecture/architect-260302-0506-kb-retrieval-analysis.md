@@ -1,3 +1,5 @@
+> **⚠️ SUPERSEDED / HISTORICAL (2026-03).** This analysis predates the SurrealDB-only architecture (v2.0.0+), cross-encoder reranking (v2.7.0), and the removal of the Vietnamese/cross-language retrieval layer. Retained for historical context only — do not treat its proposals (sqlite-vec, auto-translate layer, BGE-M3 hybrid) as current direction. See docs/architecture/overview.md.
+
 # Architecture Analysis: Surreal-Memory KB Retrieval Problems
 
 **Date:** 2026-03-02 | **Type:** Senior Architecture Consultation

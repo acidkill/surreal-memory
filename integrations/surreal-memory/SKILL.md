@@ -237,7 +237,6 @@ Automatically extracts: 1 decision, 1 fact, 1 TODO.
 - **Temporal reasoning** — Causal chain traversal, event sequences, temporal range queries
 - **Brain versioning** — Snapshot, rollback, diff brain state
 - **Brain transplant** — Transfer filtered knowledge between brains
-- **Vietnamese + English** — Full bilingual support for extraction and sentiment
 
 ## Depth Levels
 
@@ -250,7 +249,7 @@ Automatically extracts: 1 decision, 1 fact, 1 TODO.
 
 ## Notes
 
-- Memories are stored locally in SQLite at `~/.surrealmemory/brains/<brain>.db`
+- Memories are stored in SurrealDB (see `docker-compose.surrealdb.yml`)
 - No data is sent to external services (unless optional embedding provider is configured)
 - Brain isolation: each brain is independent, no cross-contamination
 - `smem_remember` returns fiber_id for reference tracking

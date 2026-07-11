@@ -176,4 +176,3 @@ Follow-up needed:
 - **One concept per memory** — don't cram multiple facts into one memory
 - **Source attribution** — always note where information came from when available
 - **Respect existing brain vocabulary** — check existing tags before inventing new ones
-- **Vietnamese support** — if input is Vietnamese, store in Vietnamese with Vietnamese tags

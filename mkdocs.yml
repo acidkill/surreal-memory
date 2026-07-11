@@ -127,7 +127,6 @@ nav:
   - Blog:
     - Why I Built Surreal-Memory: blog/why-i-built-surrealmemory.md
     - Honest Comparison 2026: blog/honest-comparison-2026.md
-    - OpenClaw Integration: blog/surreal-memory-openclaw.md
 
 extra_css:
   - assets/css/quickstart.css

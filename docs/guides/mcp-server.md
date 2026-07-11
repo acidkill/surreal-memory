@@ -612,7 +612,7 @@ docker run -i --rm -v surrealmemory:/root/.surrealmemory ghcr.io/acidkill/surrea
 | **RAM (active, small brain)** | ~30-35 MB |
 | **RAM (active, large brain)** | ~55-60 MB |
 | **CPU** | Near 0% when idle |
-| **Disk** | ~1-50 MB per brain (SQLite) |
+| **Disk** | ~1-50 MB per brain (SurrealDB) |
 | **Startup time** | < 2 seconds |
 
 Surreal-Memory is lightweight — it won't slow down your editor.

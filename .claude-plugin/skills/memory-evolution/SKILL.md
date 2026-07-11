@@ -313,5 +313,4 @@ Focus areas: testing (0 memories), deployment (3 memories, could be richer)
 - **Respect user judgment** — if user says "keep it", keep it, even if metrics say prune
 - **Progressive improvement** — aim for +5-10 grade points per cycle, not perfection in one pass
 - **No perfectionism** — grade B+ is healthy; don't optimize for A+ if effort outweighs benefit
-- **Vietnamese support** — if brain content is Vietnamese, conduct evolution in Vietnamese
 - **Compare cycles** — if previous evolution memory exists, show delta from last cycle

@@ -12,7 +12,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [2.7.4] — 2026-07-09
+### Removed
+
+- **Vietnamese language support and the cross-language "translation" layer**
+  (extraction is English-only now). Dropped the Vietnamese lexicons/patterns and the
+  EN↔VI query-expansion map, the recall handler's cross-language hint, and the
+  `[nlp-vi]` extra (`underthesea` / `pyvi`). Embedding-level multilingual recall is
+  unaffected — it is a property of the embedding model, not the extraction layer. See
+  [architecture/vietnamese-removal.md](architecture/vietnamese-removal.md).
+
+## [2.7.4] — 2026-07-11
+
+### Performance
+
+- **`recall` is now index-backed end-to-end (≈25s → ≈8s on a 65k-neuron /
+  295k-synapse brain).** A BM25 `FULLTEXT` index (`idx_neuron_content_fts`, lowercase
+  analyzer) with the `@@` operator replaces the case-sensitive `CONTAINS` full-scan
+  for content lookup (~2.9s → ~0.9ms/call, now case-insensitive), and neighbour
+  traversal queries each synapse direction with its own indexed equality instead of
+  an index-defeating `OR` across `in`/`out` (~950ms → ~38ms/call).
 
 ### Changed
 

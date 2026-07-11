@@ -1,7 +1,7 @@
 # Plan: Graph SVG Export (`smem graph --export svg`)
 
 **Date**: 2026-02-26
-**Origin**: User feedback from bemiagent.com — "muốn chụp hình graph nhưng chỉ có text"
+**Origin**: User feedback from bemiagent.com — "want to screenshot the graph but only have text"
 **Reference**: Feature Factory `antv-renderer.ts` (AntV SSR approach reviewed, not applicable for Python)
 
 ---

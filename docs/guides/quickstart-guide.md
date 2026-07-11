@@ -125,7 +125,7 @@ Something wrong? Run `smem doctor --fix` to auto-remediate hooks, dedup, and emb
 | Step | What | Why |
 |------|------|-----|
 | Config | Creates `~/.surrealmemory/config.toml` | Central settings for brain, embedding, dedup |
-| Brain | Creates `default.db` SQLite database | Your memory graph lives here |
+| Brain | Creates the `default` brain in SurrealDB | Your memory graph lives here |
 | SurrealDB | Starts via `docker-compose.surrealdb.yml` | Vector search backend for similarity queries |
 | MCP | Registers in Claude Code + Cursor | AI tools can use your brain |
 | Hooks | Installs PreCompact, Stop, PostToolUse | Captures memories automatically |

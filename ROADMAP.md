@@ -77,7 +77,7 @@
 - [x] Phase 1: Core FileWatcher class, watchdog integration, state tracking (mtime + simhash)
 - [x] Phase 2: `smem watch` CLI + `smem_watch` MCP tool + config
 - [x] Phase 3: `smem serve` integration, debounce (2s), metrics
-- **Brain test**: Não tự hấp thụ thông tin từ môi trường → Yes
+- **Brain test**: The brain absorbs information from its environment on its own → Yes
 
 ### A3. Brain Quality Track C — Vertical Intelligence
 
@@ -107,7 +107,7 @@
 - [x] Phase 2: Prediction Error Encoding + Retrieval Reconsolidation (~350 LOC)
 - [x] Phase 3: Context-Dependent Retrieval + Hippocampal Replay + Working Memory Chunking (~470 LOC)
 - [x] Phase 4: Schema Assimilation + Interference Forgetting (~550 LOC)
-- [x] v4.21.1: Multilingual support (en/vi + agnostic fallback), input firewall noise stripping, `clean_for_prompt` recall mode
+- [x] v4.21.1: input firewall noise stripping, `clean_for_prompt` recall mode. _Note: the multilingual (en/vi) extraction layer originally shipped here was later **removed** — extraction is now English-only; embedding-level semantic multilingual recall remains possible via the embedding model._
 - **Brain test**: ALL 10 improvements map to documented neuroscience principles → Yes
 - **Zero LLM**: Pure algorithmic (regex, SimHash, graph ops). No embeddings required.
 - 107 new tests, post-encode hooks, paginated tag fetch, real activation scores
@@ -128,7 +128,7 @@
 - [x] Dashboard: TierDistribution card (progress bars), `count_typed_memories()` SQL COUNT
 - [x] v4.22.1: 6 review fixes — with_priority data loss, boundary migration v38, case-insensitive tier, broader exception handling
 - **42 new tests** across 4 phase files
-- **Brain test**: Não có working memory (nhanh) vs long-term memory (chậm) → Yes
+- **Brain test**: The brain has working memory (fast) vs long-term memory (slow) → Yes
 - **Backward compatible**: default `warm` → existing memories unchanged
 
 **Target**: v5.0 = "production-ready for teams" release.
@@ -196,7 +196,7 @@
 - [ ] Tier analytics dashboard: distribution chart, decay curves, coverage gap detection, promotion history
 - **Foundation**: A5 hippocampal replay (LTP/LTD) already provides strengthen/weaken mechanism
 - **Monetization gate**: Intelligence, not data access — users always see all memories, Pro makes management smarter
-- **Brain test**: Não tự điều chỉnh độ ưu tiên theo thói quen → Yes
+- **Brain test**: The brain self-adjusts priorities based on habit → Yes
 
 **Target**: v6.0 = "Surreal-Memory as a service" with revenue stream.
 
@@ -225,7 +225,7 @@ Cold tier (SQLite read-only, compressed) — archived, rarely accessed
 - KB (pinned) memories stay in hot tier permanently
 - Single query interface — storage layer handles tier routing transparently
 - **Target**: Sub-100ms recall at 1M+ neurons
-- **Brain test**: Não có vùng nhớ nhanh (working memory) vs nhớ dài hạn → Yes
+- **Brain test**: The brain has a fast-memory region (working memory) vs long-term memory → Yes
 
 ### C2. Approximate Nearest Neighbor Index
 
@@ -236,7 +236,7 @@ Cold tier (SQLite read-only, compressed) — archived, rarely accessed
 - ANN narrows 500K → 500 candidates, SA refines final ranking
 - Index rebuilds async during consolidation (not on hot path)
 - **Important**: Acceleration, not replacement. Spreading activation remains central.
-- **Brain test**: Não có vùng chuyên lọc nhanh trước khi phản xạ sâu (thalamus) → Yes
+- **Brain test**: The brain has a region that filters quickly before deep reflex (thalamus) → Yes
 
 ### C3. Partitioned Brain Sharding
 
@@ -301,7 +301,7 @@ Lifecycle hooks:
 - Code neurons: AST-aware storage, activate on structural similarity
 - Audio neurons: voice memo → transcription + audio embedding
 - Cross-modal synapses: screenshot → error message → fix
-- **Brain test**: Não lưu đa phương thức → Yes
+- **Brain test**: The brain stores memories multi-modally → Yes
 
 ### D4. Federation Protocol
 
@@ -335,7 +335,7 @@ Lifecycle hooks:
 - Agent hints: "You haven't recalled 'deployment checklist' in 14 days. Review?"
 - Memories surviving multiple reviews → lower decay rate automatically
 - **Pulled forward**: Interference Forgetting (retroactive/proactive/fan effect) → A5 Phase 4
-- **Brain test**: Não cần ôn lại để nhớ lâu → Yes
+- **Brain test**: The brain needs review to remember long-term → Yes
 
 ### E3. Contextual Personality — *partially pulled to A5 Phase 3*
 
@@ -345,7 +345,7 @@ Lifecycle hooks:
 - "Quick chat" context → shallow depth; "code review" → deep
 - Personality profiles stored as brain metadata
 - **Pulled forward**: Context-Dependent Retrieval (project/topic fingerprint) → A5 Phase 3
-- **Brain test**: Context ảnh hưởng cách não nhớ → Yes
+- **Brain test**: Context influences how the brain remembers → Yes
 
 ### E4. Causal Reasoning Engine — *partially pulled to A5 Phase 2*
 
@@ -356,7 +356,7 @@ Lifecycle hooks:
 - Counterfactual queries: "What would have happened if X didn't occur?"
 - Causal graph visualization in dashboard
 - **Pulled forward**: Prediction Error Encoding (surprise signal) → A5 Phase 2
-- **Brain test**: Não suy luận nhân quả từ kinh nghiệm → Yes
+- **Brain test**: The brain infers causality from experience → Yes
 
 ---
 

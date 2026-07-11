@@ -223,4 +223,3 @@ Projected grade after fixes: A- (91/100)
 - **Respect user time** — estimate effort for each recommendation (minutes, not hours)
 - **No auto-modifications** — audit is read-only; user decides what to fix
 - **Compare to baseline** — if previous audit exists, show delta (improved/degraded/unchanged)
-- **Vietnamese support** — if brain content is Vietnamese, report in Vietnamese

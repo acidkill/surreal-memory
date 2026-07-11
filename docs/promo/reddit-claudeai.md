@@ -12,7 +12,7 @@ Most memory MCP servers use RAG (embed text → vector search → return chunks)
 
 When you remember "Alice", it doesn't just find text containing "Alice". It activates the Alice neuron, which spreads to connected concepts: the meeting where you discussed rate limiting → the outage it caused → the JWT decision that led to it. You get the full causal chain, not just keyword matches.
 
-**No LLM or embedding API required for core encode and recall.** It's pure algorithmic graph traversal. No API keys needed for core operations. Embeddings (Ollama, Gemini, OpenAI, sentence-transformers) are optional and used for cross-language search only.
+**No LLM or embedding API required for core encode and recall.** It's pure algorithmic graph traversal. No API keys needed for core operations. Embeddings (Ollama, Gemini, OpenAI, sentence-transformers) are optional and used for semantic (vector) search only.
 
 ## What it does
 

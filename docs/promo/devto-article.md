@@ -122,9 +122,9 @@ docker compose -f docker-compose.surrealdb.yml up -d
 
 Works with Claude Code, Cursor, Windsurf, VS Code (Cline/Continue), Zed, and Gemini CLI.
 
-### Optional: Cross-Language Embeddings
+### Optional: Semantic (Vector) Search
 
-Core recall works without any embedding API. Enable vector search for cross-language queries:
+Core recall works without any embedding API. Enable optional semantic (vector) search for similarity-based recall:
 
 ```toml
 # ~/.surrealmemory/config.toml

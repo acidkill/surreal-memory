@@ -3,6 +3,8 @@
 
 Last updated: **2026-03-16**
 
+> **⚠️ Historical figures.** These benchmarks were measured on the legacy **SQLite** backend (`SQLiteStorage`) and old upstream version numbering (e.g. "v4.7.0"). Surreal-Memory has been **SurrealDB-only since v2.0.0** (schema v8, v2.7.x); SQLite is now a test fixture only. A re-run on the SurrealDB backend is pending — the numbers below reflect the algorithmic approach, not the current production backend.
+
 
 ## Surreal-Memory vs Mem0 — Competitive Benchmark
 
@@ -70,7 +72,7 @@ DASHSCOPE_API_KEY=your-key python scripts/benchmark_mem0_vs_nm.py
 Head-to-head comparison using the same test suite: 50 diverse memories, 20 recall queries, multi-hop reasoning, and conversation context.
 
 !!! info "Test Setup"
-    - **Surreal-Memory v4.7.0**: SQLiteStorage, spreading activation, zero external APIs
+    - **Surreal-Memory v4.7.0** (legacy upstream numbering; historical): SQLiteStorage, spreading activation, zero external APIs
     - **Cognee v0.5.5**: KuzuDB graph + LanceDB vectors + fastembed embeddings, Qwen LLM via DashScope for cognify/search
     - **Platform**: Windows 11, Python 3.12, single-threaded async
     - **Script**: `scripts/benchmark_cognee_vs_nm.py`

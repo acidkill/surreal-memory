@@ -7,7 +7,7 @@ Surreal-Memory works **without embeddings** — its core retrieval uses spreadin
 | Scenario | Without Embeddings | With Embeddings |
 |----------|-------------------|-----------------|
 | Recall "auth bug" when you stored "auth bug" | Works perfectly | Works perfectly |
-| Recall "lỗi xác thực" when you stored "auth bug" | Won't match | Matches via semantic similarity |
+| Recall "error de autenticación" when you stored "auth bug" | Won't match | Matches via semantic similarity |
 | Discover links between "JWT expired" and "token refresh" | Only if explicitly connected | Auto-discovered via cosine similarity |
 | Store/recall in one language only | Full functionality | No benefit |
 
@@ -54,7 +54,7 @@ model = "all-MiniLM-L6-v2"           # English-only, 384D, ~80MB
 similarity_threshold = 0.7
 ```
 
-**Multilingual models** (recommended for non-English or mixed-language use):
+**Multilingual models** (for non-English or mixed-language content):
 
 | Model | Languages | Dimensions | Size | Speed (CPU) |
 |-------|-----------|-----------|------|-------------|
@@ -63,7 +63,7 @@ similarity_threshold = 0.7
 | `multilingual-e5-small` | 100+ languages | 384 | ~500MB | ~30ms |
 | `multilingual-e5-large` | 100+ languages | 1024 | ~2.2GB | ~150ms |
 
-For Vietnamese, Chinese, Japanese, or any non-English language, use `paraphrase-multilingual-MiniLM-L12-v2`:
+For Chinese, Japanese, or any non-English content, use `paraphrase-multilingual-MiniLM-L12-v2`:
 
 ```toml
 [embedding]
@@ -75,9 +75,14 @@ similarity_threshold = 0.65
 
 > The model downloads automatically on first use (~440MB). Subsequent runs use the cached version.
 
+> **Note on language support:** multilingual recall here is a property of the **embedding model** —
+> the semantic vector space maps equivalent meaning across languages. Surreal-Memory's own text
+> extraction (keywords, entities, sentiment, temporal) is **English-only**; there is no
+> language-specific extraction or translation layer.
+
 ### 2. Gemini (Google API)
 
-Uses Google's `gemini-embedding-001` (3072D) or `text-embedding-004` (768D).
+Uses Google's `gemini-embedding-001` (3072-dim).
 
 ```bash
 pip install surreal-memory[embeddings-gemini]
@@ -95,12 +100,12 @@ export GEMINI_API_KEY="your-key-here"
 [embedding]
 enabled = true
 provider = "gemini"
-model = "text-embedding-004"         # 768D, lower cost
-# model = "gemini-embedding-001"     # 3072D, higher quality
+model = "gemini-embedding-001"       # 3072-dim, recommended
 similarity_threshold = 0.7
 ```
 
 > Get a free API key at [ai.google.dev](https://ai.google.dev/). Free tier includes generous embedding quotas.
+> Do **not** use `text-embedding-004` (decommissioned) or `gemini-embedding-exp-03-07` (experimental) — use `gemini-embedding-001`.
 
 ### 3. Ollama (Free, Local)
 
@@ -191,7 +196,7 @@ similarity_threshold = 0.7
 | **Setup** | `pip install` only | Ollama + model pull | API key required | API key required | API key required |
 | **GPU Accel** | Optional | Yes (native) | N/A | N/A | N/A |
 
-**Recommendation**: Start with `sentence_transformer` + `paraphrase-multilingual-MiniLM-L12-v2` for simplicity. Use `ollama` if you have a GPU and want fast local inference. Switch to Gemini, OpenAI, or OpenRouter if you need managed cloud embeddings.
+**Recommendation**: Start with `sentence_transformer` + `all-MiniLM-L6-v2` (English) or `paraphrase-multilingual-MiniLM-L12-v2` (mixed-language) for simplicity. Use `ollama` if you have a GPU and want fast local inference. Switch to Gemini, OpenAI, or OpenRouter if you need managed cloud embeddings.
 
 ## How It Works
 
@@ -199,7 +204,7 @@ When embeddings are enabled, two things happen:
 
 ### 1. Embedding Anchors (during recall)
 
-When you recall a memory, Surreal-Memory runs keyword search (FTS5) **and** embedding similarity search **in parallel**. Results are merged — this means you can find memories even when the query uses completely different words than what was stored.
+When you recall a memory, Surreal-Memory runs keyword search (full-text) **and** embedding similarity search **in parallel**. Results are merged — this means you can find memories even when the query uses completely different words than what was stored.
 
 ### 2. Semantic Discovery (during consolidation)
 
@@ -221,7 +226,7 @@ These synapses allow spreading activation to traverse semantic connections durin
 ### Embedding Dimension
 
 The vector index (`idx_neuron_embedding`, HNSW) is built to a fixed **dimension** that must match your
-embedding provider's output (e.g. `all-MiniLM-L6-v2` = 384, `text-embedding-004`/`nomic-embed-text` = 768,
+embedding provider's output (e.g. `all-MiniLM-L6-v2` = 384, `nomic-embed-text` = 768,
 `text-embedding-3-small` = 1536, `gemini-embedding-001`/`text-embedding-3-large` = 3072). By default the
 dimension is **auto-derived** from the active provider, so you normally set nothing.
 

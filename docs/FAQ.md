@@ -8,9 +8,7 @@
 - **CLI tools**: `smem`, `surreal-memory`, `smem-mcp`
 - **Optional extras**:
   - `[server]` — FastAPI + Uvicorn
-  - `[neo4j]` — Neo4j graph database
   - `[nlp-en]` — English NLP (spaCy)
-  - `[nlp-vi]` — Vietnamese NLP (underthesea, pyvi)
   - `[all]` — All of the above
   - `[dev]` — Development tools (pytest, ruff, mypy, etc.)
 
@@ -251,7 +249,7 @@ smem brain switch my-project
 They already share the same brain automatically. Both read/write to the same files:
 
 - **Config**: `~/.surrealmemory/config.toml`
-- **Data**: `~/.surrealmemory/brains/<name>.db`
+- **Data**: SurrealDB (shared datastore; see `docker-compose.surrealdb.yml`)
 
 As long as both tools point to the same `current_brain`, all memories are synced. Verify with:
 
@@ -511,9 +509,9 @@ If you're unsure, run `smem brain health` first to see diagnostics and recommend
 Surreal-Memory uses a **local-first** architecture with hub-and-spoke sync:
 
 ```
-Device A (SQLite) ──┐
-                    ├──→ Hub Server ──→ Device B (SQLite)
-Device C (SQLite) ──┘
+Device A (SurrealDB) ──┐
+                       ├──→ Hub Server ──→ Device B (SurrealDB)
+Device C (SurrealDB) ──┘
 ```
 
 **Conflict resolution strategies:**
@@ -525,7 +523,7 @@ Device C (SQLite) ──┘
 | `prefer_remote` | Hub version always wins |
 | `prefer_stronger` | Memory with higher activation/confidence wins |
 
-**Offline support**: Full. Each device has a complete SQLite brain. Sync is incremental — only changed fibers/neurons are transmitted. Changes queue locally and sync when connectivity resumes.
+**Offline support**: Full. Each device has a complete SurrealDB brain. Sync is incremental — only changed fibers/neurons are transmitted. Changes queue locally and sync when connectivity resumes.
 
 **Concurrent writes**: Each device tracks a vector clock. When two devices modify the same neuron, the configured strategy resolves the conflict automatically. No manual merge required.
 
@@ -569,12 +567,12 @@ Surreal-Memory is designed for **AI agent memory** — not as a general-purpose 
 
 ### Q: How does Surreal-Memory handle concurrent access from multiple agents?
 
-SQLite with WAL (Write-Ahead Logging) mode enables:
+Surreal-Memory stores every brain in **SurrealDB**, which handles concurrency at the storage engine:
 
-- **Multiple concurrent readers** — agents can query simultaneously
-- **Single writer at a time** — writes are serialized by SQLite's locking
-- **No corruption risk** — WAL mode prevents reader-writer conflicts
+- **Multiple concurrent readers** — agents can query the same brain simultaneously
+- **Concurrent writers** — SurrealDB serializes conflicting writes through its own transaction engine, so there is no external file lock to manage
+- **No corruption risk** — writes are transactional
 
-For multi-agent write scenarios, Surreal-Memory uses a **deferred write queue** — non-critical writes (Hebbian weight updates, conductivity changes) are batched and flushed after the response, reducing lock contention.
+For multi-agent write scenarios, Surreal-Memory also uses an app-level **deferred write queue** — non-critical writes (Hebbian weight updates, conductivity changes) are batched and flushed after the response, reducing contention on hot neurons.
 
-If you need true multi-writer concurrency across processes, use the [FastAPI server](api/server.md) as a central write coordinator.
+Point every process at the same SurrealDB instance (see `docker-compose.surrealdb.yml`) and they share one brain; the [FastAPI server](api/server.md) can act as a central coordinator for HTTP clients.

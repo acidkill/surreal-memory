@@ -7,18 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **Vietnamese language support and the cross-language "translation" layer.** The
+  long-unmaintained bilingual surface has been dropped — extraction (keywords,
+  entities, sentiment, temporal, relations, arousal, prediction-error reversal),
+  query expansion, and auto-capture are now **English-only**:
+  - Removed the Vietnamese lexicons/patterns and helpers (`_is_vietnamese`,
+    `_strip_diacritics`, `normalize_vietnamese_compound`, `_tokenize_vietnamese`,
+    `_extract_vietnamese_names`, `_resolve_vi_hour`, `detect_language`,
+    `_get_stop_words(language)`), the EN↔VI `CROSS_LANG_MAP` query-expansion pairs,
+    and the recall handler's `_check_cross_language_hint`.
+  - Dropped the optional `[nlp-vi]` extra and its `underthesea` / `pyvi`
+    dependencies (plus the matching mypy overrides and the `pyvi` warning filter).
+  - Deleted the Vietnamese and cross-language test suites and pruned Vietnamese
+    cases from the shared unit / integration / e2e tests and benchmark scripts.
+  - Embedding-level multilingual recall is unaffected — it is a property of the
+    embedding model (e.g. Gemini, `paraphrase-multilingual-*`), not of the removed
+    extraction layer. The extraction `language` parameter is retained for
+    backward-compatible call sites but is ignored (English-only). See
+    [`docs/architecture/vietnamese-removal.md`](docs/architecture/vietnamese-removal.md).
+
 ### Fixed
 
 - **Auto-mode keyword/concept extraction no longer forms cross-clause bigrams or
   drops real words.** Bigrams now require both words in the same clause (split on
   `.,;:!?\n\r` and the em-dash) with a tightened position gap (`<= 2`). A Polish
   stop-word set (`STOP_WORDS_PL`, diacritic + ASCII) is added so bare Polish
-  function words stop surviving as keywords. The Vietnamese stop-word set no longer
-  contributes to the auto-mode combined set — its ASCII-only entries (`ai`, `anh`,
-  `cho`, `em`, `khi`, `ra`, …) were silently deleting real English/Polish words
-  from every auto-mode extraction, and ASCII short-forms that collide with domain
-  acronyms (e.g. `ci` → "CI", continuous integration) are excluded from the Polish
-  set. Explicit-language branches (`vi`, `pl`) are unaffected.
+  function words stop surviving as keywords; ASCII short-forms that collide with
+  domain acronyms (e.g. `ci` → "CI", continuous integration) are excluded from the
+  Polish set.
 
 - **`SurrealDBStorage` now reconnects after a dropped transport, not only on a
   401.** A DB container restart (backup, upgrade, reboot) severs the WebSocket and
