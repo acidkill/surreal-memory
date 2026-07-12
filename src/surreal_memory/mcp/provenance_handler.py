@@ -15,6 +15,22 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _parse_trust(raw: Any) -> tuple[float | None, str | None]:
+    """Parse an optional smem_source trust arg -> (value, error).
+
+    Absent/None -> (None, None). Out-of-range or non-numeric -> (None, message).
+    """
+    if raw is None:
+        return None, None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None, "trust must be a number in [0.0, 1.0]"
+    if not (0.0 <= value <= 1.0):
+        return None, "trust must be in [0.0, 1.0]"
+    return value, None
+
+
 class ProvenanceHandler:
     """Mixin providing source, provenance, and show handler implementations."""
 
@@ -51,6 +67,10 @@ class ProvenanceHandler:
             raw_metadata = args.get("metadata")
             metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
 
+            trust, trust_error = _parse_trust(args.get("trust"))
+            if trust_error is not None:
+                return {"error": trust_error}
+
             try:
                 source = Source.create(
                     brain_id=brain_id,
@@ -59,6 +79,7 @@ class ProvenanceHandler:
                     version=version,
                     file_hash=file_hash,
                     metadata=metadata,
+                    trust=trust,
                 )
             except ValueError:
                 return {"error": f"Invalid source_type: {args.get('source_type')}"}
@@ -68,6 +89,7 @@ class ProvenanceHandler:
                 "name": source.name,
                 "source_type": source.source_type.value,
                 "status": source.status.value,
+                "trust": source.trust,
             }
 
         if action == "list":
@@ -83,6 +105,7 @@ class ProvenanceHandler:
                         "source_type": s.source_type.value,
                         "version": s.version,
                         "status": s.status.value,
+                        "trust": s.trust,
                         "created_at": s.created_at.isoformat(),
                     }
                     for s in sources
@@ -104,6 +127,7 @@ class ProvenanceHandler:
                 "source_type": source.source_type.value,
                 "version": source.version,
                 "status": source.status.value,
+                "trust": source.trust,
                 "file_hash": source.file_hash,
                 "metadata": source.metadata,
                 "linked_neuron_count": neuron_count,
@@ -115,11 +139,17 @@ class ProvenanceHandler:
             source_id = str(args.get("source_id") or "")
             if not source_id:
                 return {"error": "source_id is required for update"}
+            trust_update: float | None = None
+            if args.get("trust") is not None:
+                trust_update, trust_error = _parse_trust(args.get("trust"))
+                if trust_error is not None:
+                    return {"error": trust_error}
             updated = await storage.update_source(
                 source_id,
                 status=args.get("status"),
                 version=args.get("version"),
                 metadata=args.get("metadata"),
+                trust=trust_update,
             )
             if not updated:
                 return {"error": f"Source '{source_id}' not found"}

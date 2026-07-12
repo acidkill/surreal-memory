@@ -70,3 +70,29 @@ class TestOrdering:
     def test_all_defaults_in_unit_range(self) -> None:
         for v in list(DEFAULT_SOURCE_TYPE_TRUST.values()) + list(DEFAULT_LABEL_TRUST.values()):
             assert 0.0 <= v <= 1.0
+
+
+class TestParseTrustArg:
+    def test_none_is_noop(self) -> None:
+        from surreal_memory.mcp.provenance_handler import _parse_trust
+
+        assert _parse_trust(None) == (None, None)
+
+    def test_valid_value(self) -> None:
+        from surreal_memory.mcp.provenance_handler import _parse_trust
+
+        assert _parse_trust(0.8) == (0.8, None)
+
+    def test_out_of_range_rejected(self) -> None:
+        from surreal_memory.mcp.provenance_handler import _parse_trust
+
+        value, error = _parse_trust(1.5)
+        assert value is None
+        assert error is not None
+
+    def test_non_numeric_rejected(self) -> None:
+        from surreal_memory.mcp.provenance_handler import _parse_trust
+
+        value, error = _parse_trust("abc")
+        assert value is None
+        assert error is not None

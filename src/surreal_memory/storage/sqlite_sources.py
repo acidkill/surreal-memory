@@ -117,6 +117,7 @@ class SQLiteSourcesMixin:
         status: str | None = None,
         version: str | None = None,
         metadata: dict[str, Any] | None = None,
+        trust: float | None = None,
     ) -> bool:
         """Update a source. Returns True if the row was modified."""
         conn = self._ensure_conn()
@@ -140,6 +141,9 @@ class SQLiteSourcesMixin:
         if metadata is not None:
             sets.append("metadata = ?")
             params.append(json.dumps(metadata))
+        if trust is not None:
+            sets.append("trust = ?")
+            params.append(trust)
 
         set_clause = ", ".join(sets)
         params.extend([brain_id, source_id])

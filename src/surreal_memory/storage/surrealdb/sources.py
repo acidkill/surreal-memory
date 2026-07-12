@@ -162,6 +162,7 @@ class SurrealDBSourcesMixin:
         status: str | None = None,
         version: str | None = None,
         metadata: dict[str, Any] | None = None,
+        trust: float | None = None,
     ) -> bool:
         brain_id = self._get_brain_id()
 
@@ -188,6 +189,8 @@ class SurrealDBSourcesMixin:
             update["version"] = version
         if metadata is not None:
             update["metadata"] = metadata
+        if trust is not None:
+            update["trust"] = trust
 
         conn = self._ensure_conn()
         sid = _to_surreal_id(source_id)

@@ -644,6 +644,8 @@ class RecallHandler:
                 "intersection_boost": round(result.score_breakdown.intersection_boost, 4),
                 "freshness_boost": round(result.score_breakdown.freshness_boost, 4),
                 "frequency_boost": round(result.score_breakdown.frequency_boost, 4),
+                "trust_factor": round(result.score_breakdown.trust_factor, 4),
+                "recency_factor": round(result.score_breakdown.recency_factor, 4),
             }
 
         # Surface conflict info from retrieval
@@ -706,6 +708,7 @@ class RecallHandler:
                             "source_type": src.source_type.value,
                             "version": src.version,
                             "status": src.status.value,
+                            "trust": src.trust,
                         }
                 if source_map:
                     response["sources"] = source_map

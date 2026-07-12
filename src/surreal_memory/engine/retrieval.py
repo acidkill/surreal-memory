@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import dataclasses
 import heapq
 import logging
 import math
@@ -655,6 +656,27 @@ class ReflexPipeline:
                 },
             },
         )
+
+        # U2: surface trust/recency calibration when active (no-op at neutral defaults).
+        _tw = self._config.trust_weight
+        _rw = self._config.recency_weight
+        if _tw > 0.0 and self._last_trust_map:
+            result.metadata["trust_factors"] = dict(self._last_trust_map)
+            result.metadata["trust_weight"] = _tw
+        if _rw != 1.0:
+            result.metadata["recency_weight"] = _rw
+        if result.score_breakdown is not None and (_tw > 0.0 or _rw != 1.0):
+            _top_trust = (
+                self._last_trust_map.get(result.fibers_matched[0], self._config.trust_default)
+                if result.fibers_matched and self._last_trust_map
+                else 1.0
+            )
+            _trust_factor = (1.0 - _tw) + _tw * _top_trust if _tw > 0.0 else 1.0
+            result.score_breakdown = dataclasses.replace(
+                result.score_breakdown,
+                trust_factor=_trust_factor,
+                recency_factor=_rw,
+            )
 
         # Update priming cache and metrics (non-critical)
         if session_id and _priming_result is not None:
@@ -1870,9 +1892,7 @@ class ReflexPipeline:
 
         return fibers[:10]
 
-    async def _build_trust_map(
-        self, fibers: list[Fiber], trust_default: float
-    ) -> dict[str, float]:
+    async def _build_trust_map(self, fibers: list[Fiber], trust_default: float) -> dict[str, float]:
         """Resolve per-fiber effective trust for scoring (batch, memoised sources).
 
         Called only when ``trust_weight > 0``. Uses the batch typed-memory fetch (one

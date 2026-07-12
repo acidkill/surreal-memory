@@ -1901,6 +1901,7 @@ class NeuralStorage(ABC):
         status: str | None = None,
         version: str | None = None,
         metadata: dict[str, Any] | None = None,
+        trust: float | None = None,
     ) -> bool:
         """Update a source. Returns True if modified."""
         raise NotImplementedError
