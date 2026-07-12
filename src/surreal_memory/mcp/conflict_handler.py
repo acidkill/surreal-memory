@@ -27,6 +27,36 @@ _MAX_TAGS = 50
 _MAX_TAG_LENGTH = 100
 
 
+async def _apply_manual_supersession(
+    storage: NeuralStorage, old_anchor_id: str, new_anchor_id: str
+) -> bool:
+    """Stamp A-side supersession lineage for a manual keep_new resolution.
+
+    Resolves the (unambiguous) fibers behind the old and new anchor neurons and
+    marks the old fiber superseded by the new one (valid_until/superseded_by +
+    SUPERSEDES synapse). Returns True when a change was applied; idempotent.
+    """
+    from surreal_memory.engine.supersession import (
+        resolve_fibers_for_neurons,
+        supersede_typed_memory,
+    )
+
+    fiber_map = await resolve_fibers_for_neurons(storage, [old_anchor_id, new_anchor_id])
+    old_fiber_id = fiber_map.get(old_anchor_id)
+    new_fiber_id = fiber_map.get(new_anchor_id)
+    if not old_fiber_id or not new_fiber_id or old_fiber_id == new_fiber_id:
+        return False
+    outcome = await supersede_typed_memory(
+        storage,
+        old_fiber_id=old_fiber_id,
+        new_fiber_id=new_fiber_id,
+        new_anchor_id=new_anchor_id,
+        old_anchor_id=old_anchor_id,
+        reason="manual:conflict-resolve-keep-new",
+    )
+    return outcome.superseded
+
+
 class ConflictHandler:
     """Mixin: conflict management tool handlers."""
 
@@ -240,6 +270,16 @@ class ConflictHandler:
             created_at=synapse.created_at,
         )
         await storage.update_synapse(resolved_synapse)
+
+        # U3: stamp per-fact supersession lineage (A-side) so recall hard-filters
+        # the kept-old fact and provenance can trace it. Best-effort: a failure here
+        # must not undo the (already-applied) neuron/synapse resolution.
+        try:
+            await _apply_manual_supersession(
+                storage, old_anchor_id=existing.id, new_anchor_id=synapse.source_id
+            )
+        except Exception:
+            logger.debug("Manual supersession lineage failed (non-critical)", exc_info=True)
 
     async def _resolve_keep_both(
         self,
