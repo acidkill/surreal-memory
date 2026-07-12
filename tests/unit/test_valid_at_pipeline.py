@@ -1,8 +1,8 @@
 """Regression: point-in-time recall (valid_at) through the REAL pipeline.
 
 U3's valid_at recall tests mocked ReflexPipeline, so they never exercised the
-pipeline's own event-time filter `_fiber_valid_at`. The Spectron demo surfaced the
-bug: BuildFiberStep stamps every fiber with a ZERO-WIDTH time window
+pipeline's own event-time filter `_fiber_valid_at`. Manual end-to-end verification
+surfaced the bug: BuildFiberStep stamps every fiber with a ZERO-WIDTH time window
 (time_start == time_end == write time), and `_fiber_valid_at` required
 `time_start <= dt <= time_end`, so any valid_at other than that exact microsecond
 excluded the fiber — making logical point-in-time recall impossible for the common
