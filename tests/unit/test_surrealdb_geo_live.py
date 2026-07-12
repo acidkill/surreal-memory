@@ -32,6 +32,14 @@ _BERGEN = {"lat": 60.3913, "lon": 5.3221, "label": "Bergen"}
 _OSLO_CENTER = GeoPoint(59.9139, 10.7522)
 
 
+def _norm(fiber_id: str) -> str:
+    """Canonical dash form. SurrealDB's find_fibers/get_fiber/fibers_matched return the
+    underscore-sanitized Fiber.id round-trip (the documented "Bug C" deferred id form),
+    so id comparisons must be form-agnostic — same pattern as the supersession live test.
+    """
+    return fiber_id.replace("_", "-")
+
+
 @pytest.fixture
 async def storage():  # type: ignore[no-untyped-def]
     from surreal_memory.storage.surrealdb.store import SurrealDBStorage
@@ -75,18 +83,18 @@ class TestSurrealGeoBrowse:
         nowhere = await _add(storage, "Cafe Mocca has no location", None)
 
         found = await storage.find_fibers(near=GeoFilter(_OSLO_CENTER, 50_000), limit=100)
-        ids = {f.id for f in found}
-        assert oslo.id in ids
-        assert bergen.id not in ids  # ~305 km away
-        assert nowhere.id not in ids  # metadata.location != NONE pre-filter drops it
+        ids = {_norm(f.id) for f in found}
+        assert _norm(oslo.id) in ids
+        assert _norm(bergen.id) not in ids  # ~305 km away
+        assert _norm(nowhere.id) not in ids  # metadata.location != NONE pre-filter drops it
 
     async def test_wider_radius_keeps_bergen(self, storage) -> None:  # type: ignore[no-untyped-def]
         oslo = await _add(storage, "Cafe Mocca is in Oslo Norway", _OSLO)
         bergen = await _add(storage, "Cafe Mocca is in Bergen Norway", _BERGEN)
 
         found = await storage.find_fibers(near=GeoFilter(_OSLO_CENTER, 400_000), limit=100)
-        ids = {f.id for f in found}
-        assert oslo.id in ids and bergen.id in ids
+        ids = {_norm(f.id) for f in found}
+        assert _norm(oslo.id) in ids and _norm(bergen.id) in ids
 
 
 class TestSurrealGeoRecallPipeline:
@@ -97,5 +105,6 @@ class TestSurrealGeoRecallPipeline:
         pipeline = ReflexPipeline(storage, BrainConfig())
         result = await pipeline.query("Cafe Mocca Norway", near=GeoFilter(_OSLO_CENTER, 50_000))
 
-        assert oslo.id in result.fibers_matched
-        assert bergen.id not in result.fibers_matched
+        matched = {_norm(x) for x in result.fibers_matched}
+        assert _norm(oslo.id) in matched
+        assert _norm(bergen.id) not in matched

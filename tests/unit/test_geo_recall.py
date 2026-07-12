@@ -13,6 +13,7 @@ from __future__ import annotations
 import tempfile
 from collections.abc import AsyncIterator
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -20,6 +21,7 @@ from surreal_memory.core.brain import Brain, BrainConfig
 from surreal_memory.core.fiber import Fiber
 from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.engine.retrieval import ReflexPipeline, _fiber_near
+from surreal_memory.engine.retrieval_types import DepthLevel, RetrievalResult, Subgraph
 from surreal_memory.storage.memory_store import InMemoryStorage
 from surreal_memory.storage.sqlite_store import SQLiteStorage
 from surreal_memory.utils.geo import GeoFilter, GeoPoint
@@ -127,6 +129,43 @@ class TestNearThroughPipeline:
 
         assert located.id in result.fibers_matched
         assert unlocated.id not in result.fibers_matched  # no location → excluded
+
+
+def _sentinel_result() -> RetrievalResult:
+    """A recognisable fast-path result — if it survives, the guard failed to bypass."""
+    return RetrievalResult(
+        answer="FAST-PATH",
+        confidence=1.0,
+        depth_used=DepthLevel.INSTANT,
+        neurons_activated=0,
+        fibers_matched=["FAST-PATH-SENTINEL"],
+        subgraph=Subgraph(neuron_ids=[], synapse_ids=[], anchor_ids=[]),
+        context="FAST-PATH",
+        latency_ms=0.0,
+        tokens_used=0,
+        metadata={},
+        score_breakdown=None,
+    )
+
+
+class TestNearBypassesFastPaths:
+    """The valid_at lesson: an early-return fast-path must NOT swallow the geo filter."""
+
+    async def test_near_skips_temporal_fast_path(self, storage: SQLiteStorage) -> None:
+        oslo = await _add_located_fiber(storage, "Cafe Mocca is in Oslo Norway", _OSLO)
+        pipeline = ReflexPipeline(storage, BrainConfig())
+
+        with patch.object(
+            pipeline, "_try_temporal_reasoning", AsyncMock(return_value=_sentinel_result())
+        ):
+            # Control: with no geo filter the temporal fast-path fires and short-circuits.
+            control = await pipeline.query("Cafe Mocca Norway")
+            # With `near` set the guard must bypass it and run the full geo-filtered pipeline.
+            geo = await pipeline.query("Cafe Mocca Norway", near=GeoFilter(_OSLO_CENTER, 50_000))
+
+        assert control.fibers_matched == ["FAST-PATH-SENTINEL"]  # fast-path really would fire
+        assert "FAST-PATH-SENTINEL" not in geo.fibers_matched  # ...but was bypassed for near
+        assert oslo.id in geo.fibers_matched
 
 
 @pytest.fixture(params=["memory", "sqlite"])

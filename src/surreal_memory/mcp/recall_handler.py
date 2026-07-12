@@ -382,9 +382,11 @@ class RecallHandler:
         await self.hooks.emit(HookEvent.PRE_RECALL, {"query": query, "depth": depth.value})
 
         # Surface depth routing: SUFFICIENT → answer from surface, skip brain.db.
-        # Skipped when `near` is set (U8): the surface answer never touches fibers, so
-        # it would bypass the geospatial hard-filter.
-        if not args.get("depth") and near is None:  # Only route when user didn't specify depth
+        # Skipped when a fiber-level hard filter is active (`near` — U8, or `valid_at` —
+        # point-in-time): the surface answer never touches fibers, so it would bypass the
+        # filter and return current/unscoped state. Same fast-path-bypass class as the
+        # temporal/fiber-summary guards in ReflexPipeline.query.
+        if not args.get("depth") and near is None and valid_at is None:
             surface_response, depth_override = self._check_surface_depth(query)
             if surface_response is not None:
                 return surface_response
