@@ -110,7 +110,7 @@ smem recall "auth bug"
 
 ## 3 Tools. That's It.
 
-56 MCP tools are available, but you only need three:
+57 MCP tools are available, but you only need three:
 
 | Tool | What it does |
 |------|-------------|
@@ -126,7 +126,7 @@ Everything else — sessions, context loading, habit tracking, maintenance — w
 
 ```
                     ┌──────────────────────────────┐
-                    │       MCP Server (56 tools)   │
+                    │       MCP Server (57 tools)   │
                     └──────────┬───────────────────┘
                                │
                     ┌──────────▼───────────────────┐
@@ -198,6 +198,10 @@ Sync uses **Merkle delta** — only diffs travel, not the full brain.
 - **Vector search** — SurrealDB HNSW for semantic similarity (when embeddings are configured)
 - **Cross-encoder reranking** — optional config-driven precision pass, HTTP (shared inference server) or in-process, blended with the activation score
 - **Cognitive reasoning** — hypothesize, submit evidence, make predictions, verify with Bayesian confidence
+- **Per-fact supersession** — when a new memory replaces an old one, recall automatically resolves the conflict (the old fact is superseded, not deleted); recall the state of the world as of a past moment with `valid_at`
+- **Trust & recency scoring** — weight recall by how much you trust a source and how fresh a memory is, instead of treating everything as equally reliable forever
+- **Uncertainty surfacing** — ask `smem_uncertainty` how much to trust an answer: contradictions, drift, soon-expiring memories, low-evidence facts
+- **Queryable retrieval traces** — opt-in record of *why* a recall returned what it did, for debugging and auditing
 
 #### Knowledge Ingestion
 - **Train from documents** — PDF, DOCX, PPTX, HTML, JSON, XLSX, CSV ingested into permanent brain knowledge
@@ -210,7 +214,7 @@ Sync uses **Merkle delta** — only diffs travel, not the full brain.
 - **Brain versioning** — snapshot, rollback, diff, transplant memories between brains
 
 #### Ecosystem
-- **Web dashboard** — multi-page React UI at `/ui` (overview, health radar, graph, timeline, evolution, storage, tool-stats, visualize, settings) — every page free, no Pro gate
+- **Web dashboard** — multi-page React UI at `/ui` (overview, health radar, graph, timeline, evolution, storage, tool-stats, visualize, settings, uncertainty) — every page free, no Pro gate
 - **VS Code extension** — memory tree, graph explorer, CodeLens, WebSocket sync
 - **Safety** — Fernet encryption, sensitive content auto-detection, input firewall
 - **Plugin system** — extend with custom retrieval strategies, compression, and storage backends
