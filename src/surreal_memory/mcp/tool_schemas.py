@@ -315,6 +315,10 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "type": "boolean",
                     "description": "Include full conflict details in response (default: false). When false, only has_conflicts flag and conflict_count are returned.",
                 },
+                "include_superseded": {
+                    "type": "boolean",
+                    "description": "Include superseded facts (those with valid_until set) in recall. Default false: superseded facts are hard-filtered out. Set true to see the full history. Ignored when valid_at is given (point-in-time filtering takes over).",
+                },
                 "warn_expiry_days": {
                     "type": "integer",
                     "minimum": 1,

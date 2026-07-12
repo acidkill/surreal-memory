@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
+import os
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -104,6 +106,40 @@ async def _rerank_by_recency(fiber_ids: list[str], storage: Any) -> list[str]:
     pairs = [(fid, await _ts(fid)) for fid in fiber_ids]
     pairs.sort(key=lambda p: p[1], reverse=True)
     return [p[0] for p in pairs]
+
+def _result_with_fibers(result: Any, fibers: list[str]) -> Any:
+    """Return ``result`` with ``fibers_matched`` replaced.
+
+    Production ``RetrievalResult`` is a (mutable) dataclass with no ``_replace``;
+    test doubles are namedtuples or MagicMocks that DO expose ``_replace``. Handle
+    all three so post-filter drops (expiry / trust / tier / supersession) actually
+    take effect on the real result object and not only on namedtuple/mock ones.
+    """
+    if dataclasses.is_dataclass(result) and not isinstance(result, type):
+        try:
+            return dataclasses.replace(result, fibers_matched=fibers)
+        except Exception:  # pragma: no cover - defensive
+            logger.debug("dataclasses.replace failed on result", exc_info=True)
+    replace = getattr(result, "_replace", None)
+    if callable(replace):
+        try:
+            return replace(fibers_matched=fibers)
+        except Exception:  # pragma: no cover - defensive
+            logger.debug("_replace failed on result", exc_info=True)
+    return result
+
+
+def _superseded_hard_filter_enabled() -> bool:
+    """Whether valid_until-set (superseded) facts are hard-filtered from recall.
+
+    This is the ONE intended default-behaviour change of v2.9.0. Escape hatch: set
+    SURREAL_MEMORY_DISABLE_SUPERSEDED_FILTER to a truthy value to DISABLE the hard
+    filter, in which case superseded facts still surface but are demoted 0.25x via
+    their old anchor's ``_superseded`` neuron metadata (the second line of defence).
+    """
+    raw = os.getenv("SURREAL_MEMORY_DISABLE_SUPERSEDED_FILTER", "").strip().lower()
+    return raw not in ("1", "true", "yes", "on")
+
 
 
 class RecallHandler:
@@ -320,6 +356,10 @@ class RecallHandler:
             except (ValueError, TypeError):
                 return {"error": f"Invalid valid_at datetime: {args['valid_at']}"}
 
+        # U3: superseded facts (valid_until set) are hard-filtered from recall by
+        # default; opt back in per-call with include_superseded=true.
+        include_superseded = bool(args.get("include_superseded", False))
+
         await self.hooks.emit(HookEvent.PRE_RECALL, {"query": query, "depth": depth.value})
 
         # Surface depth routing: SUFFICIENT → answer from surface, skip brain.db
@@ -454,6 +494,7 @@ class RecallHandler:
         # same single pass. ``fibers_matched`` is a ``list[str]`` in production
         # (RetrievalResult); guard defensively so a non-list value can never make
         # ``list()``/iteration raise and abort recall.
+        superseded_excluded = 0
         needs_post_filter = isinstance(result.fibers_matched, list) and bool(result.fibers_matched)
         if needs_post_filter:
             original_matched = list(result.fibers_matched)
@@ -469,6 +510,25 @@ class RecallHandler:
                     # expiry drops the fiber (never a truthy non-bool).
                     if tm is not None and getattr(tm, "is_expired", False) is True:
                         continue
+
+                    # Supersession / point-in-time filter (U3). tm is already fetched
+                    # in this pass, so this adds ZERO extra storage reads.
+                    if tm is not None:
+                        if valid_at is not None:
+                            # point-in-time: keep only facts that were valid then
+                            # ("where did Emma live before?").
+                            if not tm.is_valid_at(valid_at):
+                                superseded_excluded += 1
+                                continue
+                        elif (
+                            isinstance(tm.valid_until, datetime)
+                            and not include_superseded
+                            and _superseded_hard_filter_enabled()
+                        ):
+                            # default: hard-filter superseded facts (the one intended
+                            # default-behaviour change). Escape hatch keeps them (demoted).
+                            superseded_excluded += 1
+                            continue
 
                     # Trust filter
                     if min_trust is not None:
@@ -490,8 +550,8 @@ class RecallHandler:
                 # Only rewrite the result when the filter actually dropped a
                 # fiber; leaving it untouched otherwise keeps the original result
                 # object intact (avoids needless copies / mock corruption).
-                if len(filtered_fibers) < len(original_matched) and hasattr(result, "_replace"):
-                    result = result._replace(fibers_matched=filtered_fibers)
+                if len(filtered_fibers) < len(original_matched):
+                    result = _result_with_fibers(result, filtered_fibers)
             except Exception:
                 logger.debug("Post-filter (trust/tier) failed (non-critical)", exc_info=True)
 
@@ -603,6 +663,14 @@ class RecallHandler:
                     "tags": list(tm.tags) if tm and tm.tags else [],
                     "created_at": fiber.created_at.isoformat() if fiber.created_at else None,
                 }
+                # U3: validity / supersession lineage for the caller.
+                if tm is not None:
+                    if tm.valid_from is not None:
+                        item["valid_from"] = tm.valid_from.isoformat()
+                    if tm.valid_until is not None:
+                        item["valid_until"] = tm.valid_until.isoformat()
+                    if tm.superseded_by is not None:
+                        item["superseded_by"] = tm.superseded_by
                 # Include structure metadata if present
                 structure = anchor.metadata.get("_structure") if anchor.metadata else None
                 if structure:
@@ -637,6 +705,10 @@ class RecallHandler:
 
         if budget_stats is not None:
             response["budget_stats"] = budget_stats
+
+        # U3: how many hits were dropped by the supersession / point-in-time filter.
+        if superseded_excluded:
+            response["superseded_excluded_count"] = superseded_excluded
 
         if result.score_breakdown is not None:
             response["score_breakdown"] = {
