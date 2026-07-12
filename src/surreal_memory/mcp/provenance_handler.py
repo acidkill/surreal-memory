@@ -263,13 +263,69 @@ class ProvenanceHandler:
                     }
                 )
 
+        # U3: supersession lineage — both directions, transitive, cycle-guarded.
+        superseded_by = await self._walk_supersedes(storage, neuron_id, forward=True)
+        supersedes = await self._walk_supersedes(storage, neuron_id, forward=False)
+        for entry in superseded_by:
+            chain.append({"type": "superseded_by", **entry})
+        for entry in supersedes:
+            chain.append({"type": "supersedes", **entry})
+
         return {
             "neuron_id": neuron_id,
             "provenance": chain,
             "has_source": any(e["type"] == "source" for e in chain),
             "is_verified": any(e["type"] == "verified" for e in chain),
             "is_approved": any(e["type"] == "approved" for e in chain),
+            "is_superseded": bool(superseded_by),
+            "supersedes_count": len(supersedes),
         }
+
+    async def _walk_supersedes(
+        self,
+        storage: NeuralStorage,
+        start_neuron_id: str,
+        *,
+        forward: bool,
+        max_depth: int = 32,
+    ) -> list[dict[str, Any]]:
+        """Walk the SUPERSEDES chain from an anchor neuron.
+
+        SUPERSEDES points new_anchor -> old_anchor. ``forward=True`` follows inbound
+        edges (who superseded this, i.e. newer facts); ``forward=False`` follows
+        outbound edges (what this superseded, i.e. older facts). A visited-set guards
+        against cycles and ``max_depth`` bounds pathological chains.
+        """
+        out: list[dict[str, Any]] = []
+        visited: set[str] = {start_neuron_id}
+        current = start_neuron_id
+        for _ in range(max_depth):
+            if forward:
+                syns = await storage.get_synapses(
+                    target_id=current, type=SynapseType.SUPERSEDES
+                )
+                # Filter client-side too: some backends/mocks ignore the type kwarg.
+                edges = [s for s in syns if s.type == SynapseType.SUPERSEDES]
+                nxt = edges[0].source_id if edges else None
+            else:
+                syns = await storage.get_synapses(
+                    source_id=current, type=SynapseType.SUPERSEDES
+                )
+                edges = [s for s in syns if s.type == SynapseType.SUPERSEDES]
+                nxt = edges[0].target_id if edges else None
+            if not edges or nxt is None or nxt in visited:
+                break
+            syn = edges[0]
+            out.append(
+                {
+                    "neuron_id": nxt,
+                    "reason": syn.metadata.get("reason"),
+                    "timestamp": syn.created_at.isoformat() if syn.created_at else None,
+                }
+            )
+            visited.add(nxt)
+            current = nxt
+        return out
 
     async def _provenance_add_audit(
         self,
