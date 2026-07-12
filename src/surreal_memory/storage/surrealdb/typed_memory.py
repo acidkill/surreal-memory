@@ -166,10 +166,14 @@ class SurrealDBTypedMemoryMixin:
 
     async def get_typed_memory(self, fiber_id: str) -> TypedMemory | None:
         brain_id = self._get_brain_id()
+        # Match on the sanitized record id so BOTH the original dash uuid and the
+        # underscore record-id form resolve (a Fiber loaded from SurrealDB carries the
+        # underscore form, while typed_memory.fiber_id is stored as the dash uuid).
         rows = await self._query(
-            "SELECT * FROM typed_memory WHERE brain_id = $brain_id AND fiber_id = $fiber_id LIMIT 1",
+            "SELECT * FROM typed_memory WHERE brain_id = $brain_id "
+            "AND id = type::record('typed_memory', $sid) LIMIT 1",
             brain_id=brain_id,
-            fiber_id=fiber_id,
+            sid=_to_surreal_id(fiber_id),
         )
         if not rows:
             return None
@@ -225,17 +229,25 @@ class SurrealDBTypedMemoryMixin:
         if not ids:
             return {}
         brain_id = self._get_brain_id()
-        # Inline the validated brain_id literal so the brain_id index is used
-        # (a $bind falls back to a full table scan on SurrealDB 3.2.0).
+        # Normalise each query id to its sanitized record-id part so BOTH the dash
+        # uuid and the underscore record-id form resolve (a Fiber loaded from
+        # SurrealDB carries the underscore form; typed_memory.fiber_id is the dash
+        # uuid). Inline the validated brain_id literal so the brain_id index is used.
         lit = f'"{_safe_brain_id(brain_id)}"'
+        sid_to_fid: dict[str, str] = {}
+        for fid in ids:
+            sid_to_fid.setdefault(_to_surreal_id(fid), fid)
+        sids = list(sid_to_fid.keys())
         rows = await self._query(
-            f"SELECT * FROM typed_memory WHERE brain_id = {lit} AND fiber_id IN $fids",
-            fids=ids,
+            f"SELECT * FROM typed_memory WHERE brain_id = {lit} AND meta::id(id) IN $sids",
+            sids=sids,
         )
         result: dict[str, TypedMemory] = {}
         for r in rows:
             tm = _row_to_typed_memory(r)
-            result[tm.fiber_id] = tm
+            orig = sid_to_fid.get(_to_surreal_id(tm.fiber_id))
+            if orig is not None:
+                result[orig] = tm
         return result
 
     async def get_expiring_memories(
