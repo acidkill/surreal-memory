@@ -20,12 +20,53 @@ from surreal_memory.mcp.tool_handler_utils import _get_brain_or_error, _require_
 from surreal_memory.utils.timeutils import utcnow
 
 if TYPE_CHECKING:
+    from surreal_memory.engine.encoder import EncodingResult
     from surreal_memory.engine.hooks import HookRegistry
     from surreal_memory.mcp.maintenance_handler import HealthPulse
     from surreal_memory.storage.base import NeuralStorage
     from surreal_memory.unified_config import UnifiedConfig
 
 logger = logging.getLogger(__name__)
+
+
+async def _apply_supersessions(storage: NeuralStorage, result: EncodingResult) -> int:
+    """Stamp per-fact supersession lineage for old anchors the new memory replaced.
+
+    For each old anchor neuron flagged during conflict resolution, resolve its
+    (unambiguous) fiber and mark that fiber superseded by the new one — A-side
+    validity (valid_until/superseded_by) + a SUPERSEDES synapse + old-anchor
+    metadata (via ``engine.supersession``). Best-effort and idempotent; returns
+    how many facts were actually superseded.
+    """
+    from surreal_memory.engine.supersession import (
+        resolve_fibers_for_neurons,
+        supersede_typed_memory,
+    )
+
+    old_neuron_ids = list(dict.fromkeys(result.pending_supersessions))
+    if not old_neuron_ids:
+        return 0
+
+    fiber_map = await resolve_fibers_for_neurons(storage, old_neuron_ids)
+    new_fiber_id = result.fiber.id
+    new_anchor_id = result.fiber.anchor_neuron_id
+    applied = 0
+    for old_anchor_id in old_neuron_ids:
+        old_fiber_id = fiber_map.get(old_anchor_id)
+        # Skip ambiguous (unresolved) neurons and self-supersession.
+        if not old_fiber_id or old_fiber_id == new_fiber_id:
+            continue
+        outcome = await supersede_typed_memory(
+            storage,
+            old_fiber_id=old_fiber_id,
+            new_fiber_id=new_fiber_id,
+            new_anchor_id=new_anchor_id,
+            old_anchor_id=old_anchor_id,
+            reason="auto:conflict-resolution",
+        )
+        if outcome.superseded:
+            applied += 1
+    return applied
 
 
 class RememberHandler:
@@ -268,6 +309,7 @@ class RememberHandler:
 
         await self.hooks.emit(HookEvent.PRE_REMEMBER, {"content": content, "type": mem_type.value})
 
+        superseded_count = 0
         try:
             storage.disable_auto_save()
             raw_tags = args.get("tags", [])
@@ -448,6 +490,14 @@ class RememberHandler:
                 except Exception:
                     logger.debug("Decision overlap detection failed (non-critical)", exc_info=True)
 
+            # U3: apply per-fact supersession lineage (needs the new fiber_id, so
+            # it runs inside the auto-save-disabled window just before batch_save).
+            if getattr(result, "pending_supersessions", None):
+                try:
+                    superseded_count = await _apply_supersessions(storage, result)
+                except Exception:
+                    logger.debug("Supersession application failed (non-critical)", exc_info=True)
+
             await storage.batch_save()
         finally:
             storage.enable_auto_save()
@@ -558,6 +608,11 @@ class RememberHandler:
         if conflicts_detected > 0:
             response["conflicts_detected"] = conflicts_detected
             response["message"] += f" ({conflicts_detected} conflict(s) detected)"
+
+        # U3: surface how many prior facts this memory superseded.
+        if superseded_count > 0:
+            response["superseded_count"] = superseded_count
+            response["message"] += f" (superseded {superseded_count} prior fact(s))"
 
         hint = self._get_maintenance_hint(pulse)
         if hint:

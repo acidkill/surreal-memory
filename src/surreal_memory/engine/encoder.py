@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -75,6 +75,9 @@ class EncodingResult:
     synapses_created: list[Synapse]
     conflicts_detected: int = 0
     extraction_stats: dict[str, int] | None = None
+    # U3: old anchor-neuron ids this memory supersedes (applied post-save by the
+    # caller, which owns the freshly-created fiber_id). Empty in the common case.
+    pending_supersessions: list[str] = field(default_factory=list)
 
 
 def build_default_pipeline(
@@ -441,6 +444,7 @@ class MemoryEncoder:
                 "dropped_noise": ctx.dropped_noise,
                 "dropped_duplicate_entity": ctx.dropped_duplicate_entity,
             },
+            pending_supersessions=list(ctx.pending_supersessions),
         )
 
     async def _post_encode_neuro(self, anchor: Neuron) -> None:

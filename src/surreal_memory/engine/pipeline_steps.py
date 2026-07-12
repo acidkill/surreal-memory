@@ -1304,6 +1304,11 @@ class ConflictDetectionStep:
                 result = await try_auto_resolve(conflict, storage, new_confidence=0.5)
                 if result.auto_resolved:
                     auto_resolved.append(result)
+                    # "keep_new" = the new memory explicitly wins → supersede the old.
+                    if getattr(result, "resolution", "") == "keep_new":
+                        old_id = getattr(conflict, "existing_neuron_id", None)
+                        if old_id and old_id not in ctx.pending_supersessions:
+                            ctx.pending_supersessions.append(old_id)
                 else:
                     still_manual.append(conflict)
             remaining_conflicts = still_manual  # type: ignore[assignment]
@@ -1326,6 +1331,13 @@ class ConflictDetectionStep:
             )
             for resolution in resolutions:
                 ctx.synapses_created.append(resolution.contradicts_synapse)
+                # A resolution that collapsed the old fact's confidence below the
+                # supersede threshold marks it _superseded (C-side). Record the old
+                # anchor so the A-side validity lineage is stamped post-save.
+                if resolution.superseded:
+                    old_id = resolution.conflict.existing_neuron_id
+                    if old_id not in ctx.pending_supersessions:
+                        ctx.pending_supersessions.append(old_id)
 
         return ctx
 

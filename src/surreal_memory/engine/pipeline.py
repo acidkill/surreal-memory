@@ -54,6 +54,12 @@ class PipelineContext:
     synapses_created: list[Synapse] = field(default_factory=list)
     conflicts_detected: int = 0
 
+    # ── U3: old anchor-neuron ids the new memory supersedes ──
+    # Populated by ConflictDetectionStep when a conflict resolves as "new replaces
+    # old". Applied post-save by RememberHandler (needs the new fiber_id) to stamp
+    # the A-side validity (valid_until/superseded_by) + SUPERSEDES synapse.
+    pending_supersessions: list[str] = field(default_factory=list)
+
     # ── Inter-step state ──
     anchor_neuron: Neuron | None = None
     content_hash: int = 0
