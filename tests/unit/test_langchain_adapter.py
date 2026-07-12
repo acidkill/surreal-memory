@@ -9,6 +9,9 @@ the pipeline for a recall-backed feature); only the empty-brain fallback uses a 
 from __future__ import annotations
 
 import asyncio
+import os
+import signal
+import time
 from datetime import datetime
 from typing import Any
 from unittest.mock import patch
@@ -145,6 +148,39 @@ def test_invoke_sync_without_running_loop() -> None:
     docs = retriever.invoke("capital of Germany Berlin")
 
     assert any("Berlin" in d.page_content for d in docs)
+
+
+async def _noop() -> int:
+    return 42
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires os.fork (POSIX)")
+def test_bridge_loop_survives_fork() -> None:
+    # Regression: the shared bridge loop must be reset in a forked child. Warm it up in
+    # the PARENT first (the dangerous ordering: gunicorn --preload + warmup), then fork
+    # and run a sync call in the child. Without os.register_at_fork the child inherits a
+    # dead loop and hangs forever.
+    from surreal_memory.adapters import langchain as lc
+
+    assert lc._run_sync(_noop()) == 42  # create the bridge loop in the parent
+
+    pid = os.fork()
+    if pid == 0:  # child
+        try:
+            os._exit(0 if lc._run_sync(_noop()) == 42 else 2)
+        except BaseException:
+            os._exit(3)
+
+    deadline = time.monotonic() + 15.0
+    while time.monotonic() < deadline:
+        waited, status = os.waitpid(pid, os.WNOHANG)
+        if waited == pid:
+            assert os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0
+            return
+        time.sleep(0.05)
+    os.kill(pid, signal.SIGKILL)
+    os.waitpid(pid, 0)
+    pytest.fail("child hung after fork — bridge loop was not reset")
 
 
 def test_batch_across_threads_does_not_hang() -> None:

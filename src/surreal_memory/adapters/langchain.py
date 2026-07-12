@@ -15,6 +15,7 @@ bridge to async via :func:`_run_sync`. Prefer the native async paths where you c
 from __future__ import annotations
 
 import asyncio
+import os
 import threading
 import time
 from typing import TYPE_CHECKING, Any, cast
@@ -79,12 +80,29 @@ def _get_bridge_loop() -> asyncio.AbstractEventLoop:
     return loop
 
 
+def _reset_bridge_after_fork() -> None:
+    """Drop the inherited bridge loop in a forked child.
+
+    ``os.fork()`` copies the loop object but NOT the thread that drives it, so a child that
+    inherited a warmed-up bridge loop (e.g. gunicorn ``--preload`` + a warmup call) would
+    hang forever on its first sync call. Reset to nothing so the child lazily builds its
+    own loop+thread on demand.
+    """
+    global _bridge_loop, _bridge_lock
+    _bridge_loop = None
+    _bridge_lock = threading.Lock()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_bridge_after_fork)
+
+
 def _run_sync(coro: Coroutine[Any, Any, Any]) -> Any:
     """Run an async coroutine from sync code on the shared background loop.
 
     Works whether or not the caller already has a running loop (the coroutine always
     executes on the dedicated bridge loop, never the caller's), and is safe under
-    concurrent calls from ``Runnable.batch``'s worker threads.
+    concurrent calls from ``Runnable.batch``'s worker threads and across ``os.fork()``.
     """
     return asyncio.run_coroutine_threadsafe(coro, _get_bridge_loop()).result()
 
