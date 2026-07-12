@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import sqlite3
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal
@@ -13,10 +12,6 @@ from surreal_memory.core.fiber import Fiber
 from surreal_memory.storage.sqlite_row_mappers import row_to_fiber
 from surreal_memory.utils.geo import GeoFilter, fiber_within
 from surreal_memory.utils.timeutils import utcnow
-
-# Metres per degree of latitude (WGS-84 mean) — used only to size a conservative bbox
-# pre-filter; correctness comes from the exact haversine post-filter.
-_M_PER_DEG_LAT = 111_320.0
 
 
 def _build_fts_query(search_term: str) -> str:
@@ -197,21 +192,13 @@ class SQLiteFiberMixin:
             params.append(f'$."{metadata_key}"')
 
         if near is not None:
-            # Conservative bbox pre-filter on the JSON location. Correctness comes from
-            # the exact haversine post-filter below; the bbox only trims rows scanned.
+            # Server-side pre-filter: drop locationless fibers. A lat/lon bbox is
+            # deliberately NOT used — a naive metres-per-degree box false-excludes true
+            # matches near the equator (meridian degree ≈ 110.6 km < the 111.3 km mean)
+            # and near the poles (longitude span blows up), and those rows would never
+            # reach the exact haversine post-filter. On a non-indexed JSON column the
+            # box saves nothing, so correctness wins: exact haversine does the bounding.
             query += " AND json_extract(metadata, '$.location.lat') IS NOT NULL"
-            lat0, lon0, radius = near.center.lat, near.center.lon, near.radius_m
-            dlat = radius / _M_PER_DEG_LAT
-            query += " AND json_extract(metadata, '$.location.lat') BETWEEN ? AND ?"
-            params.extend([max(-90.0, lat0 - dlat), min(90.0, lat0 + dlat)])
-            cos_lat = math.cos(math.radians(lat0))
-            if cos_lat > 1e-9:
-                dlon = radius / (_M_PER_DEG_LAT * cos_lat)
-                # Skip the lon clause when the box would wrap the antimeridian/pole —
-                # the exact post-filter still bounds the result correctly.
-                if dlon < 180.0 and lon0 - dlon >= -180.0 and lon0 + dlon <= 180.0:
-                    query += " AND json_extract(metadata, '$.location.lon') BETWEEN ? AND ?"
-                    params.extend([lon0 - dlon, lon0 + dlon])
 
         # When tags/near filtering happens in Python, fetch more rows to compensate.
         fetch_limit = min(limit * 3, 3000) if (tags or near is not None) else limit
@@ -226,7 +213,7 @@ class SQLiteFiberMixin:
         if tags is not None:
             fibers = [f for f in fibers if tags.issubset(f.tags)]
 
-        # Exact geospatial hard filter (haversine) after the bbox pre-filter.
+        # Exact geospatial hard filter (haversine) — the source of truth for `near`.
         if near is not None:
             fibers = [f for f in fibers if fiber_within(f, near)]
 

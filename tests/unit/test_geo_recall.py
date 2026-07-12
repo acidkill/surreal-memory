@@ -188,10 +188,21 @@ class TestFindFibersNearBrowse:
         assert oslo.id in ids and bergen.id in ids
 
     async def test_antimeridian_not_wrongly_excluded(self, browse_storage: object) -> None:
-        # SQLite's bbox pre-filter must SKIP the lon-clause here or it drops this fiber.
+        # Across the antimeridian the exact haversine must still see ~22 km (a naive
+        # lon-bbox would wrap and wrongly drop this fiber — which is why there is none).
         f_near = await _browse_add(browse_storage, "east of the line", {"lat": 0.0, "lon": 179.9})
         found = await browse_storage.find_fibers(near=GeoFilter(GeoPoint(0.0, -179.9), 30_000))  # type: ignore[attr-defined]
         assert f_near.id in {f.id for f in found}  # ~22 km across the antimeridian
+
+    async def test_edge_of_radius_included(self, browse_storage: object) -> None:
+        # A fiber ~9.9 km from center must survive a 10 km browse filter (no bbox
+        # pre-filter can shave the edge; exact haversine is the only bound).
+        import math
+
+        edge = {"lat": math.degrees(9_900.0 / 6_371_008.8), "lon": 0.0}
+        f_edge = await _browse_add(browse_storage, "near the edge", edge)
+        found = await browse_storage.find_fibers(near=GeoFilter(GeoPoint(0.0, 0.0), 10_000))  # type: ignore[attr-defined]
+        assert f_edge.id in {f.id for f in found}
 
     async def test_no_near_returns_all(self, browse_storage: object) -> None:
         located = await _browse_add(browse_storage, "in oslo", _OSLO)
