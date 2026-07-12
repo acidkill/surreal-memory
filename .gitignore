@@ -241,3 +241,6 @@ integrations/surrealmemory/coverage/
 
 # Local hook event log — may capture secrets from tool output
 tool_events.jsonl
+
+# Internal QA/run evidence (scratch — local reference only, never ships publicly)
+qa/
