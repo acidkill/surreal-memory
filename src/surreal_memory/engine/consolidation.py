@@ -463,14 +463,16 @@ class ConsolidationEngine:
                 for nid in fib.neuron_ids:
                     fiber_salience_cache.setdefault(nid, []).append(fib)
 
-        # Pre-fetch neighbor counts for bridge detection (avoid N+1 queries)
-        # Collect all unique source neuron IDs from synapses eligible for pruning
-        candidate_source_ids = list({s.source_id for s in all_synapses if s.weight >= 0.02})
+        # Bridge detection (below) needs, per source neuron, its outgoing synapses.
+        # We ALREADY hold every synapse for the brain in ``all_synapses``, so group
+        # them in-memory instead of asking the storage layer. The SurrealDB backend
+        # has no batched ``get_synapses_for_neurons``, so the previous call fanned out
+        # into one query PER candidate source neuron — tens of thousands on a large
+        # brain — which blew the per-strategy prune budget (120s timeout). Grouping the
+        # already-loaded list is O(n) in Python and issues zero extra queries.
         neighbor_synapses_map: dict[str, list[Synapse]] = {}
-        if candidate_source_ids:
-            neighbor_synapses_map = await self._storage.get_synapses_for_neurons(
-                candidate_source_ids, direction="out"
-            )
+        for s in all_synapses:
+            neighbor_synapses_map.setdefault(s.source_id, []).append(s)
 
         for syn_idx, synapse in enumerate(all_synapses):
             if syn_idx % 500 == 0 and syn_idx > 0:
