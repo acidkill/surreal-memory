@@ -5,6 +5,7 @@ import { PageSkeleton } from "@/components/common/PageSkeleton"
 
 const OverviewPage = lazy(() => import("@/features/overview/OverviewPage"))
 const HealthPage = lazy(() => import("@/features/health/HealthPage"))
+const UncertaintyPage = lazy(() => import("@/features/uncertainty/UncertaintyPage"))
 const GraphPage = lazy(() => import("@/features/graph/GraphPage"))
 const TimelinePage = lazy(() => import("@/features/timeline/TimelinePage"))
 const EvolutionPage = lazy(() => import("@/features/evolution/EvolutionPage"))
@@ -33,6 +34,14 @@ export default function App() {
           element={
             <Suspense fallback={<PageSkeleton />}>
               <HealthPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="uncertainty"
+          element={
+            <Suspense fallback={<PageSkeleton />}>
+              <UncertaintyPage />
             </Suspense>
           }
         />

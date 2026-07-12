@@ -47,6 +47,8 @@ export interface HealthReport {
   neuron_count: number
   synapse_count: number
   fiber_count: number
+  contradiction_count: number
+  conflict_rate: number
   warnings: HealthWarning[]
   recommendations: string[]
   top_penalties: PenaltyFactor[]
@@ -423,4 +425,52 @@ export interface LicenseResponse {
   is_pro: boolean
   activated_at: string
   expires_at: string
+}
+
+// GET /api/dashboard/uncertainty
+export type UncertaintyLevel = "low" | "medium" | "high"
+
+export interface UncertaintyCounts {
+  contradictions: number
+  low_evidence: number
+  superseded: number
+  expiring: number
+  drift_clusters: number
+}
+
+export interface UncertaintyScan {
+  typed_scanned: number
+  typed_scan_truncated: boolean
+  contradictions_capped: boolean
+}
+
+export interface LowEvidenceSample {
+  fiber_id: string
+  trust_score: number
+}
+
+export interface SupersededSample {
+  fiber_id: string
+  superseded_by: string
+}
+
+export interface DriftClusterSample {
+  id: string | number | null
+  canonical: string | null
+  confidence: number | null
+}
+
+export interface UncertaintySamples {
+  low_evidence: LowEvidenceSample[]
+  superseded: SupersededSample[]
+  drift_clusters: DriftClusterSample[]
+}
+
+export interface UncertaintyOverview {
+  level: UncertaintyLevel
+  counts: UncertaintyCounts
+  contradiction_rate: number
+  total_memories: number
+  scan: UncertaintyScan
+  samples: UncertaintySamples
 }

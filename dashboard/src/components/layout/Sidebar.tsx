@@ -2,6 +2,7 @@ import { NavLink } from "react-router-dom"
 import {
   SquaresFour,
   Heartbeat,
+  ShieldWarning,
   Graph,
   Clock,
   TrendUp,
@@ -21,6 +22,7 @@ import { useTranslation } from "react-i18next"
 const navItems = [
   { to: "/", icon: SquaresFour, labelKey: "nav.overview" },
   { to: "/health", icon: Heartbeat, labelKey: "nav.health" },
+  { to: "/uncertainty", icon: ShieldWarning, labelKey: "nav.uncertainty" },
   { to: "/graph", icon: Graph, labelKey: "nav.graph" },
   { to: "/timeline", icon: Clock, labelKey: "nav.timeline" },
   { to: "/evolution", icon: TrendUp, labelKey: "nav.evolution" },

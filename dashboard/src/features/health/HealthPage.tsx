@@ -76,6 +76,42 @@ export default function HealthPage() {
         )}
       </div>
 
+      {/* Conflict tiles */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">
+              {t("health.conflictRate")}
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {isLoading ? (
+              <Skeleton className="h-8 w-20" />
+            ) : (
+              <p className="font-mono text-2xl font-bold">
+                {`${((health?.conflict_rate ?? 0) * 100).toFixed(1)}%`}
+              </p>
+            )}
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">
+              {t("health.contradictionCount")}
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {isLoading ? (
+              <Skeleton className="h-8 w-16" />
+            ) : (
+              <p className="font-mono text-2xl font-bold">
+                {health?.contradiction_count ?? 0}
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
       {/* Top Penalties — actionable cards */}
       {health && health.top_penalties && health.top_penalties.length > 0 && (
         <TopPenaltiesSection penalties={health.top_penalties} />

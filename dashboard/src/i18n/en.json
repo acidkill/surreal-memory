@@ -2,6 +2,7 @@
   "nav": {
     "overview": "Overview",
     "health": "Health",
+    "uncertainty": "Uncertainty",
     "graph": "Graph",
     "timeline": "Timeline",
     "evolution": "Evolution",
@@ -80,7 +81,33 @@
     "estimatedGain": "+{{gain}} pts if fixed",
     "currentScore": "Current: {{score}}%",
     "weight": "Weight: {{weight}}%",
-    "fixAction": "Fix"
+    "fixAction": "Fix",
+    "conflictRate": "Conflict Rate",
+    "contradictionCount": "Contradictions"
+  },
+  "uncertainty": {
+    "title": "Uncertainty",
+    "window": "Last {{days}} days",
+    "level": {
+      "low": "Low",
+      "medium": "Medium",
+      "high": "High"
+    },
+    "contradictionRate": "Contradiction Rate",
+    "totalMemories": "Total Memories",
+    "contradictions": "Contradictions",
+    "lowTrust": "Low-trust",
+    "superseded": "Superseded",
+    "expiring": "Expiring",
+    "drift": "Drift Clusters",
+    "driftSqliteOnly": "Drift detection is SQLite-only.",
+    "truncatedNote": "Low-trust and superseded reflect only the most-recent {{count}} scanned memories.",
+    "fiberId": "Fiber",
+    "trustScore": "Trust",
+    "supersededBy": "Superseded by",
+    "canonical": "Canonical",
+    "confidence": "Confidence",
+    "noSamples": "Nothing to show."
   },
   "enrichment": {
     "rememberTitle": "Ask your agent to remember frequently",

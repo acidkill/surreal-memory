@@ -23,6 +23,7 @@ import type {
   VisualizeRequest,
   VisualizeResponse,
   LicenseResponse,
+  UncertaintyOverview,
 } from "@/api/types"
 
 // Keys
@@ -44,6 +45,8 @@ const keys = {
   embeddingConfig: ["config", "embedding"] as const,
   watcherStatus: ["dashboard", "watcher-status"] as const,
   license: ["dashboard", "license"] as const,
+  uncertainty: (withinDays: number) =>
+    ["dashboard", "uncertainty", withinDays] as const,
 }
 
 // Stats
@@ -90,6 +93,17 @@ export function useHealth() {
   return useQuery({
     queryKey: keys.health,
     queryFn: () => api.get<HealthReport>("/api/dashboard/health"),
+  })
+}
+
+// Uncertainty overview
+export function useUncertainty(withinDays = 14) {
+  return useQuery({
+    queryKey: keys.uncertainty(withinDays),
+    queryFn: () =>
+      api.get<UncertaintyOverview>(
+        `/api/dashboard/uncertainty?within_days=${withinDays}`,
+      ),
   })
 }
 
