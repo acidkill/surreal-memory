@@ -280,6 +280,15 @@ warn_unused_ignores = false
 module = "surreal_memory.engine.doc_extractor"
 disallow_untyped_calls = false
 
+[[tool.mypy.overrides]]
+# langchain-core is an optional extra (not in [dev]); CI's Type Check job type-checks
+# this module without it installed, so BaseRetriever/BaseChatMessageHistory/BaseMessage
+# resolve as Any — same pattern as file_watcher.py's optional `watchdog` base class.
+module = "surreal_memory.adapters.langchain"
+disallow_subclassing_any = false
+warn_unused_ignores = false
+warn_return_any = false
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
