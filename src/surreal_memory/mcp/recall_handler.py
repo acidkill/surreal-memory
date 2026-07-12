@@ -381,8 +381,10 @@ class RecallHandler:
 
         await self.hooks.emit(HookEvent.PRE_RECALL, {"query": query, "depth": depth.value})
 
-        # Surface depth routing: SUFFICIENT → answer from surface, skip brain.db
-        if not args.get("depth"):  # Only route when user didn't specify depth
+        # Surface depth routing: SUFFICIENT → answer from surface, skip brain.db.
+        # Skipped when `near` is set (U8): the surface answer never touches fibers, so
+        # it would bypass the geospatial hard-filter.
+        if not args.get("depth") and near is None:  # Only route when user didn't specify depth
             surface_response, depth_override = self._check_surface_depth(query)
             if surface_response is not None:
                 return surface_response

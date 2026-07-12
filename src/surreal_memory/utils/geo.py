@@ -100,6 +100,17 @@ def fiber_location(fiber: Any) -> GeoPoint | None:
         return None
 
 
+def fiber_within(fiber: Any, geo_filter: GeoFilter) -> bool:
+    """Whether a fiber's location is inside the geo filter — the shared hard-filter.
+
+    A fiber with no (or malformed) location is NOT near anything, matching the
+    ``valid_at`` precedent. Used by the recall pipeline and by browse pushdown so the
+    exact-distance semantics are identical everywhere.
+    """
+    loc = fiber_location(fiber)
+    return loc is not None and geo_filter.contains(loc)
+
+
 def location_to_metadata(point: GeoPoint) -> dict[str, Any]:
     """Serialise a GeoPoint to the metadata dict shape stored on a fiber."""
     out: dict[str, Any] = {"lat": point.lat, "lon": point.lon}

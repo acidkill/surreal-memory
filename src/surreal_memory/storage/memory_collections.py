@@ -9,6 +9,7 @@ from typing import Literal
 from surreal_memory.core.fiber import Fiber
 from surreal_memory.core.memory_types import MemoryType, Priority, TypedMemory
 from surreal_memory.core.project import Project
+from surreal_memory.utils.geo import GeoFilter, fiber_within
 from surreal_memory.utils.timeutils import utcnow
 
 
@@ -45,6 +46,7 @@ class InMemoryCollectionsMixin:
         min_salience: float | None = None,
         metadata_key: str | None = None,
         limit: int = 100,
+        near: GeoFilter | None = None,
     ) -> list[Fiber]:
         limit = min(limit, 1000)
         brain_id = self._get_brain_id()
@@ -62,6 +64,9 @@ class InMemoryCollectionsMixin:
             if min_salience is not None and fiber.salience < min_salience:
                 continue
             if metadata_key is not None and metadata_key not in fiber.metadata:
+                continue
+            # U8: geospatial hard filter (haversine) — excludes locationless fibers.
+            if near is not None and not fiber_within(fiber, near):
                 continue
 
             results.append(fiber)

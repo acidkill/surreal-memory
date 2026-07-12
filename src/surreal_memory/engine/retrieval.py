@@ -41,7 +41,7 @@ from surreal_memory.engine.stabilization import StabilizationConfig, stabilize
 from surreal_memory.engine.write_queue import DeferredWriteQueue
 from surreal_memory.extraction.parser import QueryIntent, QueryParser, Stimulus
 from surreal_memory.extraction.router import QueryRouter
-from surreal_memory.utils.geo import GeoFilter, fiber_location
+from surreal_memory.utils.geo import GeoFilter, fiber_within
 from surreal_memory.utils.timeutils import utcnow
 
 __all__ = ["DepthLevel", "ReflexPipeline", "RetrievalResult"]
@@ -99,13 +99,12 @@ def _fiber_valid_at(fiber: Fiber, dt: datetime) -> bool:
 
 
 def _fiber_near(fiber: Fiber, geo_filter: GeoFilter) -> bool:
-    """Whether a fiber is within the geo filter's radius (U8).
+    """Whether a fiber is within the geo filter's radius (U8) — see ``geo.fiber_within``.
 
-    HARD filter: a fiber with no (or malformed) location is NOT near anything and is
-    excluded when a ``near`` filter is active — matching the ``valid_at`` precedent.
+    HARD filter: a fiber with no (or malformed) location is excluded when a ``near``
+    filter is active, matching the ``valid_at`` precedent.
     """
-    loc = fiber_location(fiber)
-    return loc is not None and geo_filter.contains(loc)
+    return fiber_within(fiber, geo_filter)
 
 
 class ReflexPipeline:
@@ -298,15 +297,18 @@ class ReflexPipeline:
             else:
                 depth = rule_depth
 
-        # 2.5 Temporal reasoning fast-path (v0.19.0)
-        temporal_result = await self._try_temporal_reasoning(
-            stimulus, depth, reference_time, start_time
-        )
-        if temporal_result is not None:
-            return temporal_result
+        # 2.5 Temporal reasoning fast-path (v0.19.0). Bypassed when a geo filter is
+        # active (U8) — these fast-paths return before _find_matching_fibers, where the
+        # `near` hard-filter lives, so they would silently ignore it (the valid_at lesson).
+        if near is None:
+            temporal_result = await self._try_temporal_reasoning(
+                stimulus, depth, reference_time, start_time
+            )
+            if temporal_result is not None:
+                return temporal_result
 
-        # 2.8 Fiber summary tier — lightweight first-pass retrieval
-        if self._config.fiber_summary_tier_enabled and depth != DepthLevel.INSTANT:
+        # 2.8 Fiber summary tier — lightweight first-pass retrieval (also geo-bypassed).
+        if near is None and self._config.fiber_summary_tier_enabled and depth != DepthLevel.INSTANT:
             fiber_result = await self._try_fiber_summary_tier(
                 stimulus, depth, max_tokens, start_time
             )

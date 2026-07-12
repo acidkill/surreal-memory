@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from surreal_memory.core.synapse import Synapse, SynapseType
     from surreal_memory.engine.brain_versioning import BrainVersion
     from surreal_memory.engine.memory_stages import MaturationRecord, MemoryStage
+    from surreal_memory.utils.geo import GeoFilter
 
 
 class NeuralStorage(ABC):
@@ -492,6 +493,7 @@ class NeuralStorage(ABC):
         min_salience: float | None = None,
         metadata_key: str | None = None,
         limit: int = 100,
+        near: GeoFilter | None = None,
     ) -> list[Fiber]:
         """
         Find fibers matching criteria.
@@ -503,6 +505,9 @@ class NeuralStorage(ABC):
             min_salience: Filter by minimum salience
             metadata_key: Filter by metadata containing this key (non-null value)
             limit: Maximum results
+            near: Geospatial hard filter (U8) — keep only fibers whose
+                ``metadata['location']`` is within the filter's radius. Fibers with no
+                location are excluded. Exact haversine semantics across all backends.
 
         Returns:
             List of matching fibers

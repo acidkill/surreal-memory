@@ -20,6 +20,7 @@ from surreal_memory.core.brain import Brain, BrainConfig
 from surreal_memory.core.fiber import Fiber
 from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.engine.retrieval import ReflexPipeline, _fiber_near
+from surreal_memory.storage.memory_store import InMemoryStorage
 from surreal_memory.storage.sqlite_store import SQLiteStorage
 from surreal_memory.utils.geo import GeoFilter, GeoPoint
 
@@ -126,3 +127,76 @@ class TestNearThroughPipeline:
 
         assert located.id in result.fibers_matched
         assert unlocated.id not in result.fibers_matched  # no location → excluded
+
+
+@pytest.fixture(params=["memory", "sqlite"])
+async def browse_storage(request: pytest.FixtureRequest) -> AsyncIterator[object]:
+    """Same geo browse contract on both in-process backends (SurrealDB: *_live test)."""
+    if request.param == "memory":
+        s: object = InMemoryStorage()
+        brain = Brain.create(name="geo_browse")
+        await s.save_brain(brain)  # type: ignore[attr-defined]
+        s.set_brain(brain.id)  # type: ignore[attr-defined]
+        yield s
+    else:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sq = SQLiteStorage(Path(tmpdir) / "test.db")
+            await sq.initialize()
+            brain = Brain.create(name="geo_browse")
+            await sq.save_brain(brain)
+            sq.set_brain(brain.id)
+            yield sq
+            await sq.close()
+
+
+async def _browse_add(storage: object, content: str, location: dict[str, float] | None) -> Fiber:
+    neuron = Neuron.create(type=NeuronType.CONCEPT, content=content)
+    await storage.add_neuron(neuron)  # type: ignore[attr-defined]
+    fiber = Fiber.create(
+        neuron_ids={neuron.id},
+        synapse_ids=set(),
+        anchor_neuron_id=neuron.id,
+        summary=content,
+        metadata={"location": location} if location is not None else None,
+    )
+    await storage.add_fiber(fiber)  # type: ignore[attr-defined]
+    return fiber
+
+
+class TestFindFibersNearBrowse:
+    """Browse pushdown `find_fibers(near=)` — identical hard-filter across backends."""
+
+    async def test_filters_by_radius_and_excludes_locationless(
+        self, browse_storage: object
+    ) -> None:
+        oslo = await _browse_add(browse_storage, "in oslo", _OSLO)
+        bergen = await _browse_add(browse_storage, "in bergen", _BERGEN)
+        nowhere = await _browse_add(browse_storage, "no location", None)
+
+        found = await browse_storage.find_fibers(near=GeoFilter(_OSLO_CENTER, 50_000))  # type: ignore[attr-defined]
+        ids = {f.id for f in found}
+        assert oslo.id in ids
+        assert bergen.id not in ids  # ~305 km away
+        assert nowhere.id not in ids  # no location → excluded
+
+    async def test_wider_radius_keeps_bergen(self, browse_storage: object) -> None:
+        oslo = await _browse_add(browse_storage, "in oslo", _OSLO)
+        bergen = await _browse_add(browse_storage, "in bergen", _BERGEN)
+
+        found = await browse_storage.find_fibers(near=GeoFilter(_OSLO_CENTER, 400_000))  # type: ignore[attr-defined]
+        ids = {f.id for f in found}
+        assert oslo.id in ids and bergen.id in ids
+
+    async def test_antimeridian_not_wrongly_excluded(self, browse_storage: object) -> None:
+        # SQLite's bbox pre-filter must SKIP the lon-clause here or it drops this fiber.
+        f_near = await _browse_add(browse_storage, "east of the line", {"lat": 0.0, "lon": 179.9})
+        found = await browse_storage.find_fibers(near=GeoFilter(GeoPoint(0.0, -179.9), 30_000))  # type: ignore[attr-defined]
+        assert f_near.id in {f.id for f in found}  # ~22 km across the antimeridian
+
+    async def test_no_near_returns_all(self, browse_storage: object) -> None:
+        located = await _browse_add(browse_storage, "in oslo", _OSLO)
+        nowhere = await _browse_add(browse_storage, "no location", None)
+
+        found = await browse_storage.find_fibers()  # type: ignore[attr-defined]
+        ids = {f.id for f in found}
+        assert located.id in ids and nowhere.id in ids

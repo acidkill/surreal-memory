@@ -37,6 +37,7 @@ from surreal_memory.storage.surrealdb.sources import SurrealDBSourcesMixin
 from surreal_memory.storage.surrealdb.tool_events import SurrealDBToolEventsMixin
 from surreal_memory.storage.surrealdb.typed_memory import SurrealDBTypedMemoryMixin
 from surreal_memory.storage.surrealdb.versions import SurrealDBVersionsMixin
+from surreal_memory.utils.geo import GeoFilter, fiber_within
 from surreal_memory.utils.timeutils import utcnow
 
 logger = logging.getLogger(__name__)
@@ -1205,6 +1206,7 @@ class SurrealDBStorage(
         min_salience: float | None = None,
         metadata_key: str | None = None,
         limit: int = 100,
+        near: GeoFilter | None = None,
     ) -> list[Fiber]:
         brain_id = self._get_brain_id()
         conditions = ["brain_id = $brain_id"]
@@ -1216,9 +1218,17 @@ class SurrealDBStorage(
         if min_salience is not None:
             conditions.append("salience >= $min_salience")
             params["min_salience"] = min_salience
+        if near is not None:
+            # Server-side pre-filter: drop locationless fibers (exercises FLEXIBLE-field
+            # traversal). No spatial index exists, so geo::distance would not improve
+            # complexity and its lon/lat order + metre unit vary across 3.x — the exact
+            # haversine post-filter below is the version-independent source of truth.
+            conditions.append("metadata.location != NONE")
 
         where = " AND ".join(conditions)
-        rows = await self._query(f"SELECT * FROM fiber WHERE {where} LIMIT {int(limit)}", **params)
+        # Over-fetch when a Python post-filter (tags/time/metadata_key/near) narrows the set.
+        fetch_limit = min(int(limit) * 3, 3000) if near is not None else int(limit)
+        rows = await self._query(f"SELECT * FROM fiber WHERE {where} LIMIT {fetch_limit}", **params)
 
         fibers = [_row_to_fiber(r) for r in rows]
 
@@ -1244,6 +1254,9 @@ class SurrealDBStorage(
             ]
         if metadata_key:
             fibers = [f for f in fibers if metadata_key in f.metadata]
+        # Exact geospatial hard filter (haversine) — version-independent source of truth.
+        if near is not None:
+            fibers = [f for f in fibers if fiber_within(f, near)]
 
         return fibers[:limit]
 

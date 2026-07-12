@@ -8,6 +8,7 @@ from typing import Any, Literal
 from surreal_memory.core.brain import Brain, BrainSnapshot
 from surreal_memory.core.fiber import Fiber
 from surreal_memory.storage.shared_store_mappers import dict_to_brain, dict_to_fiber
+from surreal_memory.utils.geo import GeoFilter, fiber_within
 
 
 class SharedStorageError(Exception):
@@ -75,6 +76,7 @@ class SharedFiberBrainMixin:
         min_salience: float | None = None,
         metadata_key: str | None = None,
         limit: int = 100,
+        near: GeoFilter | None = None,
     ) -> list[Fiber]:
         """Find fibers matching criteria."""
         params: dict[str, Any] = {"limit": min(limit, 1000)}
@@ -91,7 +93,12 @@ class SharedFiberBrainMixin:
             params["metadata_key"] = metadata_key
 
         result = await self._request("GET", "/memory/fibers", params=params)
-        return [dict_to_fiber(f) for f in result.get("fibers", [])]
+        fibers = [dict_to_fiber(f) for f in result.get("fibers", [])]
+        # The remote endpoint has no geo predicate — apply the same exact haversine
+        # hard filter client-side (best-effort; keeps semantics identical to InMemory).
+        if near is not None:
+            fibers = [f for f in fibers if fiber_within(f, near)]
+        return fibers
 
     async def update_fiber(self, fiber: Fiber) -> None:
         """Update an existing fiber."""
