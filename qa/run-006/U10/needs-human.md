@@ -1,9 +1,11 @@
 # U10 — NEEDS-HUMAN: v2.10.0 push / PR / tag (ready-to-copy)
 
-The whole run (U1–U10 + UB1/UB2) is stacked linearly. The **v2.10.0 tip
-`feature/v2100-release-prep` (HEAD `70cf1a1`)** contains the ENTIRE history on top of
-`main` (`d25b98f` = v2.8.0) — including all of v2.9.0. Nothing below has been executed;
-these are for Toni to run/verify.
+The whole run (U1–U10 + UB1/UB2) is stacked linearly. Push the branch tip of
+**`feature/v2100-release-prep`** — it contains the ENTIRE history on top of `main`
+(`d25b98f` = v2.8.0), including all of v2.9.0. The release content (version bump +
+CHANGELOG) is commit `70cf1a1`; the `qa/run-006/` evidence commits sit on top of it (run
+artifacts — squash or drop them at merge if you don't want them on `main`). Nothing below
+has been executed; these are for Toni to run/verify.
 
 ## Branch chain (stacked, the v2.10.0 tip contains everything)
 ```
@@ -11,7 +13,7 @@ main d25b98f (v2.8.0)
  └─ …v2.9.0 stack (U1–U7)… → feature/v290-release-prep b92856f   (v2.9.0 tip)
      └─ feature/v2100-pr7-geo        b893604   (U8 geospatial recall)
          └─ feature/v2100-pr8-langchain 6dba78f (U9 LangChain adapter)
-             └─ feature/v2100-release-prep 70cf1a1  ← v2.10.0 TIP (push this)
+             └─ feature/v2100-release-prep 70cf1a1 (+ qa docs)  ← v2.10.0 TIP (push this branch)
 ```
 
 ## Option A — ship v2.9.0 then v2.10.0 as two releases (recommended; matches the two CHANGELOG sections)
