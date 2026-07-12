@@ -104,6 +104,7 @@ class ConsolidationReport:
     dream_synapses_created: int = 0
     habits_learned: int = 0
     action_events_pruned: int = 0
+    retrieval_traces_pruned: int = 0
     duplicates_found: int = 0
     semantic_synapses_created: int = 0
     memories_promoted: int = 0
@@ -654,6 +655,24 @@ class ConsolidationEngine:
                     logger.info("Pruned %d old unpromoted entity refs", pruned_refs)
             except Exception:
                 logger.debug("Entity ref pruning skipped (table may not exist)")
+
+        # Prune old retrieval traces (telemetry TTL + max-count cap) — U4. Runs even
+        # when tracing is currently disabled so a re-disable still cleans up its
+        # accumulated traces; on a never-traced brain this is a cheap empty DELETE.
+        if not dry_run and hasattr(self._storage, "prune_retrieval_traces"):
+            try:
+                from surreal_memory.unified_config import get_config
+
+                trace_cfg = get_config().trace
+                pruned_traces = await self._storage.prune_retrieval_traces(
+                    retention_days=trace_cfg.retention_days,
+                    max_traces=trace_cfg.max_traces,
+                )
+                if pruned_traces > 0:
+                    logger.info("Pruned %d old retrieval traces", pruned_traces)
+                    report.retrieval_traces_pruned = pruned_traces
+            except Exception:
+                logger.debug("Retrieval trace pruning skipped", exc_info=True)
 
     async def _merge(
         self,
