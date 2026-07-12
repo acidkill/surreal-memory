@@ -339,12 +339,23 @@ class RememberHandler:
                         "error": f"Invalid event_at format: {raw_event_at}. Use ISO format (e.g. '2026-03-02T08:00:00')."
                     }
 
+            # U8: optional geographic location → fiber metadata (for recall's `near`).
+            encode_metadata: dict[str, Any] = {"type": mem_type.value}
+            raw_location = args.get("location")
+            if raw_location is not None:
+                from surreal_memory.utils.geo import location_to_metadata, parse_geo_point
+
+                try:
+                    encode_metadata["location"] = location_to_metadata(parse_geo_point(raw_location))
+                except (ValueError, TypeError) as exc:
+                    return {"error": f"Invalid location: {exc}"}
+
             encode_content = encrypted_content if encrypted_content is not None else content
             result = await encoder.encode(
                 content=encode_content,
                 timestamp=event_timestamp,
                 tags=tags if tags else None,
-                metadata={"type": mem_type.value},
+                metadata=encode_metadata,
             )
 
             # Attach encryption metadata to fiber
@@ -752,6 +763,7 @@ class RememberHandler:
                 "event_at",
                 "ephemeral",
                 "tier",
+                "location",
             ):
                 if key in item:
                     single_args[key] = item[key]

@@ -18,6 +18,7 @@ from surreal_memory.core.retrieval_trace import RetrievalTrace
 _FILTER_KEYS = (
     "tags",
     "valid_at",
+    "near",
     "min_trust",
     "min_confidence",
     "include_superseded",

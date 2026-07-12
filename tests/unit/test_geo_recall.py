@@ -1,0 +1,128 @@
+"""U8: geospatial recall (`near`) through the REAL pipeline.
+
+Mirrors tests/unit/test_valid_at_pipeline.py. The `near` filter lives in exactly the
+same place as `_fiber_valid_at` (ReflexPipeline._find_matching_fibers, right after the
+valid_at filter), so — per the valid_at lesson (U3's mocked-pipeline tests hid the
+`_fiber_valid_at` bug) — it MUST be exercised end-to-end against the real pipeline, not
+a mock. A hard filter: fibers outside the radius (or without a location) are dropped;
+`near=None` is a strict no-op (golden recall stays green).
+"""
+
+from __future__ import annotations
+
+import tempfile
+from collections.abc import AsyncIterator
+from pathlib import Path
+
+import pytest
+
+from surreal_memory.core.brain import Brain, BrainConfig
+from surreal_memory.core.fiber import Fiber
+from surreal_memory.core.neuron import Neuron, NeuronType
+from surreal_memory.engine.retrieval import ReflexPipeline, _fiber_near
+from surreal_memory.storage.sqlite_store import SQLiteStorage
+from surreal_memory.utils.geo import GeoFilter, GeoPoint
+
+_OSLO = {"lat": 59.9139, "lon": 10.7522, "label": "Oslo"}
+_BERGEN = {"lat": 60.3913, "lon": 5.3221, "label": "Bergen"}
+_OSLO_CENTER = GeoPoint(59.9139, 10.7522)
+
+
+class TestFiberNearUnit:
+    def _fiber(self, location: dict[str, float] | None) -> Fiber:
+        return Fiber.create(
+            neuron_ids={"n"},
+            synapse_ids=set(),
+            anchor_neuron_id="n",
+            summary="x",
+            metadata={"location": location} if location is not None else None,
+        )
+
+    def test_inside_radius(self) -> None:
+        near = GeoFilter(GeoPoint(59.95, 10.80), 50_000)  # a few km from Oslo
+        assert _fiber_near(self._fiber(_OSLO), near) is True
+
+    def test_outside_radius(self) -> None:
+        near = GeoFilter(_OSLO_CENTER, 50_000)  # 50 km around Oslo
+        assert _fiber_near(self._fiber(_BERGEN), near) is False  # Bergen ~305 km away
+
+    def test_no_location_is_excluded(self) -> None:
+        near = GeoFilter(_OSLO_CENTER, 1_000)
+        assert _fiber_near(self._fiber(None), near) is False
+
+    def test_garbage_location_is_excluded(self) -> None:
+        near = GeoFilter(_OSLO_CENTER, 20_015_087.0)  # whole globe — only garbage fails
+        assert _fiber_near(self._fiber({"lat": 999.0, "lon": 0.0}), near) is False
+
+
+@pytest.fixture
+async def storage() -> AsyncIterator[SQLiteStorage]:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        s = SQLiteStorage(Path(tmpdir) / "test.db")
+        await s.initialize()
+        brain = Brain.create(name="geo_test")
+        await s.save_brain(brain)
+        s.set_brain(brain.id)
+        yield s
+        await s.close()
+
+
+async def _add_located_fiber(
+    storage: SQLiteStorage, content: str, location: dict[str, float] | None
+) -> Fiber:
+    neuron = Neuron.create(type=NeuronType.CONCEPT, content=content)
+    await storage.add_neuron(neuron)
+    fiber = Fiber.create(
+        neuron_ids={neuron.id},
+        synapse_ids=set(),
+        anchor_neuron_id=neuron.id,
+        summary=content,
+        metadata={"location": location} if location is not None else None,
+    )
+    await storage.add_fiber(fiber)
+    return fiber
+
+
+class TestNearThroughPipeline:
+    async def test_near_keeps_only_fibers_in_radius(self, storage: SQLiteStorage) -> None:
+        oslo = await _add_located_fiber(storage, "Cafe Mocca is in Oslo Norway", _OSLO)
+        bergen = await _add_located_fiber(storage, "Cafe Mocca is in Bergen Norway", _BERGEN)
+
+        pipeline = ReflexPipeline(storage, BrainConfig())
+        result = await pipeline.query("Cafe Mocca Norway", near=GeoFilter(_OSLO_CENTER, 50_000))
+
+        assert oslo.id in result.fibers_matched
+        assert bergen.id not in result.fibers_matched  # ~305 km away, filtered out
+
+    async def test_wider_radius_keeps_both(self, storage: SQLiteStorage) -> None:
+        oslo = await _add_located_fiber(storage, "Cafe Mocca is in Oslo Norway", _OSLO)
+        bergen = await _add_located_fiber(storage, "Cafe Mocca is in Bergen Norway", _BERGEN)
+
+        pipeline = ReflexPipeline(storage, BrainConfig())
+        result = await pipeline.query("Cafe Mocca Norway", near=GeoFilter(_OSLO_CENTER, 400_000))
+
+        assert oslo.id in result.fibers_matched
+        assert bergen.id in result.fibers_matched  # 400 km covers Bergen
+
+    async def test_no_near_is_a_noop(self, storage: SQLiteStorage) -> None:
+        # Golden invariant: near=None leaves recall unchanged (both returned).
+        oslo = await _add_located_fiber(storage, "Cafe Mocca is in Oslo Norway", _OSLO)
+        bergen = await _add_located_fiber(storage, "Cafe Mocca is in Bergen Norway", _BERGEN)
+
+        pipeline = ReflexPipeline(storage, BrainConfig())
+        result = await pipeline.query("Cafe Mocca Norway")
+
+        assert oslo.id in result.fibers_matched
+        assert bergen.id in result.fibers_matched
+
+    async def test_fiber_without_location_excluded_when_near_set(
+        self, storage: SQLiteStorage
+    ) -> None:
+        located = await _add_located_fiber(storage, "Cafe Mocca is in Oslo Norway", _OSLO)
+        unlocated = await _add_located_fiber(storage, "Cafe Mocca is in Oslo Norway too", None)
+
+        pipeline = ReflexPipeline(storage, BrainConfig())
+        result = await pipeline.query("Cafe Mocca Norway", near=GeoFilter(_OSLO_CENTER, 50_000))
+
+        assert located.id in result.fibers_matched
+        assert unlocated.id not in result.fibers_matched  # no location → excluded

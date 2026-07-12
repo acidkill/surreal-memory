@@ -364,6 +364,17 @@ class RecallHandler:
             except (ValueError, TypeError):
                 return {"error": f"Invalid valid_at datetime: {args['valid_at']}"}
 
+        # U8: parse optional geospatial filter (near = {lat, lon, radius_m}). A hard
+        # filter like valid_at — fibers outside the radius (or without a location) drop.
+        near = None
+        if "near" in args:
+            from surreal_memory.utils.geo import parse_geo_filter
+
+            try:
+                near = parse_geo_filter(args["near"])
+            except (ValueError, TypeError) as exc:
+                return {"error": f"Invalid near filter: {exc}"}
+
         # U3: superseded facts (valid_until set) are hard-filtered from recall by
         # default; opt back in per-call with include_superseded=true.
         include_superseded = bool(args.get("include_superseded", False))
@@ -392,6 +403,7 @@ class RecallHandler:
             max_tokens=max_tokens,
             reference_time=utcnow(),
             valid_at=valid_at,
+            near=near,
             tags=tags,
             session_id=f"mcp-{id(self)}",
             exclude_ephemeral=permanent_only,
@@ -1024,6 +1036,16 @@ class RecallHandler:
 
         tags = _parse_tags(args)
 
+        # U8: geospatial filter also applies across brains.
+        near = None
+        if "near" in args:
+            from surreal_memory.utils.geo import parse_geo_filter
+
+            try:
+                near = parse_geo_filter(args["near"])
+            except (ValueError, TypeError) as exc:
+                return {"error": f"Invalid near filter: {exc}"}
+
         try:
             result = await cross_brain_recall(
                 config=self.config,
@@ -1032,6 +1054,7 @@ class RecallHandler:
                 depth=depth,
                 max_tokens=max_tokens,
                 tags=tags,
+                near=near,
             )
         except Exception:
             logger.error("Cross-brain recall failed", exc_info=True)

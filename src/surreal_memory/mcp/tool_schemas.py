@@ -201,6 +201,18 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "(dropped_short, dropped_noise, dropped_duplicate_entity) in the response. "
                     "Default: false. Useful for debugging the noise filter or measuring memory hygiene.",
                 },
+                "location": {
+                    "type": "object",
+                    "description": "Geographic location for this memory (WGS-84 degrees). "
+                    "Stored on the fiber metadata so recall's 'near' filter can find it. "
+                    "No schema migration — metadata-only.",
+                    "properties": {
+                        "lat": {"type": "number", "minimum": -90, "maximum": 90},
+                        "lon": {"type": "number", "minimum": -180, "maximum": 180},
+                        "label": {"type": "string", "maxLength": 200},
+                    },
+                    "required": ["lat", "lon"],
+                },
             },
             "required": ["content"],
         },
@@ -272,6 +284,16 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
                                 "type": "boolean",
                                 "description": "Session-scoped memory (auto-expires, never synced)",
                             },
+                            "location": {
+                                "type": "object",
+                                "description": "Geographic location (WGS-84 degrees) stored on fiber metadata for recall's 'near' filter.",
+                                "properties": {
+                                    "lat": {"type": "number", "minimum": -90, "maximum": 90},
+                                    "lon": {"type": "number", "minimum": -180, "maximum": 180},
+                                    "label": {"type": "string", "maxLength": 200},
+                                },
+                                "required": ["lat", "lon"],
+                            },
                         },
                         "required": ["content"],
                     },
@@ -310,6 +332,16 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "valid_at": {
                     "type": "string",
                     "description": "ISO datetime string to filter memories valid at that point in time (e.g. '2026-02-01T12:00:00')",
+                },
+                "near": {
+                    "type": "object",
+                    "description": "Geospatial hard filter — keep only memories whose location is within radius_m metres of (lat, lon). Memories without a location are excluded. Coordinates are WGS-84 degrees.",
+                    "properties": {
+                        "lat": {"type": "number", "minimum": -90, "maximum": 90},
+                        "lon": {"type": "number", "minimum": -180, "maximum": 180},
+                        "radius_m": {"type": "number", "exclusiveMinimum": 0, "maximum": 20015087},
+                    },
+                    "required": ["lat", "lon", "radius_m"],
                 },
                 "include_conflicts": {
                     "type": "boolean",
