@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.9.0] — Memory you can trust
+
+The trust release: memories now carry validity and provenance, recall stops
+surfacing facts that have been superseded, and both the MCP tools and the dashboard
+can tell you how much to trust an answer.
+
+### Changed
+
+- **Superseded facts are hard-filtered from recall by default** (the one intended
+  default-behaviour change). When a newer fact replaces an older one, the old fact's
+  validity window is closed (`valid_until` set) and it no longer surfaces in
+  `smem_recall` by default. Escape hatches: `include_superseded: true` per call, the
+  env var `SURREAL_MEMORY_DISABLE_SUPERSEDED_FILTER` process-wide (superseded facts
+  then still surface, demoted 0.25×), or `valid_at: "<ISO>"` for point-in-time recall.
+- `smem_stats` now reports `conflict_rate` (active conflicts / neurons); `smem_uncertainty`
+  and the dashboard report `contradiction_rate` (active conflicts / typed memories) — two
+  distinct, consistently-named metrics.
+
+### Added
+
+- **Schema v9** (SurrealDB 8→9, SQLite 38→39; additive, idempotent migration): typed-memory
+  validity fields (`valid_from` / `valid_until` / `superseded_by`), a `retrieval_trace`
+  table, and `source.trust`.
+- **Trust & recency calibration**: configurable `trust_weight` / `recency_weight` /
+  `trust_default` on the brain; neutral defaults keep default ranking byte-identical.
+  `smem_source` gains a `trust` field; recall resolves per-source / per-source-type /
+  per-label trust.
+- **Per-fact supersession**: recall hard-filter + `valid_at` + escape hatch; automatic
+  supersession on conflict resolution (remember) and manual via `smem_conflicts` keep_new;
+  `smem_provenance` traces the SUPERSEDES lineage both directions;
+  `smem_lifecycle action=backfill_supersession` retro-stamps existing conflicts.
+- **Queryable retrieval traces** (opt-in telemetry, off by default): `smem_recall trace: true`
+  returns a `trace_id`; `smem_provenance action=traces` / `action=trace_get`; traces are
+  pruned during consolidation.
+- **Uncertainty surfacing**: `smem_uncertainty` (overview / contradictions / drift / expiring /
+  low_evidence) and `smem_recall include_uncertainty: true`.
+- **Dashboard**: a new **Uncertainty** page + `/api/dashboard/uncertainty` endpoint; the Health
+  page and report now surface `conflict_rate` and `contradiction_count`.
+
+### Fixed
+
+- SurrealDB record-id comparison: `id = $bare` never matched a `RecordID` — sources
+  (`get` / `update` / `delete_source`) now match via `type::record`.
+- SurrealDB fiber-id normalization: `get_typed_memory` and batch lookups now resolve both the
+  original (dash) and loaded (underscore) id forms, restoring recall's sources / trust map.
+
 ## [2.8.0] — 2026-07-11
 
 ### Removed
