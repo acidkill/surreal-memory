@@ -1,7 +1,7 @@
 # MCP Tools Reference
 
 Complete reference for all Surreal-Memory MCP tools.
-**56 tools** available via MCP stdio transport.
+**57 tools** available via MCP stdio transport.
 
 !!! tip
     Tools are called as MCP tool calls, not CLI commands. In Claude Code, call `smem_recall` directly — do not run `smem recall` in terminal.
@@ -62,6 +62,7 @@ Complete reference for all Surreal-Memory MCP tools.
   - [`smem_transplant`](#smem_transplant)
   - [`smem_conflicts`](#smem_conflicts)
 - [Other](#other)
+  - [`smem_uncertainty`](#smem_uncertainty)
   - [`smem_visualize`](#smem_visualize)
   - [`smem_watch`](#smem_watch)
   - [`smem_surface`](#smem_surface)
@@ -123,6 +124,10 @@ Query memories by semantic search with confidence ranking.
 | `min_confidence` | number | No | — | Minimum confidence threshold |
 | `valid_at` | string | No | — | ISO datetime string to filter memories valid at that point in time (e.g. '2026-02-01T12:00:00') |
 | `include_conflicts` | boolean | No | default: false | Include full conflict details in response (default: false). When false, only has_conflicts flag and conflict_count ar... |
+| `include_superseded` | boolean | No | — | Include superseded facts (those with valid_until set) in recall. Default false: superseded facts are hard-filtered ou... |
+| `trace` | boolean | No | — | Persist a retrieval trace for this recall and return its trace_id (telemetry — what fed the answer). Works even when ... |
+| `include_uncertainty` | boolean | No | — | Attach an 'uncertainty' block summarising how much to trust the answer (contradictions, superseded facts, low confide... |
+| `session_id` | string | No | — | Optional session identifier stored on the retrieval trace to group recalls from one session. |
 | `warn_expiry_days` | integer | No | — | If set, warn about memories expiring within this many days. Adds expiry_warnings to response. |
 | `brains` | array[string] | No | — | Optional list of brain names to query across (max 5). When provided, runs parallel recall across all specified brains... |
 | `min_trust` | number | No | — | Filter: only return memories with trust_score >= this value. Unscored memories (NULL) are always included. |
@@ -241,13 +246,18 @@ Load saved project context, decisions, and progress.
 
 ### `smem_provenance`
 
-Trace provenance, verify, or approve a memory neuron. Use 'trace' to see full provenance chain (source, stored_by, verified, approved). Use 'verify' or 'approve' to add audit trail entries.
+Trace provenance / verify / approve a memory neuron, or query retrieval traces. Use 'trace' to see a neuron's full provenance chain (source, stored_by, verified, approved, superseded lineage). Use 'verify' or 'approve' to add audit trail entries. Use 'traces' to list recalls that used a memory or matched a query, and 'trace_get' to fetch one full retrieval-trace record.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `action` | string (`trace`, `verify`, `approve`) | Yes | — | Action: trace (view chain), verify (mark verified), approve (mark approved). |
-| `neuron_id` | string | Yes | — | Neuron ID to trace/verify/approve. |
+| `action` | string (`trace`, `verify`, `approve`, `traces`, `trace_get`) | Yes | — | trace (neuron chain), verify, approve; traces (list retrieval traces), trace_get (one retrieval trace). |
+| `neuron_id` | string | No | — | Neuron ID to trace/verify/approve (required for those actions). |
 | `actor` | string | No | default: mcp_agent | Who is performing the verification/approval (default: mcp_agent). |
+| `fiber_id` | string | No | — | action=traces: only retrieval traces whose fiber_ids contain this id. |
+| `query_contains` | string | No | — | action=traces: case-insensitive substring match on the trace query. |
+| `since` | string | No | — | action=traces: ISO datetime; only traces created at/after this time. |
+| `limit` | integer | No | — | action=traces: max traces to return (default 20). |
+| `trace_id` | string | No | — | action=trace_get: the retrieval-trace id to fetch. |
 | `compact` | boolean | No | — | Return compact response (strip metadata hints, truncate lists). Saves 60-80% tokens. |
 | `token_budget` | integer | No | — | Max tokens for response. Progressively strips content to fit budget. |
 
@@ -696,6 +706,18 @@ Memory conflicts: list, resolve, or pre-check.
 
 ## Other {#other}
 
+### `smem_uncertainty`
+
+How much can you trust this brain's memories? Uncertainty diagnostics — contradictions, low-evidence (low trust) facts, superseded facts, soon-expiring memories, and drift. Separate from smem_conflicts (which is CRUD). Read-only. Note: low_evidence/superseded sample the most-recent ~200 typed memories (see response 'scan.typed_scan_truncated'); contradiction count is capped. Drift is available on SQLite backends only.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `action` | string (`overview`, `contradictions`, `drift`, `expiring`, `low_evidence`) | No | — | overview (default)=counts + contradiction_rate + samples; contradictions=list active conflicts; drift=detected drift ... |
+| `within_days` | integer | No | — | Window for the 'expiring' signal / overview (default 14). |
+| `limit` | integer | No | — | Max items to return for list actions (default 10). |
+| `compact` | boolean | No | — | Return compact response (strip metadata hints, truncate lists). Saves 60-80% tokens. |
+| `token_budget` | integer | No | — | Max tokens for response. Progressively strips content to fit budget. |
+
 ### `smem_visualize`
 
 Generate charts from memory data. Returns Vega-Lite, markdown table, or ASCII chart.
@@ -748,12 +770,13 @@ Tool usage analytics: which tools agents use, frequency, success rates, and dail
 
 ### `smem_lifecycle`
 
-Memory lifecycle management — view lifecycle states and manage compression resistance. Hot memories (accessed recently or high priority) resist compression automatically. Actions: status (distribution of lifecycle states), recover (rehydrate a compressed memory), freeze (prevent a memory from compressing), thaw (resume normal lifecycle).
+Memory lifecycle management — view lifecycle states and manage compression resistance. Hot memories (accessed recently or high priority) resist compression automatically. Actions: status (distribution of lifecycle states), recover (rehydrate a compressed memory), freeze (prevent a memory from compressing), thaw (resume normal lifecycle), backfill_supersession (retroactively stamp supersession lineage on existing conflicts).
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `action` | string (`status`, `recover`, `freeze`, `thaw`) | Yes | — | status=show lifecycle distribution, recover=rehydrate compressed memory, freeze=prevent compression, thaw=resume norm... |
+| `action` | string (`status`, `recover`, `freeze`, `thaw`, `backfill_supersession`) | Yes | — | status=show lifecycle distribution, recover=rehydrate compressed memory, freeze=prevent compression, thaw=resume norm... |
 | `id` | string | No | — | Neuron ID (required for recover/freeze/thaw). For recover, fiber_id is also accepted. |
+| `limit` | integer | No | — | Max CONTRADICTS synapses to scan for backfill_supersession (default 1000). |
 | `compact` | boolean | No | — | Return compact response (strip metadata hints, truncate lists). Saves 60-80% tokens. |
 | `token_budget` | integer | No | — | Max tokens for response. Progressively strips content to fit budget. |
 
@@ -841,4 +864,4 @@ One-shot snapshot of the current working situation: active session task, top 3 r
 
 ---
 
-*Auto-generated by `scripts/gen_mcp_docs.py` from `tool_schemas.py` — 56 tools.*
+*Auto-generated by `scripts/gen_mcp_docs.py` from `tool_schemas.py` — 57 tools.*
