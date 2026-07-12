@@ -99,6 +99,7 @@ Store a memory. Auto-detects type if not specified. Error resolution: when a new
 | `context` | object | No | — | Structured context dict merged into content server-side using type-specific templates. Keys like 'reason', 'alternati... |
 | `ephemeral` | boolean | No | — | Session-scoped memory: auto-expires after TTL (default 24h), never synced to cloud, excluded from consolidation. Use ... |
 | `verbose_extraction` | boolean | No | — | Surface concept-extraction observability stats (dropped_short, dropped_noise, dropped_duplicate_entity) in the respon... |
+| `location` | object | No | — | Geographic location for this memory (WGS-84 degrees). Stored on the fiber metadata so recall's 'near' filter can find... |
 | `compact` | boolean | No | — | Return compact response (strip metadata hints, truncate lists). Saves 60-80% tokens. |
 | `token_budget` | integer | No | — | Max tokens for response. Progressively strips content to fit budget. |
 
@@ -123,6 +124,7 @@ Query memories by semantic search with confidence ranking.
 | `max_tokens` | integer | No | default: 500 | Maximum tokens in response (default: 500) |
 | `min_confidence` | number | No | — | Minimum confidence threshold |
 | `valid_at` | string | No | — | ISO datetime string to filter memories valid at that point in time (e.g. '2026-02-01T12:00:00') |
+| `near` | object | No | — | Geospatial hard filter — keep only memories whose location is within radius_m metres of (lat, lon). Memories without ... |
 | `include_conflicts` | boolean | No | default: false | Include full conflict details in response (default: false). When false, only has_conflicts flag and conflict_count ar... |
 | `include_superseded` | boolean | No | — | Include superseded facts (those with valid_until set) in recall. Default false: superseded facts are hard-filtered ou... |
 | `trace` | boolean | No | — | Persist a retrieval trace for this recall and return its trace_id (telemetry — what fed the answer). Works even when ... |
