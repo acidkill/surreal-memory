@@ -321,7 +321,7 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
                 },
                 "trace": {
                     "type": "boolean",
-                    "description": "Persist a retrieval trace for this recall and return its trace_id (telemetry — what fed the answer). Works even when trace telemetry is off globally; does not change global config.",
+                    "description": "Persist a retrieval trace for this recall and return its trace_id (telemetry — what fed the answer). Works even when trace telemetry is off globally; does not change global config. Persisted synchronously before the response returns (small added latency); on failure the response carries trace_error instead of trace_id. Not applied to cross-brain recall (when 'brains' is set).",
                 },
                 "session_id": {
                     "type": "string",

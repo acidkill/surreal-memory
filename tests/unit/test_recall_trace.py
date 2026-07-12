@@ -132,3 +132,31 @@ class TestRecallTracePersist:
         # Recall still succeeds despite the trace backend failing.
         assert res["answer"] == "Emma lives in Bergen."
         await asyncio.sleep(0)
+
+    @pytest.mark.asyncio
+    async def test_per_call_persist_failure_surfaces_trace_error(self) -> None:
+        # The caller explicitly asked for trace_id via trace=true; a persist failure
+        # must surface as trace_error (not be swallowed silently), and recall still works.
+        server = _make_server(TraceConfig())  # disabled globally; per-call forces it
+        mock_storage = AsyncMock()
+        mock_storage.get_brain = AsyncMock(
+            return_value=MagicMock(id="test-brain", config=MagicMock())
+        )
+        mock_storage.brain_id = "test-brain"
+        mock_storage.get_typed_memory = AsyncMock(return_value=None)
+        mock_storage.add_retrieval_trace = AsyncMock(side_effect=RuntimeError("db down"))
+        with (
+            patch.object(server, "get_storage", return_value=mock_storage),
+            patch("surreal_memory.engine.retrieval.ReflexPipeline") as mock_pipeline_cls,
+            patch.object(server, "_check_maintenance", return_value=MagicMock(hints=())),
+            patch.object(server, "_fire_eternal_trigger"),
+            patch.object(server, "_record_tool_action", new_callable=AsyncMock),
+            patch.object(server, "_passive_capture", new_callable=AsyncMock),
+        ):
+            mock_pipeline = AsyncMock()
+            mock_pipeline.query = AsyncMock(return_value=_make_result())
+            mock_pipeline_cls.return_value = mock_pipeline
+            res = await server.call_tool("smem_recall", {"query": "q", "trace": True})
+        assert res["answer"] == "Emma lives in Bergen."
+        assert "trace_id" not in res
+        assert "trace_error" in res

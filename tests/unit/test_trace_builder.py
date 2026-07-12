@@ -71,3 +71,25 @@ class TestBuildRetrievalTrace:
         assert trace.fiber_ids == ()
         assert trace.anchor_ids == ()
         assert trace.depth_used == 0
+
+    def test_bounds_oversized_filter_values(self) -> None:
+        # smem_recall args are not jsonschema-validated at the MCP boundary, so a caller
+        # could pass a huge tags list; the persisted filters must stay bounded.
+        huge_tags = ["x" * 500 for _ in range(100)]
+        trace = build_retrieval_trace(
+            _result(["f1"], []), query="q", brain_id="b", mode="exact", args={"tags": huge_tags}
+        )
+        assert len(trace.filters["tags"]) == 20  # capped list length
+        assert all(len(t) <= 200 for t in trace.filters["tags"])  # each value truncated
+
+    def test_records_tier_filter_not_recall_tier(self) -> None:
+        # The real smem_recall arg is 'tier'; 'recall_tier' is a dead key that must be ignored.
+        trace = build_retrieval_trace(
+            _result(["f1"], []),
+            query="q",
+            brain_id="b",
+            mode="exact",
+            args={"tier": "hot", "recall_tier": "IGNORED"},
+        )
+        assert trace.filters["tier"] == "hot"
+        assert "recall_tier" not in trace.filters

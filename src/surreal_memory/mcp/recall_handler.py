@@ -263,7 +263,11 @@ class RecallHandler:
             _require_brain_id,
         )
 
-        # Cross-brain recall: early return if brains parameter is provided
+        # Cross-brain recall: early return if brains parameter is provided.
+        # NOTE: retrieval tracing (trace=true / sampling) is intentionally NOT applied
+        # to cross-brain recall — the merged multi-brain result has no single brain_id
+        # or RetrievalResult to attribute a trace to. Documented in the smem_recall
+        # 'trace' schema description.
         brain_names = args.get("brains")
         if brain_names and isinstance(brain_names, list) and len(brain_names) > 0:
             return await self._cross_brain_recall(args, brain_names)
@@ -953,9 +957,14 @@ class RecallHandler:
             )
 
             if per_call:
-                # Synchronous: the caller explicitly wants the id back.
-                await storage.add_retrieval_trace(trace)
-                response["trace_id"] = trace.id
+                # Synchronous: the caller explicitly asked for the id back, so surface
+                # a persistence failure to them rather than swallowing it silently.
+                try:
+                    await storage.add_retrieval_trace(trace)
+                    response["trace_id"] = trace.id
+                except Exception:
+                    logger.debug("Per-call retrieval trace persist failed", exc_info=True)
+                    response["trace_error"] = "trace requested but could not be persisted"
             else:
                 # Fire-and-forget with a strong reference (avoids GC of the task).
                 tasks = getattr(self, "_trace_tasks", None)

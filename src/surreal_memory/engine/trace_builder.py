@@ -13,18 +13,33 @@ from typing import Any
 from surreal_memory.core.retrieval_trace import RetrievalTrace
 
 # Recall args that describe *what was filtered* — surfaced in the trace so a later
-# query can answer "which recalls applied filter X".
+# query can answer "which recalls applied filter X". Key names MUST match the actual
+# smem_recall argument names (e.g. "tier", not "recall_tier").
 _FILTER_KEYS = (
     "tags",
     "valid_at",
     "min_trust",
     "min_confidence",
     "include_superseded",
-    "recall_tier",
+    "tier",
     "brains",
     "prefer_recent",
-    "near",
 )
+
+# Defensive bounds on filter values — smem_recall args are NOT jsonschema-validated at
+# the MCP boundary, so a caller could pass an arbitrarily large tags list. Keep the
+# persisted trace small (the RetrievalTrace <2 KB contract) by capping here.
+_MAX_FILTER_LIST = 20
+_MAX_FILTER_STR = 200
+
+
+def _bound_filter_value(value: Any) -> Any:
+    """Bound a filter value so it can't blow the trace size budget."""
+    if isinstance(value, (list, set, tuple)):
+        return [str(v)[:_MAX_FILTER_STR] for v in list(value)[:_MAX_FILTER_LIST]]
+    if isinstance(value, str):
+        return value[:_MAX_FILTER_STR]
+    return value  # bool / int / float scalars are already small
 
 
 def _as_str_tuple(value: Any, cap: int) -> tuple[str, ...]:
@@ -43,9 +58,7 @@ def _extract_filters(args: dict[str, Any] | None, mode: str) -> dict[str, Any]:
         return filters
     for key in _FILTER_KEYS:
         if key in args and args[key] not in (None, "", [], {}):
-            value = args[key]
-            # Keep filters JSON-scalar-ish and small.
-            filters[key] = list(value) if isinstance(value, (set, tuple)) else value
+            filters[key] = _bound_filter_value(args[key])
     return filters
 
 
