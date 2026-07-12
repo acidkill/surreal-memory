@@ -241,20 +241,22 @@ async def get_uncertainty(
     the smem_uncertainty tool serves) so the server never imports mcp. Drift is
     SQLite-only; on SurrealDB drift_clusters is 0.
     """
+    import copy
+
     from surreal_memory.engine.uncertainty_report import build_brain_uncertainty
 
-    brain_id = (
-        getattr(storage, "current_brain_id", None)
-        or getattr(storage, "brain_id", None)
-        or "default"
-    )
+    # current_brain_id is the active brain (a property aliasing brain_id on real storages).
+    brain_id = getattr(storage, "current_brain_id", None) or "default"
     key = f"uncertainty:{brain_id}:{within_days}"
+    # deepcopy on read AND write: the payload has nested lists/dicts, so hand callers a
+    # private copy — a downstream in-place mutation must never corrupt the shared cache entry.
     cached = _UNCERTAINTY_CACHE.get(key)
     if cached is not None:
-        return dict(cached)
+        return copy.deepcopy(cached)
     result = await build_brain_uncertainty(storage, within_days=within_days)
+    result["brain"] = brain_id
     _UNCERTAINTY_CACHE.set(key, result)
-    return result
+    return copy.deepcopy(result)
 
 
 @router.get(

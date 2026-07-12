@@ -53,6 +53,16 @@ class TestUncertaintyRoute:
         assert body["contradiction_rate"] == 0.25
         assert body["total_memories"] == 8
         assert "scan" in body
+        assert body["brain"] == "b"
+
+    def test_cache_entry_is_mutation_safe(self) -> None:
+        # The route deepcopies on read/write, so mutating a returned payload must not
+        # corrupt the shared cache entry for the next caller.
+        client = _client(_storage(contradictions=1, total=4))
+        r1 = client.get("/api/dashboard/uncertainty").json()
+        r1["counts"]["contradictions"] = 999  # tamper with the returned copy
+        r2 = client.get("/api/dashboard/uncertainty").json()
+        assert r2["counts"]["contradictions"] == 1  # cache untouched
 
     def test_within_days_validated(self) -> None:
         client = _client(_storage())

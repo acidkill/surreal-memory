@@ -71,17 +71,12 @@ class StatsHandler:
 
         stats = await storage.get_enhanced_stats(brain.id)
 
-        # Count active conflicts (unresolved CONTRADICTS synapses)
-        conflicts_active = 0
-        try:
-            from surreal_memory.core.synapse import SynapseType
+        # Count active conflicts (unresolved CONTRADICTS synapses). Uses the bounded,
+        # single-sourced engine helper so this hot path never full-scans the synapse
+        # table on SurrealDB (get_synapses with limit=None emits no LIMIT there).
+        from surreal_memory.engine.uncertainty_report import count_active_contradictions
 
-            contradicts_synapses = await storage.get_synapses(type=SynapseType.CONTRADICTS)
-            conflicts_active = sum(
-                1 for s in contradicts_synapses if not s.metadata.get("_resolved")
-            )
-        except Exception:
-            logger.debug("Conflict count failed (non-critical)", exc_info=True)
+        conflicts_active, _conflicts_capped = await count_active_contradictions(storage)
 
         # Tier distribution counts
         tier_distribution = {MemoryTier.HOT: 0, MemoryTier.WARM: 0, MemoryTier.COLD: 0}
@@ -108,7 +103,10 @@ class StatsHandler:
             "hot_neurons": stats.get("hot_neurons", []),
             "newest_memory": stats.get("newest_memory"),
             "conflicts_active": conflicts_active,
-            "contradiction_rate": round(conflicts_active / max(stats["neuron_count"], 1), 4),
+            # conflict_rate = active conflicts / neurons (same formula/name as smem_health
+            # + diagnostics). NB: smem_uncertainty/dashboard report `contradiction_rate`,
+            # which is scoped to typed-memory count — a deliberately distinct metric.
+            "conflict_rate": round(conflicts_active / max(stats["neuron_count"], 1), 4),
             "tier_distribution": tier_distribution,
         }
 
