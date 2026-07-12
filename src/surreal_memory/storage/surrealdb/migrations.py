@@ -560,7 +560,11 @@ async def _migrate_8_to_9(conn: Any) -> None:
             if "already exists" in str(exc).lower():
                 logger.debug("v9 migration statement skipped (already exists): %s", stmt[:80])
             else:
-                logger.warning("v9 migration statement failed: %s (%s)", stmt[:80], exc)
+                # Fail loudly on a genuine DDL error (stricter than the tolerant
+                # ensure_schema): swallowing it would stamp v9 over an incomplete
+                # schema. Only the idempotent "already exists" re-DEFINE is skipped.
+                logger.error("v9 migration statement failed: %s (%s)", stmt[:80], exc)
+                raise
     await _stamp_version(conn, TARGET_VERSION)
 
 
