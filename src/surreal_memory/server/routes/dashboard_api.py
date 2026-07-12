@@ -90,6 +90,8 @@ class HealthReport(BaseModel):
     neuron_count: int = 0
     synapse_count: int = 0
     fiber_count: int = 0
+    contradiction_count: int = 0
+    conflict_rate: float = 0.0
     warnings: list[dict[str, Any]] = Field(default_factory=list)
     recommendations: list[str] = Field(default_factory=list)
     top_penalties: list[dict[str, Any]] = Field(default_factory=list)
@@ -388,6 +390,8 @@ async def get_health(
         neuron_count=report.neuron_count,
         synapse_count=report.synapse_count,
         fiber_count=report.fiber_count,
+        contradiction_count=report.contradiction_count,
+        conflict_rate=report.conflict_rate,
         warnings=[
             {
                 "severity": w.severity.value,
