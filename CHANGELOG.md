@@ -10,31 +10,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.10.0] — Ecosystem
 
 The ecosystem release: recall gains a geographic dimension, and surreal-memory plugs
-directly into the LangChain RAG stack. No schema change — both features are additive
-and the default recall ranking stays byte-identical.
+directly into the LangChain RAG stack. **No schema change and no migration** — both
+features are purely additive, and the default recall ranking stays byte-identical if
+you don't use them.
 
 ### Added
 
-- **Geospatial recall** (metadata-only, no migration): attach a location to a memory
-  with `smem_remember` `location: {lat, lon, label?}`, and filter recall to a radius
-  with `smem_recall` `near: {lat, lon, radius_m}`. `near` is a hard filter modelled on
-  `valid_at` (exact WGS-84 haversine; memories without a location are excluded);
-  `near=None` is a strict no-op. Coordinates live in `fiber.metadata["location"]` (an
-  OBJECT FLEXIBLE field). `find_fibers(near=...)` browse pushdown works across the
-  InMemory, SQLite and SurrealDB backends, all sharing one exact-haversine implementation.
-- **LangChain adapter** (optional extra: `pip install surreal-memory[langchain]`):
-  `from surreal_memory.adapters.langchain import SurrealMemoryRetriever,
-  SurrealMemoryChatMessageHistory`. `SurrealMemoryRetriever` is a `BaseRetriever` that
-  runs the reflex recall pipeline and maps matched fibers to LangChain `Document`s;
-  `SurrealMemoryChatMessageHistory` persists chat turns as per-session memories and
-  replays them verbatim. In-process (no REST server), async-native with a sync bridge.
-  See `examples/langchain_rag.py` for an LCEL RAG chain with `RunnableWithMessageHistory`.
+- **Geospatial recall** — recall can now be scoped to "near a place", not just "similar
+  in meaning". Attach a location when you store a memory, then filter recall to a
+  radius around a point:
+
+  ```python
+  # Store a location alongside a memory
+  smem_remember(
+      content="Met the landlord to sign the lease",
+      location={"lat": 59.9139, "lon": 10.7522, "label": "Oslo"},
+  )
+
+  # Only recall memories within 50 km of a point
+  smem_recall(
+      query="lease signing",
+      near={"lat": 59.9139, "lon": 10.7522, "radius_m": 50_000},
+  )
+  ```
+
+  This is useful for agents that operate across multiple sites, travel logs, or any
+  memory that's meaningfully tied to a place — "what did we discuss at the Oslo
+  office" now works as an actual filter, not just a keyword match. `near` behaves
+  like the existing `valid_at` filter: it's exact (real-world great-circle distance,
+  not a bounding box), memories without a location are excluded when `near` is set,
+  and omitting `near` entirely leaves recall completely unchanged. No schema
+  migration is needed — the location lives in the memory's existing metadata field.
+  Under the hood, the same distance filter works identically whether your brain runs
+  on the in-memory backend, SQLite, or SurrealDB.
+
+- **LangChain adapter** (optional — nothing changes unless you install it):
+
+  ```bash
+  pip install surreal-memory[langchain]
+  ```
+
+  ```python
+  from surreal_memory.adapters.langchain import (
+      SurrealMemoryRetriever,
+      SurrealMemoryChatMessageHistory,
+  )
+
+  # Drop surreal-memory into any LangChain RAG chain as the retriever
+  retriever = SurrealMemoryRetriever(brain_name="my_brain", k=5)
+  docs = await retriever.ainvoke("what did we decide about the backend?")
+
+  # Or use it as a chat history — every turn is stored as a real, queryable memory
+  history = SurrealMemoryChatMessageHistory("session-42", brain_name="my_brain")
+  ```
+
+  This means you can build a LangChain agent or RAG pipeline that uses surreal-memory
+  as its long-term memory with a couple of lines, instead of writing custom glue code
+  against the MCP tools. Runs in-process (no server required), works with both async
+  and sync LangChain code. See `examples/langchain_rag.py` for a full working example
+  (a LangChain chain that retrieves context and remembers the conversation).
 
 ### Fixed
 
-- `find_fibers(tags=...)` now pushes the tag predicate into SQL/SurQL so the `LIMIT`
-  applies *after* tag filtering — a tagged subset (e.g. a chat session) no longer risks
-  falling outside the fetch window on a large brain.
+- `find_fibers(tags=...)` now pushes the tag predicate into the database query itself,
+  so results are filtered *before* the result-count limit is applied instead of after.
+  In practice: on a large brain, a tagged subset (e.g. one chat session's messages)
+  could previously be cut off by the limit before the tag filter even ran, silently
+  losing part of that session's history. That's fixed for all three backends.
 
 ## [2.9.0] — Memory you can trust
 
