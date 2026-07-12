@@ -160,9 +160,7 @@ async def test_trust_weight_demotes_low_trust_fiber() -> None:
             TypedMemory.create(fiber_id=label, memory_type=MemoryType.FACT, trust_score=trust)
         )
     try:
-        pipeline = ReflexPipeline(
-            store, BrainConfig(sufficiency_threshold=0.1, trust_weight=1.0)
-        )
+        pipeline = ReflexPipeline(store, BrainConfig(sufficiency_threshold=0.1, trust_weight=1.0))
         ranking = list((await pipeline.query("reciprocal rank fusion scoring")).fibers_matched)
         assert "hi" in ranking and "lo" in ranking
         assert ranking.index("hi") < ranking.index("lo")

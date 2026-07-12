@@ -55,9 +55,7 @@ class TestFiberIdNormalization:
         )
         await storage.add_fiber(fiber)
         await storage.add_typed_memory(
-            TypedMemory.create(
-                fiber_id=fiber.id, memory_type=MemoryType.FACT, trust_score=0.9
-            )
+            TypedMemory.create(fiber_id=fiber.id, memory_type=MemoryType.FACT, trust_score=0.9)
         )
 
         # Dash form (the original id).

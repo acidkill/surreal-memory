@@ -9,8 +9,6 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-import pytest
-
 from surreal_memory.core.fiber import Fiber
 from surreal_memory.core.memory_types import MemoryType, TypedMemory
 from surreal_memory.core.neuron import Neuron, NeuronType
@@ -88,9 +86,7 @@ class TestManualKeepNewSupersession:
         assert tm.valid_until is not None
 
         # SUPERSEDES synapse new_anchor -> old_anchor.
-        supersedes = await storage.get_synapses(
-            source_id=new_neuron.id, target_id=old_neuron.id
-        )
+        supersedes = await storage.get_synapses(source_id=new_neuron.id, target_id=old_neuron.id)
         assert any(s.type == SynapseType.SUPERSEDES for s in supersedes)
 
     async def test_keep_new_without_fibers_is_still_ok(self) -> None:

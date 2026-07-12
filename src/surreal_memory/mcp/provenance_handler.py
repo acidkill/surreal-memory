@@ -301,16 +301,12 @@ class ProvenanceHandler:
         current = start_neuron_id
         for _ in range(max_depth):
             if forward:
-                syns = await storage.get_synapses(
-                    target_id=current, type=SynapseType.SUPERSEDES
-                )
+                syns = await storage.get_synapses(target_id=current, type=SynapseType.SUPERSEDES)
                 # Filter client-side too: some backends/mocks ignore the type kwarg.
                 edges = [s for s in syns if s.type == SynapseType.SUPERSEDES]
                 nxt = edges[0].source_id if edges else None
             else:
-                syns = await storage.get_synapses(
-                    source_id=current, type=SynapseType.SUPERSEDES
-                )
+                syns = await storage.get_synapses(source_id=current, type=SynapseType.SUPERSEDES)
                 edges = [s for s in syns if s.type == SynapseType.SUPERSEDES]
                 nxt = edges[0].target_id if edges else None
             if not edges or nxt is None or nxt in visited:

@@ -107,6 +107,7 @@ async def _rerank_by_recency(fiber_ids: list[str], storage: Any) -> list[str]:
     pairs.sort(key=lambda p: p[1], reverse=True)
     return [p[0] for p in pairs]
 
+
 def _result_with_fibers(result: Any, fibers: list[str]) -> Any:
     """Return ``result`` with ``fibers_matched`` replaced.
 
@@ -139,7 +140,6 @@ def _superseded_hard_filter_enabled() -> bool:
     """
     raw = os.getenv("SURREAL_MEMORY_DISABLE_SUPERSEDED_FILTER", "").strip().lower()
     return raw not in ("1", "true", "yes", "on")
-
 
 
 class RecallHandler:

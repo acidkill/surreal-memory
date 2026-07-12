@@ -8,7 +8,7 @@ Covers the two halves of the automatic path:
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -44,18 +44,14 @@ async def _make_fact(store: InMemoryStorage, hint: str) -> Fiber:
         summary=f"fact {hint}",
     )
     await store.add_fiber(fiber)
-    await store.add_typed_memory(
-        TypedMemory.create(fiber_id=fiber.id, memory_type=MemoryType.FACT)
-    )
+    await store.add_typed_memory(TypedMemory.create(fiber_id=fiber.id, memory_type=MemoryType.FACT))
     return fiber
 
 
 class TestApplySupersessions:
     """RememberHandler._apply_supersessions on real InMemoryStorage."""
 
-    async def test_applies_lineage_for_pending_old_anchor(
-        self, storage: InMemoryStorage
-    ) -> None:
+    async def test_applies_lineage_for_pending_old_anchor(self, storage: InMemoryStorage) -> None:
         old = await _make_fact(storage, "oslo")
         new = await _make_fact(storage, "bergen")
         result = EncodingResult(
@@ -122,9 +118,7 @@ class TestConflictStepCollectsSupersessions:
         self, storage: InMemoryStorage, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         conflict = MagicMock(existing_neuron_id="old-anchor")
-        resolution = MagicMock(
-            superseded=True, contradicts_synapse=MagicMock(), conflict=conflict
-        )
+        resolution = MagicMock(superseded=True, contradicts_synapse=MagicMock(), conflict=conflict)
 
         async def fake_detect(**_: object) -> list[object]:
             return [conflict]

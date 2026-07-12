@@ -104,9 +104,7 @@ async def _run_recall(
     server: MCPServer, extra_args: dict[str, Any], tms: dict[str, TypedMemory]
 ) -> dict[str, Any]:
     mock_storage = AsyncMock()
-    mock_storage.get_brain = AsyncMock(
-        return_value=MagicMock(id="test-brain", config=MagicMock())
-    )
+    mock_storage.get_brain = AsyncMock(return_value=MagicMock(id="test-brain", config=MagicMock()))
     mock_storage._current_brain_id = "test-brain"
     mock_storage.brain_id = "test-brain"
     mock_storage.get_typed_memory = AsyncMock(side_effect=lambda fid: tms.get(fid))

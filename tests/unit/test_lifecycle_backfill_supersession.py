@@ -53,9 +53,7 @@ async def _fact(
         summary=hint,
     )
     await store.add_fiber(fiber)
-    await store.add_typed_memory(
-        TypedMemory.create(fiber_id=fiber.id, memory_type=MemoryType.FACT)
-    )
+    await store.add_typed_memory(TypedMemory.create(fiber_id=fiber.id, memory_type=MemoryType.FACT))
     return neuron, fiber
 
 

@@ -35,9 +35,7 @@ async def _make_fact(store: InMemoryStorage, hint: str) -> Fiber:
         summary=f"fact {hint}",
     )
     await store.add_fiber(fiber)
-    await store.add_typed_memory(
-        TypedMemory.create(fiber_id=fiber.id, memory_type=MemoryType.FACT)
-    )
+    await store.add_typed_memory(TypedMemory.create(fiber_id=fiber.id, memory_type=MemoryType.FACT))
     return fiber
 
 
