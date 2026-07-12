@@ -678,3 +678,24 @@ class TestRecommendations:
         non_info_warnings = [w for w in report.warnings if w.severity != WarningSeverity.INFO]
         if non_info_warnings:
             assert len(report.recommendations) >= 1
+
+
+class TestConflictHealthFields:
+    """U6: BrainHealthReport surfaces contradiction_count + conflict_rate (grade unchanged)."""
+
+    @pytest.mark.asyncio
+    async def test_defaults_zero_without_conflicts(self, empty_storage: InMemoryStorage) -> None:
+        report = await DiagnosticsEngine(empty_storage).analyze(empty_storage._current_brain_id)
+        assert report.contradiction_count == 0
+        assert report.conflict_rate == 0.0
+
+    @pytest.mark.asyncio
+    async def test_fields_are_consistent(self, rich_storage: InMemoryStorage) -> None:
+        # conflict_rate is derived from contradiction_count / neuron_count (the same
+        # value used for the purity penalty) — assert the surfaced fields are self
+        # consistent regardless of the concrete conflict count on this backend.
+        report = await DiagnosticsEngine(rich_storage).analyze(rich_storage._current_brain_id)
+        assert isinstance(report.contradiction_count, int)
+        assert report.conflict_rate == round(
+            report.contradiction_count / max(report.neuron_count, 1), 4
+        )

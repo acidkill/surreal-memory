@@ -271,6 +271,11 @@ class BrainHealthReport:
     # Penalty breakdown (top factors hurting the score)
     top_penalties: tuple[PenaltyFactor, ...] = ()
 
+    # Conflict health (U6) — already computed for the purity penalty; surfaced here
+    # for the dashboard. Does NOT change the grade/purity formula.
+    contradiction_count: int = 0
+    conflict_rate: float = 0.0
+
 
 # ── Grade mapping ────────────────────────────────────────────────
 
@@ -448,6 +453,8 @@ class DiagnosticsEngine:
             warnings=tuple(warnings),
             recommendations=tuple(recommendations),
             top_penalties=top_penalties,
+            contradiction_count=contradicts_count,
+            conflict_rate=round(conflict_rate, 4),
         )
 
     # ── Metric computations ──────────────────────────────────────

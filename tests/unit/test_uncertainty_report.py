@@ -126,3 +126,55 @@ class TestBuildUncertaintyBlock:
         # No disputed ids and confidence above threshold → truly no signal → None.
         block = await build_uncertainty_block(storage, _result(["f1"], confidence=0.95), _Config())
         assert block is None
+
+
+def _brain_storage(
+    *,
+    synapses: list[Any] | None = None,
+    expiring_count: int = 0,
+    typed: list[Any] | None = None,
+    total: int = 0,
+    drift: list[Any] | None = None,
+) -> Any:
+    ns = SimpleNamespace()
+    ns.get_synapses = AsyncMock(return_value=synapses or [])
+    ns.get_expiring_memory_count = AsyncMock(return_value=expiring_count)
+    ns.find_typed_memories = AsyncMock(return_value=typed or [])
+    ns.count_typed_memories = AsyncMock(return_value=total)
+    if drift is not None:
+        ns.get_drift_clusters = AsyncMock(return_value=drift)
+    return ns
+
+
+class TestBuildBrainUncertainty:
+    async def test_aggregates_all_signals(self) -> None:
+        from surreal_memory.core.synapse import SynapseType
+        from surreal_memory.engine.uncertainty_report import build_brain_uncertainty
+
+        syn = SimpleNamespace(type=SynapseType.CONTRADICTS, metadata={})
+        low = SimpleNamespace(fiber_id="f1", trust_score=0.2, superseded_by=None)
+        sup = SimpleNamespace(fiber_id="f2", trust_score=0.9, superseded_by="f3")
+        storage = _brain_storage(synapses=[syn], expiring_count=2, typed=[low, sup], total=10)
+
+        block = await build_brain_uncertainty(storage)
+        assert block["level"] == "high"
+        assert block["counts"] == {
+            "contradictions": 1,
+            "low_evidence": 1,
+            "superseded": 1,
+            "expiring": 2,
+            "drift_clusters": 0,
+        }
+        assert block["contradiction_rate"] == 0.1
+        assert block["total_memories"] == 10
+        assert block["scan"]["typed_scan_truncated"] is False
+        assert block["scan"]["contradictions_capped"] is False
+
+    async def test_drift_absent_backend_is_zero(self) -> None:
+        from surreal_memory.engine.uncertainty_report import build_brain_uncertainty
+
+        # No get_drift_clusters (SurrealDB) → drift_clusters 0, no raise.
+        storage = _brain_storage(total=0)
+        block = await build_brain_uncertainty(storage)
+        assert block["counts"]["drift_clusters"] == 0
+        assert block["contradiction_rate"] == 0.0  # total 0 → no divide-by-zero

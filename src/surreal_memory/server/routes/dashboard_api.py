@@ -20,6 +20,12 @@ logger = logging.getLogger(__name__)
 # short window; the overview's counts are computed live (cheap) around it.
 _GRADE_CACHE = TTLCache()
 
+# Brain-wide uncertainty overview is bounded/cheap, but cached per brain for a short
+# window anyway to keep the dashboard's polling off the storage hot path (same
+# perf-guardrail class as the grade cache). TTL-only invalidation (known limitation:
+# a fresh conflict/expiry may take up to the TTL to appear).
+_UNCERTAINTY_CACHE = TTLCache()
+
 
 async def _cached_grade_purity(storage: NeuralStorage, brain_name: str) -> tuple[str, float]:
     """Return (grade, purity) for a brain, cached per brain for the TTL window."""
@@ -217,6 +223,36 @@ async def get_tier_stats(
     return TierDistribution(
         hot=counts["hot"], warm=counts["warm"], cold=counts["cold"], total=total
     )
+
+
+@router.get(
+    "/uncertainty",
+    summary="Brain-wide uncertainty overview (contradictions, low-trust, superseded, expiring, drift)",
+)
+async def get_uncertainty(
+    storage: Annotated[NeuralStorage, Depends(get_storage)],
+    within_days: int = Query(14, ge=1, le=365),
+) -> dict[str, Any]:
+    """Uncertainty overview for the active brain, TTL-cached per brain.
+
+    Reuses ``engine.uncertainty_report.build_brain_uncertainty`` (the same aggregation
+    the smem_uncertainty tool serves) so the server never imports mcp. Drift is
+    SQLite-only; on SurrealDB drift_clusters is 0.
+    """
+    from surreal_memory.engine.uncertainty_report import build_brain_uncertainty
+
+    brain_id = (
+        getattr(storage, "current_brain_id", None)
+        or getattr(storage, "brain_id", None)
+        or "default"
+    )
+    key = f"uncertainty:{brain_id}:{within_days}"
+    cached = _UNCERTAINTY_CACHE.get(key)
+    if cached is not None:
+        return dict(cached)
+    result = await build_brain_uncertainty(storage, within_days=within_days)
+    _UNCERTAINTY_CACHE.set(key, result)
+    return result
 
 
 @router.get(

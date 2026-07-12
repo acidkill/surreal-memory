@@ -18,8 +18,16 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from surreal_memory.core.synapse import SynapseType
+
 _TOP_N = 10
 _DEFAULT_SUFFICIENCY = 0.7
+
+# Brain-wide overview bounds (shared by the smem_uncertainty tool AND the dashboard
+# route, so they live here in engine rather than mcp).
+_BRAIN_MAX_SCAN = 200
+_BRAIN_LOW_TRUST = 0.4
+_BRAIN_CONTRADICTION_CAP = 2000
 
 
 def _level(counts: dict[str, int]) -> str:
@@ -183,4 +191,120 @@ async def build_uncertainty_block(
         "low_confidence": low_confidence,
         "expiring": expiring,
         "drift_clusters": drift_clusters,
+    }
+
+
+# ── brain-wide overview (shared by smem_uncertainty tool + dashboard route) ──
+
+
+def _brain_level(
+    contradictions: int, low_evidence: int, superseded: int, expiring: int, drift: int
+) -> str:
+    if contradictions > 0 or low_evidence > 0:
+        return "high"
+    if superseded > 0 or expiring > 0 or drift > 0:
+        return "medium"
+    return "low"
+
+
+async def count_active_contradictions(storage: Any) -> tuple[int, bool]:
+    """(count of unresolved CONTRADICTS, whether the scan hit the cap).
+
+    Bounded so this never full-scans the synapse table on SurrealDB (get_synapses
+    with limit=None emits no LIMIT there).
+    """
+    try:
+        contradicts = await storage.get_synapses(
+            type=SynapseType.CONTRADICTS, limit=_BRAIN_CONTRADICTION_CAP
+        )
+    except Exception:
+        return 0, False
+    active = sum(1 for s in contradicts if not s.metadata.get("_resolved"))
+    return active, len(contradicts) >= _BRAIN_CONTRADICTION_CAP
+
+
+async def get_detected_drift(storage: Any, limit: int = _TOP_N) -> list[dict[str, Any]]:
+    """Detected drift clusters (SQLite-only; [] on backends without get_drift_clusters)."""
+    getter = getattr(storage, "get_drift_clusters", None)
+    if getter is None:
+        return []
+    try:
+        clusters = await getter(status="detected", limit=min(limit, _BRAIN_MAX_SCAN))
+    except Exception:
+        return []
+    return [
+        {"id": c.get("id"), "canonical": c.get("canonical"), "confidence": c.get("confidence")}
+        for c in (clusters or [])
+    ]
+
+
+async def scan_low_evidence_and_superseded(
+    storage: Any,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int, bool]:
+    """(low-evidence list, superseded list, rows_scanned, truncated).
+
+    No dedicated trust/superseded index on the ABC, so scan a bounded window (<=200)
+    and filter in Python. Both backends order by recency, so on a brain with >200
+    typed memories the result reflects only the most-recent rows — the caller MUST
+    surface ``truncated``. include_expired=False matches count_typed_memories' scope.
+    """
+    try:
+        rows = await storage.find_typed_memories(limit=_BRAIN_MAX_SCAN, include_expired=False)
+    except Exception:
+        return [], [], 0, False
+    low_evidence: list[dict[str, Any]] = []
+    superseded: list[dict[str, Any]] = []
+    for tm in rows:
+        trust = getattr(tm, "trust_score", None)
+        if trust is not None and trust <= _BRAIN_LOW_TRUST:
+            low_evidence.append({"fiber_id": tm.fiber_id, "trust_score": trust})
+        if getattr(tm, "superseded_by", None):
+            superseded.append({"fiber_id": tm.fiber_id, "superseded_by": tm.superseded_by})
+    return low_evidence, superseded, len(rows), len(rows) >= _BRAIN_MAX_SCAN
+
+
+async def build_brain_uncertainty(storage: Any, within_days: int = 14) -> dict[str, Any]:
+    """Brain-wide uncertainty overview (the smem_uncertainty 'overview' shape).
+
+    Reused by both the MCP tool and the dashboard route (server must not import mcp).
+    All sources bounded/guarded; drift is SQLite-only.
+    """
+    conflicts_active, contradictions_capped = await count_active_contradictions(storage)
+    try:
+        expiring_count = int(await storage.get_expiring_memory_count(within_days))
+    except Exception:
+        expiring_count = 0
+    drift = await get_detected_drift(storage, _TOP_N)
+    low_evidence, superseded, scanned, scan_truncated = await scan_low_evidence_and_superseded(
+        storage
+    )
+    try:
+        total = await storage.count_typed_memories()
+    except Exception:
+        total = 0
+    contradiction_rate = round(conflicts_active / total, 4) if total > 0 else 0.0
+
+    return {
+        "level": _brain_level(
+            conflicts_active, len(low_evidence), len(superseded), expiring_count, len(drift)
+        ),
+        "counts": {
+            "contradictions": conflicts_active,
+            "low_evidence": len(low_evidence),
+            "superseded": len(superseded),
+            "expiring": expiring_count,
+            "drift_clusters": len(drift),
+        },
+        "contradiction_rate": contradiction_rate,
+        "total_memories": total,
+        "scan": {
+            "typed_scanned": scanned,
+            "typed_scan_truncated": scan_truncated,
+            "contradictions_capped": contradictions_capped,
+        },
+        "samples": {
+            "low_evidence": low_evidence[:_TOP_N],
+            "superseded": superseded[:_TOP_N],
+            "drift_clusters": drift[:_TOP_N],
+        },
     }

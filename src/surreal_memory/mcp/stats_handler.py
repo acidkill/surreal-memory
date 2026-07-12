@@ -108,6 +108,7 @@ class StatsHandler:
             "hot_neurons": stats.get("hot_neurons", []),
             "newest_memory": stats.get("newest_memory"),
             "conflicts_active": conflicts_active,
+            "contradiction_rate": round(conflicts_active / max(stats["neuron_count"], 1), 4),
             "tier_distribution": tier_distribution,
         }
 
@@ -244,6 +245,8 @@ class StatsHandler:
             "neuron_count": report.neuron_count,
             "synapse_count": report.synapse_count,
             "fiber_count": report.fiber_count,
+            "contradiction_count": report.contradiction_count,
+            "conflict_rate": report.conflict_rate,
             "warnings": [
                 {"severity": w.severity.value, "code": w.code, "message": w.message}
                 for w in report.warnings
