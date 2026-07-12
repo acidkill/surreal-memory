@@ -34,8 +34,11 @@ def _brain_literal(brain_id: str) -> str:
 def _row_to_retrieval_trace(row: dict[str, Any]) -> RetrievalTrace:
     """Convert a SurrealDB retrieval_trace record back into a RetrievalTrace."""
     payload = dict(row.get("payload") or {})
+    # The native record id is the dash-folded, injection-safe form; the original
+    # (un-sanitised) id is preserved in payload["_orig_id"] so `.id` round-trips.
+    orig_id = payload.pop("_orig_id", None)
     raw_id = row.get("id")
-    trace_id = str(raw_id).rsplit(":", 1)[-1] if raw_id is not None else ""
+    trace_id = orig_id or (str(raw_id).rsplit(":", 1)[-1] if raw_id is not None else "")
     data: dict[str, Any] = {
         **payload,
         "id": trace_id,
@@ -75,6 +78,11 @@ class SurrealDBRetrievalTraceMixin:
 
         full = trace.to_dict()
         payload = {k: full[k] for k in _PAYLOAD_KEYS}
+        # SurrealDB folds the record id to an injection-safe charset (_to_surreal_id,
+        # '-'->'_'), which is lossy for a dashed uuid4; stash the original so the
+        # returned RetrievalTrace.id matches what add_retrieval_trace returned
+        # (parity with the InMemory/SQLite backends, which keep id verbatim).
+        payload["_orig_id"] = trace.id
         record_data: dict[str, Any] = {
             "brain_id": brain_id,
             "session_id": trace.session_id,
