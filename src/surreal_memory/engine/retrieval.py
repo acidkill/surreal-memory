@@ -162,6 +162,9 @@ class ReflexPipeline:
         self._activation_caches: collections.OrderedDict[str, Any] = collections.OrderedDict()
         self._priming_metrics: collections.OrderedDict[str, Any] = collections.OrderedDict()
         self._max_session_cache = 256
+        # U2: per-fiber effective trust from the last _find_matching_fibers call
+        # (only populated when trust_weight > 0). Surfaced into result.metadata.
+        self._last_trust_map: dict[str, float] = {}
 
         # Adaptive depth selection (Bayesian priors)
         self._adaptive_selector: AdaptiveDepthSelector | None = None
@@ -1751,6 +1754,16 @@ class ReflexPipeline:
         fw = self._config.freshness_weight
         halflife = self._config.recency_halflife_hours
         tag_boost = self._config.tag_match_boost
+        rw = self._config.recency_weight
+        tw = self._config.trust_weight
+        trust_default = self._config.trust_default
+
+        # Trust map (fiber_id -> effective trust) is built ONLY when trust weighting is
+        # active, so the neutral default (trust_weight=0.0) does ZERO extra storage reads.
+        trust_map: dict[str, float] = {}
+        if tw > 0.0 and fibers:
+            trust_map = await self._build_trust_map(fibers[:60], trust_default)
+        self._last_trust_map = trust_map
 
         def _fiber_score(fiber: Fiber) -> float:
             # --- Base quality: salience * recency * conductivity ---
@@ -1758,6 +1771,11 @@ class ReflexPipeline:
             if fiber.last_conducted:
                 hours_ago = (utcnow() - fiber.last_conducted).total_seconds() / 3600
                 recency = max(0.1, 1.0 / (1.0 + math.exp((hours_ago - halflife) / (halflife / 2))))
+
+            # U2 recency calibration (branch-guarded no-op at recency_weight=1.0):
+            # dampen the recency factor toward neutral (1.0) as recency_weight drops.
+            if rw != 1.0:
+                recency = (1.0 - rw) + rw * recency
 
             base_score = fiber.salience * recency * fiber.conductivity
 
@@ -1840,11 +1858,44 @@ class ReflexPipeline:
                         if overlap > 0.3:
                             score += overlap * 0.2
 
+            # U2 trust calibration (branch-guarded no-op at trust_weight=0.0):
+            # blend the final score toward the fiber's effective trust.
+            if tw > 0.0:
+                trust = trust_map.get(fiber.id, trust_default)
+                score *= (1.0 - tw) + tw * trust
+
             return score
 
         fibers.sort(key=_fiber_score, reverse=True)
 
         return fibers[:10]
+
+    async def _build_trust_map(
+        self, fibers: list[Fiber], trust_default: float
+    ) -> dict[str, float]:
+        """Resolve per-fiber effective trust for scoring (batch, memoised sources).
+
+        Called only when ``trust_weight > 0``. Uses the batch typed-memory fetch (one
+        query, inline brain_id) plus a per-source cache, so trust weighting adds at
+        most one typed-memory batch read + one source read per distinct source.
+        """
+        from surreal_memory.core.source import Source
+        from surreal_memory.engine.trust import resolve_effective_trust
+
+        fiber_ids = [f.id for f in fibers]
+        tms = await self._storage.get_typed_memories_batch(fiber_ids)
+        source_cache: dict[str, Source | None] = {}
+        trust_map: dict[str, float] = {}
+        for fid in fiber_ids:
+            tm = tms.get(fid)
+            source: Source | None = None
+            if tm is not None and tm.source and tm.source.startswith("source:"):
+                src_id = tm.source[len("source:") :]
+                if src_id not in source_cache:
+                    source_cache[src_id] = await self._storage.get_source(src_id)
+                source = source_cache[src_id]
+            trust_map[fid] = resolve_effective_trust(tm, source, trust_default)
+        return trust_map
 
     async def query_with_stimulus(
         self,

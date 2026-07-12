@@ -154,6 +154,10 @@ class BrainConfig:
     # Interference forgetting (memory competition detection)
     interference_detection_enabled: bool = False
     fan_effect_threshold: int = 15
+    # Trust/recency calibration (U2 — opt-in; neutral defaults preserve ranking)
+    trust_weight: float = 0.0  # 0.0 = trust ignored in final scoring (default no-op)
+    recency_weight: float = 1.0  # 1.0 = existing recency decay unchanged (default no-op)
+    trust_default: float = 0.7  # fallback trust when no per-memory/source signal resolves
 
     def with_updates(self, **kwargs: Any) -> BrainConfig:
         """Create a new config with updated values."""

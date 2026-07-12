@@ -98,3 +98,55 @@ async def test_ranking_is_deterministic_across_runs() -> None:
     a = await _ranking(BrainConfig(sufficiency_threshold=0.1))
     b = await _ranking(BrainConfig(sufficiency_threshold=0.1))
     assert a == b
+
+
+@pytest.mark.asyncio
+async def test_explicit_neutral_weights_match_golden_snapshot() -> None:
+    # Explicit neutral trust/recency weights must reproduce the default ranking.
+    ranking = await _ranking(
+        BrainConfig(sufficiency_threshold=0.1, trust_weight=0.0, recency_weight=1.0)
+    )
+    assert ranking == GOLDEN_ORDER
+
+
+@pytest.mark.asyncio
+async def test_zero_trust_storage_reads_at_default() -> None:
+    # Spy: with trust_weight=0.0 (default) the trust map is never built, so the
+    # batch typed-memory read the trust path uses is never called.
+    store = await _build()
+    calls: list[int] = []
+    orig = store.get_typed_memories_batch
+
+    async def _spy(fiber_ids):  # type: ignore[no-untyped-def]
+        calls.append(1)
+        return await orig(fiber_ids)
+
+    store.get_typed_memories_batch = _spy  # type: ignore[method-assign]
+    try:
+        pipeline = ReflexPipeline(store, BrainConfig(sufficiency_threshold=0.1))
+        await pipeline.query(QUERY)
+        assert calls == []
+        assert pipeline._last_trust_map == {}
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_trust_storage_read_when_weight_positive() -> None:
+    # With trust_weight>0 the trust map IS built (batch typed-memory read happens).
+    store = await _build()
+    calls: list[int] = []
+    orig = store.get_typed_memories_batch
+
+    async def _spy(fiber_ids):  # type: ignore[no-untyped-def]
+        calls.append(1)
+        return await orig(fiber_ids)
+
+    store.get_typed_memories_batch = _spy  # type: ignore[method-assign]
+    try:
+        pipeline = ReflexPipeline(store, BrainConfig(sufficiency_threshold=0.1, trust_weight=0.5))
+        await pipeline.query(QUERY)
+        assert calls != []
+        assert pipeline._last_trust_map != {}
+    finally:
+        await store.close()

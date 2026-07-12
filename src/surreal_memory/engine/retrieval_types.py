@@ -59,6 +59,8 @@ class ScoreBreakdown:
     emotional_resonance: float
     decision_domain_boost: float = 0.0
     raw_total: float = 0.0
+    trust_factor: float = 1.0  # U2: >1/<1 when trust weighting active, else 1.0 (no-op)
+    recency_factor: float = 1.0  # U2: recency blend factor when recency_weight != 1.0
 
 
 @dataclass
