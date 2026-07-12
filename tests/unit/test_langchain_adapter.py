@@ -9,6 +9,7 @@ the pipeline for a recall-backed feature); only the empty-brain fallback uses a 
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from typing import Any
 from unittest.mock import patch
 
@@ -146,6 +147,20 @@ def test_invoke_sync_without_running_loop() -> None:
     assert any("Berlin" in d.page_content for d in docs)
 
 
+def test_batch_across_threads_does_not_hang() -> None:
+    # Runnable.batch runs .invoke() from concurrent worker threads. The shared background
+    # bridge loop must serialise them without the cross-loop deadlock a new-loop-per-call
+    # bridge causes (the reviewer's HIGH #3). A short timeout guards against a regression.
+    storage = asyncio.run(_make_storage())
+    asyncio.run(_seed(storage, "Vienna is the capital of Austria"))
+    retriever = SurrealMemoryRetriever.from_storage(storage)
+
+    results = retriever.batch(["capital of Austria Vienna"] * 4)
+
+    assert len(results) == 4
+    assert all(any("Vienna" in d.page_content for d in docs) for docs in results)
+
+
 class TestChatMessageHistory:
     def test_roundtrip_preserves_order_and_types(self) -> None:
         storage = asyncio.run(_make_storage())
@@ -185,3 +200,65 @@ class TestChatMessageHistory:
         history.clear()
 
         assert history.messages == []
+
+    def test_mixed_case_session_id_roundtrips_and_isolates(self) -> None:
+        # Regression: the encoder lowercases stored tags. A mixed-case session id must
+        # still round-trip (the read tag is normalized the same way), and a lowercase
+        # "twin" id must NOT receive this session's turns (exact lc_session metadata).
+        storage = asyncio.run(_make_storage())
+        mixed = SurrealMemoryChatMessageHistory("Session-ABC", storage=storage)
+        twin = SurrealMemoryChatMessageHistory("session-abc", storage=storage)
+
+        mixed.add_user_message("from the mixed-case session")
+        twin.add_user_message("from the lowercase twin")
+
+        assert [m.content for m in mixed.messages] == ["from the mixed-case session"]
+        assert [m.content for m in twin.messages] == ["from the lowercase twin"]
+
+    def test_message_order_stable_on_timestamp_tie(self) -> None:
+        # Regression: turns sharing a time_start microsecond must still replay in write
+        # order via the monotonic lc_seq tiebreaker (else a tight add_messages loop could
+        # replay an AI answer before its human question).
+        storage = asyncio.run(_make_storage())
+        history = SurrealMemoryChatMessageHistory("s-order", storage=storage)
+        tied = datetime(2026, 1, 1, 12, 0, 0)
+        tag = history._session_tag
+
+        async def _insert(content: str, seq: int) -> None:
+            neuron = Neuron.create(type=NeuronType.CONCEPT, content=content)
+            await storage.add_neuron(neuron)
+            fiber = Fiber.create(
+                neuron_ids={neuron.id},
+                synapse_ids=set(),
+                anchor_neuron_id=neuron.id,
+                summary=content,
+                agent_tags={tag},
+                time_start=tied,
+                time_end=tied,
+                metadata={
+                    "lc_role": "human",
+                    "lc_session": "s-order",
+                    "lc_content": content,
+                    "lc_seq": seq,
+                },
+            )
+            await storage.add_fiber(fiber)
+
+        # Insert out of order; lc_seq is the intended replay order.
+        asyncio.run(_insert("third", 3))
+        asyncio.run(_insert("first", 1))
+        asyncio.run(_insert("second", 2))
+
+        assert [m.content for m in history.messages] == ["first", "second", "third"]
+
+
+class TestRetrieverTagField:
+    def test_memory_tags_does_not_shadow_langchain_tags(self) -> None:
+        # Regression: the recall-filter field must be `memory_tags`, leaving LangChain's
+        # inherited `tags` (tracing/callback tags) intact and independent.
+        storage = asyncio.run(_make_storage())
+        retriever = SurrealMemoryRetriever.from_storage(
+            storage, tags=["trace-tag"], memory_tags=["recall-tag"]
+        )
+        assert retriever.tags == ["trace-tag"]  # LangChain's own field, untouched
+        assert retriever.memory_tags == ["recall-tag"]

@@ -1224,10 +1224,21 @@ class SurrealDBStorage(
             # complexity and its lon/lat order + metre unit vary across 3.x — the exact
             # haversine post-filter below is the version-independent source of truth.
             conditions.append("metadata.location != NONE")
+        if tags:
+            # Push tag membership into SurQL (AND semantics) so LIMIT applies AFTER tag
+            # filtering — else a tagged subset (e.g. a chat session) can fall outside the
+            # LIMIT window on a large brain and silently vanish. SurrealDB stores tags as
+            # separate `auto_tags`/`agent_tags` arrays (no combined `tags` field); the
+            # Python `f.tags` union post-filter below still applies. Tags are stored
+            # lowercased, so match the lowercased form (parameterised — no injection).
+            for i, tag in enumerate(tags):
+                key = f"tag_{i}"
+                conditions.append(f"(${key} IN auto_tags OR ${key} IN agent_tags)")
+                params[key] = tag.lower()
 
         where = " AND ".join(conditions)
-        # Over-fetch when a Python post-filter (tags/time/metadata_key/near) narrows the set.
-        fetch_limit = min(int(limit) * 3, 3000) if near is not None else int(limit)
+        # Over-fetch when a Python post-filter (time/metadata_key/near) further narrows.
+        fetch_limit = min(int(limit) * 3, 3000) if (near is not None or tags) else int(limit)
         rows = await self._query(f"SELECT * FROM fiber WHERE {where} LIMIT {fetch_limit}", **params)
 
         fibers = [_row_to_fiber(r) for r in rows]

@@ -108,3 +108,32 @@ class TestSurrealGeoRecallPipeline:
         matched = {_norm(x) for x in result.fibers_matched}
         assert _norm(oslo.id) in matched
         assert _norm(bergen.id) not in matched
+
+
+class TestSurrealTagPushdown:
+    """find_fibers(tags=) must push tag membership into SurQL so LIMIT applies AFTER the
+    tag filter. SurrealDB stores auto_tags/agent_tags (no combined `tags` field), so the
+    predicate is `$tag IN auto_tags OR $tag IN agent_tags` — pinned live because the naive
+    `$tag IN tags` silently returns nothing on this (the default) backend.
+    """
+
+    async def _add_tagged(self, storage, summary, salience, tag):  # type: ignore[no-untyped-def]
+        neuron = Neuron.create(type=NeuronType.CONCEPT, content=summary)
+        await storage.add_neuron(neuron)
+        fiber = Fiber.create(
+            neuron_ids={neuron.id},
+            synapse_ids=set(),
+            anchor_neuron_id=neuron.id,
+            summary=summary,
+            agent_tags={tag} if tag else set(),
+        ).with_salience(salience)
+        await storage.add_fiber(fiber)
+        return fiber
+
+    async def test_tag_filter_applies_before_limit(self, storage) -> None:  # type: ignore[no-untyped-def]
+        for i in range(3):
+            await self._add_tagged(storage, f"decoy {i}", 0.9, None)
+        kept = await self._add_tagged(storage, "keep me", 0.1, "lc-session:xyz")
+
+        found = await storage.find_fibers(tags={"lc-session:xyz"}, limit=2)
+        assert [_norm(f.id) for f in found] == [_norm(kept.id)]

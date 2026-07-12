@@ -15,7 +15,8 @@ bridge to async via :func:`_run_sync`. Prefer the native async paths where you c
 from __future__ import annotations
 
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
+import threading
+import time
 from typing import TYPE_CHECKING, Any, cast
 
 try:
@@ -49,19 +50,53 @@ _LC_SESSION_PREFIX = "lc-session:"
 _LC_TAG = "langchain"
 _DEFAULT_K = 5
 
+_bridge_loop: asyncio.AbstractEventLoop | None = None
+_bridge_lock = threading.Lock()
+
+
+def _get_bridge_loop() -> asyncio.AbstractEventLoop:
+    """A single, process-wide background event loop for the sync bridge.
+
+    Every sync-entry coroutine runs on THIS loop (never a fresh loop per call), so
+    storage's process-global ``asyncio.Lock`` objects stay bound to one loop. A
+    new-loop-per-call bridge deadlocks under ``retriever.batch(...)`` — its worker
+    threads each spin an independent loop and can contend on the same cached lock.
+    """
+    global _bridge_loop
+    loop = _bridge_loop
+    if loop is None:
+        with _bridge_lock:
+            loop = _bridge_loop
+            if loop is None:
+                loop = asyncio.new_event_loop()
+                thread = threading.Thread(
+                    target=loop.run_forever,
+                    name="surreal-memory-langchain-bridge",
+                    daemon=True,
+                )
+                thread.start()
+                _bridge_loop = loop
+    return loop
+
 
 def _run_sync(coro: Coroutine[Any, Any, Any]) -> Any:
-    """Run an async coroutine from sync code, safely whether or not a loop is running.
+    """Run an async coroutine from sync code on the shared background loop.
 
-    No running loop → ``asyncio.run``. A loop already running (e.g. inside Jupyter or an
-    async web handler) → run in a dedicated one-shot thread so we never re-enter a loop.
+    Works whether or not the caller already has a running loop (the coroutine always
+    executes on the dedicated bridge loop, never the caller's), and is safe under
+    concurrent calls from ``Runnable.batch``'s worker threads.
     """
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coro)
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(asyncio.run, coro).result()
+    return asyncio.run_coroutine_threadsafe(coro, _get_bridge_loop()).result()
+
+
+def _normalize_tag(tag: str) -> str:
+    """Match the encoder's default ``TagNormalizer`` (no synonyms → ``lower().strip()``).
+
+    Storage back-ends filter tags by exact match, but ``MemoryEncoder`` lowercases every
+    tag it stores. Applying the same transform on the read side keeps the session tag
+    matching regardless of the ``session_id``'s original casing/whitespace.
+    """
+    return tag.lower().strip()
 
 
 async def _current_brain_config(storage: NeuralStorage) -> BrainConfig:
@@ -99,7 +134,10 @@ class SurrealMemoryRetriever(BaseRetriever):
     brain_name: str | None = None
     depth: int = 1
     max_tokens: int = 500
-    tags: list[str] | None = None
+    # NOTE: named `memory_tags`, NOT `tags` — BaseRetriever/Runnable already defines a
+    # `tags` field used for LangSmith/callback tracing tags. Shadowing it would leak these
+    # recall-filter values into tracing and hijack the framework's own tag semantics.
+    memory_tags: list[str] | None = None
     permanent_only: bool = False
     k: int = _DEFAULT_K
 
@@ -134,7 +172,7 @@ class SurrealMemoryRetriever(BaseRetriever):
             query=query,
             depth=depth,
             max_tokens=self.max_tokens,
-            tags=set(self.tags) if self.tags else None,
+            tags=set(self.memory_tags) if self.memory_tags else None,
             exclude_ephemeral=self.permanent_only,
         )
 
@@ -145,7 +183,7 @@ class SurrealMemoryRetriever(BaseRetriever):
                 continue
             docs.append(await self._fiber_to_document(storage, fiber, result.confidence))
 
-        if not docs and result.answer:
+        if self.k > 0 and not docs and result.answer:
             # No fibers surfaced but the pipeline produced an answer — keep it as context.
             return [
                 Document(
@@ -225,7 +263,10 @@ class SurrealMemoryChatMessageHistory(BaseChatMessageHistory):
 
     @property
     def _session_tag(self) -> str:
-        return f"{_LC_SESSION_PREFIX}{self.session_id}"
+        # Normalized to the encoder's stored form so mixed-case/whitespace session ids
+        # still match on read (else find_fibers' exact tag match returns nothing, and a
+        # lowercase twin id would receive this session's turns).
+        return _normalize_tag(f"{_LC_SESSION_PREFIX}{self.session_id}")
 
     async def _aadd_message(self, message: BaseMessage) -> None:
         from surreal_memory.engine.encoder import MemoryEncoder
@@ -241,15 +282,25 @@ class SurrealMemoryChatMessageHistory(BaseChatMessageHistory):
                 "lc_role": _message_role(message),
                 "lc_session": self.session_id,
                 "lc_content": content,
+                # Monotonic write-order tiebreaker: fibers can share a time_start
+                # microsecond under a tight add_messages() loop; nanosecond order keeps
+                # replay stable (e.g. the human turn before its AI answer).
+                "lc_seq": time.time_ns(),
             },
         )
 
     async def _aget_messages(self) -> list[BaseMessage]:
         storage = await self._aresolve_storage()
         fibers = await storage.find_fibers(tags={self._session_tag}, limit=1000)
-        ordered = sorted(fibers, key=lambda f: f.time_start or f.created_at)
+        ordered = sorted(
+            fibers, key=lambda f: (f.time_start or f.created_at, f.metadata.get("lc_seq", 0))
+        )
         messages: list[BaseMessage] = []
         for fiber in ordered:
+            # Exact session match (defence-in-depth beyond the tag) — never replay another
+            # session's turns even if tag normalization ever collides.
+            if fiber.metadata.get("lc_session") != self.session_id:
+                continue
             role = fiber.metadata.get("lc_role")
             content = fiber.metadata.get("lc_content")
             if role is None or content is None:
@@ -261,6 +312,8 @@ class SurrealMemoryChatMessageHistory(BaseChatMessageHistory):
         storage = await self._aresolve_storage()
         fibers = await storage.find_fibers(tags={self._session_tag}, limit=1000)
         for fiber in fibers:
+            if fiber.metadata.get("lc_session") != self.session_id:
+                continue
             await storage.delete_fiber(fiber.id)
 
     @property

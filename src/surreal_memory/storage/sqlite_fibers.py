@@ -191,6 +191,15 @@ class SQLiteFiberMixin:
             query += " AND json_extract(metadata, ?) IS NOT NULL"
             params.append(f'$."{metadata_key}"')
 
+        if tags:
+            # Push the tag filter into SQL (AND semantics) so LIMIT applies to already
+            # tag-matched rows. Without this, a brain with more fibers than the fetch
+            # window returns an arbitrary slice and a tagged subset (e.g. a chat session)
+            # can vanish entirely. Mirrors find_fibers_batch's json_each pattern.
+            for tag in tags:
+                query += " AND EXISTS (SELECT 1 FROM json_each(tags) WHERE value = ?)"
+                params.append(tag)
+
         if near is not None:
             # Server-side pre-filter: drop locationless fibers. A lat/lon bbox is
             # deliberately NOT used — a naive metres-per-degree box false-excludes true
