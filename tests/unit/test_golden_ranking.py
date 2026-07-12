@@ -132,6 +132,45 @@ async def test_zero_trust_storage_reads_at_default() -> None:
 
 
 @pytest.mark.asyncio
+async def test_trust_weight_demotes_low_trust_fiber() -> None:
+    # Directional guard: two equally-matching fibers; with trust_weight=1.0 the
+    # higher-trust fiber MUST outrank the lower-trust one. A sign/term swap in the
+    # trust-multiply (score *= (1-tw) + tw*trust) would fail this.
+    from surreal_memory.core.memory_types import MemoryType, TypedMemory
+
+    store = SQLiteStorage(Path(tempfile.mkdtemp()) / "trust_dir.db")
+    await store.initialize()
+    brain = Brain.create(name="trust_dir")
+    await store.save_brain(brain)
+    store.set_brain(brain.id)
+    for label, trust, tail in [("hi", 0.9, "alpha"), ("lo", 0.1, "beta")]:
+        neuron = Neuron.create(
+            type=NeuronType.CONCEPT, content=f"reciprocal rank fusion scoring {tail}"
+        )
+        await store.add_neuron(neuron)
+        fiber = Fiber.create(
+            neuron_ids={neuron.id},
+            synapse_ids=set(),
+            anchor_neuron_id=neuron.id,
+            summary=f"reciprocal rank fusion scoring blends retrievers {tail}",
+            fiber_id=label,
+        )
+        await store.add_fiber(fiber)
+        await store.add_typed_memory(
+            TypedMemory.create(fiber_id=label, memory_type=MemoryType.FACT, trust_score=trust)
+        )
+    try:
+        pipeline = ReflexPipeline(
+            store, BrainConfig(sufficiency_threshold=0.1, trust_weight=1.0)
+        )
+        ranking = list((await pipeline.query("reciprocal rank fusion scoring")).fibers_matched)
+        assert "hi" in ranking and "lo" in ranking
+        assert ranking.index("hi") < ranking.index("lo")
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
 async def test_trust_storage_read_when_weight_positive() -> None:
     # With trust_weight>0 the trust map IS built (batch typed-memory read happens).
     store = await _build()

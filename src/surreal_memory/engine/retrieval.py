@@ -658,8 +658,8 @@ class ReflexPipeline:
         )
 
         # U2: surface trust/recency calibration when active (no-op at neutral defaults).
-        _tw = self._config.trust_weight
-        _rw = self._config.recency_weight
+        _tw = max(0.0, min(1.0, self._config.trust_weight))
+        _rw = max(0.0, min(1.0, self._config.recency_weight))
         if _tw > 0.0 and self._last_trust_map:
             result.metadata["trust_factors"] = dict(self._last_trust_map)
             result.metadata["trust_weight"] = _tw
@@ -1776,15 +1776,19 @@ class ReflexPipeline:
         fw = self._config.freshness_weight
         halflife = self._config.recency_halflife_hours
         tag_boost = self._config.tag_match_boost
-        rw = self._config.recency_weight
-        tw = self._config.trust_weight
+        # Clamp weights to [0,1] at point of use so a hand-edited out-of-range config
+        # can never invert/corrupt the score (the blend formulas assume [0,1]).
+        rw = max(0.0, min(1.0, self._config.recency_weight))
+        tw = max(0.0, min(1.0, self._config.trust_weight))
         trust_default = self._config.trust_default
 
         # Trust map (fiber_id -> effective trust) is built ONLY when trust weighting is
         # active, so the neutral default (trust_weight=0.0) does ZERO extra storage reads.
+        # Cap = 20 top neurons x limit_per_neuron=3 = the max find_fibers_batch returns.
+        _trust_map_cap = 60
         trust_map: dict[str, float] = {}
         if tw > 0.0 and fibers:
-            trust_map = await self._build_trust_map(fibers[:60], trust_default)
+            trust_map = await self._build_trust_map(fibers[:_trust_map_cap], trust_default)
         self._last_trust_map = trust_map
 
         def _fiber_score(fiber: Fiber) -> float:
