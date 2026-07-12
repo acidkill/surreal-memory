@@ -122,7 +122,7 @@ class SurrealDBSourcesMixin:
     async def get_source(self, source_id: str) -> Source | None:
         brain_id = self._get_brain_id()
         rows = await self._query(
-            "SELECT * FROM source WHERE brain_id = $brain_id AND id = $sid LIMIT 1",
+            "SELECT * FROM source WHERE brain_id = $brain_id AND id = type::record('source', $sid) LIMIT 1",
             brain_id=brain_id,
             sid=_to_surreal_id(source_id),
         )
@@ -166,7 +166,7 @@ class SurrealDBSourcesMixin:
         brain_id = self._get_brain_id()
 
         rows = await self._query(
-            "SELECT id FROM source WHERE brain_id = $brain_id AND id = $sid LIMIT 1",
+            "SELECT id FROM source WHERE brain_id = $brain_id AND id = type::record('source', $sid) LIMIT 1",
             brain_id=brain_id,
             sid=_to_surreal_id(source_id),
         )
@@ -198,7 +198,7 @@ class SurrealDBSourcesMixin:
         brain_id = self._get_brain_id()
 
         rows = await self._query(
-            "SELECT id FROM source WHERE brain_id = $brain_id AND id = $sid LIMIT 1",
+            "SELECT id FROM source WHERE brain_id = $brain_id AND id = type::record('source', $sid) LIMIT 1",
             brain_id=brain_id,
             sid=_to_surreal_id(source_id),
         )
