@@ -346,7 +346,9 @@ class RememberHandler:
                 from surreal_memory.utils.geo import location_to_metadata, parse_geo_point
 
                 try:
-                    encode_metadata["location"] = location_to_metadata(parse_geo_point(raw_location))
+                    encode_metadata["location"] = location_to_metadata(
+                        parse_geo_point(raw_location)
+                    )
                 except (ValueError, TypeError) as exc:
                     return {"error": f"Invalid location: {exc}"}
 

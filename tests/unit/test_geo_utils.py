@@ -39,7 +39,9 @@ class TestHaversine:
         assert haversine_m(a, b) < 30_000
 
     def test_poles_coincide_regardless_of_lon(self) -> None:
-        assert haversine_m(GeoPoint(90.0, 0.0), GeoPoint(90.0, 123.0)) == pytest.approx(0.0, abs=1.0)
+        assert haversine_m(GeoPoint(90.0, 0.0), GeoPoint(90.0, 123.0)) == pytest.approx(
+            0.0, abs=1.0
+        )
 
 
 class TestGeoPointValidation:

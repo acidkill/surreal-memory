@@ -31,7 +31,6 @@ from surreal_memory.engine.reconstruction import (
 )
 from surreal_memory.engine.reflex_activation import CoActivation, ReflexActivation
 from surreal_memory.engine.retrieval_context import format_context
-from surreal_memory.utils.geo import GeoFilter, fiber_location
 from surreal_memory.engine.retrieval_types import DepthLevel, RetrievalResult, Subgraph
 from surreal_memory.engine.score_fusion import (
     RankedAnchor,
@@ -42,6 +41,7 @@ from surreal_memory.engine.stabilization import StabilizationConfig, stabilize
 from surreal_memory.engine.write_queue import DeferredWriteQueue
 from surreal_memory.extraction.parser import QueryIntent, QueryParser, Stimulus
 from surreal_memory.extraction.router import QueryRouter
+from surreal_memory.utils.geo import GeoFilter, fiber_location
 from surreal_memory.utils.timeutils import utcnow
 
 __all__ = ["DepthLevel", "ReflexPipeline", "RetrievalResult"]
