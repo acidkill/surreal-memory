@@ -75,12 +75,24 @@ if TYPE_CHECKING:
 def _fiber_valid_at(fiber: Fiber, dt: datetime) -> bool:
     """Check if a fiber is temporally valid at the given datetime.
 
-    A fiber is valid if its time window contains dt. Missing bounds
-    are treated as unbounded (open interval).
+    A fiber is valid if its event-time window contains dt. Missing bounds are
+    treated as unbounded (open interval). A ZERO-WIDTH window (time_start ==
+    time_end) is also treated as unbounded: BuildFiberStep stamps both bounds with
+    the write timestamp for every fact that has no extracted event-time range, so a
+    zero-width window carries no event-duration information to filter against — and
+    requiring dt to equal that exact microsecond would make point-in-time recall
+    impossible for the common case. Logical point-in-time (``valid_at`` over
+    supersession validity, via ``TypedMemory.is_valid_at``) governs there; only
+    fibers with a REAL interval (time_start < time_end, e.g. an extracted date
+    range) are event-time filtered here.
     """
-    if fiber.time_start is not None and fiber.time_start > dt:
+    start = fiber.time_start
+    end = fiber.time_end
+    if start is not None and end is not None and start == end:
+        return True
+    if start is not None and start > dt:
         return False
-    if fiber.time_end is not None and fiber.time_end < dt:
+    if end is not None and end < dt:
         return False
     return True
 
