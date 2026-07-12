@@ -20,3 +20,28 @@ class TestTraceConfig:
     def test_from_dict_defaults_on_missing_keys(self) -> None:
         c = TraceConfig.from_dict({})
         assert c == TraceConfig()
+
+
+class TestUnifiedConfigTraceWiring:
+    """U4: UnifiedConfig exposes + persists the [trace] section."""
+
+    def test_default_trace_is_off(self) -> None:
+        from surreal_memory.unified_config import UnifiedConfig
+
+        assert UnifiedConfig().trace.enabled is False
+
+    def test_save_load_round_trip_preserves_trace(self, tmp_path: object) -> None:
+        from pathlib import Path
+
+        from surreal_memory.unified_config import UnifiedConfig
+
+        data_dir = Path(str(tmp_path))
+        cfg = UnifiedConfig(data_dir=data_dir)
+        cfg.trace = TraceConfig(enabled=True, sample_rate=0.25, retention_days=14, max_traces=99)
+        cfg.save()
+
+        loaded = UnifiedConfig.load(config_path=data_dir / "config.toml")
+        assert loaded.trace.enabled is True
+        assert loaded.trace.sample_rate == 0.25
+        assert loaded.trace.retention_days == 14
+        assert loaded.trace.max_traces == 99

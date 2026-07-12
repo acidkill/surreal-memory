@@ -319,6 +319,14 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "type": "boolean",
                     "description": "Include superseded facts (those with valid_until set) in recall. Default false: superseded facts are hard-filtered out. Set true to see the full history. Ignored when valid_at is given (point-in-time filtering takes over).",
                 },
+                "trace": {
+                    "type": "boolean",
+                    "description": "Persist a retrieval trace for this recall and return its trace_id (telemetry — what fed the answer). Works even when trace telemetry is off globally; does not change global config.",
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": "Optional session identifier stored on the retrieval trace to group recalls from one session.",
+                },
                 "warn_expiry_days": {
                     "type": "integer",
                     "minimum": 1,

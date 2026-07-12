@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import logging
 import os
+import random
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -898,7 +900,81 @@ class RecallHandler:
         if alert_info:
             response.update(alert_info)
 
+        # U4: retrieval-trace telemetry (opt-in; off by default → true no-op).
+        await self._maybe_persist_trace(response, result, query, args, brain, recall_mode, storage)
+
         return response
+
+    async def _maybe_persist_trace(
+        self,
+        response: dict[str, Any],
+        result: Any,
+        query: str,
+        args: dict[str, Any],
+        brain: Any,
+        mode: str,
+        storage: Any,
+    ) -> None:
+        """Persist a compact RetrievalTrace for this recall, when enabled.
+
+        Neutral default (trace.enabled=false) → fully skipped: no build, no task,
+        no storage call. ``trace=true`` per-call forces one trace and returns its
+        ``trace_id`` in the response WITHOUT flipping the global config (persisted
+        synchronously since the caller asked for the id). Config-enabled sampling
+        fires-and-forgets via a strong-ref'd task. Never raises — telemetry must
+        not break recall.
+        """
+        try:
+            trace_cfg = getattr(self.config, "trace", None)
+            per_call = bool(args.get("trace", False))
+            if trace_cfg is None:
+                return
+            if not per_call:
+                if not trace_cfg.enabled:
+                    return
+                if trace_cfg.sample_rate < 1.0 and random.random() >= trace_cfg.sample_rate:
+                    return
+
+            from surreal_memory.engine.trace_builder import build_retrieval_trace
+
+            config_snapshot = {
+                "trust_weight": getattr(brain.config, "trust_weight", 0.0),
+                "recency_weight": getattr(brain.config, "recency_weight", 1.0),
+                "trace_sample_rate": trace_cfg.sample_rate,
+            }
+            trace = build_retrieval_trace(
+                result,
+                query=query,
+                brain_id=str(getattr(storage, "brain_id", None) or getattr(brain, "id", "") or ""),
+                mode=mode,
+                args=args,
+                config_snapshot=config_snapshot,
+                session_id=args.get("session_id"),
+            )
+
+            if per_call:
+                # Synchronous: the caller explicitly wants the id back.
+                await storage.add_retrieval_trace(trace)
+                response["trace_id"] = trace.id
+            else:
+                # Fire-and-forget with a strong reference (avoids GC of the task).
+                tasks = getattr(self, "_trace_tasks", None)
+                if tasks is None:
+                    tasks = set()
+                    self._trace_tasks = tasks
+                task = asyncio.create_task(self._persist_trace_safe(storage, trace))
+                tasks.add(task)
+                task.add_done_callback(tasks.discard)
+        except Exception:
+            logger.debug("Retrieval trace scheduling failed (non-critical)", exc_info=True)
+
+    @staticmethod
+    async def _persist_trace_safe(storage: Any, trace: Any) -> None:
+        """Persist one trace, swallowing errors (background telemetry task)."""
+        try:
+            await storage.add_retrieval_trace(trace)
+        except Exception:
+            logger.debug("Retrieval trace persist failed (non-critical)", exc_info=True)
 
     async def _cross_brain_recall(
         self, args: dict[str, Any], brain_names: list[str]

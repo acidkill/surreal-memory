@@ -1466,6 +1466,9 @@ class UnifiedConfig:
     # Token budget retrieval
     budget: BudgetRetrievalConfig = field(default_factory=BudgetRetrievalConfig)
 
+    # Retrieval-trace telemetry (schema v9, opt-in; neutral default = off)
+    trace: TraceConfig = field(default_factory=TraceConfig)
+
     # CLI preferences
     json_output: bool = False
     default_depth: int | None = None
@@ -1562,6 +1565,7 @@ class UnifiedConfig:
             ),
             response=ResponseConfig.from_dict(data.get("response", {})),
             budget=BudgetRetrievalConfig.from_dict(data.get("budget", {})),
+            trace=TraceConfig.from_dict(data.get("trace", {})),
             json_output=data.get("cli", {}).get("json_output", False),
             default_depth=data.get("cli", {}).get("default_depth"),
             default_max_tokens=data.get("cli", {}).get("default_max_tokens", 500),
@@ -1773,6 +1777,13 @@ class UnifiedConfig:
             f"strip_hints = {'true' if self.response.strip_hints else 'false'}",
             f"content_preview_length = {self.response.content_preview_length}",
             f"auto_compact_threshold = {self.response.auto_compact_threshold}",
+            "",
+            "# Retrieval-trace telemetry (opt-in; off by default)",
+            "[trace]",
+            f"enabled = {'true' if self.trace.enabled else 'false'}",
+            f"sample_rate = {self.trace.sample_rate}",
+            f"retention_days = {self.trace.retention_days}",
+            f"max_traces = {self.trace.max_traces}",
             "",
             "# CLI preferences",
             "[cli]",
