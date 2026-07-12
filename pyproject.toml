@@ -78,6 +78,9 @@ graphiti = [
 llamaindex = [
     "llama-index-core>=0.10.0",
 ]
+langchain = [
+    "langchain-core>=0.3,<2",
+]
 watch = [
     "watchdog>=4.0.0",
 ]
@@ -109,7 +112,7 @@ integration = [
     "surreal-memory[chromadb,mem0]",
 ]
 all = [
-    "surreal-memory[server,surrealdb,embeddings-gemini,nlp,integration]",
+    "surreal-memory[server,surrealdb,embeddings-gemini,nlp,integration,langchain]",
 ]
 dev = [
     "pytest>=7.0",

@@ -391,6 +391,36 @@ async def main():
 asyncio.run(main())
 ```
 
+### LangChain integration
+
+Install the extra (`pip install surreal-memory[langchain]`) and wrap a brain as a
+LangChain retriever + chat-message history. Both are in-process (no REST server needed);
+everything is async underneath with a sync bridge for LangChain's sync API.
+
+```python
+from surreal_memory.adapters.langchain import (
+    SurrealMemoryChatMessageHistory,
+    SurrealMemoryRetriever,
+)
+
+# Retriever — matched fibers become LangChain Documents (page_content = memory text,
+# metadata carries fiber_id, tags, salience, confidence, source="surreal-memory").
+retriever = SurrealMemoryRetriever(brain_name="my_brain", k=5)
+docs = await retriever.ainvoke("what did we decide about the backend?")
+
+# Per-session chat history — turns are stored as memories tagged lc-session:<id>.
+history = SurrealMemoryChatMessageHistory("session-42", brain_name="my_brain")
+history.add_user_message("Which database are we using?")
+history.add_ai_message("SurrealDB.")
+print(history.messages)  # replayed verbatim, in order
+
+# Already hold a storage handle (tests, custom wiring)? Inject it:
+retriever = SurrealMemoryRetriever.from_storage(storage, k=5)
+```
+
+See [`examples/langchain_rag.py`](examples/langchain_rag.py) for a full LCEL RAG chain
+with `RunnableWithMessageHistory`.
+
 ---
 
 ## Development
@@ -433,7 +463,7 @@ Items here are explicitly **not** in the current release. Community PRs welcome 
 - **JetBrains IDE plugin** — Kotlin / Java plugin using the same REST API as the dashboard. Parity feature for IntelliJ-family IDEs.
 - **Cross-device sync UI** — visualize Merkle delta progress, device roster, conflict resolution flow in the dashboard.
 - **Cloudflare Pages for docs** — alternative to the removed GitHub Pages workflow. Static `mkdocs build` deployed to CF Pages, no GitHub dependency.
-- **LangChain / LlamaIndex retriever adapter** — `from surreal_memory.adapters.langchain import SurrealMemoryRetriever`. Opens the project to the RAG ecosystem.
+- **LlamaIndex retriever adapter** — same shape as the shipped LangChain adapter (`from surreal_memory.adapters.langchain import SurrealMemoryRetriever`; see the Python API section), for the LlamaIndex side of the RAG ecosystem.
 - **More embedding providers** — Voyage AI, Cohere, Mistral. Current set: Gemini, OpenAI, OpenRouter, local.
 - **Upstream sync bot** — scheduled workflow that scans `nhadaututtheky/neural-memory` for new commits, classifies them GREEN / YELLOW / RED against our fork, and opens a draft PR for the green batch.
 - **Two-way Telegram bot** — `notify-telegram.yml` is one-way (release notes). Extend with `smem remember` via bot commands.
