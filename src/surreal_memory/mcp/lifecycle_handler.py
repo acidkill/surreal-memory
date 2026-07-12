@@ -380,4 +380,75 @@ class LifecycleHandler:
                     return {"error": "Failed to thaw neuron"}
                 return {"frozen": False, "neuron_id": neuron_id}
 
-        return {"error": f"Unknown action: {action}. Valid: status, recover, freeze, thaw"}
+        if action == "backfill_supersession":
+            limit = min(int(args.get("limit", 1000)), 5000)
+            result = await self._lifecycle_backfill_supersession(storage, limit=limit)
+            result["brain"] = brain.id
+            return result
+
+        return {
+            "error": (
+                f"Unknown action: {action}. "
+                "Valid: status, recover, freeze, thaw, backfill_supersession"
+            )
+        }
+
+    async def _lifecycle_backfill_supersession(
+        self, storage: NeuralStorage, *, limit: int
+    ) -> dict[str, Any]:
+        """Retroactively stamp A-side supersession lineage for existing conflicts.
+
+        Pre-U3 data has old anchors marked ``_superseded`` (C-side) with a CONTRADICTS
+        edge from the newer anchor, but no A-side validity. Walk CONTRADICTS synapses,
+        and for each genuinely-superseded old fact whose fiber is unambiguous, stamp
+        valid_until/superseded_by + a SUPERSEDES synapse (idempotent, via
+        ``engine.supersession``). Reports counts; ambiguous fibers are skipped.
+        """
+        from surreal_memory.core.synapse import SynapseType
+        from surreal_memory.engine.supersession import (
+            resolve_fibers_for_neurons,
+            supersede_typed_memory,
+        )
+
+        synapses = await storage.get_synapses(type=SynapseType.CONTRADICTS)
+        truncated = len(synapses) > limit
+        synapses = synapses[:limit]
+
+        scanned = 0
+        backfilled = 0
+        already_linked = 0
+        skipped_ambiguous = 0
+        for syn in synapses:
+            new_anchor = syn.source_id
+            old_anchor = syn.target_id
+            old_neuron = await storage.get_neuron(old_anchor)
+            if old_neuron is None or not old_neuron.metadata.get("_superseded"):
+                continue
+            scanned += 1
+            fiber_map = await resolve_fibers_for_neurons(storage, [old_anchor, new_anchor])
+            old_fiber_id = fiber_map.get(old_anchor)
+            new_fiber_id = fiber_map.get(new_anchor)
+            if not old_fiber_id or not new_fiber_id or old_fiber_id == new_fiber_id:
+                skipped_ambiguous += 1
+                continue
+            outcome = await supersede_typed_memory(
+                storage,
+                old_fiber_id=old_fiber_id,
+                new_fiber_id=new_fiber_id,
+                new_anchor_id=new_anchor,
+                old_anchor_id=old_anchor,
+                reason="backfill:supersession",
+            )
+            if outcome.superseded:
+                backfilled += 1
+            else:
+                already_linked += 1
+
+        return {
+            "action": "backfill_supersession",
+            "scanned": scanned,
+            "backfilled": backfilled,
+            "already_linked": already_linked,
+            "skipped_ambiguous": skipped_ambiguous,
+            "truncated": truncated,
+        }

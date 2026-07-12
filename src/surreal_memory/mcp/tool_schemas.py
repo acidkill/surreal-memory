@@ -1815,20 +1815,28 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
         "description": "Memory lifecycle management — view lifecycle states and manage compression resistance. "
         "Hot memories (accessed recently or high priority) resist compression automatically. "
         "Actions: status (distribution of lifecycle states), recover (rehydrate a compressed memory), "
-        "freeze (prevent a memory from compressing), thaw (resume normal lifecycle).",
+        "freeze (prevent a memory from compressing), thaw (resume normal lifecycle), "
+        "backfill_supersession (retroactively stamp supersession lineage on existing conflicts).",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["status", "recover", "freeze", "thaw"],
+                    "enum": ["status", "recover", "freeze", "thaw", "backfill_supersession"],
                     "description": "status=show lifecycle distribution, recover=rehydrate compressed memory, "
-                    "freeze=prevent compression, thaw=resume normal lifecycle",
+                    "freeze=prevent compression, thaw=resume normal lifecycle, "
+                    "backfill_supersession=stamp A-side validity for already-superseded facts",
                 },
                 "id": {
                     "type": "string",
                     "description": "Neuron ID (required for recover/freeze/thaw). "
                     "For recover, fiber_id is also accepted.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 5000,
+                    "description": "Max CONTRADICTS synapses to scan for backfill_supersession (default 1000).",
                 },
             },
             "required": ["action"],
