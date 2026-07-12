@@ -20,14 +20,28 @@ SCHEMA_SQL = """
 -- full-scanning with CONTAINS.
 DEFINE ANALYZER IF NOT EXISTS smem_content TOKENIZERS blank, class FILTERS lowercase, ascii;
 
+-- Tables that carry an arbitrary-key ``metadata``/``config`` object are declared
+-- SCHEMALESS (not SCHEMAFULL). Those nested keys require FLEXIBLE on a SCHEMAFULL
+-- table, but SurrealDB rejects ``DEFINE FIELD ... FLEXIBLE`` on any table that is
+-- already SCHEMALESS ("FLEXIBLE can only be used in SCHEMAFULL tables"). Because a
+-- bare ``DEFINE TABLE X SCHEMAFULL`` is swallowed as "already exists" on an upgraded
+-- DB, a legacy table first created SCHEMALESS never converges to SCHEMAFULL, so
+-- every FLEXIBLE field-def then errors on each ensure_schema()/consolidate. And
+-- converting such a table to SCHEMAFULL would BRICK updates on any row still holding
+-- a legacy field absent from the schema. A SCHEMALESS table already accepts
+-- arbitrary nested object keys WITHOUT FLEXIBLE, so these tables are SCHEMALESS +
+-- plain ``TYPE object`` — correct and identical on fresh and upgraded databases.
+-- (synapse + retrieval_trace stay SCHEMAFULL: a migration drops & recreates them,
+-- so their FLEXIBLE fields are always valid.)
+
 -- Neurons (primary memory units)
-DEFINE TABLE neuron SCHEMAFULL;
+DEFINE TABLE neuron SCHEMALESS;
 DEFINE FIELD id              ON neuron TYPE string;
 DEFINE FIELD brain_id        ON neuron TYPE string;
 DEFINE FIELD type            ON neuron TYPE string;
 DEFINE FIELD content         ON neuron TYPE string;
 DEFINE FIELD content_hash    ON neuron TYPE int DEFAULT 0;
-DEFINE FIELD metadata        ON neuron TYPE object FLEXIBLE DEFAULT {};
+DEFINE FIELD metadata        ON neuron TYPE object DEFAULT {};
 DEFINE FIELD embedding_vec   ON neuron TYPE option<array<float>>;
 DEFINE FIELD ephemeral       ON neuron TYPE bool DEFAULT false;
 DEFINE FIELD created_at      ON neuron TYPE datetime DEFAULT time::now();
@@ -70,7 +84,7 @@ DEFINE INDEX idx_state_neuron  ON neuron_state FIELDS brain_id, neuron_id UNIQUE
 DEFINE TABLE schema_meta SCHEMALESS;
 
 -- Fibers (memory clusters / signal pathways)
-DEFINE TABLE fiber SCHEMAFULL;
+DEFINE TABLE fiber SCHEMALESS;
 DEFINE FIELD id              ON fiber TYPE string;
 DEFINE FIELD brain_id        ON fiber TYPE string;
 DEFINE FIELD neuron_ids      ON fiber TYPE array<string>;
@@ -88,7 +102,7 @@ DEFINE FIELD summary         ON fiber TYPE option<string>;
 DEFINE FIELD essence         ON fiber TYPE option<string>;
 DEFINE FIELD auto_tags       ON fiber TYPE array<string> DEFAULT [];
 DEFINE FIELD agent_tags      ON fiber TYPE array<string> DEFAULT [];
-DEFINE FIELD metadata        ON fiber TYPE object FLEXIBLE DEFAULT {};
+DEFINE FIELD metadata        ON fiber TYPE object DEFAULT {};
 DEFINE FIELD compression_tier ON fiber TYPE int DEFAULT 0;
 DEFINE FIELD pinned           ON fiber TYPE bool DEFAULT false;
 DEFINE FIELD created_at       ON fiber TYPE datetime DEFAULT time::now();
@@ -97,11 +111,11 @@ DEFINE INDEX idx_fiber_brain  ON fiber FIELDS brain_id;
 DEFINE INDEX idx_fiber_anchor ON fiber FIELDS brain_id, anchor_neuron_id;
 
 -- Brains (top-level containers)
-DEFINE TABLE brain SCHEMAFULL;
+DEFINE TABLE brain SCHEMALESS;
 DEFINE FIELD id          ON brain TYPE string;
 DEFINE FIELD name        ON brain TYPE string;
-DEFINE FIELD config      ON brain TYPE object FLEXIBLE DEFAULT {};
-DEFINE FIELD metadata    ON brain TYPE object FLEXIBLE DEFAULT {};
+DEFINE FIELD config      ON brain TYPE object DEFAULT {};
+DEFINE FIELD metadata    ON brain TYPE object DEFAULT {};
 DEFINE FIELD created_at  ON brain TYPE datetime DEFAULT time::now();
 DEFINE FIELD updated_at  ON brain TYPE datetime DEFAULT time::now();
 -- Removed unique index on name - multiple brains can have same name
@@ -140,7 +154,7 @@ DEFINE FIELD computed_at   ON merkle_hash TYPE datetime DEFAULT time::now();
 DEFINE INDEX idx_merkle    ON merkle_hash FIELDS brain_id, entity_type, prefix UNIQUE;
 
 -- Typed memories
-DEFINE TABLE typed_memory SCHEMAFULL;
+DEFINE TABLE typed_memory SCHEMALESS;
 DEFINE FIELD fiber_id      ON typed_memory TYPE string;
 DEFINE FIELD brain_id      ON typed_memory TYPE string;
 DEFINE FIELD memory_type   ON typed_memory TYPE string;
@@ -152,7 +166,7 @@ DEFINE FIELD source        ON typed_memory TYPE option<string>;
 DEFINE FIELD project_id    ON typed_memory TYPE option<string>;
 DEFINE FIELD expires_at    ON typed_memory TYPE option<datetime>;
 DEFINE FIELD tier          ON typed_memory TYPE string DEFAULT 'warm';
-DEFINE FIELD metadata      ON typed_memory TYPE object FLEXIBLE DEFAULT {};
+DEFINE FIELD metadata      ON typed_memory TYPE object DEFAULT {};
 DEFINE FIELD created_at    ON typed_memory TYPE datetime DEFAULT time::now();
 DEFINE FIELD updated_at    ON typed_memory TYPE datetime DEFAULT time::now();
 DEFINE FIELD valid_from    ON typed_memory TYPE option<datetime>;
@@ -173,7 +187,7 @@ DEFINE INDEX idx_project_brain ON project FIELDS brain_id;
 DEFINE INDEX idx_project_uid   ON project FIELDS brain_id, uid UNIQUE;
 
 -- Sources (memory origin registry)
-DEFINE TABLE source SCHEMAFULL;
+DEFINE TABLE source SCHEMALESS;
 DEFINE FIELD id             ON source TYPE string;
 DEFINE FIELD brain_id       ON source TYPE string;
 DEFINE FIELD name           ON source TYPE string;
@@ -183,7 +197,7 @@ DEFINE FIELD effective_date ON source TYPE option<datetime>;
 DEFINE FIELD expires_at     ON source TYPE option<datetime>;
 DEFINE FIELD status         ON source TYPE string DEFAULT 'active';
 DEFINE FIELD file_hash      ON source TYPE string DEFAULT '';
-DEFINE FIELD metadata       ON source TYPE object FLEXIBLE DEFAULT {};
+DEFINE FIELD metadata       ON source TYPE object DEFAULT {};
 DEFINE FIELD created_at     ON source TYPE datetime DEFAULT time::now();
 DEFINE FIELD updated_at     ON source TYPE datetime DEFAULT time::now();
 DEFINE FIELD trust          ON source TYPE option<float>;
@@ -207,7 +221,7 @@ DEFINE INDEX idx_trace_brain   ON retrieval_trace FIELDS brain_id;
 DEFINE INDEX idx_trace_created ON retrieval_trace FIELDS brain_id, created_at;
 
 -- Alerts (system-generated warnings and recommendations)
-DEFINE TABLE alerts SCHEMAFULL;
+DEFINE TABLE alerts SCHEMALESS;
 DEFINE FIELD id                 ON alerts TYPE string;
 DEFINE FIELD brain_id           ON alerts TYPE string;
 DEFINE FIELD alert_type         ON alerts TYPE string;
@@ -219,7 +233,7 @@ DEFINE FIELD created_at         ON alerts TYPE datetime DEFAULT time::now();
 DEFINE FIELD seen_at            ON alerts TYPE option<datetime>;
 DEFINE FIELD acknowledged_at    ON alerts TYPE option<datetime>;
 DEFINE FIELD resolved_at        ON alerts TYPE option<datetime>;
-DEFINE FIELD metadata           ON alerts TYPE object FLEXIBLE DEFAULT {};
+DEFINE FIELD metadata           ON alerts TYPE object DEFAULT {};
 DEFINE INDEX idx_alerts_brain   ON alerts FIELDS brain_id;
 DEFINE INDEX idx_alerts_status  ON alerts FIELDS brain_id, status;
 
@@ -294,7 +308,7 @@ DEFINE INDEX idx_maturation_fiber     ON maturation FIELDS brain_id, fiber_id UN
 DEFINE INDEX idx_maturation_stage     ON maturation FIELDS brain_id, stage;
 
 -- Brain versions (snapshot/checkpoint history with compressed snapshots)
-DEFINE TABLE brain_versions SCHEMAFULL;
+DEFINE TABLE brain_versions SCHEMALESS;
 DEFINE FIELD id              ON brain_versions TYPE string;
 DEFINE FIELD brain_id        ON brain_versions TYPE string;
 DEFINE FIELD version_name    ON brain_versions TYPE string DEFAULT '';
@@ -306,7 +320,7 @@ DEFINE FIELD fiber_count     ON brain_versions TYPE int DEFAULT 0;
 DEFINE FIELD snapshot_hash   ON brain_versions TYPE string DEFAULT '';
 DEFINE FIELD snapshot_data   ON brain_versions TYPE string DEFAULT '';
 DEFINE FIELD created_at      ON brain_versions TYPE datetime DEFAULT time::now();
-DEFINE FIELD metadata        ON brain_versions TYPE object FLEXIBLE DEFAULT {};
+DEFINE FIELD metadata        ON brain_versions TYPE object DEFAULT {};
 DEFINE INDEX idx_versions_brain  ON brain_versions FIELDS brain_id;
 DEFINE INDEX idx_versions_number ON brain_versions FIELDS brain_id, version_number;
 

@@ -81,7 +81,10 @@ class TestEnsureSchemaExecution:
         joined = "\n".join(conn.executed)
         assert "DEFINE ANALYZER IF NOT EXISTS smem_content" in joined
         assert "idx_neuron_content_fts" in joined
-        assert "DEFINE TABLE neuron SCHEMAFULL" in joined
+        # neuron (and the other arbitrary-``metadata`` tables) are SCHEMALESS so
+        # their ``TYPE object`` metadata accepts nested keys without FLEXIBLE, which
+        # SurrealDB rejects on a SCHEMALESS table — see SCHEMA_SQL rationale comment.
+        assert "DEFINE TABLE neuron SCHEMALESS" in joined
         assert "HNSW DIMENSION 1024" in joined
 
     async def test_a_failing_statement_does_not_abort_the_rest(self) -> None:
