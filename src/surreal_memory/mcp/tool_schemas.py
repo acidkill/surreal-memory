@@ -408,27 +408,50 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "smem_provenance",
-        "description": "Trace provenance, verify, or approve a memory neuron. "
-        "Use 'trace' to see full provenance chain (source, stored_by, verified, approved). "
-        "Use 'verify' or 'approve' to add audit trail entries.",
+        "description": "Trace provenance / verify / approve a memory neuron, or query retrieval traces. "
+        "Use 'trace' to see a neuron's full provenance chain (source, stored_by, verified, approved, "
+        "superseded lineage). Use 'verify' or 'approve' to add audit trail entries. Use 'traces' to list "
+        "recalls that used a memory or matched a query, and 'trace_get' to fetch one full retrieval-trace record.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["trace", "verify", "approve"],
-                    "description": "Action: trace (view chain), verify (mark verified), approve (mark approved).",
+                    "enum": ["trace", "verify", "approve", "traces", "trace_get"],
+                    "description": "trace (neuron chain), verify, approve; traces (list retrieval traces), trace_get (one retrieval trace).",
                 },
                 "neuron_id": {
                     "type": "string",
-                    "description": "Neuron ID to trace/verify/approve.",
+                    "description": "Neuron ID to trace/verify/approve (required for those actions).",
                 },
                 "actor": {
                     "type": "string",
                     "description": "Who is performing the verification/approval (default: mcp_agent).",
                 },
+                "fiber_id": {
+                    "type": "string",
+                    "description": "action=traces: only retrieval traces whose fiber_ids contain this id.",
+                },
+                "query_contains": {
+                    "type": "string",
+                    "description": "action=traces: case-insensitive substring match on the trace query.",
+                },
+                "since": {
+                    "type": "string",
+                    "description": "action=traces: ISO datetime; only traces created at/after this time.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100,
+                    "description": "action=traces: max traces to return (default 20).",
+                },
+                "trace_id": {
+                    "type": "string",
+                    "description": "action=trace_get: the retrieval-trace id to fetch.",
+                },
             },
-            "required": ["action", "neuron_id"],
+            "required": ["action"],
         },
     },
     {

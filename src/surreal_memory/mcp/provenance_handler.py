@@ -181,14 +181,10 @@ class ProvenanceHandler:
     # ========== Provenance ==========
 
     async def _provenance(self, args: dict[str, Any]) -> dict[str, Any]:
-        """Trace provenance, verify, or approve a neuron."""
+        """Trace provenance / verify / approve a neuron, or query retrieval traces."""
         action = args.get("action", "")
         if not action:
-            return {"error": "action is required (trace, verify, approve)"}
-
-        neuron_id = args.get("neuron_id")
-        if not neuron_id or not isinstance(neuron_id, str):
-            return {"error": "neuron_id is required"}
+            return {"error": "action is required (trace, verify, approve, traces, trace_get)"}
 
         storage = await self.get_storage()
         try:
@@ -196,6 +192,17 @@ class ProvenanceHandler:
         except ValueError:
             logger.error("No brain configured for provenance")
             return {"error": "No brain configured"}
+
+        # Retrieval-trace telemetry queries (U4) — keyed by fiber_id / query / trace_id,
+        # NOT neuron_id, so they are dispatched before the neuron requirement below.
+        if action == "traces":
+            return await self._provenance_traces(storage, args)
+        if action == "trace_get":
+            return await self._provenance_trace_get(storage, args)
+
+        neuron_id = args.get("neuron_id")
+        if not neuron_id or not isinstance(neuron_id, str):
+            return {"error": "neuron_id is required"}
 
         # Verify neuron exists
         neuron = await storage.get_neuron(neuron_id)
@@ -217,7 +224,12 @@ class ProvenanceHandler:
                 storage, neuron_id, SynapseType.APPROVED_BY, actor
             )
 
-        return {"error": f"Unknown action: {action}. Use trace, verify, or approve."}
+        return {
+            "error": (
+                f"Unknown action: {action}. "
+                "Use trace, verify, approve (neuron), or traces, trace_get (retrieval traces)."
+            )
+        }
 
     async def _provenance_trace(self, storage: NeuralStorage, neuron_id: str) -> dict[str, Any]:
         """Trace full provenance chain for a neuron."""
@@ -355,6 +367,72 @@ class ProvenanceHandler:
             "actor": actor,
             "synapse_id": syn.id,
         }
+
+    # ========== Retrieval-trace queries (U4) ==========
+
+    async def _provenance_traces(
+        self, storage: NeuralStorage, args: dict[str, Any]
+    ) -> dict[str, Any]:
+        """List retrieval traces (compact) — "which recalls used memory X / matched query Y".
+
+        Filters: fiber_id (traces whose fiber_ids contain it), query_contains, since (ISO
+        datetime), limit (1..100, default 20). Returns newest-first compact records.
+        """
+        from datetime import datetime
+
+        fiber_id = args.get("fiber_id") or args.get("neuron_id")
+        query_contains = args.get("query_contains")
+        since_raw = args.get("since")
+        since = None
+        if isinstance(since_raw, str) and since_raw:
+            try:
+                since = datetime.fromisoformat(since_raw)
+                if since.tzinfo is not None:
+                    from datetime import UTC
+
+                    since = since.astimezone(UTC).replace(tzinfo=None)
+            except ValueError:
+                return {"error": f"Invalid since datetime: {since_raw}"}
+
+        try:
+            limit = max(1, min(int(args.get("limit", 20)), 100))
+        except (TypeError, ValueError):
+            limit = 20
+
+        traces = await storage.find_retrieval_traces(
+            fiber_id=fiber_id if isinstance(fiber_id, str) else None,
+            query_contains=query_contains if isinstance(query_contains, str) else None,
+            since=since,
+            limit=limit,
+        )
+        return {
+            "traces": [
+                {
+                    "id": t.id,
+                    "query": t.query,
+                    "mode": t.mode,
+                    "depth_used": t.depth_used,
+                    "confidence": t.confidence,
+                    "fiber_ids": list(t.fiber_ids),
+                    "session_id": t.session_id,
+                    "created_at": t.created_at.isoformat() if t.created_at else None,
+                }
+                for t in traces
+            ],
+            "count": len(traces),
+        }
+
+    async def _provenance_trace_get(
+        self, storage: NeuralStorage, args: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Get one full retrieval-trace record by id — "what fed answer X"."""
+        trace_id = args.get("trace_id")
+        if not trace_id or not isinstance(trace_id, str):
+            return {"error": "trace_id is required for trace_get"}
+        trace = await storage.get_retrieval_trace(trace_id)
+        if trace is None:
+            return {"error": f"Retrieval trace '{trace_id}' not found"}
+        return {"trace": trace.to_dict()}
 
     # ========== Show ==========
 
