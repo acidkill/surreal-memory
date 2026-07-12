@@ -94,6 +94,57 @@ class TestSupersedeTypedMemory:
         )
         assert outcome.superseded is False
 
+    async def test_boundary_preserved_against_different_successor(
+        self, storage: InMemoryStorage
+    ) -> None:
+        # Paris superseded by NYC. A later, DIFFERENT fact (Berlin) must NOT move
+        # Paris's closed validity window — the newer fact supersedes the current
+        # fact, not a historical one. Guards point-in-time (valid_at) recall.
+        paris = await _make_fact(storage, "paris")
+        nyc = await _make_fact(storage, "nyc")
+        berlin = await _make_fact(storage, "berlin")
+
+        first = await supersede_typed_memory(
+            storage, paris.id, nyc.id, nyc.anchor_neuron_id, paris.anchor_neuron_id
+        )
+        assert first.superseded is True
+        tm1 = await storage.get_typed_memory(paris.id)
+        assert tm1 is not None
+        boundary = tm1.valid_until
+        assert tm1.superseded_by == nyc.id
+
+        second = await supersede_typed_memory(
+            storage, paris.id, berlin.id, berlin.anchor_neuron_id, paris.anchor_neuron_id
+        )
+        assert second.superseded is False  # no-op — boundary is immutable once set
+        tm2 = await storage.get_typed_memory(paris.id)
+        assert tm2 is not None
+        assert tm2.superseded_by == nyc.id  # unchanged
+        assert tm2.valid_until == boundary  # unchanged
+        # No spurious Berlin -> Paris SUPERSEDES edge either.
+        berlin_syn = await storage.get_synapses(
+            source_id=berlin.anchor_neuron_id, target_id=paris.anchor_neuron_id
+        )
+        assert not any(s.type == SynapseType.SUPERSEDES for s in berlin_syn)
+
+    async def test_superseded_by_canonicalized_to_dash(self, storage: InMemoryStorage) -> None:
+        # Manual/backfill paths pass the storage-loaded (underscore) fiber id; the
+        # stored superseded_by must be normalised to the canonical dash form so the
+        # value surfaced to callers is consistent with the dash form remember returns.
+        old = await _make_fact(storage, "a")
+        new = await _make_fact(storage, "b")
+        underscore_new = new.id.replace("-", "_")
+        assert underscore_new != new.id
+
+        outcome = await supersede_typed_memory(
+            storage, old.id, underscore_new, new.anchor_neuron_id, old.anchor_neuron_id
+        )
+        assert outcome.superseded is True
+        assert outcome.new_fiber_id == new.id  # canonical dash
+        tm = await storage.get_typed_memory(old.id)
+        assert tm is not None
+        assert tm.superseded_by == new.id  # dash, not underscore
+
 
 class TestResolveFibersForNeurons:
     async def test_unambiguous_neuron_maps(self, storage: InMemoryStorage) -> None:

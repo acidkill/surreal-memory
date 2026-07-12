@@ -30,6 +30,20 @@ class SupersessionOutcome:
     superseded: bool  # True if a change was applied (False = nothing to do / idempotent no-op)
 
 
+def _canonical_fiber_id(fiber_id: str) -> str:
+    """Return the original dash-UUID form of a fiber id.
+
+    Fiber ids are uuid4 (hex + dashes, never underscores); SurrealDB record-id
+    sanitisation folds ``-`` -> ``_``, so a fiber loaded from the DB carries the
+    underscore form (the deferred Fiber.id round-trip). We store ``superseded_by``
+    in the canonical dash form regardless of which path produced ``new_fiber_id``
+    (in-process dash id vs storage-loaded underscore id) so the value surfaced to
+    callers is consistent. Lossless because UUIDs contain no underscores — mirrors
+    the same reversal already done for synapse ids in ``_row_to_synapse``.
+    """
+    return fiber_id.replace("_", "-")
+
+
 async def supersede_typed_memory(
     storage: NeuralStorage,
     old_fiber_id: str,
@@ -39,18 +53,29 @@ async def supersede_typed_memory(
     reason: str = "",
     now: datetime | None = None,
 ) -> SupersessionOutcome:
-    """Mark ``old_fiber_id`` superseded by ``new_fiber_id`` (idempotent)."""
+    """Mark ``old_fiber_id`` superseded by ``new_fiber_id`` (idempotent).
+
+    Boundary-preserving: once a fact's validity window is closed it STAYS closed.
+    Re-superseding an already-superseded fact — by the same OR a different newer
+    fact — is a no-op, because a newer fact supersedes the *current* fact, not a
+    historical one. This protects the ``valid_until`` boundary that point-in-time
+    (``valid_at``) recall depends on.
+    """
     now = now or utcnow()
+    canonical_new = _canonical_fiber_id(new_fiber_id)
 
     old_tm = await storage.get_typed_memory(old_fiber_id)
     if old_tm is None:
-        return SupersessionOutcome(old_fiber_id, new_fiber_id, superseded=False)
+        return SupersessionOutcome(old_fiber_id, canonical_new, superseded=False)
 
-    already = old_tm.superseded_by == new_fiber_id and old_tm.valid_until is not None
-    if not already:
-        # A side (authoritative): close the validity window + record the successor.
-        updated = old_tm.with_validity(valid_until=now, superseded_by=new_fiber_id)
-        await storage.update_typed_memory(updated)
+    # Already closed → no-op (idempotent AND boundary-preserving against a different
+    # successor). See docstring: the window's upper bound is immutable once set.
+    if old_tm.valid_until is not None:
+        return SupersessionOutcome(old_fiber_id, canonical_new, superseded=False)
+
+    # A side (authoritative): close the validity window + record the successor.
+    updated = old_tm.with_validity(valid_until=now, superseded_by=canonical_new)
+    await storage.update_typed_memory(updated)
 
     # SUPERSEDES synapse new -> old (mirror _schema_evolve), created once.
     if not await _supersedes_synapse_exists(storage, new_anchor_id, old_anchor_id):
@@ -69,12 +94,12 @@ async def supersede_typed_memory(
     if old_neuron is not None and not old_neuron.metadata.get("_superseded"):
         stamped = old_neuron.with_metadata(
             _superseded=True,
-            _superseded_by=new_fiber_id,
+            _superseded_by=canonical_new,
             _superseded_at=now.isoformat(),
         )
         await storage.update_neuron(stamped)
 
-    return SupersessionOutcome(old_fiber_id, new_fiber_id, superseded=not already)
+    return SupersessionOutcome(old_fiber_id, canonical_new, superseded=True)
 
 
 async def _supersedes_synapse_exists(

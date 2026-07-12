@@ -185,3 +185,24 @@ class TestRecallSupersessionFilter:
         # Current fact: open-ended → no valid_until / superseded_by keys.
         assert "valid_until" not in memories["f-bergen"]
         assert "superseded_by" not in memories["f-bergen"]
+
+    @pytest.mark.asyncio
+    async def test_answer_context_rebuilt_after_hard_filter(
+        self, server: MCPServer, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # When the hard-filter drops a fiber from a REAL RetrievalResult dataclass,
+        # result.context (surfaced as `answer`) must be rebuilt from the survivors so
+        # the superseded fact's text does not linger in the primary answer field.
+        # (Regression: the rebuild was gated on hasattr(result,"_replace"), a no-op on
+        # the production dataclass, so answer kept the dropped fact's prose.)
+        async def _fake_format_context(**_: object) -> tuple[str, dict[str, object]]:
+            return ("Emma lives in Bergen.", {})
+
+        monkeypatch.setattr(
+            "surreal_memory.engine.retrieval_context.format_context", _fake_format_context
+        )
+        res = await _run_recall(server, {}, _emma_typed_memories())
+        assert res["fibers_matched"] == ["f-bergen"]
+        # answer regenerated from the surviving fiber only — no "Oslo" text.
+        assert res["answer"] == "Emma lives in Bergen."
+        assert "Oslo" not in res["answer"]

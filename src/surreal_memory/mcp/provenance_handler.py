@@ -295,6 +295,11 @@ class ProvenanceHandler:
         edges (who superseded this, i.e. newer facts); ``forward=False`` follows
         outbound edges (what this superseded, i.e. older facts). A visited-set guards
         against cycles and ``max_depth`` bounds pathological chains.
+
+        ``get_synapses`` returns no defined order, so edges are sorted by
+        (created_at, id) for a DETERMINISTIC chain across runs/backends. When a node
+        has multiple edges in one direction (e.g. a fact that superseded several
+        others) this follows the earliest one — a single representative chain.
         """
         out: list[dict[str, Any]] = []
         visited: set[str] = {start_neuron_id}
@@ -302,16 +307,20 @@ class ProvenanceHandler:
         for _ in range(max_depth):
             if forward:
                 syns = await storage.get_synapses(target_id=current, type=SynapseType.SUPERSEDES)
-                # Filter client-side too: some backends/mocks ignore the type kwarg.
-                edges = [s for s in syns if s.type == SynapseType.SUPERSEDES]
-                nxt = edges[0].source_id if edges else None
             else:
                 syns = await storage.get_synapses(source_id=current, type=SynapseType.SUPERSEDES)
-                edges = [s for s in syns if s.type == SynapseType.SUPERSEDES]
-                nxt = edges[0].target_id if edges else None
-            if not edges or nxt is None or nxt in visited:
+            # Filter client-side too (some backends/mocks ignore the type kwarg) and
+            # order deterministically.
+            edges = sorted(
+                (s for s in syns if s.type == SynapseType.SUPERSEDES),
+                key=lambda s: (s.created_at.isoformat() if s.created_at else "", s.id),
+            )
+            if not edges:
                 break
             syn = edges[0]
+            nxt = syn.source_id if forward else syn.target_id
+            if nxt is None or nxt in visited:
+                break
             out.append(
                 {
                     "neuron_id": nxt,

@@ -70,8 +70,8 @@ async def _rebuild_context_for_fibers(
         brain_id=brain_id,
         clean_for_prompt=clean_for_prompt,
     )
-    if new_ctx and hasattr(result, "_replace"):
-        return result._replace(context=new_ctx)
+    if new_ctx:
+        return _result_replace(result, context=new_ctx)
     return result
 
 
@@ -108,23 +108,25 @@ async def _rerank_by_recency(fiber_ids: list[str], storage: Any) -> list[str]:
     return [p[0] for p in pairs]
 
 
-def _result_with_fibers(result: Any, fibers: list[str]) -> Any:
-    """Return ``result`` with ``fibers_matched`` replaced.
+def _result_replace(result: Any, **fields: Any) -> Any:
+    """Return ``result`` with the given fields replaced.
 
     Production ``RetrievalResult`` is a (mutable) dataclass with no ``_replace``;
     test doubles are namedtuples or MagicMocks that DO expose ``_replace``. Handle
-    all three so post-filter drops (expiry / trust / tier / supersession) actually
-    take effect on the real result object and not only on namedtuple/mock ones.
+    all three so post-filter mutations — dropping fibers (expiry / trust / tier /
+    supersession) AND rebuilding ``context`` so the answer prose reflects the
+    surviving set — take effect on the real result object, not only on
+    namedtuple/mock ones.
     """
     if dataclasses.is_dataclass(result) and not isinstance(result, type):
         try:
-            return dataclasses.replace(result, fibers_matched=fibers)
+            return dataclasses.replace(result, **fields)
         except Exception:  # pragma: no cover - defensive
             logger.debug("dataclasses.replace failed on result", exc_info=True)
     replace = getattr(result, "_replace", None)
     if callable(replace):
         try:
-            return replace(fibers_matched=fibers)
+            return replace(**fields)
         except Exception:  # pragma: no cover - defensive
             logger.debug("_replace failed on result", exc_info=True)
     return result
@@ -551,7 +553,7 @@ class RecallHandler:
                 # fiber; leaving it untouched otherwise keeps the original result
                 # object intact (avoids needless copies / mock corruption).
                 if len(filtered_fibers) < len(original_matched):
-                    result = _result_with_fibers(result, filtered_fibers)
+                    result = _result_replace(result, fibers_matched=filtered_fibers)
             except Exception:
                 logger.debug("Post-filter (trust/tier) failed (non-critical)", exc_info=True)
 
@@ -622,8 +624,8 @@ class RecallHandler:
                             brain_id=brain_id,
                             clean_for_prompt=clean_for_prompt,
                         )
-                        if new_ctx and hasattr(result, "_replace"):
-                            result = result._replace(context=new_ctx)
+                        if new_ctx:
+                            result = _result_replace(result, context=new_ctx)
             except Exception:
                 logger.debug("prefer_recent rerank failed, keeping default order", exc_info=True)
 
