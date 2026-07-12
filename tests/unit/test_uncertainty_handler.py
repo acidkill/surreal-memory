@@ -84,6 +84,10 @@ class TestUncertaintyTool:
         assert c["drift_clusters"] == 0  # InMemory has no drift backend
         assert res["contradiction_rate"] > 0.0
         assert res["total_memories"] >= 4
+        # Honesty fields: small brain → not truncated / not capped.
+        assert res["scan"]["typed_scan_truncated"] is False
+        assert res["scan"]["contradictions_capped"] is False
+        assert res["scan"]["typed_scanned"] >= 4
 
     async def test_overview_is_default_action(self, server: _FakeServer) -> None:
         assert (await server._uncertainty({}))["level"] == "high"
@@ -92,6 +96,8 @@ class TestUncertaintyTool:
         res = await server._uncertainty({"action": "low_evidence"})
         assert res["count"] == 1
         assert res["low_evidence"][0]["trust_score"] == 0.3
+        assert res["truncated"] is False
+        assert res["scanned"] >= 4
 
     async def test_expiring_action(self, server: _FakeServer) -> None:
         res = await server._uncertainty({"action": "expiring", "within_days": 14})

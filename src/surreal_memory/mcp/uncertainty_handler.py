@@ -25,6 +25,10 @@ logger = logging.getLogger(__name__)
 _MAX_LIMIT = 200
 _SAMPLE_N = 10
 _LOW_TRUST_THRESHOLD = 0.4
+# Bound the CONTRADICTS synapse scan so overview never does a full-table scan on
+# SurrealDB (get_synapses with limit=None emits no LIMIT there). A brain with more
+# active conflicts than this is already pathological; the count is reported capped.
+_CONTRADICTION_SCAN_CAP = 2000
 
 
 def _level(
@@ -75,10 +79,10 @@ class UncertaintyHandler:
     async def _uncertainty_overview(
         self, storage: NeuralStorage, brain_id: str, within_days: int
     ) -> dict[str, Any]:
-        conflicts_active = await _count_active_contradictions(storage)
+        conflicts_active, contradictions_capped = await _count_active_contradictions(storage)
         expiring_count = await _safe_int(storage.get_expiring_memory_count(within_days))
         drift = await _get_drift(storage, _SAMPLE_N)
-        low_evidence, superseded = await _scan_typed(storage)
+        low_evidence, superseded, scanned, scan_truncated = await _scan_typed(storage)
 
         try:
             total = await storage.count_typed_memories()
@@ -101,6 +105,14 @@ class UncertaintyHandler:
             "counts": counts,
             "contradiction_rate": contradiction_rate,
             "total_memories": total,
+            # Honesty about coverage: low_evidence/superseded reflect only the most-recent
+            # `scanned` typed memories (recency-ordered); when truncated, older facts are
+            # NOT counted. contradiction count is capped at _CONTRADICTION_SCAN_CAP.
+            "scan": {
+                "typed_scanned": scanned,
+                "typed_scan_truncated": scan_truncated,
+                "contradictions_capped": contradictions_capped,
+            },
             "samples": {
                 "low_evidence": low_evidence[:_SAMPLE_N],
                 "superseded": superseded[:_SAMPLE_N],
@@ -131,8 +143,13 @@ class UncertaintyHandler:
         return {"expiring": out, "count": len(out), "within_days": within_days}
 
     async def _uncertainty_low_evidence(self, storage: NeuralStorage, limit: int) -> dict[str, Any]:
-        low_evidence, _ = await _scan_typed(storage)
-        return {"low_evidence": low_evidence[:limit], "count": len(low_evidence)}
+        low_evidence, _superseded, scanned, truncated = await _scan_typed(storage)
+        return {
+            "low_evidence": low_evidence[:limit],
+            "count": len(low_evidence),
+            "scanned": scanned,
+            "truncated": truncated,
+        }
 
 
 # ── module helpers ──
@@ -157,12 +174,16 @@ async def _safe_int(awaitable: Any) -> int:
         return 0
 
 
-async def _count_active_contradictions(storage: NeuralStorage) -> int:
+async def _count_active_contradictions(storage: NeuralStorage) -> tuple[int, bool]:
+    """(count of unresolved CONTRADICTS, whether the scan hit the cap)."""
     try:
-        contradicts = await storage.get_synapses(type=SynapseType.CONTRADICTS)
+        contradicts = await storage.get_synapses(
+            type=SynapseType.CONTRADICTS, limit=_CONTRADICTION_SCAN_CAP
+        )
     except Exception:
-        return 0
-    return sum(1 for s in contradicts if not s.metadata.get("_resolved"))
+        return 0, False
+    active = sum(1 for s in contradicts if not s.metadata.get("_resolved"))
+    return active, len(contradicts) >= _CONTRADICTION_SCAN_CAP
 
 
 async def _get_drift(storage: NeuralStorage, limit: int) -> list[dict[str, Any]]:
@@ -185,16 +206,20 @@ async def _get_drift(storage: NeuralStorage, limit: int) -> list[dict[str, Any]]
 
 async def _scan_typed(
     storage: NeuralStorage,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """One bounded typed-memory scan → (low-evidence list, superseded list).
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int, bool]:
+    """(low-evidence list, superseded list, rows_scanned, truncated).
 
     No dedicated trust/superseded index method exists on the ABC, so this scans a
-    bounded window (<=200) and filters in Python — cheap and backend-agnostic.
+    bounded window (<=200) and filters in Python. Both backends order this by
+    recency, so on a brain with >200 typed memories the result reflects only the
+    most-recent rows — the caller MUST surface ``truncated`` so the counts are not
+    read as exhaustive. Uses ``include_expired=False`` to match the scope of
+    ``count_typed_memories`` (total_memories).
     """
     try:
-        rows = await storage.find_typed_memories(limit=_MAX_LIMIT, include_expired=True)
+        rows = await storage.find_typed_memories(limit=_MAX_LIMIT, include_expired=False)
     except Exception:
-        return [], []
+        return [], [], 0, False
     low_evidence: list[dict[str, Any]] = []
     superseded: list[dict[str, Any]] = []
     for tm in rows:
@@ -203,4 +228,4 @@ async def _scan_typed(
             low_evidence.append({"fiber_id": tm.fiber_id, "trust_score": trust})
         if getattr(tm, "superseded_by", None):
             superseded.append({"fiber_id": tm.fiber_id, "superseded_by": tm.superseded_by})
-    return low_evidence, superseded
+    return low_evidence, superseded, len(rows), len(rows) >= _MAX_LIMIT

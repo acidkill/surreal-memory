@@ -913,9 +913,11 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "smem_uncertainty",
-        "description": "How much can you trust this brain's memories? Brain-wide uncertainty diagnostics — "
+        "description": "How much can you trust this brain's memories? Uncertainty diagnostics — "
         "contradictions, low-evidence (low trust) facts, superseded facts, soon-expiring memories, and drift. "
-        "Separate from smem_conflicts (which is CRUD). Read-only.",
+        "Separate from smem_conflicts (which is CRUD). Read-only. Note: low_evidence/superseded sample the "
+        "most-recent ~200 typed memories (see response 'scan.typed_scan_truncated'); contradiction count is "
+        "capped. Drift is available on SQLite backends only.",
         "inputSchema": {
             "type": "object",
             "properties": {

@@ -15,6 +15,7 @@ returns — it is pure, opt-in reporting. This module lives in ``engine`` (not
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 _TOP_N = 10
@@ -42,7 +43,7 @@ async def _contradictions(storage: Any, disputed_ids: list[str]) -> list[dict[st
     out: list[dict[str, Any]] = []
     for nid in top:
         neuron = neurons.get(nid) if isinstance(neurons, dict) else None
-        content = getattr(neuron, "content", "") if neuron is not None else ""
+        content = (getattr(neuron, "content", "") or "") if neuron is not None else ""
         out.append({"neuron_id": nid, "content": content[:200]})
     return out
 
@@ -143,12 +144,19 @@ async def build_uncertainty_block(
     if not isinstance(fiber_ids, list):
         fiber_ids = []
 
-    contradictions = await _contradictions(storage, disputed_ids)
-    superseded, tags = await _superseded_and_tags(storage, fiber_ids)
-    expiring = await _expiring(storage, fiber_ids, within_days)
+    # Independent reads run concurrently (each guards its own errors); drift depends
+    # on the tag set from the superseded scan, so it runs after.
+    contradictions, (superseded, tags), expiring = await asyncio.gather(
+        _contradictions(storage, disputed_ids),
+        _superseded_and_tags(storage, fiber_ids),
+        _expiring(storage, fiber_ids, within_days),
+    )
     drift_clusters = await _drift(storage, tags)
 
-    threshold = float(getattr(config, "sufficiency_threshold", _DEFAULT_SUFFICIENCY))
+    try:
+        threshold = float(getattr(config, "sufficiency_threshold", _DEFAULT_SUFFICIENCY))
+    except (TypeError, ValueError):
+        threshold = _DEFAULT_SUFFICIENCY
     try:
         confidence = float(getattr(result, "confidence", 1.0) or 0.0)
     except (TypeError, ValueError):
