@@ -323,6 +323,10 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "type": "boolean",
                     "description": "Persist a retrieval trace for this recall and return its trace_id (telemetry — what fed the answer). Works even when trace telemetry is off globally; does not change global config. Persisted synchronously before the response returns (small added latency); on failure the response carries trace_error instead of trace_id. Not applied to cross-brain recall (when 'brains' is set).",
                 },
+                "include_uncertainty": {
+                    "type": "boolean",
+                    "description": "Attach an 'uncertainty' block summarising how much to trust the answer (contradictions, superseded facts, low confidence, soon-expiring memories, drift). Default false. Only added when there is an actual uncertainty signal.",
+                },
                 "session_id": {
                     "type": "string",
                     "description": "Optional session identifier stored on the retrieval trace to group recalls from one session.",
@@ -905,6 +909,34 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
                 },
             },
             "required": ["action"],
+        },
+    },
+    {
+        "name": "smem_uncertainty",
+        "description": "How much can you trust this brain's memories? Brain-wide uncertainty diagnostics — "
+        "contradictions, low-evidence (low trust) facts, superseded facts, soon-expiring memories, and drift. "
+        "Separate from smem_conflicts (which is CRUD). Read-only.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["overview", "contradictions", "drift", "expiring", "low_evidence"],
+                    "description": "overview (default)=counts + contradiction_rate + samples; contradictions=list active conflicts; drift=detected drift clusters; expiring=memories expiring soon; low_evidence=low-trust memories.",
+                },
+                "within_days": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 365,
+                    "description": "Window for the 'expiring' signal / overview (default 14).",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 200,
+                    "description": "Max items to return for list actions (default 10).",
+                },
+            },
         },
     },
     {

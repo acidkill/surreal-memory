@@ -904,6 +904,18 @@ class RecallHandler:
         if alert_info:
             response.update(alert_info)
 
+        # U5: opt-in uncertainty block (additive; existing has_conflicts/include_conflicts
+        # untouched). Only attached when there is an actual uncertainty signal.
+        if args.get("include_uncertainty"):
+            try:
+                from surreal_memory.engine.uncertainty_report import build_uncertainty_block
+
+                block = await build_uncertainty_block(storage, result, brain.config)
+                if block is not None:
+                    response["uncertainty"] = block
+            except Exception:
+                logger.debug("Uncertainty block build failed (non-critical)", exc_info=True)
+
         # U4: retrieval-trace telemetry (opt-in; off by default → true no-op).
         await self._maybe_persist_trace(response, result, query, args, brain, recall_mode, storage)
 

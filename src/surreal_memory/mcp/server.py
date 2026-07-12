@@ -53,6 +53,7 @@ from surreal_memory.mcp.telegram_handler import TelegramHandler
 from surreal_memory.mcp.tool_handlers import ToolHandler
 from surreal_memory.mcp.tool_schemas import get_tool_schemas_for_tier
 from surreal_memory.mcp.train_handler import TrainHandler
+from surreal_memory.mcp.uncertainty_handler import UncertaintyHandler
 from surreal_memory.mcp.version_check_handler import VersionCheckHandler
 from surreal_memory.mcp.visualize_handler import VisualizeHandler
 from surreal_memory.mcp.watch_handler import WatchHandler
@@ -88,6 +89,7 @@ class MCPServer(
     AutoHandler,
     IndexHandler,
     ConflictHandler,
+    UncertaintyHandler,
     TrainHandler,
     DBTrainHandler,
     MaintenanceHandler,
@@ -246,6 +248,7 @@ class MCPServer(
             "smem_version": self._version,
             "smem_transplant": self._transplant,
             "smem_conflicts": self._conflicts,
+            "smem_uncertainty": self._uncertainty,
             "smem_train": self._train,
             "smem_train_db": self._train_db,
             "smem_pin": self._pin,
