@@ -198,3 +198,48 @@ the `fiber_id` filter the same way ids are sanitized on write), or (b) resolve f
 regression test should assert `response["sources"][fid]["trust"]` is present after a source-linked
 `smem_remember` + `smem_recall` on the SurrealDB backend.
 ```
+
+---
+
+## RE-VERIFICATION after UB2
+
+**Fix commit:** `9e32a85` — "fix(surrealdb): get_typed_memory/batch resolve loaded (underscore) fiber-id form (UB2)" (confirmed ancestor of worktree HEAD; `get_typed_memory` now `AND id = type::record('typed_memory', $sid)`, `get_typed_memories_batch` now `WHERE brain_id = {lit} AND meta::id(id) IN $sids`, both via `_to_surreal_id` — `storage/surrealdb/typed_memory.py:174,242`).
+
+**Re-run:** same harness `u2_harness2.py`, worktree `.venv/bin/python`, live SurrealDB, `SURREAL_MEMORY_STORAGE=surrealdb`, **FRESH brain `u2qarun006ub2`** (no stale rows — recall matched exactly the one new fiber `e0b9c7cc_ee50_44af_ac0f_b9519e9757cc`). Raw stdout: `harness2-ub2-output.txt`. No mocks. Command:
+```
+SURREAL_MEMORY_STORAGE=surrealdb SURREAL_MEMORY_BRAIN=u2qarun006ub2 \
+  .venv/bin/python u2_harness2.py
+```
+Backend asserted: `SurrealDBStorage`.
+
+### Item 2 real-trust — **PASS** (was the caveat)
+
+Linked source `linked-u2mark…` `trust=0.9`; brain `trust_weight=0.5`. Real `_recall` output:
+```json
+"score_breakdown":{"base_activation":0.9572,"intersection_boost":0.25,"freshness_boost":0.1321,
+  "frequency_boost":0.0208,"trust_factor":0.95,"recency_factor":1.0}
+```
+`trust_factor = 0.95 = (1-0.5) + 0.5·0.9` → now reflects the **real source trust (0.9)**, NOT the old `trust_default` path (0.85). `_build_trust_map` resolves the per-fiber source trust correctly on SurrealDB. Confirmed. (At `trust_weight=0.0` the same recall shows `trust_factor:1.0, recency_factor:1.0` — neutral default intact.)
+
+### Item 3 sources[fid].trust — **PASS** (was FAIL)
+
+After source-linked `smem_remember` (fiber `e0b9c7cc-ee50-44af-ac0f-b9519e9757cc`) + `smem_recall`, the real `_recall` response now populates `sources` with the U2 `trust` field:
+```json
+"sources": {
+  "e0b9c7cc_ee50_44af_ac0f_b9519e9757cc": {
+    "source_id":"source:448237af_eba1_4915_9a05_1e4023304c3d",
+    "name":"linked-u2mark1783820106","source_type":"research","version":"","status":"active",
+    "trust": 0.9
+  }
+}
+```
+`response["sources"][fid]["trust"] == 0.9`. Present at both `trust_weight=0.0` and `trust_weight=0.5` recalls. Confirmed.
+
+### Re-verification verdict
+
+| Item | Before UB2 | After UB2 (9e32a85) |
+|------|-----------|---------------------|
+| 2 — real source trust in `trust_factor` | trust_default (0.85) | **PASS** — 0.95 (real 0.9) |
+| 3 — `sources[fid].trust` | FAIL (empty map) | **PASS** — 0.9 present |
+
+Item 1 (`smem_source` trust param) re-confirmed PASS in the same run. UB2 fully unblocks the U2 sources map and real-trust calibration on the live SurrealDB backend.
