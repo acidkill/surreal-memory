@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.10.0] — Ecosystem
+
+The ecosystem release: recall gains a geographic dimension, and surreal-memory plugs
+directly into the LangChain RAG stack. No schema change — both features are additive
+and the default recall ranking stays byte-identical.
+
+### Added
+
+- **Geospatial recall** (metadata-only, no migration): attach a location to a memory
+  with `smem_remember` `location: {lat, lon, label?}`, and filter recall to a radius
+  with `smem_recall` `near: {lat, lon, radius_m}`. `near` is a hard filter modelled on
+  `valid_at` (exact WGS-84 haversine; memories without a location are excluded);
+  `near=None` is a strict no-op. Coordinates live in `fiber.metadata["location"]` (an
+  OBJECT FLEXIBLE field). `find_fibers(near=...)` browse pushdown works across the
+  InMemory, SQLite and SurrealDB backends, all sharing one exact-haversine implementation.
+- **LangChain adapter** (optional extra: `pip install surreal-memory[langchain]`):
+  `from surreal_memory.adapters.langchain import SurrealMemoryRetriever,
+  SurrealMemoryChatMessageHistory`. `SurrealMemoryRetriever` is a `BaseRetriever` that
+  runs the reflex recall pipeline and maps matched fibers to LangChain `Document`s;
+  `SurrealMemoryChatMessageHistory` persists chat turns as per-session memories and
+  replays them verbatim. In-process (no REST server), async-native with a sync bridge.
+  See `examples/langchain_rag.py` for an LCEL RAG chain with `RunnableWithMessageHistory`.
+
+### Fixed
+
+- `find_fibers(tags=...)` now pushes the tag predicate into SQL/SurQL so the `LIMIT`
+  applies *after* tag filtering — a tagged subset (e.g. a chat session) no longer risks
+  falling outside the fetch window on a large brain.
+
 ## [2.9.0] — Memory you can trust
 
 The trust release: memories now carry validity over time, recall stops surfacing facts
