@@ -202,6 +202,7 @@ Sync uses **Merkle delta** — only diffs travel, not the full brain.
 - **Trust & recency scoring** — weight recall by how much you trust a source and how fresh a memory is, instead of treating everything as equally reliable forever
 - **Uncertainty surfacing** — ask `smem_uncertainty` how much to trust an answer: contradictions, drift, soon-expiring memories, low-evidence facts
 - **Queryable retrieval traces** — opt-in record of *why* a recall returned what it did, for debugging and auditing
+- **Geospatial recall** — attach a location to a memory and filter recall to a radius around a point (`near`)
 
 #### Knowledge Ingestion
 - **Train from documents** — PDF, DOCX, PPTX, HTML, JSON, XLSX, CSV ingested into permanent brain knowledge
@@ -216,6 +217,7 @@ Sync uses **Merkle delta** — only diffs travel, not the full brain.
 #### Ecosystem
 - **Web dashboard** — multi-page React UI at `/ui` (overview, health radar, graph, timeline, evolution, storage, tool-stats, visualize, settings, uncertainty) — every page free, no Pro gate
 - **VS Code extension** — memory tree, graph explorer, CodeLens, WebSocket sync
+- **LangChain adapter** — optional extra (`pip install surreal-memory[langchain]`) exposing a `BaseRetriever` and chat message history backed by a brain — see [Python API](#python-api)
 - **Safety** — Fernet encryption, sensitive content auto-detection, input firewall
 - **Plugin system** — extend with custom retrieval strategies, compression, and storage backends
 
