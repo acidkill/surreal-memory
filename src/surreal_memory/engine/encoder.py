@@ -506,9 +506,7 @@ class MemoryEncoder:
 
         for neuron, vector in zip(candidates, vectors, strict=False):
             try:
-                await self._storage.update_neuron(
-                    neuron.with_metadata(_embedding=list(vector))
-                )
+                await self._storage.update_neuron(neuron.with_metadata(_embedding=list(vector)))
             except Exception:
                 logger.debug("Inline embed update failed: %s", neuron.id, exc_info=True)
 
