@@ -13,6 +13,9 @@ _MODEL_DIMENSIONS: dict[str, int] = {
     "text-embedding-3-small": 1536,
     "text-embedding-3-large": 3072,
     "text-embedding-ada-002": 1536,
+    # Local llama.cpp / llamastash models served over the OpenAI-compatible API.
+    "bge-m3": 1024,
+    "bge-large-en-v1.5": 1024,
 }
 
 _DEFAULT_MODEL = "text-embedding-3-small"
@@ -35,10 +38,22 @@ class OpenAIEmbedding(EmbeddingProvider):
         provider_label: str = "OpenAI",
     ) -> None:
         self._model = model
-        self._base_url = base_url.rstrip("/") if base_url else None
+        # Default to a local OpenAI-compatible embedding endpoint when
+        # SURREAL_MEMORY_EMBEDDING_ENDPOINT is set and no explicit base_url is
+        # passed (e.g. llamastash bge-m3 at http://127.0.0.1:11435/v1). Mirrors the
+        # reranker's SURREAL_MEMORY_RERANKER_ENDPOINT so embeddings can be served by
+        # a local server with no cloud round-trip. Subclasses that pass their own
+        # base_url (e.g. OpenRouter) are unaffected.
+        resolved_base = base_url or os.environ.get("SURREAL_MEMORY_EMBEDDING_ENDPOINT", "").strip()
+        self._base_url = resolved_base.rstrip("/") if resolved_base else None
         self._api_key_env = api_key_env
         self._provider_label = provider_label
         self._api_key = api_key or os.getenv(api_key_env)
+        # A local endpoint (llamastash / llama.cpp) needs no real key, but the
+        # OpenAI SDK still requires a non-empty string — fall back to a placeholder
+        # instead of failing hard when a base_url is configured.
+        if not self._api_key and self._base_url:
+            self._api_key = "sk-local"
         if not self._api_key:
             raise ValueError(
                 f"A {provider_label} API key is required. Pass it directly or set "
