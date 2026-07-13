@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.10.1] — Local-first performance
+
+A performance and correctness patch for the SurrealDB backend, focused on large
+brains and local (self-hosted) embedding. No schema migration; recall ranking is
+unchanged if you don't change your embedding config.
+
+### What's now possible (and wasn't)
+
+- **Point the embedder at a local, OpenAI-compatible server.** Reranking could
+  already run against a local endpoint (`SURREAL_MEMORY_RERANKER_ENDPOINT`); the
+  embedder now has the same knob: `SURREAL_MEMORY_EMBEDDING_ENDPOINT`. Set
+  `provider = "openai"`, `model = "bge-m3"` (or your model), and
+  `SURREAL_MEMORY_EMBEDDING_ENDPOINT = http://127.0.0.1:11435/v1` to embed and
+  rerank entirely on your own GPU (e.g. bge-m3 + bge-reranker via llama.cpp /
+  llamastash) with no cloud calls. A placeholder API key is supplied automatically
+  for keyless local servers.
+
+- **Fresh memories are semantically searchable immediately.** Previously a
+  just-saved memory only got its embedding vector on the next batch
+  `smem reindex`, so semantic recall missed it until then; it was keyword-only in
+  the meantime. `remember`/encode now embed the memory inline as part of the save.
+  Fully fail-soft: with embeddings disabled or no provider reachable, saves behave
+  exactly as before (keyword-only, no error, no slowdown).
+
+### Fixed
+
+- **`smem consolidate` no longer times out on large brains.** The `prune` strategy
+  issued one query *per candidate source neuron* (tens of thousands on a 66k-neuron
+  brain) for bridge detection, blowing the 120s per-strategy budget. It now groups
+  the already-loaded synapses in memory — zero extra queries — dropping prune's read
+  path from ~110s to a few seconds.
+
+- **No more `FLEXIBLE can only be used in SCHEMAFULL tables` warnings on upgraded
+  databases.** Tables that carry an arbitrary-key `metadata`/`config` object
+  (neuron, fiber, brain, typed_memory, source, alerts, brain_versions) are now
+  declared `SCHEMALESS`, which accepts nested keys without `FLEXIBLE`. On a database
+  whose tables were first created `SCHEMALESS`, the old `SCHEMAFULL` + `FLEXIBLE`
+  definitions failed on every `ensure_schema()`/`consolidate`; converting such
+  tables to `SCHEMAFULL` was unsafe (it breaks updates of any row holding a legacy
+  field). `synapse` and `retrieval_trace` stay `SCHEMAFULL`.
+
+- **Session-end dedup recognizes a local OpenAI-compatible embedder.** The stop
+  hook treated only `ollama` as a cheap local embedder and fell back to simhash for
+  everything else; a loopback `SURREAL_MEMORY_EMBEDDING_ENDPOINT` (llamastash bge-m3)
+  is now recognized as local-and-cheap, so end-of-session semantic dedup uses it.
+
 ## [2.10.0] — Ecosystem
 
 The ecosystem release: recall gains a geographic dimension, and surreal-memory plugs
