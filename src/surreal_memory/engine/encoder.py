@@ -433,6 +433,10 @@ class MemoryEncoder:
         if ctx.anchor_neuron is not None:
             await self._post_encode_neuro(ctx.anchor_neuron)
 
+        # Embed the freshly-created neurons inline so semantic recall works on
+        # them immediately, instead of only after a batch ``smem reindex``.
+        await self._embed_created_neurons(ctx)
+
         return EncodingResult(
             fiber=fiber,
             neurons_created=ctx.neurons_created,
@@ -446,6 +450,67 @@ class MemoryEncoder:
             },
             pending_supersessions=list(ctx.pending_supersessions),
         )
+
+    async def _embed_created_neurons(self, ctx: PipelineContext) -> None:
+        """Embed the non-ephemeral neurons this encode just created so semantic
+        recall works on them immediately.
+
+        Embeddings used to be populated only by a batch ``smem reindex``, so a
+        freshly-saved memory was keyword-recallable but NOT semantically
+        recallable until the next reindex ran. One ``embed_batch`` call covers
+        the whole memory; against a local endpoint (bge-m3 via llamastash,
+        ~15 ms) this adds negligible latency. Fully fail-soft: if embeddings are
+        disabled or no provider is available, memories stay keyword-only — no
+        error, no slowdown — exactly the prior behaviour. Ephemeral and TIME
+        neurons are skipped (disposable / not semantically meaningful).
+        """
+        logger = logging.getLogger(__name__)
+        try:
+            from surreal_memory.engine.semantic_discovery import (
+                _create_provider,
+                _effective_embedding,
+            )
+
+            enabled, _, _ = _effective_embedding(self._config)
+        except Exception:
+            return
+        if not enabled:
+            return
+
+        from surreal_memory.core.neuron import NeuronType
+
+        seen: set[str] = set()
+        candidates: list[Neuron] = []
+        for n in [*ctx.neurons_created, ctx.anchor_neuron]:
+            if n is None or n.id in seen:
+                continue
+            if getattr(n, "ephemeral", False):
+                continue  # disposable (24 h) — not worth an embedding
+            if n.type == NeuronType.TIME:
+                continue  # timestamps are not semantically meaningful
+            if not n.content or len(n.content) < 3:
+                continue
+            if "_embedding" in n.metadata:
+                continue
+            seen.add(n.id)
+            candidates.append(n)
+        if not candidates:
+            return
+
+        try:
+            provider = _create_provider(self._config, task_type="RETRIEVAL_DOCUMENT")
+            vectors = await provider.embed_batch([n.content for n in candidates])
+        except Exception:
+            logger.debug("Inline embedding skipped (provider unavailable)", exc_info=True)
+            return
+
+        for neuron, vector in zip(candidates, vectors, strict=False):
+            try:
+                await self._storage.update_neuron(
+                    neuron.with_metadata(_embedding=list(vector))
+                )
+            except Exception:
+                logger.debug("Inline embed update failed: %s", neuron.id, exc_info=True)
 
     async def _post_encode_neuro(self, anchor: Neuron) -> None:
         """Run post-encode neuroscience hooks (schema assimilation + interference).
