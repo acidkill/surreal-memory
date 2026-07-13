@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import sys
 from pathlib import Path
@@ -251,10 +252,20 @@ async def _embedding_dedup(
         from surreal_memory.engine.embedding.provider import EmbeddingProvider
 
         embed_provider: EmbeddingProvider
+        endpoint = os.environ.get("SURREAL_MEMORY_EMBEDDING_ENDPOINT", "")
+        is_local_endpoint = any(h in endpoint for h in ("127.0.0.1", "localhost", "::1"))
         if provider_name == "ollama":
             from surreal_memory.engine.embedding.ollama_embedding import OllamaEmbedding
 
             embed_provider = OllamaEmbedding(model=model_name)
+        elif provider_name in ("openai", "openrouter") and is_local_endpoint:
+            # A local OpenAI-compatible server (e.g. llamastash bge-m3 at
+            # http://127.0.0.1:11435/v1) is GPU-served at ~15ms/embed — as cheap as
+            # Ollama — so use it for higher-quality semantic dedup. Only a *local*
+            # (loopback) endpoint qualifies; remote/cloud bases are skipped below.
+            from surreal_memory.engine.embedding.openai_embedding import OpenAIEmbedding
+
+            embed_provider = OpenAIEmbedding(model=model_name)
         else:
             # Stop hook runs in a fresh, uncached process on every session save.
             # Never load a heavy local model (sentence-transformers pulls in torch
