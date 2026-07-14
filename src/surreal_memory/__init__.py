@@ -16,7 +16,7 @@ from surreal_memory.engine.encoder import EncodingResult, MemoryEncoder
 from surreal_memory.engine.reflex_activation import CoActivation, ReflexActivation
 from surreal_memory.engine.retrieval import DepthLevel, ReflexPipeline, RetrievalResult
 
-__version__ = "2.10.2"
+__version__ = "2.10.3"
 
 __all__ = [
     "__version__",

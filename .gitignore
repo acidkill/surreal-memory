@@ -232,6 +232,10 @@ integrations/surrealmemory/coverage/
 # Local surreal-memory brain data (never commit)
 .surrealmemory/
 .neuralmemory/
+# Brain dumps / backups — never commit (may contain private memory content)
+*.surql
+*.surql.gz
+surrealmemory-backups/
 
 # Serena MCP project cache (never commit)
 .serena/

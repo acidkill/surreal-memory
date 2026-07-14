@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.10.3] — Prune completes, habits stick
+
+Two user-reported bugs on large, months-old brains: `consolidate`'s prune step
+timed out, and `smem habits list` was always empty.
+
+### Fixed
+
+- **Prune no longer times out on large brains.** The `prune` strategy fetched
+  every neuron's activation state one row at a time (a hidden N+1 behind the
+  `get_neuron_states_batch` name) and re-ran it for each 5000-neuron page. On a
+  ~67k-neuron / ~420k-synapse brain that single step cost ~140s and blew the
+  120s per-strategy budget. States are now read in one scan and looked up
+  in-memory, and the SurrealDB backend gained a real batched
+  `get_neuron_states_batch`. End-to-end prune drops from ~188s to ~39s on that
+  brain. (Builds on 2.10.1's N+1 synapse fix and the embedding-vector OMIT.)
+- **`smem habits list` now finds learned habits on large brains.** `find_fibers`
+  filtered the `_habit_pattern` marker in Python *after* applying the row limit,
+  so on a brain with more fibers than the fetch window any habit beyond the first
+  1000 rows was invisible. The marker filter is now pushed into the SurrealDB
+  query (`WHERE metadata.<key> != NONE`), and the `habits` CLI commands query the
+  marker directly instead of `get_fibers(1000)` + a Python filter.
+- **`consolidate` reports query patterns separately from habits.** "Habits
+  learned: N" previously also counted query-pattern strengthenings — which are
+  CONCEPT neurons/synapses, not listable `_habit_pattern` fibers — so the number
+  never matched `smem habits list`. Query patterns now have their own
+  "Query patterns learned" line.
+- **Learned habits survive consolidation.** The `merge` strategy could fold a
+  `_habit_pattern` fiber into a summary fiber and drop the marker, silently
+  deleting the habit. Habit fibers are now excluded from merge clusters so
+  habits accumulate over time.
+
 ## [2.10.2] — Faster inline embedding
 
 A follow-up performance patch to [2.10.1]'s inline embedding.

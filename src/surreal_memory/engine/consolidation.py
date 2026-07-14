@@ -103,6 +103,7 @@ class ConsolidationReport:
     synapses_enriched: int = 0
     dream_synapses_created: int = 0
     habits_learned: int = 0
+    query_patterns_learned: int = 0
     action_events_pruned: int = 0
     retrieval_traces_pruned: int = 0
     duplicates_found: int = 0
@@ -131,6 +132,7 @@ class ConsolidationReport:
             f"  Synapses enriched: {self.synapses_enriched}",
             f"  Dream synapses created: {self.dream_synapses_created}",
             f"  Habits learned: {self.habits_learned}",
+            f"  Query patterns learned: {self.query_patterns_learned}",
             f"  Action events pruned: {self.action_events_pruned}",
             f"  Duplicates found: {self.duplicates_found}",
             f"  Semantic synapses: {self.semantic_synapses_created}",
@@ -170,6 +172,7 @@ class ConsolidationReport:
             + self.synapses_enriched
             + self.dream_synapses_created
             + self.habits_learned
+            + self.query_patterns_learned
             + self.duplicates_found
             + self.semantic_synapses_created
             + self.fibers_compressed
@@ -600,6 +603,21 @@ class ConsolidationEngine:
             batch_size,
             est_batches,
         )
+        # Dead-neuron detection needs each neuron's access_frequency. Fetching states
+        # per page (get_neuron_states_batch → a 5000-id `IN` query) cost ~10s/page on a
+        # 67k-neuron brain — ~140s total, the dominant prune cost after the embedding
+        # OMIT. One brain-wide fetch is a single filtered scan (~1.4s), so load all
+        # states once and look them up in-memory across every page.
+        try:
+            states_by_id: dict[str, Any] = {
+                s.neuron_id: s for s in await self._storage.get_all_neuron_states()
+            }
+            use_prefetched_states = True
+        except Exception:
+            logger.debug("get_all_neuron_states failed; per-page state fallback", exc_info=True)
+            states_by_id = {}
+            use_prefetched_states = False
+
         while True:
             batch = await self._storage.find_neurons(
                 limit=batch_size, offset=offset, ephemeral=False, include_embedding=False
@@ -607,9 +625,12 @@ class ConsolidationEngine:
             if not batch:
                 break
 
-            # Check for dead neurons (never accessed, old enough)
-            batch_ids = [n.id for n in batch]
-            states = await self._storage.get_neuron_states_batch(batch_ids)
+            # Dead-neuron check reads access_frequency from the prefetched states; only
+            # fall back to a per-page batch if the brain-wide fetch was unavailable.
+            if use_prefetched_states:
+                states = states_by_id
+            else:
+                states = await self._storage.get_neuron_states_batch([n.id for n in batch])
 
             for neuron in batch:
                 # Never auto-prune pinned neurons, whether isolated (orphan) or
@@ -739,6 +760,14 @@ class ConsolidationEngine:
             fi_verbatim = fiber_list[i].metadata.get("_verbatim", False)
             fj_verbatim = fiber_list[j].metadata.get("_verbatim", False)
             if fi_verbatim != fj_verbatim:
+                continue
+
+            # Never merge a learned-habit fiber away: the merged fiber drops the
+            # `_habit_pattern` marker and step metadata, so `smem habits list` would
+            # silently lose the habit and habits could never accumulate over time.
+            if fiber_list[i].metadata.get("_habit_pattern") or fiber_list[j].metadata.get(
+                "_habit_pattern"
+            ):
                 continue
 
             set_a = fiber_list[i].neuron_ids
@@ -1502,7 +1531,11 @@ class ConsolidationEngine:
             from surreal_memory.engine.query_pattern_mining import learn_query_patterns
 
             qp_report = await learn_query_patterns(self._storage, brain.config, reference_time)
-            report.habits_learned += qp_report.patterns_learned
+            # Query patterns are CONCEPT-neuron/synapse strengthenings, NOT listable
+            # `_habit_pattern` workflow fibers. Counting them under habits_learned made
+            # `consolidate` report "Habits learned: N" while `smem habits list` (which
+            # lists habit fibers) stayed empty. Keep them as a distinct metric.
+            report.query_patterns_learned += qp_report.patterns_learned
         except Exception:
             logger.debug("Query pattern learning failed (non-critical)", exc_info=True)
 

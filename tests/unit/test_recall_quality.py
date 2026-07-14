@@ -169,6 +169,11 @@ class TestDeadNeuronPruning:
         storage.get_neuron_states_batch = AsyncMock(
             return_value={"old-dead": self._make_state("old-dead", freq=0)}
         )
+        # Prune now prefetches all states in one scan (get_all_neuron_states) instead
+        # of a per-page batch — mock the primary path it actually reads from.
+        storage.get_all_neuron_states = AsyncMock(
+            return_value=[self._make_state("old-dead", freq=0)]
+        )
         storage.delete_neurons_batch = AsyncMock()
 
         config = ConsolidationConfig()
@@ -195,6 +200,7 @@ class TestDeadNeuronPruning:
         storage.get_neuron_states_batch = AsyncMock(
             return_value={"young": self._make_state("young", freq=0)}
         )
+        storage.get_all_neuron_states = AsyncMock(return_value=[self._make_state("young", freq=0)])
         storage.delete_neurons_batch = AsyncMock()
 
         config = ConsolidationConfig()
@@ -230,6 +236,9 @@ class TestDeadNeuronPruning:
         storage.get_neuron_states_batch = AsyncMock(
             return_value={"accessed": self._make_state("accessed", freq=5)}
         )
+        storage.get_all_neuron_states = AsyncMock(
+            return_value=[self._make_state("accessed", freq=5)]
+        )
         storage.delete_neurons_batch = AsyncMock()
         storage.get_synapses_for_neurons = AsyncMock(return_value={})
 
@@ -264,6 +273,7 @@ class TestDeadNeuronPruning:
         storage.get_neuron_states_batch = AsyncMock(
             return_value={"pinned": self._make_state("pinned", freq=0)}
         )
+        storage.get_all_neuron_states = AsyncMock(return_value=[self._make_state("pinned", freq=0)])
         storage.delete_neurons_batch = AsyncMock()
         storage.get_synapses_for_neurons = AsyncMock(return_value={})
 

@@ -859,6 +859,34 @@ class SurrealDBStorage(
             pass
         return None
 
+    async def get_neuron_states_batch(self, neuron_ids: list[str]) -> dict[str, NeuronState]:
+        """Fetch many neuron states in ONE query per chunk.
+
+        The base fallback loops ``get_neuron_state`` once per id. Consolidation's
+        prune scan calls this per 5000-neuron page, so on a ~67k-neuron brain the
+        fallback fired ~67k point selects and dominated the strategy runtime
+        (~170s measured → 120s budget blown). The ``neuron_state`` row carries a
+        plain ``neuron_id``, so a single ``IN $ids`` select returns the whole
+        page; ids are param-bound (injection-safe). Chunked so an oversized id
+        list can't build a pathologically large statement.
+        """
+        result: dict[str, NeuronState] = {}
+        if not neuron_ids:
+            return result
+        brain_id = self._get_brain_id()
+        chunk = 5000
+        for start in range(0, len(neuron_ids), chunk):
+            ids = list(neuron_ids[start : start + chunk])
+            rows = await self._query(
+                "SELECT * FROM neuron_state WHERE brain_id = $brain_id AND neuron_id IN $ids",
+                brain_id=brain_id,
+                ids=ids,
+            )
+            for r in rows:
+                state = _row_to_neuron_state(r)
+                result[state.neuron_id] = state
+        return result
+
     async def update_neuron_state(self, state: NeuronState) -> None:
         conn = self._ensure_conn()
         sid = _to_surreal_id(state.neuron_id)
@@ -1241,6 +1269,16 @@ class SurrealDBStorage(
         if min_salience is not None:
             conditions.append("salience >= $min_salience")
             params["min_salience"] = min_salience
+        if metadata_key is not None:
+            # Push the marker-existence filter into SurQL so LIMIT applies AFTER it.
+            # As a post-LIMIT Python filter it silently dropped any fiber carrying the
+            # key (e.g. a learned `_habit_pattern` workflow) that sat beyond the first
+            # `limit` rows on a large brain — `smem habits list` then showed nothing.
+            # metadata_key is an internal marker constant, but validate it to a bare
+            # identifier so the interpolated field path can never carry an injection.
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", metadata_key):
+                raise ValueError(f"invalid metadata_key: {metadata_key!r}")
+            conditions.append(f"metadata.{metadata_key} != NONE")
         if near is not None:
             # Server-side pre-filter: drop locationless fibers (exercises FLEXIBLE-field
             # traversal). No spatial index exists, so geo::distance would not improve
@@ -1286,8 +1324,7 @@ class SurrealDBStorage(
                 and _ensure_naive(f.time_start) <= end
                 and _ensure_naive(f.time_end) >= start
             ]
-        if metadata_key:
-            fibers = [f for f in fibers if metadata_key in f.metadata]
+        # metadata_key is now filtered in SurQL (see WHERE above), so no post-filter here.
         # Exact geospatial hard filter (haversine) — version-independent source of truth.
         if near is not None:
             fibers = [f for f in fibers if fiber_within(f, near)]

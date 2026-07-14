@@ -374,6 +374,65 @@ class TestMetadataKeyFilter:
 
 
 # ---------------------------------------------------------------------------
+# 2.10.3: metadata_key filter must apply BEFORE limit (habits-empty regression)
+# ---------------------------------------------------------------------------
+
+
+class TestMetadataKeyFilterBeyondLimit:
+    """find_fibers(metadata_key=...) must push the marker into the backend query
+    so LIMIT applies AFTER filtering. When it was a post-LIMIT Python filter, a
+    learned `_habit_pattern` fiber sitting outside the first `limit` rows vanished
+    and `smem habits list` showed nothing on a large brain.
+    """
+
+    @pytest.mark.asyncio
+    async def test_marked_fiber_found_despite_higher_salience_unmarked(
+        self, sqlite_storage: SQLiteStorage
+    ) -> None:
+        # 14 high-salience fibers WITHOUT the marker fill the top of the salience
+        # ordering; a first-`limit` slice would be entirely these.
+        for i in range(14):
+            await _add_fiber_with_neuron(
+                sqlite_storage, f"n-nomark-{i}", metadata={"other": True}, salience=0.9
+            )
+        # One low-salience fiber WITH the marker — the only real habit.
+        marked = await _add_fiber_with_neuron(
+            sqlite_storage, "n-habit", metadata={"_habit_pattern": True}, salience=0.01
+        )
+
+        # limit smaller than the unmarked count: a post-LIMIT filter returns [].
+        results = await sqlite_storage.find_fibers(metadata_key="_habit_pattern", limit=5)
+        assert [f.id for f in results] == [marked.id]
+
+
+# ---------------------------------------------------------------------------
+# 2.10.3: query patterns reported separately from listable habits
+# ---------------------------------------------------------------------------
+
+
+class TestConsolidationReportQueryPatterns:
+    """Query patterns are CONCEPT-neuron/synapse strengthenings, not listable
+    `_habit_pattern` fibers. They must be a distinct metric so `consolidate`
+    stops claiming 'Habits learned: N' for things `smem habits list` can't show.
+    """
+
+    def test_summary_lists_query_patterns_separately(self) -> None:
+        from surreal_memory.engine.consolidation import ConsolidationReport
+
+        report = ConsolidationReport(habits_learned=0, query_patterns_learned=2)
+        text = report.summary()
+        assert "Habits learned: 0" in text
+        assert "Query patterns learned: 2" in text
+
+    def test_query_patterns_count_as_activity(self) -> None:
+        """A run that only learned query patterns must not emit 'nothing changed' hints."""
+        from surreal_memory.engine.consolidation import ConsolidationReport
+
+        report = ConsolidationReport(query_patterns_learned=1)
+        assert "Why nothing changed" not in report.summary()
+
+
+# ---------------------------------------------------------------------------
 # H8: Input validation in _remember, _recall, _todo
 # ---------------------------------------------------------------------------
 

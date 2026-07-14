@@ -379,3 +379,55 @@ async def test_run_strategy_dispatcher(
     await engine._run_strategy(ConsolidationStrategy.DREAM, report, utcnow(), dry_run=True)
 
     assert called
+
+
+@pytest.mark.asyncio
+async def test_merge_never_removes_habit_fiber() -> None:
+    """A `_habit_pattern` fiber must survive _merge even at 100% neuron overlap.
+
+    Merging deletes the member fibers and the merged fiber drops the marker, so
+    without the guard a learned habit would silently vanish from `smem habits
+    list` and habits could never accumulate over time.
+    """
+    store = InMemoryStorage()
+    brain = Brain.create(name="merge_habit_test", brain_id="mh-brain")
+    await store.save_brain(brain)
+    store.set_brain(brain.id)
+
+    for nid in ("n-a", "n-b", "n-c"):
+        await store.add_neuron(Neuron.create(type=NeuronType.ENTITY, content=nid, neuron_id=nid))
+
+    shared = {"n-a", "n-b", "n-c"}  # 100% overlap → Jaccard 1.0, well above 0.5
+    plain1 = Fiber(
+        id="plain-1",
+        neuron_ids=shared,
+        synapse_ids=set(),
+        anchor_neuron_id="n-a",
+        pathway=["n-a"],
+        frequency=5,
+    )
+    plain2 = Fiber(
+        id="plain-2",
+        neuron_ids=shared,
+        synapse_ids=set(),
+        anchor_neuron_id="n-b",
+        pathway=["n-b"],
+        frequency=5,
+    )
+    habit = Fiber(
+        id="habit-1",
+        neuron_ids=shared,
+        synapse_ids=set(),
+        anchor_neuron_id="n-a",
+        pathway=["n-a"],
+        frequency=5,
+        metadata={"_habit_pattern": True, "_workflow_actions": ["a", "b"]},
+    )
+    for f in (plain1, plain2, habit):
+        await store.add_fiber(f)
+
+    engine = ConsolidationEngine(store, ConsolidationConfig())
+    await engine._merge(ConsolidationReport(), dry_run=False)
+
+    remaining = {f.id for f in await store.get_fibers(limit=100)}
+    assert "habit-1" in remaining, "merge must never delete a _habit_pattern fiber"

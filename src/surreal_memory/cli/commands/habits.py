@@ -30,8 +30,10 @@ def habits_list(
         config = get_config()
         storage = await get_storage(config)
         try:
-            fibers = await storage.get_fibers(limit=1000)
-            habits = [f for f in fibers if f.metadata.get("_habit_pattern")]
+            # Query the marker in-store (find_fibers pushes `_habit_pattern` into the
+            # backend WHERE) rather than get_fibers(limit=1000)+Python filter, which on a
+            # large brain returns an arbitrary first-1000 slice that omits habit fibers.
+            habits = await storage.find_fibers(metadata_key="_habit_pattern", limit=1000)
 
             if json_output:
                 output_result(
@@ -88,8 +90,8 @@ def habits_show(
         config = get_config()
         storage = await get_storage(config)
         try:
-            fibers = await storage.get_fibers(limit=1000)
-            habits = [f for f in fibers if f.metadata.get("_habit_pattern") and f.summary == name]
+            habit_fibers = await storage.find_fibers(metadata_key="_habit_pattern", limit=1000)
+            habits = [f for f in habit_fibers if f.summary == name]
 
             if not habits:
                 typer.echo(f"No habit found with name: {name}")
@@ -146,8 +148,7 @@ def habits_clear(
         config = get_config()
         storage = await get_storage(config)
         try:
-            fibers = await storage.get_fibers(limit=1000)
-            habits = [f for f in fibers if f.metadata.get("_habit_pattern")]
+            habits = await storage.find_fibers(metadata_key="_habit_pattern", limit=1000)
 
             if not habits:
                 typer.echo("No habits to clear.")
@@ -233,12 +234,8 @@ def habits_status(
             total_sessions = max(len(session_ids), 1)
 
             # Get existing habits to exclude
-            fibers = await storage.get_fibers(limit=1000)
-            existing_habits = {
-                tuple(f.metadata.get("_workflow_actions", []))
-                for f in fibers
-                if f.metadata.get("_habit_pattern")
-            }
+            habit_fibers = await storage.find_fibers(metadata_key="_habit_pattern", limit=1000)
+            existing_habits = {tuple(f.metadata.get("_workflow_actions", [])) for f in habit_fibers}
 
             # Separate into learned vs emerging
             emerging: list[dict[str, str | int | float]] = []
