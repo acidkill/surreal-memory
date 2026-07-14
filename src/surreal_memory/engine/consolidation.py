@@ -584,14 +584,25 @@ class ConsolidationEngine:
         # Dead neuron pruning: never-accessed + old enough + not pinned
         dead_neuron_days = getattr(self._config, "prune_dead_neuron_days", 14.0)
 
-        # Paginate through all neurons to avoid OOM (batch 5k)
+        # Paginate through all neurons in fixed-size batches. OMIT the embedding
+        # vector: orphan/dead detection needs only id + created_at, so dragging the
+        # 1024-float vector for tens of thousands of neurons (~100 MB per 5k-page on
+        # a large brain, ~1.4 GB total) was the dominant cost that blew the 120s
+        # prune budget after the synapse N+1 was removed.
         batch_size = 5000
         offset = 0
         orphan_ids: list[str] = []
         dead_ids: list[str] = []
+        est_batches = (len(connected_neuron_ids | fiber_neuron_ids) // batch_size) + 1
+        logger.info(
+            "Prune: scanning neurons in %d-row batches (~%d+ batches; embedding "
+            "vectors omitted from the scan)",
+            batch_size,
+            est_batches,
+        )
         while True:
             batch = await self._storage.find_neurons(
-                limit=batch_size, offset=offset, ephemeral=False
+                limit=batch_size, offset=offset, ephemeral=False, include_embedding=False
             )
             if not batch:
                 break
