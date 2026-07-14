@@ -789,6 +789,29 @@ class SurrealDBStorage(
         await conn.merge(f"neuron:{sid}", update_data)
         await self._record_change_internal("neuron", neuron.id, "update", neuron)
 
+    async def update_neuron_embeddings(self, pairs: list[tuple[str, list[float]]]) -> None:
+        """Write embedding vectors for many neurons in a single round-trip.
+
+        Inline embedding on write (encoder) would otherwise issue one ``merge`` per
+        neuron — tens of round-trips per save. This batches them into one
+        multi-statement ``UPDATE`` (param-bound, so injection-safe), setting only
+        ``embedding_vec``/``updated_at``. The change-log is intentionally skipped:
+        the vector is derived from content that already logged its create, and a
+        peer can re-embed locally, so it needn't sync as a separate delta.
+        """
+        if not pairs:
+            return
+        stmts: list[str] = []
+        params: dict[str, Any] = {}
+        for i, (nid, vec) in enumerate(pairs):
+            params[f"id{i}"] = _to_surreal_id(nid)
+            params[f"v{i}"] = list(vec)
+            stmts.append(
+                f"UPDATE type::record('neuron', $id{i}) "
+                f"SET embedding_vec = $v{i}, updated_at = time::now()"
+            )
+        await self._query(";\n".join(stmts) + ";", **params)
+
     async def delete_neuron(self, neuron_id: str) -> bool:
         conn = self._ensure_conn()
         brain_id = self._get_brain_id()
