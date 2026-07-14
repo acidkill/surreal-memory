@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.10.2] — Faster inline embedding
+
+A follow-up performance patch to [2.10.1]'s inline embedding.
+
+### Fixed
+
+- **Faster memory saves on large brains.** [2.10.1] embeds a memory's neurons as
+  part of the save, but wrote each vector with its own database round-trip. Those
+  writes are now batched into a single query, so a permanent `remember` on a
+  66k-neuron SurrealDB brain drops from ~6s to ~3s. (SurrealDB backend; other
+  backends keep the per-neuron path.)
+
 ## [2.10.1] — Local-first performance
 
 A performance and correctness patch for the SurrealDB backend, focused on large
