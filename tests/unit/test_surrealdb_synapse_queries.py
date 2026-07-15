@@ -145,10 +145,19 @@ class TestQueryShapes:
 
     @pytest.mark.asyncio
     async def test_delete_neuron_cascade_uses_in_out(self):
+        """Two single-field DELETEs, not one OR query.
+
+        A single "brain_id = ... AND (in = X OR out = X)" query measured
+        ~1.2s/call live on SurrealDB 3.2.0 — the planner doesn't use either
+        idx_synapse_in/idx_synapse_out across an OR of two different fields.
+        Splitting into two single-field DELETEs (each hits its own index)
+        measured ~5ms total.
+        """
         st, conn = _store_with_mock_conn()
         await st.delete_neuron("a")
-        found = _find_query(conn, "DELETE synapse WHERE")
-        assert found is not None
-        sql, _ = found
-        assert "in = type::record('neuron', $nid)" in sql
-        assert "out = type::record('neuron', $nid)" in sql
+        in_query = _find_query(conn, "AND in = neuron:")
+        out_query = _find_query(conn, "AND out = neuron:")
+        assert in_query is not None
+        assert out_query is not None
+        assert " OR " not in in_query[0]
+        assert " OR " not in out_query[0]

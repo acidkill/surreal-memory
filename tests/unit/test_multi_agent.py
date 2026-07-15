@@ -116,8 +116,17 @@ class TestAgentTagInjection:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.xdist_group(name="consolidation_lock")
 class TestConsolidationLock:
-    """Test file-based consolidation lock."""
+    """Test file-based consolidation lock.
+
+    _lock_path() is a real, fixed file under ~/.surrealmemory/ shared across
+    the whole process tree — not test-isolated. Under pytest-xdist's default
+    per-test scheduling, two of these tests can land on different worker
+    processes and race on that one file (reproduced live: a different subset
+    fails each full-suite run, 100% pass in isolation). xdist_group pins the
+    whole class to one worker, same fix as the aiosqlite leak-guard pair.
+    """
 
     @pytest.fixture(autouse=True)
     def _cleanup_lock(self) -> None:
