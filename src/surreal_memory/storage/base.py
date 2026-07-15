@@ -302,6 +302,25 @@ class NeuralStorage(ABC):
         """
         ...
 
+    async def get_synapses_batch(self, synapse_ids: list[str]) -> dict[str, Synapse]:
+        """Get multiple synapses by ID in a single operation.
+
+        Default implementation falls back to sequential get_synapse.
+        Backends should override for batch efficiency.
+
+        Args:
+            synapse_ids: List of synapse IDs to fetch
+
+        Returns:
+            Dict mapping synapse_id to Synapse for found synapses
+        """
+        results: dict[str, Synapse] = {}
+        for sid in synapse_ids:
+            synapse = await self.get_synapse(sid)
+            if synapse is not None:
+                results[sid] = synapse
+        return results
+
     @abstractmethod
     async def get_synapses(
         self,

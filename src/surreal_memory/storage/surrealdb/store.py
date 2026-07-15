@@ -91,6 +91,13 @@ def _is_auth_error(exc: Exception) -> bool:
 
 _BRAIN_ID_SAFE = re.compile(r"^[a-zA-Z0-9_.\-]+$")
 
+# Bounded concurrency for per-id batch fetches (get_neurons_batch/get_synapses_batch).
+# Pipelines direct record selects over the one shared AsyncSurreal connection;
+# measured ~1.7x over sequential on a 67k-neuron brain, with diminishing
+# returns above this value (single-connection multiplexing, not true parallel
+# sockets).
+_BATCH_FETCH_CONCURRENCY = 16
+
 
 def _brain_literal(brain_id: str) -> str:
     """Return ``brain_id`` as a safe inline SurrealQL string literal.
@@ -634,21 +641,34 @@ class SurrealDBStorage(
         return None
 
     async def get_neurons_batch(self, neuron_ids: list[str]) -> dict[str, Neuron]:
+        """Fetch multiple neurons by id, concurrently over the shared connection.
+
+        A single ``id IN [...]`` query was measured *slower* than per-id direct
+        selects on this SurrealDB version (3.2.0) — IN-membership against a
+        RecordID primary key doesn't use the primary index the way a direct
+        ``neuron:{id}`` fetch does, so it falls back to a scan-like path (same
+        family of index-selection gap as the brain_id-literal-vs-param gotcha
+        elsewhere in this store). Bounded concurrency instead pipelines the
+        direct selects over the one shared connection (~1.7x measured on a
+        67k-neuron brain) without the IN-query regression.
+        """
         if not neuron_ids:
             return {}
-        # Use direct select for each ID (more reliable than IN query with params)
-        results: dict[str, Neuron] = {}
-        for nid in neuron_ids:
+        semaphore = asyncio.Semaphore(_BATCH_FETCH_CONCURRENCY)
+
+        async def _fetch_one(nid: str) -> tuple[str, Neuron | None]:
             sid = _to_surreal_id(nid)
-            try:
-                result = await self._conn.select(f"neuron:{sid}")
-                if result and isinstance(result, list) and len(result) > 0:
-                    neuron = _row_to_neuron(result[0])
-                    # Use the converted ID as key
-                    results[nid] = neuron
-            except Exception:
-                pass
-        return results
+            async with semaphore:
+                try:
+                    result = await self._conn.select(f"neuron:{sid}")
+                except Exception:
+                    return nid, None
+            if result and isinstance(result, list) and len(result) > 0:
+                return nid, _row_to_neuron(result[0])
+            return nid, None
+
+        pairs = await asyncio.gather(*(_fetch_one(nid) for nid in neuron_ids))
+        return {nid: neuron for nid, neuron in pairs if neuron is not None}
 
     async def find_neurons(
         self,
@@ -950,6 +970,31 @@ class SurrealDBStorage(
         except Exception:
             pass
         return None
+
+    async def get_synapses_batch(self, synapse_ids: list[str]) -> dict[str, Synapse]:
+        """Fetch multiple synapses by id, concurrently over the shared connection.
+
+        See ``get_neurons_batch`` for why this is bounded-concurrent per-id
+        selects rather than a single ``id IN [...]`` query.
+        """
+        if not synapse_ids:
+            return {}
+        conn = self._ensure_conn()
+        semaphore = asyncio.Semaphore(_BATCH_FETCH_CONCURRENCY)
+
+        async def _fetch_one(syn_id: str) -> tuple[str, Synapse | None]:
+            sid = _to_surreal_id(syn_id)
+            async with semaphore:
+                try:
+                    result = await conn.select(f"synapse:{sid}")
+                except Exception:
+                    return syn_id, None
+            if result:
+                return syn_id, _row_to_synapse(result[0] if isinstance(result, list) else result)
+            return syn_id, None
+
+        pairs = await asyncio.gather(*(_fetch_one(sid) for sid in synapse_ids))
+        return {sid: synapse for sid, synapse in pairs if synapse is not None}
 
     async def get_synapses(
         self,

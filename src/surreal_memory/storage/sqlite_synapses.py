@@ -448,7 +448,7 @@ class SQLiteSynapseMixin:
         neuron_ids = [nid for nid, _ in path]
         synapse_ids = [sid for _, sid in path]
         neurons = await self.get_neurons_batch(neuron_ids)
-        synapses_map = await self._get_synapses_batch(synapse_ids)
+        synapses_map = await self.get_synapses_batch(synapse_ids)
         result: list[tuple[Neuron, Synapse]] = []
         for neuron_id, synapse_id in path:
             neuron = neurons.get(neuron_id)
@@ -457,7 +457,7 @@ class SQLiteSynapseMixin:
                 result.append((neuron, synapse))
         return result
 
-    async def _get_synapses_batch(self, synapse_ids: list[str]) -> dict[str, Synapse]:
+    async def get_synapses_batch(self, synapse_ids: list[str]) -> dict[str, Synapse]:
         """Batch fetch synapses by ID list."""
         if not synapse_ids:
             return {}

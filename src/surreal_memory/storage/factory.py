@@ -224,6 +224,9 @@ class HybridStorage:
     async def get_synapses(self, **kwargs: Any) -> list[Synapse]:
         return await self._local.get_synapses(**kwargs)
 
+    async def get_synapses_batch(self, synapse_ids: list[str]) -> dict[str, Synapse]:
+        return await self._local.get_synapses_batch(synapse_ids)
+
     async def update_synapse(self, synapse: Synapse) -> None:
         await self._local.update_synapse(synapse)
         if self._auto_sync:

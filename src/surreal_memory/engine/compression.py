@@ -30,7 +30,6 @@ from surreal_memory.utils.timeutils import ensure_naive_utc, utcnow
 
 if TYPE_CHECKING:
     from surreal_memory.core.fiber import Fiber
-    from surreal_memory.core.synapse import Synapse
     from surreal_memory.storage.base import NeuralStorage
 
 logger = logging.getLogger(__name__)
@@ -158,6 +157,7 @@ class CompressionReport:
     duration_ms: float = 0.0
     fibers_compressed: int = 0
     fibers_skipped: int = 0
+    fibers_deferred: int = 0
     tokens_saved: int = 0
     backups_created: int = 0
     dry_run: bool = False
@@ -174,6 +174,8 @@ class CompressionReport:
             f"  Backups created: {self.backups_created}",
             f"  Duration: {self.duration_ms:.1f}ms",
         ]
+        if self.fibers_deferred:
+            lines.append(f"  Fibers deferred to next run (time budget): {self.fibers_deferred}")
         return "\n".join(lines)
 
 
@@ -584,14 +586,20 @@ class CompressionEngine:
         neurons = await self._storage.get_neurons_batch(list(fiber.neuron_ids))
         neuron_contents = [n.content for n in neurons.values()]
 
-        # Fetch synapses for entity-level relation labels.
-        all_synapses: list[Synapse] = []
-        if fiber.synapse_ids:
-            for syn_id in fiber.synapse_ids:
-                syn = await self._storage.get_synapse(syn_id)
-                if syn is not None:
-                    all_synapses.append(syn)
-        relations = [str(s.type) for s in all_synapses]
+        # Fetch synapses for entity-level relation labels — only ENTITY_ONLY and
+        # TEMPLATE tiers consume `relations` (see compress_tier2_entity_preserving /
+        # compress_tier3_template below). EXTRACTIVE/GRAPH_ONLY never read it, so
+        # skipping the fetch for those tiers halves the per-fiber DB round trips
+        # on a brain where most eligible fibers land in EXTRACTIVE (measured: 63%
+        # on the `default` brain, the dominant contributor to the 120s compress
+        # timeout alongside the neuron fetch).
+        relations: list[str] = []
+        if fiber.synapse_ids and target_tier in (
+            CompressionTier.ENTITY_ONLY,
+            CompressionTier.TEMPLATE,
+        ):
+            synapses_map = await self._storage.get_synapses_batch(list(fiber.synapse_ids))
+            relations = [str(s.type) for s in synapses_map.values()]
 
         # Build a representative "content" string from neuron contents for
         # tiers that operate on text (1-2).
@@ -923,6 +931,7 @@ class CompressionEngine:
         *,
         reference_time: datetime | None = None,
         dry_run: bool = False,
+        time_budget_seconds: float | None = None,
     ) -> CompressionReport:
         """Compress all eligible fibers in the current brain.
 
@@ -933,6 +942,13 @@ class CompressionEngine:
         Args:
             reference_time: UTC reference time for age calculation (default: now).
             dry_run: If True, compute but do not apply changes.
+            time_budget_seconds: If set, stop compressing once elapsed time
+                exceeds this budget and report the remainder as
+                ``fibers_deferred`` instead of running unbounded. A fiber only
+                becomes ineligible once actually compressed, so deferred work
+                is picked up by the next run — the strategy is O(batch) per
+                call rather than O(brain size), which is what lets it keep up
+                as the brain grows instead of eventually timing out again.
 
         Returns:
             A CompressionReport with aggregate statistics.
@@ -950,7 +966,7 @@ class CompressionEngine:
 
         fibers = await self._storage.get_fibers(limit=10000)
 
-        for fiber in fibers:
+        for idx, fiber in enumerate(fibers):
             # Pinned (KB) fibers stay at tier 0 forever
             if fiber.pinned:
                 report.fibers_skipped += 1
@@ -975,6 +991,18 @@ class CompressionEngine:
                 report.fibers_skipped += 1
                 continue
 
+            if (
+                time_budget_seconds is not None
+                and time.perf_counter() - start > time_budget_seconds
+            ):
+                report.fibers_deferred += len(fibers) - idx
+                logger.info(
+                    "Compression time budget (%.0fs) reached; deferring %d fibers to the next run",
+                    time_budget_seconds,
+                    report.fibers_deferred,
+                )
+                break
+
             try:
                 result = await self.compress_fiber(fiber, target_tier, dry_run=dry_run)
             except Exception:
@@ -994,9 +1022,10 @@ class CompressionEngine:
 
         report.duration_ms = (time.perf_counter() - start) * 1000
         logger.info(
-            "Compression run complete: %d compressed, %d skipped, %d tokens saved",
+            "Compression run complete: %d compressed, %d skipped, %d deferred, %d tokens saved",
             report.fibers_compressed,
             report.fibers_skipped,
+            report.fibers_deferred,
             report.tokens_saved,
         )
         return report

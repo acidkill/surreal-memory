@@ -1690,13 +1690,21 @@ class ConsolidationEngine:
             return
 
         engine = CompressionEngine(self._storage)
+        # Leave headroom under the per-strategy timeout for the initial
+        # get_fibers() scan and report assembly — compressing right up to the
+        # wire risks the outer asyncio.wait_for cancelling mid-fiber instead of
+        # returning a clean, resumable report.
+        time_budget = self._config.strategy_timeout_seconds * 0.8
         compression_report = await engine.run(
             reference_time=reference_time,
             dry_run=dry_run,
+            time_budget_seconds=time_budget,
         )
 
         report.fibers_compressed += compression_report.fibers_compressed
         report.tokens_saved += compression_report.tokens_saved
+        if compression_report.fibers_deferred:
+            report.extra["compress_fibers_deferred"] = compression_report.fibers_deferred
 
     async def _lifecycle(
         self,
