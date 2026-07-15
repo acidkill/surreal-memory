@@ -343,8 +343,15 @@ class TestOpenAIEmbedding:
 
         from surreal_memory.engine.embedding.openai_embedding import OpenAIEmbedding
 
-        # Clear environment so OPENAI_API_KEY is not set
-        env_without_key = {k: v for k, v in os.environ.items() if k != "OPENAI_API_KEY"}
+        # Clear OPENAI_API_KEY and SURREAL_MEMORY_EMBEDDING_ENDPOINT: a local
+        # endpoint makes OpenAIEmbedding synthesize an "sk-local" key instead of
+        # raising, so an ambient endpoint (e.g. a dev llamastash) breaks this
+        # test's premise.
+        env_without_key = {
+            k: v
+            for k, v in os.environ.items()
+            if k not in ("OPENAI_API_KEY", "SURREAL_MEMORY_EMBEDDING_ENDPOINT")
+        }
         with unittest.mock.patch.dict(os.environ, env_without_key, clear=True):
             with pytest.raises(ValueError, match="API key"):
                 OpenAIEmbedding()

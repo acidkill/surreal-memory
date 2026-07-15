@@ -186,9 +186,13 @@ class TestCrossEncoderReranker:
 
 
 class TestRerankerAvailable:
+    @patch.dict("os.environ", {"SURREAL_MEMORY_RERANKER_ENDPOINT": ""})
     @patch("surreal_memory.engine.reranker._CROSS_ENCODER_AVAILABLE", None)
     @patch("surreal_memory.engine.reranker._check_cross_encoder", return_value=False)
     def test_not_available(self, mock_check: MagicMock) -> None:
+        # The env patch matters: an ambient SURREAL_MEMORY_RERANKER_ENDPOINT
+        # (e.g. a dev llamastash) makes reranker_available() True regardless of
+        # the CrossEncoder patches.
         assert reranker_available() is False
 
     @patch("surreal_memory.engine.reranker._CROSS_ENCODER_AVAILABLE", True)

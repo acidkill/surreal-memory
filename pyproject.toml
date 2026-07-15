@@ -292,7 +292,10 @@ warn_return_any = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-addopts = "-v --tb=short"
+# --dist loadgroup: honor @pytest.mark.xdist_group so cooperating tests (e.g.
+# the aiosqlite leak-guard pair) share one xdist worker; ungrouped tests are
+# scheduled exactly like the default `load`.
+addopts = "-v --tb=short --dist loadgroup"
 timeout = 60
 markers = [
     "stress: real-world workflow stress tests with SQLiteStorage",
