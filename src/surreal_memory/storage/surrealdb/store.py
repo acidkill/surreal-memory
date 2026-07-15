@@ -835,16 +835,21 @@ class SurrealDBStorage(
     async def delete_neuron(self, neuron_id: str) -> bool:
         conn = self._ensure_conn()
         brain_id = self._get_brain_id()
+        safe_brain = _safe_brain_id(brain_id)
         sid = _to_surreal_id(neuron_id)
 
         # Delete connected synapses first (belt-and-braces: SurrealDB also auto-cleans
         # edges when the neuron record is deleted). Endpoints are native in/out now.
-        await self._query(
-            "DELETE synapse WHERE brain_id = $brain_id AND "
-            "(in = type::record('neuron', $nid) OR out = type::record('neuron', $nid))",
-            brain_id=brain_id,
-            nid=sid,
-        )
+        #
+        # Measured live: a single "brain_id = $brain_id AND (in = ... OR out = ...)"
+        # query cost ~1.2s/call regardless of whether brain_id/the record id are
+        # inlined or param-bound — SurrealDB 3.2.0's planner doesn't use either
+        # `idx_synapse_in`/`idx_synapse_out` index across an OR of two different
+        # fields, so it falls back to a full scan. Splitting into two single-field
+        # DELETEs (each hits its own index) measured ~5ms total for both — this was
+        # the dominant cost behind prune's non-dry-run timeout on a large brain.
+        await self._query(f"DELETE synapse WHERE brain_id = '{safe_brain}' AND in = neuron:{sid}")
+        await self._query(f"DELETE synapse WHERE brain_id = '{safe_brain}' AND out = neuron:{sid}")
         # Delete state (record id is state_<sid>, matching the writer in add_neuron)
         await self._query(f"DELETE neuron_state:state_{sid}")
 
@@ -854,6 +859,22 @@ class SurrealDBStorage(
             return True
         except Exception:
             return False
+
+    async def delete_neurons_batch(self, neuron_ids: list[str]) -> int:
+        """Delete multiple neurons sequentially.
+
+        Unlike ``get_neurons_batch``'s reads, concurrent deletes here raised
+        live ``Transaction conflict: Transaction write conflict`` errors —
+        SurrealDB's transaction isolation conflicts on concurrent writes to
+        the same tables (``synapse``, ``change_log``), it doesn't just slow
+        down like concurrent reads do. ``delete_neuron`` is cheap now (~ms,
+        see its docstring), so sequential is already well within budget.
+        """
+        count = 0
+        for nid in neuron_ids:
+            if await self.delete_neuron(nid):
+                count += 1
+        return count
 
     async def has_neuron_by_content_hash(self, content_hash: int) -> bool:
         brain_id = self._get_brain_id()
@@ -1054,6 +1075,18 @@ class SurrealDBStorage(
             return True
         except Exception:
             return False
+
+    async def delete_synapses_batch(self, synapse_ids: set[str] | list[str]) -> int:
+        """Delete multiple synapses sequentially.
+
+        See ``delete_neurons_batch`` — concurrent writes conflict under
+        SurrealDB's transaction isolation, unlike concurrent reads.
+        """
+        count = 0
+        for sid in synapse_ids:
+            if await self.delete_synapse(sid):
+                count += 1
+        return count
 
     # ================================================================
     # Graph Traversal

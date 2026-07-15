@@ -649,7 +649,19 @@ class ConsolidationEngine:
                     orphan_ids.append(neuron.id)
                     continue
 
-                # Dead neuron: has connections but never accessed, old enough
+                # Dead neuron: has connections but never accessed, old enough.
+                # Never applies to fiber members: reinforce() (retrieval.py) only
+                # bumps access_frequency for the top-10 highest-activation neurons
+                # per recall, so most neurons that are genuinely part of an
+                # actively-recalled fiber still read access_frequency == 0 forever.
+                # Without this guard, "dead" pruning deletes real memory content
+                # (measured live: 57150/63380 neuron_states were fiber members with
+                # access_frequency == 0 — nearly the whole brain was wrongly
+                # eligible). Only a neuron with NO fiber membership at all (already
+                # excluded from is_orphan above only because it still has a direct
+                # synapse connection) is a genuine dead-neuron candidate.
+                if neuron.id in fiber_neuron_ids:
+                    continue
                 state = states.get(neuron.id)
                 freq = state.access_frequency if state else 0
                 if freq > 0:
