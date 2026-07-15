@@ -457,6 +457,12 @@ async def _materialize_habits(
 _TOOL_HABIT_LOOKBACK_DAYS = 30
 _TOOL_HABIT_MAX_EVENTS = 5000
 _TOOL_HABIT_MAX = 25  # cap materialized tool habits per run to avoid flooding
+# Tool events are orders of magnitude denser than action events (hundreds per
+# session vs a handful), so the configured habit_min_frequency (default 3) lets
+# nearly every tool combination qualify — live-tested at ~1.7k events it drained
+# a 134-habit backlog of mostly freq-3 noise. Scale the frequency floor with
+# volume: 1 per this many events (e.g. 1700 events → floor 17).
+_TOOL_HABIT_FREQ_DIVISOR = 100
 
 
 async def learn_tool_habits(
@@ -523,7 +529,10 @@ async def learn_tool_habits(
     if not pairs:
         return [], report
 
-    candidates = extract_habit_candidates(pairs, config.habit_min_frequency, total_sessions=1)
+    # Volume-scaled frequency floor: only genuinely habitual tool workflows
+    # qualify on dense streams; small brains keep the configured threshold.
+    effective_min_freq = max(config.habit_min_frequency, len(events) // _TOOL_HABIT_FREQ_DIVISOR)
+    candidates = extract_habit_candidates(pairs, effective_min_freq, total_sessions=1)
     if not candidates:
         return [], report
 

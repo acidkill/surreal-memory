@@ -504,6 +504,39 @@ class TestToolHabits:
         assert learned == []
         assert report.habits_learned == 0
 
+    async def test_volume_scaled_frequency_floor(self, store: InMemoryStorage) -> None:
+        """On dense streams, low-frequency combos must not qualify as habits.
+
+        400 events raise the effective floor to 400/100 = 4, so a pair seen only
+        3 times (= config threshold) is rejected as noise.
+        """
+        now = utcnow()
+        t = now - timedelta(hours=8)
+        events = []
+        # Dense filler: 394 alternating Bash/Read (self-pair-free noise floor
+        # carrier; Bash→Read itself is frequent and WILL qualify).
+        for i in range(394):
+            events.append(_tool_event("Bash" if i % 2 == 0 else "Read", t))
+            t += timedelta(seconds=20)
+        # Rare pair Grep→Write occurs exactly 3 times — below the scaled floor.
+        for _ in range(3):
+            events.append(_tool_event("Grep", t))
+            t += timedelta(seconds=10)
+            events.append(_tool_event("Write", t))
+            t += timedelta(minutes=10)
+        await store.insert_tool_events(store.current_brain_id, events)
+
+        config = BrainConfig(habit_min_frequency=3, sequential_window_seconds=60.0)
+        learned, _ = await learn_tool_habits(store, config, now)
+
+        names = {h.name for h in learned}
+        assert not any("Grep" in n for n in names), (
+            "freq-3 pair must be rejected when the volume-scaled floor is 4"
+        )
+        assert any("Bash" in n and "Read" in n for n in names), (
+            "genuinely frequent pairs must still qualify"
+        )
+
     async def test_action_habits_idempotent_across_runs(self, store: InMemoryStorage) -> None:
         """learn_habits must not re-create the same habit on every consolidation.
 
