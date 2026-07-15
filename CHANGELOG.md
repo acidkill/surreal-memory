@@ -74,6 +74,15 @@ below before relying on `prune`/`consolidate` on an existing brain.
   `--dist loadgroup`, and isolated two env-sensitive tests from ambient
   `SURREAL_MEMORY_EMBEDDING_ENDPOINT`/`SURREAL_MEMORY_RERANKER_ENDPOINT`
   developer environments.
+- **Test suite: the e2e API tests can no longer write into a configured live
+  SurrealDB.** The `client` fixture redirected `SURREAL_MEMORY_DIR` to a temp
+  dir, but a fresh config inherits `storage_backend` from the
+  `SURREAL_MEMORY_STORAGE` env var — on a dev shell exporting
+  `surrealdb` + `SURREALDB_URL`/`SURREALDB_PASS`, the suite created dozens of
+  test brains in the production DB and xdist workers aborted each other with
+  `Transaction write conflict` setup errors. The fixture now forces the
+  sqlite fixture backend, strips the live-DB env vars, and resets the cached
+  `_surrealdb_storage` singleton (which bypasses `_storage_cache`).
 
 ### Added
 
