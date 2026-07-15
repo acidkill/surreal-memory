@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
+from dataclasses import replace as dc_replace
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -336,8 +337,53 @@ async def learn_habits(
     if not candidates:
         return [], report
 
+    # Idempotency: skip candidates already materialized as habit fibers. Without
+    # this every consolidation run re-created the same habit (e.g. a duplicate
+    # `recall-remember` fiber per run) because nothing consumed the mined events.
+    existing_steps = await _existing_habit_steps(storage)
+    candidates = [c for c in candidates if tuple(c.steps) not in existing_steps]
+    if not candidates:
+        return [], report
+
     # 4. Materialize qualifying candidates
+    learned = await _materialize_habits(storage, candidates, config, report, source="action_log")
+
+    # 5. Prune old action events (>60 days)
+    prune_cutoff = reference_time - timedelta(days=60)
+    pruned = await storage.prune_action_events(prune_cutoff)
+    report.action_events_pruned = pruned
+
+    return learned, report
+
+
+async def _existing_habit_steps(storage: NeuralStorage) -> set[tuple[str, ...]]:
+    """Step-sequences of habits already materialized as `_habit_pattern` fibers."""
+    existing = await storage.find_fibers(metadata_key="_habit_pattern", limit=1000)
+    return {
+        tuple(f.metadata.get("_workflow_actions", []))
+        for f in existing
+        if f.metadata.get("_workflow_actions")
+    }
+
+
+async def _materialize_habits(
+    storage: NeuralStorage,
+    candidates: list[HabitCandidate],
+    config: BrainConfig,
+    report: HabitReport,
+    source: str,
+) -> list[LearnedHabit]:
+    """Create ACTION neurons + BEFORE synapses + WORKFLOW fibers for candidates.
+
+    Shared by action-log habits (``learn_habits``) and tool-usage habits
+    (``learn_tool_habits``). ``source`` is stored on each fiber as
+    ``_habit_source`` for observability; both remain ``_habit_pattern=True`` so
+    ``smem habits list`` shows them. Mutates *report* (habits_learned,
+    pairs_strengthened).
+    """
     learned: list[LearnedHabit] = []
+    if not candidates:
+        return learned
 
     # Batch-fetch all unique step names across all candidates
     all_steps = {step for candidate in candidates for step in candidate.steps}
@@ -376,12 +422,9 @@ async def learn_habits(
 
         # Create WORKFLOW fiber
         name = heuristic_habit_name(candidate.steps)
-        synapse_id_set = {s.id for s in sequence_synapses}
-        neuron_id_set = set(neuron_ids)
-
         workflow_fiber = Fiber.create(
-            neuron_ids=neuron_id_set,
-            synapse_ids=synapse_id_set,
+            neuron_ids=set(neuron_ids),
+            synapse_ids={s.id for s in sequence_synapses},
             anchor_neuron_id=neuron_ids[0],
             pathway=neuron_ids,
             summary=name,
@@ -391,6 +434,7 @@ async def learn_habits(
                 "_habit_pattern": True,
                 "_habit_frequency": candidate.frequency,
                 "_habit_confidence": candidate.confidence,
+                "_habit_source": source,
             },
         )
         await storage.add_fiber(workflow_fiber)
@@ -406,9 +450,99 @@ async def learn_habits(
         )
         report.habits_learned += 1
 
-    # 5. Prune old action events (>60 days)
-    prune_cutoff = reference_time - timedelta(days=60)
-    pruned = await storage.prune_action_events(prune_cutoff)
-    report.action_events_pruned = pruned
+    return learned
 
+
+# Tool-usage habit mining tunables (module-level — no BrainConfig migration).
+_TOOL_HABIT_LOOKBACK_DAYS = 30
+_TOOL_HABIT_MAX_EVENTS = 5000
+_TOOL_HABIT_MAX = 25  # cap materialized tool habits per run to avoid flooding
+
+
+async def learn_tool_habits(
+    storage: NeuralStorage,
+    config: BrainConfig,
+    reference_time: datetime,
+) -> tuple[list[LearnedHabit], HabitReport]:
+    """Learn habits from tool-usage sequences (e.g. Read → Edit → Bash).
+
+    Mirrors ``learn_habits`` but mines the ``tool_events`` buffer instead of the
+    action_log. Tool events carry no session_id, so the whole history is treated
+    as one time-ordered stream, segmented by the sequential window. Same-tool
+    self-pairs (Bash → Bash) are dropped — they are not workflows. Idempotent:
+    candidates whose step-sequence already exists as a ``_habit_pattern`` fiber
+    are skipped, so repeated consolidation runs don't accumulate duplicates.
+    Backends without a tool_events buffer (get_tool_events_for_mining → []) are
+    a graceful no-op.
+    """
+    from surreal_memory.core.action_event import ActionEvent
+
+    report = HabitReport()
+    brain_id = storage.current_brain_id
+    if not brain_id:
+        return [], report
+
+    since = reference_time - timedelta(days=_TOOL_HABIT_LOOKBACK_DAYS)
+    rows = await storage.get_tool_events_for_mining(
+        brain_id, since=since, limit=_TOOL_HABIT_MAX_EVENTS
+    )
+    if len(rows) < 2:
+        return [], report
+
+    # Build one time-ordered ActionEvent stream (tool_name as action_type).
+    events: list[ActionEvent] = []
+    for r in rows:
+        created = r.get("created_at")
+        if isinstance(created, str):
+            try:
+                created = datetime.fromisoformat(created.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+        if not isinstance(created, datetime):
+            continue
+        if created.tzinfo is not None:
+            created = created.replace(tzinfo=None)  # naive UTC (tool events are UTC)
+        tool = str(r.get("tool_name") or "").strip()
+        if not tool:
+            continue
+        events.append(
+            ActionEvent(
+                brain_id=brain_id,
+                session_id=None,
+                action_type=tool,
+                created_at=created,
+            )
+        )
+    report.sequences_analyzed = len(events)
+    if len(events) < 2:
+        return [], report
+
+    pairs = mine_sequential_pairs(events, config.sequential_window_seconds)
+    # Drop self-pairs (Bash → Bash): repetition of one tool is not a workflow.
+    pairs = [p for p in pairs if p.action_a != p.action_b]
+    if not pairs:
+        return [], report
+
+    candidates = extract_habit_candidates(pairs, config.habit_min_frequency, total_sessions=1)
+    if not candidates:
+        return [], report
+
+    # No session data → extract's confidence degenerates to raw frequency; clamp
+    # to [0, 1] so `smem habits list` doesn't print "Confidence: 93.00".
+    candidates = [
+        dc_replace(c, confidence=min(1.0, c.confidence)) if c.confidence > 1.0 else c
+        for c in candidates
+    ]
+
+    # Idempotency: skip candidates already materialized as habit fibers, so
+    # repeated consolidation doesn't accumulate duplicate tool habits.
+    existing_steps = await _existing_habit_steps(storage)
+    fresh = [c for c in candidates if tuple(c.steps) not in existing_steps]
+    if not fresh:
+        return [], report
+
+    # Cap to the strongest N (candidates are frequency-sorted) to avoid flooding.
+    fresh = fresh[:_TOOL_HABIT_MAX]
+
+    learned = await _materialize_habits(storage, fresh, config, report, source="tool_events")
     return learned, report

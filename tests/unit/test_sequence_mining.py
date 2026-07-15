@@ -16,6 +16,7 @@ from surreal_memory.engine.sequence_mining import (
     extract_habit_candidates,
     heuristic_habit_name,
     learn_habits,
+    learn_tool_habits,
     mine_sequential_pairs,
 )
 from surreal_memory.storage.memory_store import InMemoryStorage
@@ -424,3 +425,105 @@ class TestLearnHabits:
         assert report.habits_learned >= 1
         assert report.pairs_strengthened >= 1
         assert isinstance(report.action_events_pruned, int)
+
+
+# ── learn_tool_habits (tool_events → habits) ─────────────────────
+
+
+def _tool_event(tool: str, at: datetime) -> dict:
+    """Synthetic tool-event row as buffered by insert_tool_events."""
+    return {"tool_name": tool, "session_id": "", "created_at": at, "success": True}
+
+
+class TestToolHabits:
+    """Tool-usage sequences from the tool_events buffer become habit fibers."""
+
+    async def test_tool_sequences_become_habit_fibers(self, store: InMemoryStorage) -> None:
+        """Repeated Read → Edit → Bash runs materialize a _habit_pattern fiber."""
+        now = utcnow()
+        t = now - timedelta(minutes=30)
+        events = []
+        for _ in range(3):  # 3 repetitions ≥ habit_min_frequency=2
+            for tool in ("Read", "Edit", "Bash"):
+                events.append(_tool_event(tool, t))
+                t += timedelta(seconds=10)  # within 60s window
+            t += timedelta(minutes=10)  # gap breaks the sequence between runs
+        await store.insert_tool_events(store.current_brain_id, events)
+
+        config = BrainConfig(habit_min_frequency=2, sequential_window_seconds=60.0)
+        learned, report = await learn_tool_habits(store, config, now)
+
+        assert report.habits_learned >= 1
+        habits = await store.find_fibers(metadata_key="_habit_pattern", limit=100)
+        assert habits, "tool habits must be listable via the _habit_pattern marker"
+        assert any(h.metadata.get("_habit_source") == "tool_events" for h in habits)
+        names = {h.name for h in learned}
+        assert any("Read" in n and "Edit" in n for n in names)
+
+    async def test_self_pairs_do_not_form_habits(self, store: InMemoryStorage) -> None:
+        """Bash → Bash repetition is not a workflow and must not become a habit."""
+        now = utcnow()
+        t = now - timedelta(minutes=5)
+        events = [_tool_event("Bash", t + timedelta(seconds=5 * i)) for i in range(10)]
+        await store.insert_tool_events(store.current_brain_id, events)
+
+        config = BrainConfig(habit_min_frequency=2, sequential_window_seconds=60.0)
+        learned, report = await learn_tool_habits(store, config, now)
+
+        assert learned == []
+        assert report.habits_learned == 0
+
+    async def test_idempotent_across_runs(self, store: InMemoryStorage) -> None:
+        """A second mining run must not duplicate already-materialized habits."""
+        now = utcnow()
+        t = now - timedelta(minutes=30)
+        events = []
+        for _ in range(3):
+            for tool in ("Grep", "Read"):
+                events.append(_tool_event(tool, t))
+                t += timedelta(seconds=10)
+            t += timedelta(minutes=10)
+        await store.insert_tool_events(store.current_brain_id, events)
+
+        config = BrainConfig(habit_min_frequency=2, sequential_window_seconds=60.0)
+        _, first = await learn_tool_habits(store, config, now)
+        assert first.habits_learned >= 1
+        count_after_first = len(await store.find_fibers(metadata_key="_habit_pattern", limit=100))
+
+        _, second = await learn_tool_habits(store, config, now)
+        count_after_second = len(await store.find_fibers(metadata_key="_habit_pattern", limit=100))
+
+        assert second.habits_learned == 0
+        assert count_after_second == count_after_first
+
+    async def test_no_tool_events_is_noop(self, store: InMemoryStorage) -> None:
+        """Backends/brains without tool events return an empty report."""
+        config = BrainConfig(habit_min_frequency=2, sequential_window_seconds=60.0)
+        learned, report = await learn_tool_habits(store, config, utcnow())
+
+        assert learned == []
+        assert report.habits_learned == 0
+
+    async def test_action_habits_idempotent_across_runs(self, store: InMemoryStorage) -> None:
+        """learn_habits must not re-create the same habit on every consolidation.
+
+        Regression: each `consolidate` run created another `recall-remember`
+        fiber because nothing consumed the mined action events.
+        """
+        for session_num in range(3):
+            sid = f"s{session_num}"
+            await store.record_action("recall", session_id=sid)
+            await store.record_action("remember", session_id=sid)
+
+        config = BrainConfig(habit_min_frequency=2, sequential_window_seconds=60.0)
+        now = utcnow()
+
+        _, first = await learn_habits(store, config, now)
+        assert first.habits_learned >= 1
+        count_first = len(await store.find_fibers(metadata_key="_habit_pattern", limit=100))
+
+        _, second = await learn_habits(store, config, now)
+        count_second = len(await store.find_fibers(metadata_key="_habit_pattern", limit=100))
+
+        assert second.habits_learned == 0
+        assert count_second == count_first

@@ -112,6 +112,35 @@ class SurrealDBToolEventsMixin:
             for r in rows
         ]
 
+    async def get_tool_events_for_mining(
+        self,
+        brain_id: str,
+        since: datetime | None = None,
+        limit: int = 5000,
+    ) -> list[dict[str, Any]]:
+        """Return tool events (tool_name + created_at) oldest-first for habit mining.
+
+        Unlike ``get_unprocessed_events`` this ignores the ``processed`` flag —
+        habit mining observes the full accumulated history and never mutates it
+        (tool events carry no session_id, so mining treats them as one stream).
+        """
+        safe_limit = min(int(limit), 20000)
+        sql = "SELECT tool_name, session_id, created_at FROM tool_events WHERE brain_id = $bid"
+        params: dict[str, Any] = {"bid": brain_id}
+        if since is not None:
+            sql += " AND created_at > $since"
+            params["since"] = since
+        sql += f" ORDER BY created_at ASC LIMIT {safe_limit}"
+        rows = await self._query(sql, **params)
+        return [
+            {
+                "tool_name": r.get("tool_name", ""),
+                "session_id": r.get("session_id", ""),
+                "created_at": _iso(r.get("created_at")),
+            }
+            for r in rows
+        ]
+
     async def mark_events_processed(
         self,
         brain_id: str,

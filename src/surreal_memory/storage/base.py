@@ -1179,6 +1179,21 @@ class NeuralStorage(ABC):
         """
         raise NotImplementedError
 
+    async def get_tool_events_for_mining(
+        self,
+        brain_id: str,
+        since: datetime | None = None,
+        limit: int = 5000,
+    ) -> list[dict[str, Any]]:
+        """Return tool events (tool_name + created_at) oldest-first for habit mining.
+
+        Default: no tool-event storage → empty list, so habit mining is a no-op
+        on backends without a tool_events buffer. Backends that buffer tool
+        events (SurrealDB, SQLite, in-memory) override this. Ignores the
+        ``processed`` flag — mining reads the full history and never mutates it.
+        """
+        return []
+
     async def add_retrieval_trace(self, trace: RetrievalTrace) -> str:
         """Persist a retrieval trace. Returns the trace ID."""
         raise NotImplementedError

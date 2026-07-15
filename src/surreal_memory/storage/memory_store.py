@@ -795,6 +795,34 @@ class InMemoryStorage(
         """Return unprocessed tool events (in-memory: always empty)."""
         return []
 
+    async def get_tool_events_for_mining(
+        self,
+        brain_id: str,
+        since: datetime | None = None,
+        limit: int = 5000,
+    ) -> list[dict[str, Any]]:
+        """Return buffered tool events (tool_name + created_at) oldest-first.
+
+        In-memory ``insert_tool_events`` appends onto ``_action_events``; pick
+        the entries that carry a ``tool_name`` (tool events) and order by time.
+        """
+        out: list[dict[str, Any]] = []
+        for ev in self._action_events.get(brain_id, []):
+            if "tool_name" not in ev:
+                continue
+            created = ev.get("created_at")
+            if since is not None and isinstance(created, datetime) and created <= since:
+                continue
+            out.append(
+                {
+                    "tool_name": ev.get("tool_name", ""),
+                    "session_id": ev.get("session_id", ""),
+                    "created_at": created,
+                }
+            )
+        out.sort(key=lambda e: str(e["created_at"]))
+        return out[: min(int(limit), 20000)]
+
     async def mark_events_processed(self, brain_id: str, event_ids: list[int]) -> None:
         """Mark events as processed (no-op for in-memory storage)."""
 

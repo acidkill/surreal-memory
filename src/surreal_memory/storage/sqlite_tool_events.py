@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING, Any
 from surreal_memory.utils.timeutils import utcnow
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     import aiosqlite
 
 logger = logging.getLogger(__name__)
@@ -105,6 +107,38 @@ class SQLiteToolEventsMixin:
                         "duration_ms": row["duration_ms"],
                         "session_id": row["session_id"],
                         "task_context": row["task_context"],
+                        "created_at": row["created_at"],
+                    }
+                )
+        return results
+
+    async def get_tool_events_for_mining(
+        self,
+        brain_id: str,
+        since: datetime | None = None,
+        limit: int = 5000,
+    ) -> list[dict[str, Any]]:
+        """Return tool events (tool_name + created_at) oldest-first for habit mining.
+
+        Ignores the ``processed`` flag — habit mining reads the full history and
+        never mutates it.
+        """
+        conn = self._ensure_read_conn()
+        safe_limit = min(int(limit), 20000)
+        query = "SELECT tool_name, session_id, created_at FROM tool_events WHERE brain_id = ?"
+        params: list[Any] = [brain_id]
+        if since is not None:
+            query += " AND created_at > ?"
+            params.append(since.isoformat())
+        query += " ORDER BY created_at ASC LIMIT ?"
+        params.append(safe_limit)
+        results: list[dict[str, Any]] = []
+        async with conn.execute(query, params) as cursor:
+            async for row in cursor:
+                results.append(
+                    {
+                        "tool_name": row["tool_name"],
+                        "session_id": row["session_id"],
                         "created_at": row["created_at"],
                     }
                 )

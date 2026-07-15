@@ -1539,6 +1539,17 @@ class ConsolidationEngine:
         except Exception:
             logger.debug("Query pattern learning failed (non-critical)", exc_info=True)
 
+        # Also learn tool-usage habits from the tool_events buffer (Read → Edit →
+        # Bash, …). Unlike query patterns these ARE listable `_habit_pattern`
+        # fibers, so they count toward habits_learned.
+        try:
+            from surreal_memory.engine.sequence_mining import learn_tool_habits
+
+            _, tool_report = await learn_tool_habits(self._storage, brain.config, reference_time)
+            report.habits_learned += tool_report.habits_learned
+        except Exception:
+            logger.debug("Tool-usage habit learning failed (non-critical)", exc_info=True)
+
     async def _dedup(
         self,
         report: ConsolidationReport,

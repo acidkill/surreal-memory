@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.10.4] — Tool-usage habits
+
+Tool calls now feed habit learning: repeated tool workflows (Read → Edit →
+Bash, …) become listable habits, closing the gap where a months-old brain with
+thousands of buffered tool events had almost nothing to show in
+`smem habits list`.
+
+### Added
+
+- **Tool-usage habit mining.** The `learn_habits` consolidation strategy now
+  also mines the `tool_events` buffer. Tool events carry no session id, so the
+  history is treated as one time-ordered stream segmented by the sequential
+  window; same-tool self-pairs (Bash → Bash) are dropped, and at most 25 new
+  tool habits materialize per run (repeated runs drain the backlog). Learned
+  habits are regular `_habit_pattern` WORKFLOW fibers — they show up in
+  `smem habits list` alongside action habits, tagged
+  `_habit_source: tool_events`. Backends without a tool-event buffer are a
+  graceful no-op (`get_tool_events_for_mining` defaults to empty).
+
+### Fixed
+
+- **Habit learning is now idempotent.** Every consolidation run re-created the
+  same action habit (e.g. a duplicate `recall-remember` fiber per run) because
+  nothing consumed the mined events. Both action and tool habit mining now skip
+  step-sequences that already exist as `_habit_pattern` fibers.
+- **Habit confidence is clamped to [0, 1]** for tool habits — without session
+  data the confidence formula degenerated to the raw frequency and
+  `smem habits list` printed values like `Confidence: 93.00`.
+
 ## [2.10.3] — Prune completes, habits stick
 
 Two user-reported bugs on large, months-old brains: `consolidate`'s prune step
