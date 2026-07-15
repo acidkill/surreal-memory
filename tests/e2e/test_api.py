@@ -22,8 +22,21 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[TestCli
     # Point all storage to tmp_path instead of ~/.surrealmemory/
     monkeypatch.setenv("SURREAL_MEMORY_DIR", str(tmp_path))
 
-    # Clear cached config and storage so they reinitialize with tmp_path
+    # Force the sqlite fixture backend and strip live-DB env. On a dev box the
+    # shell exports SURREAL_MEMORY_STORAGE=surrealdb + SURREALDB_URL/PASS, and a
+    # fresh tmp_path config.toml inherits storage_backend from that env — so the
+    # e2e suite silently wrote test brains into the PRODUCTION SurrealDB and
+    # xdist workers aborted each other with transaction write conflicts.
+    monkeypatch.setenv("SURREAL_MEMORY_STORAGE", "sqlite")
+    monkeypatch.delenv("SURREALDB_URL", raising=False)
+    monkeypatch.delenv("SURREALDB_PASS", raising=False)
+
+    # Clear cached config and storage so they reinitialize with tmp_path.
+    # _surrealdb_storage is a separate module-level singleton that bypasses
+    # _storage_cache — a previously-cached production connection would be
+    # reused regardless of the env above (monkeypatch restores it on teardown).
     monkeypatch.setattr(uc, "_config", None)
+    monkeypatch.setattr(uc, "_surrealdb_storage", None)
     saved_cache = uc._storage_cache.copy()
     uc._storage_cache.clear()
 
