@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.10.5] — Consolidation scales, tool graph forms
+
+Full `smem consolidate` now finishes without per-strategy timeouts on large
+brains, and session-less tool events finally build the USED_WITH tool graph.
+
+### Fixed
+
+- **`compress` no longer times out on large brains.** On a ~67k-neuron brain
+  the strategy hit the 120s per-strategy budget: `compress_fiber` made one
+  `get_synapse` round trip per synapse id per fiber (~66k across 4.2k eligible
+  fibers) and fetched synapses even for tiers that never use them. Synapses
+  are now fetched in one bounded-concurrent batch and only for the
+  ENTITY_ONLY/TEMPLATE tiers that actually render relations; neuron batch
+  fetches are bounded-concurrent too. The compression run also takes a time
+  budget (80% of the strategy timeout) and reports any remainder as
+  `fibers_deferred` instead of being cancelled mid-run — deferred fibers stay
+  eligible, so repeated runs drain the backlog in O(batch) work per run.
+  Measured live: compress 120s-timeout → 72s clean; full `smem consolidate`
+  zero timeouts. Note: on SurrealDB 3.2.0 a single `id IN [...]` query over
+  RecordIDs measured ~8x *slower* than per-id direct selects (IN-membership
+  skips the primary index), hence concurrency-shaped batching rather than an
+  IN query.
+- **Session-less tool events now form USED_WITH/EFFECTIVE_FOR synapses.**
+  `process_events` dropped every tool event with an empty `session_id` from
+  co-occurrence grouping, so on brains where tool events carry no session
+  (all of them on a hook-fed brain) the tool graph never formed — 0 USED_WITH
+  synapses. Session-less events now fold into one shared time-ordered stream
+  (the same treatment tool-habit mining already uses), still bounded by the
+  co-occurrence window. Verified live: 16 USED_WITH synapses formed from the
+  pending backlog.
+- **Test suite: deflaked the aiosqlite leak-guard pair under `pytest-xdist`**
+  (`KeyError: 'thread'` when its two cooperating tests landed on different
+  workers) by pinning them to one worker via `xdist_group` +
+  `--dist loadgroup`, and isolated two env-sensitive tests from ambient
+  `SURREAL_MEMORY_EMBEDDING_ENDPOINT`/`SURREAL_MEMORY_RERANKER_ENDPOINT`
+  developer environments.
+
+### Added
+
+- `get_synapses_batch` on all storage backends (batched on SQLite/SurrealDB,
+  sequential fallback on the base class), mirroring `get_neurons_batch`.
+
 ## [2.10.4] — Tool-usage habits
 
 Tool calls now feed habit learning: repeated tool workflows (Read → Edit →
