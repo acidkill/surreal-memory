@@ -7,13 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [2.10.5] — Consolidation scales, tool graph forms
+## [2.10.5] — Consolidation scales, prune stops eating memories
 
 Full `smem consolidate` now finishes without per-strategy timeouts on large
-brains, and session-less tool events finally build the USED_WITH tool graph.
+brains, session-less tool events finally build the USED_WITH tool graph, and
+a data-integrity bug in dead-neuron pruning is fixed — see the first entry
+below before relying on `prune`/`consolidate` on an existing brain.
 
 ### Fixed
 
+- **`prune` no longer deletes live memory content.** Dead-neuron pruning
+  (`access_frequency == 0` + old enough) never checked fiber membership,
+  unlike orphan detection right above it in the same loop, which does.
+  `reinforce()` only bumps `access_frequency` for the top-10
+  highest-activation neurons per recall, so most neurons that are genuinely
+  part of an actively-recalled fiber read `access_frequency == 0` forever —
+  once prune's delete phase could actually complete (see the next entry),
+  this deleted real memory content instead of dead junk. Measured live:
+  57150 of 63380 neuron_states were fiber members reading
+  `access_frequency == 0` (nearly the whole brain was wrongly eligible).
+  Dead-neuron pruning now skips any neuron that belongs to a fiber, mirroring
+  the orphan-detection guard. **If you've run `consolidate` (prune or `all`)
+  non-dry-run on 2.10.0–2.10.4, check your brain's neuron/synapse counts
+  against a recent backup** — this bug could only fire once prune's delete
+  phase ran to completion, which the timeout below usually prevented, but a
+  smaller brain (or one that later grew past the point where prune was
+  timing out) could have been silently affected.
+- **`prune`'s delete phase no longer costs ~1.2s per neuron.**
+  `delete_neuron`'s synapse-cleanup query — `... WHERE brain_id = $b AND
+  (in = X OR out = X)` — doesn't hit either `idx_synapse_in`/`idx_synapse_out`
+  on SurrealDB 3.2.0: its planner falls back to a full scan across an OR of
+  two different fields regardless of whether brain_id/the record id are
+  inlined or param-bound. Splitting into two single-field DELETEs (each hits
+  its own index) measured ~5ms total instead of ~1.2s — the dominant cost
+  behind prune's 120s timeout once the read-side N+1 was fixed. Added
+  `delete_neurons_batch`/`delete_synapses_batch` to the SurrealDB backend
+  (previously SQLite-only); both are sequential, not concurrent — concurrent
+  deletes raised live `Transaction conflict` errors under SurrealDB's
+  transaction isolation, unlike concurrent reads, which are safe.
 - **`compress` no longer times out on large brains.** On a ~67k-neuron brain
   the strategy hit the 120s per-strategy budget: `compress_fiber` made one
   `get_synapse` round trip per synapse id per fiber (~66k across 4.2k eligible
