@@ -254,12 +254,17 @@ async def process_events(
     # Only process tools that meet frequency threshold
     frequent_tools = {t for t, c in tool_freq.items() if c >= config.min_frequency}
 
-    # Group events by session for co-occurrence detection
+    # Group events by session for co-occurrence detection. Tool events commonly
+    # carry no session_id (background/subagent tool calls) — those still form a
+    # valid, shared time-ordered stream rather than being dropped entirely, the
+    # same treatment `learn_tool_habits` (sequence_mining.py) already gives the
+    # session-less tool_events buffer. The sliding-window check below already
+    # bounds pairing to events within `cooccurrence_window_s`, so folding all
+    # session-less events into one bucket doesn't change its complexity.
     sessions: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for ev in events:
-        sid = ev.get("session_id", "")
-        if sid:
-            sessions[sid].append(ev)
+        sid = ev.get("session_id") or "_no_session"
+        sessions[sid].append(ev)
 
     # USED_WITH detection: sliding window within each session
     seen_pairs: set[tuple[str, str]] = set()

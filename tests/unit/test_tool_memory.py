@@ -242,6 +242,32 @@ class TestProcessEvents:
         assert len(synapses) >= 1
 
     @pytest.mark.asyncio
+    async def test_used_with_detection_without_session_id(self, storage: SQLiteStorage) -> None:
+        """Session-less tool events still form USED_WITH via the shared stream.
+
+        Regression test: events with an empty session_id used to be dropped
+        entirely from the session-grouping dict, so the co-occurrence loop
+        never ran over them and USED_WITH synapses never formed.
+        """
+        events = [
+            _make_event(tool_name="Grep", session_id="", created_at="2026-03-01T10:00:00"),
+            _make_event(tool_name="Read", session_id="", created_at="2026-03-01T10:00:30"),
+            _make_event(tool_name="Grep", session_id="", created_at="2026-03-01T10:01:00"),
+            _make_event(tool_name="Read", session_id="", created_at="2026-03-01T10:01:30"),
+        ]
+        await storage.insert_tool_events("test-brain", events)
+        config = ToolMemoryConfig(enabled=True, min_frequency=2, cooccurrence_window_s=60)
+        result = await process_events(storage, "test-brain", config)
+
+        assert result.events_processed == 4
+        assert result.synapses_created >= 1
+
+        from surreal_memory.core.synapse import SynapseType
+
+        synapses = await storage.get_synapses(type=SynapseType.USED_WITH)
+        assert len(synapses) >= 1
+
+    @pytest.mark.asyncio
     async def test_frequency_threshold(self, storage: SQLiteStorage) -> None:
         """Tools below frequency threshold don't create neurons."""
         events = [
