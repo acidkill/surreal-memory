@@ -337,7 +337,15 @@ class DocTrainer:
         # Track chunk anchor neuron IDs for linking to heading neurons
         chunk_anchors: list[tuple[tuple[str, ...], str]] = []
 
-        for chunk in chunks:
+        # Optional progress bar (tqdm is a transitive dep, not declared — fall
+        # back to periodic logging so a clean install without tqdm still reports).
+        try:
+            from tqdm.auto import tqdm as _tqdm
+        except ImportError:
+            _tqdm = None
+        iterator = _tqdm(chunks, desc="doc_train", unit="chunk") if _tqdm is not None else chunks
+
+        for chunk in iterator:
             tags: set[str] = {"doc_train"}
             if tc.domain_tag:
                 tags.add(tc.domain_tag)
@@ -379,6 +387,13 @@ class DocTrainer:
             total_neurons += len(result.neurons_created)
             total_synapses += len(result.synapses_created)
             chunks_encoded += 1
+            if _tqdm is None and chunks_encoded % 50 == 0:
+                logger.info(
+                    "doc_train progress: %d/%d chunks (%.1f%%)",
+                    chunks_encoded,
+                    len(chunks),
+                    100.0 * chunks_encoded / max(1, len(chunks)),
+                )
 
             # Pin KB fibers so they skip decay/prune/compress
             if tc.pinned:
