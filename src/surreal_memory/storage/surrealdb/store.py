@@ -388,6 +388,10 @@ class SurrealDBStorage(
         self._conn: Any = None
         self._current_brain_id: str | None = None
         self._change_seq: int = 0
+        # When True, _record_change_internal is a no-op. Bulk training against a
+        # brain that does not delta-sync sets this (via disable_change_recording)
+        # to skip the per-write change_log insert — the #1 op count during encode.
+        self._skip_change_log: bool = False
         # Serializes token re-auth so concurrent queries that all hit an
         # expired-token 401 trigger a single reconnect, not a storm.
         self._reauth_lock = asyncio.Lock()
@@ -980,6 +984,55 @@ class SurrealDBStorage(
 
         await self._record_change_internal("synapse", synapse.id, "insert", synapse)
         return synapse.id
+
+    async def add_synapses_batch(
+        self,
+        synapses: list[Synapse],
+        *,
+        record_change: bool = True,
+    ) -> int:
+        """Insert many native-RELATION synapses in a single round-trip.
+
+        Mirrors ``update_neuron_embeddings``: one multi-statement
+        ``INSERT RELATION INTO synapse $rN`` per synapse, joined and sent as one
+        query. The per-call ``await conn.query("INSERT RELATION ...")`` in
+        ``add_synapse`` is the #2 round-trip cost during doc-training (~70+/chunk);
+        this collapses N of them into one. ``record_change=False`` (used by bulk
+        training against a brain that does not delta-sync) additionally skips the
+        per-synapse ``change_log`` insert — the #1 op count. Returns the count
+        inserted (best-effort; a statement-level failure is logged, not raised,
+        matching ``add_synapse`` semantics on the RELATION table).
+        """
+        from surrealdb import RecordID
+
+        if not synapses:
+            return 0
+        brain_id = self._get_brain_id()
+        stmts: list[str] = []
+        params: dict[str, Any] = {}
+        for i, syn in enumerate(synapses):
+            row = {
+                "id": RecordID("synapse", _to_surreal_id(syn.id)),
+                "in": RecordID("neuron", _to_surreal_id(syn.source_id)),
+                "out": RecordID("neuron", _to_surreal_id(syn.target_id)),
+                "brain_id": brain_id,
+                "type": syn.type.value,
+                "weight": syn.weight,
+                "direction": syn.direction,
+                "metadata": dict(syn.metadata),
+                "created_at": syn.created_at,
+                "reinforced_count": syn.reinforced_count,
+            }
+            params[f"r{i}"] = row
+            stmts.append(f"INSERT RELATION INTO synapse $r{i}")
+        try:
+            await self._query(";\n".join(stmts) + ";", **params)
+        except Exception:
+            logger.debug("add_synapses_batch multi-statement failed; partial", exc_info=True)
+        if record_change:
+            for syn in synapses:
+                await self._record_change_internal("synapse", syn.id, "insert", syn)
+        return len(synapses)
 
     async def get_synapse(self, synapse_id: str) -> Synapse | None:
         conn = self._ensure_conn()
@@ -1817,6 +1870,8 @@ class SurrealDBStorage(
         device_id: str = "",
     ) -> None:
         """Internal helper to record a change."""
+        if self._skip_change_log:
+            return
         try:
             brain_id = self._get_brain_id()
         except ValueError:

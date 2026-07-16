@@ -53,41 +53,35 @@ class SurrealDBKeywordEntityMixin:
         return {str(r["keyword"]): int(r.get("fiber_count", 0)) for r in rows}
 
     async def increment_keyword_df(self, keywords: list[str]) -> None:
-        """Increment fiber_count by 1 for each unique keyword (UPSERT semantics)."""
+        """Increment fiber_count by 1 for each unique keyword (UPSERT semantics).
+
+        Single multi-statement round-trip for the whole batch. The previous
+        per-keyword SELECT-then-merge/insert was an N+1 (~2 ops per keyword per
+        encoded memory) that dominated doc-training cost — a 100-chunk run issued
+        ~9k keyword-DF SELECTs. ``UPSERT ... SET fiber_count = (fiber_count ?? 0)
+        + 1`` handles both create (null → 0 → 1) and increment in one statement
+        per keyword, all pipelined in one query. The (brain_id, keyword) UNIQUE
+        index makes the UPSERT atomic.
+        """
         if not keywords:
             return
 
         brain_id = self._get_brain_id()
-        conn = self._ensure_conn()
-        now = utcnow()
         bid_safe = _to_surreal_id(brain_id)
-        unique_keywords = set(keywords)
-
-        for kw in unique_keywords:
+        now = utcnow()
+        unique = list(set(keywords))
+        params: dict[str, Any] = {"bid": brain_id, "now": now}
+        stmts: list[str] = []
+        for i, kw in enumerate(unique):
             sid = f"{bid_safe}_{_safe_id(kw)}"
-            existing = await self._query(
-                "SELECT fiber_count FROM keyword_document_frequency"
-                " WHERE brain_id = $brain_id AND keyword = $keyword LIMIT 1",
-                brain_id=brain_id,
-                keyword=kw,
+            params[f"sid{i}"] = sid
+            params[f"kw{i}"] = kw
+            stmts.append(
+                "UPSERT type::record('keyword_document_frequency', $sid{i})"
+                " SET keyword = $kw{i}, brain_id = $bid,"
+                " fiber_count = (fiber_count ?? 0) + 1, last_updated = $now"
             )
-            if existing:
-                current = int(existing[0].get("fiber_count", 0))
-                await conn.merge(
-                    f"keyword_document_frequency:{sid}",
-                    {"fiber_count": current + 1, "last_updated": now},
-                )
-            else:
-                await conn.insert(
-                    "keyword_document_frequency",
-                    {
-                        "id": sid,
-                        "brain_id": brain_id,
-                        "keyword": kw,
-                        "fiber_count": 1,
-                        "last_updated": now,
-                    },
-                )
+        await self._query(";\n".join(stmts) + ";", **params)
 
     # ---------------- entity refs ----------------
 

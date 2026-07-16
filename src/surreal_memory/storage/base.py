@@ -289,6 +289,24 @@ class NeuralStorage(ABC):
         """
         ...
 
+    async def add_synapses_batch(
+        self, synapses: list[Synapse], *, record_change: bool = True
+    ) -> int:
+        """Add many synapses. Default falls back to sequential add_synapse.
+
+        Backends should override for batch efficiency (doc-training issues ~70+
+        synapse inserts per chunk). ``record_change=False`` lets bulk training
+        skip per-row change-log writes on a brain that does not delta-sync.
+        """
+        count = 0
+        for syn in synapses:
+            try:
+                await self.add_synapse(syn)
+                count += 1
+            except Exception:
+                pass
+        return count
+
     @abstractmethod
     async def get_synapse(self, synapse_id: str) -> Synapse | None:
         """

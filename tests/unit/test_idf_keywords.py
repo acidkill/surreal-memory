@@ -69,8 +69,9 @@ class TestIDFWeighting:
 
         # Should NOT query DF (cold start skip)
         storage.get_keyword_df_batch.assert_not_called()
-        # Should still create synapse with position-based weight
-        assert storage.add_synapse.call_count >= 1
+        # Should still create synapse with position-based weight (now persisted
+        # via add_synapses_batch, so assert on ctx.synapses_created, not add_synapse calls)
+        assert len(ctx.synapses_created) >= 1
 
     @pytest.mark.asyncio
     async def test_rare_keyword_gets_high_weight(self) -> None:
@@ -93,9 +94,9 @@ class TestIDFWeighting:
 
         # Find the concept synapse
         concept_synapses = [
-            call[0][0]
-            for call in storage.add_synapse.call_args_list
-            if call[0][0].type == SynapseType.RELATED_TO and call[0][0].target_id == "c1"
+            s
+            for s in ctx.synapses_created
+            if s.type == SynapseType.RELATED_TO and s.target_id == "c1"
         ]
         assert len(concept_synapses) == 1
         # Rare keyword → IDF close to 1.0 → high final weight
@@ -121,9 +122,9 @@ class TestIDFWeighting:
         await step.execute(ctx, storage, config)
 
         concept_synapses = [
-            call[0][0]
-            for call in storage.add_synapse.call_args_list
-            if call[0][0].type == SynapseType.RELATED_TO and call[0][0].target_id == "c1"
+            s
+            for s in ctx.synapses_created
+            if s.type == SynapseType.RELATED_TO and s.target_id == "c1"
         ]
         assert len(concept_synapses) == 1
         # Common keyword → low IDF → lower weight
@@ -150,9 +151,9 @@ class TestIDFWeighting:
         await step.execute(ctx, storage, config)
 
         concept_synapses = [
-            call[0][0]
-            for call in storage.add_synapse.call_args_list
-            if call[0][0].type == SynapseType.RELATED_TO and call[0][0].target_id == "c1"
+            s
+            for s in ctx.synapses_created
+            if s.type == SynapseType.RELATED_TO and s.target_id == "c1"
         ]
         assert len(concept_synapses) == 1
         # Even with max DF, weight should be > 0 (floor=0.2)
