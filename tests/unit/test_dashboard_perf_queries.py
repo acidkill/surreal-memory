@@ -21,7 +21,12 @@ from __future__ import annotations
 import sys
 from unittest.mock import AsyncMock, MagicMock
 
-if "surrealdb" not in sys.modules:
+# Stub the optional surrealdb SDK ONLY when it is genuinely not installed: an
+# `if not in sys.modules` guard would shadow an installed SDK for the rest of
+# the pytest session and break the live (SURREALDB_URL) tests running later.
+try:
+    import surrealdb  # noqa: F401
+except ImportError:  # pragma: no cover - CI unit env has no surrealdb SDK
     sys.modules["surrealdb"] = MagicMock()
     sys.modules["surrealdb.errors"] = MagicMock()
 

@@ -16,7 +16,12 @@ import pytest
 # Stub the optional surrealdb SDK so the lazy `from surrealdb import RecordID`
 # inside migrations.py resolves. RecordID becomes a MagicMock factory — fine, the
 # tests assert on query text/state transitions, not RecordID internals.
-if "surrealdb" not in sys.modules:
+# Stub ONLY when the SDK is genuinely not installed: an `if not in sys.modules`
+# guard would shadow an installed SDK for the rest of the pytest session and
+# break the live (SURREALDB_URL) tests that run after this module.
+try:
+    import surrealdb  # noqa: F401
+except ImportError:  # pragma: no cover - CI unit env has no surrealdb SDK
     sys.modules["surrealdb"] = MagicMock()
     sys.modules["surrealdb.errors"] = MagicMock()
 

@@ -25,6 +25,7 @@ from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.core.project import Project
 from surreal_memory.storage.base import NeuralStorage
 from surreal_memory.storage.sqlite_store import SQLiteStorage
+from tests.unit._surrealdb_live import cleanup_live_brains, ensure_real_surrealdb_sdk
 
 SURREALDB_URL = os.getenv("SURREALDB_URL")
 _skip_surrealdb = pytest.mark.skipif(
@@ -110,8 +111,9 @@ async def sqlite_storage(tmp_path: Path) -> SQLiteStorage:
 async def surrealdb_storage():  # type: ignore[no-untyped-def]
     if not SURREALDB_URL:
         pytest.skip("SURREALDB_URL not set")
-    # The surrealdb SDK is an optional dependency; skip when it's absent.
-    pytest.importorskip("surrealdb")
+    # Skips when the SDK is absent, and heals sys.modules when another test
+    # module stubbed `surrealdb` (importorskip would accept the stub).
+    ensure_real_surrealdb_sdk()
     from surreal_memory.storage.surrealdb.store import SurrealDBStorage
 
     storage = SurrealDBStorage(url=SURREALDB_URL)
@@ -120,7 +122,12 @@ async def surrealdb_storage():  # type: ignore[no-untyped-def]
     await storage.save_brain(brain)
     storage.set_brain(brain.id)
     yield storage
-    # Best-effort cleanup; SurrealDB doesn't have per-test isolation here
+    # Best-effort cleanup: drop this test's brain (and stale leftovers) so
+    # `smem brain list` doesn't accumulate test brains on the shared DB.
+    try:
+        await cleanup_live_brains(storage, own_brain_id=brain.id)
+    except Exception:
+        pass
     try:
         await storage.close()
     except Exception:

@@ -26,6 +26,7 @@ from surreal_memory.core.memory_types import (
     TypedMemory,
 )
 from surreal_memory.core.neuron import Neuron, NeuronType
+from tests.unit._surrealdb_live import cleanup_live_brains, ensure_real_surrealdb_sdk
 
 SURREALDB_URL = os.getenv("SURREALDB_URL")
 
@@ -37,6 +38,7 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture
 async def surrealdb_storage():  # type: ignore[no-untyped-def]
+    ensure_real_surrealdb_sdk()
     from surreal_memory.storage.surrealdb.store import SurrealDBStorage
 
     storage = SurrealDBStorage(url=SURREALDB_URL)
@@ -45,6 +47,12 @@ async def surrealdb_storage():  # type: ignore[no-untyped-def]
     await storage.save_brain(brain)
     storage.set_brain(brain.id)
     yield storage
+    # Best-effort: drop this test's brain (and stale leftovers) from the
+    # shared DB so `smem brain list` doesn't accumulate test brains.
+    try:
+        await cleanup_live_brains(storage, own_brain_id=brain.id)
+    except Exception:
+        pass
     try:
         await storage.close()
     except Exception:

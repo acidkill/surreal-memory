@@ -18,6 +18,7 @@ from surreal_memory.core.brain import Brain
 from surreal_memory.core.fiber import Fiber
 from surreal_memory.core.memory_types import MemoryType, TypedMemory
 from surreal_memory.core.neuron import Neuron, NeuronType
+from tests.unit._surrealdb_live import cleanup_live_brains, ensure_real_surrealdb_sdk
 
 SURREALDB_URL = os.getenv("SURREALDB_URL")
 
@@ -29,6 +30,7 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture
 async def storage():  # type: ignore[no-untyped-def]
+    ensure_real_surrealdb_sdk()
     from surreal_memory.storage.surrealdb.store import SurrealDBStorage
 
     store = SurrealDBStorage(url=SURREALDB_URL)
@@ -37,6 +39,10 @@ async def storage():  # type: ignore[no-untyped-def]
     await store.save_brain(brain)
     store.set_brain(brain.id)
     yield store
+    try:
+        await cleanup_live_brains(store, own_brain_id=brain.id)
+    except Exception:
+        pass
     try:
         await store.close()
     except Exception:
