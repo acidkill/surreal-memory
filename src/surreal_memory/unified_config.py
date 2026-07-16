@@ -1063,6 +1063,189 @@ class ToolMemoryConfig:
         )
 
 
+# Model names / injection globs may contain glob metacharacters (``*``/``?``/
+# ``[]``) that the stricter _TOML_SAFE_STRING rejects. This variant allows them
+# while still blocking quotes/backslashes/control chars (TOML-injection safe).
+_TOML_SAFE_GLOB = re.compile(r"^[a-zA-Z0-9_\-\./ *?\[\]]*$")
+
+
+def _sanitize_toml_glob(value: str) -> str:
+    """Sanitize a model-name / glob string for safe TOML serialization."""
+    if not isinstance(value, str):
+        return ""
+    cleaned = value.strip()[:_TOML_STR_MAX_LEN]
+    if not _TOML_SAFE_GLOB.match(cleaned):
+        return ""
+    return cleaned
+
+
+_DEFAULT_REASONING_CATEGORIES: tuple[str, ...] = (
+    "debugging",
+    "planning",
+    "implementation",
+    "refactoring",
+    "research",
+    "verification",
+    "architecture",
+    "data-analysis",
+)
+
+
+@dataclass(frozen=True)
+class ReasoningTrainingConfig:
+    """Reasoning-training configuration (mining reasoning traces + injection).
+
+    Opt-in and privacy-preserving: mining and injection are both OFF by default.
+    Mirrors the tool-memory pipeline but for model ``thinking`` blocks — mined
+    traces are distilled into ReasoningBank patterns and optionally injected into
+    other models' sessions per ``injection_map``.
+    """
+
+    mining_enabled: bool = False  # opt-in (privacy): reads no transcripts until True
+    injection_enabled: bool = False  # opt-in: inject learned strategies into sessions
+    # Glob patterns of source models to mine; () = all models with non-empty thinking.
+    mining_models: tuple[str, ...] = ()
+    # target_glob -> source_model (one source per target in v1).
+    injection_map: tuple[tuple[str, str], ...] = ()
+    categories: tuple[str, ...] = _DEFAULT_REASONING_CATEGORIES
+    min_trace_chars: int = 200
+    max_trace_chars: int = 20_000
+    max_traces_per_scan: int = 500
+    scan_lookback_days: int = 30  # 0 = full backfill
+    retention_days: int = 90
+    max_traces_total: int = 20_000
+    min_cluster_support: int = 3
+    max_patterns_per_run: int = 10
+    min_confidence: float = 0.2
+    min_patterns_per_category: int = 3
+    injection_max_patterns: int = 5
+    injection_max_chars: int = 4000
+    distill_use_llm: bool = False
+    redact_secrets: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "mining_enabled": self.mining_enabled,
+            "injection_enabled": self.injection_enabled,
+            "mining_models": list(self.mining_models),
+            "injection_map": dict(self.injection_map),
+            "categories": list(self.categories),
+            "min_trace_chars": self.min_trace_chars,
+            "max_trace_chars": self.max_trace_chars,
+            "max_traces_per_scan": self.max_traces_per_scan,
+            "scan_lookback_days": self.scan_lookback_days,
+            "retention_days": self.retention_days,
+            "max_traces_total": self.max_traces_total,
+            "min_cluster_support": self.min_cluster_support,
+            "max_patterns_per_run": self.max_patterns_per_run,
+            "min_confidence": self.min_confidence,
+            "min_patterns_per_category": self.min_patterns_per_category,
+            "injection_max_patterns": self.injection_max_patterns,
+            "injection_max_chars": self.injection_max_chars,
+            "distill_use_llm": self.distill_use_llm,
+            "redact_secrets": self.redact_secrets,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ReasoningTrainingConfig:
+        def _int(key: str, default: int, lo: int, hi: int) -> int:
+            try:
+                return max(lo, min(int(data.get(key, default)), hi))
+            except (ValueError, TypeError):
+                return default
+
+        models_raw = data.get("mining_models", [])
+        if isinstance(models_raw, (list, tuple)):
+            mining_models = tuple(str(m)[:128] for m in models_raw[:100] if str(m).strip())
+        else:
+            mining_models = ()
+
+        map_raw = data.get("injection_map", {})
+        injection_pairs: list[tuple[str, str]] = []
+        if isinstance(map_raw, dict):
+            for target, source in map_raw.items():
+                t, s = str(target).strip(), str(source).strip()
+                if t and s:
+                    injection_pairs.append((t[:128], s[:128]))
+        elif isinstance(map_raw, (list, tuple)):
+            for item in map_raw:
+                if isinstance(item, (list, tuple)) and len(item) == 2:
+                    t, s = str(item[0]).strip(), str(item[1]).strip()
+                    if t and s:
+                        injection_pairs.append((t[:128], s[:128]))
+
+        cats_raw = data.get("categories")
+        if isinstance(cats_raw, (list, tuple)) and cats_raw:
+            categories = tuple(str(c)[:64] for c in cats_raw[:50] if str(c).strip())
+        else:
+            categories = _DEFAULT_REASONING_CATEGORIES
+
+        try:
+            min_confidence = max(0.0, min(float(data.get("min_confidence", 0.2)), 1.0))
+        except (ValueError, TypeError):
+            min_confidence = 0.2
+
+        return cls(
+            mining_enabled=bool(data.get("mining_enabled", False)),
+            injection_enabled=bool(data.get("injection_enabled", False)),
+            mining_models=mining_models,
+            injection_map=tuple(injection_pairs),
+            categories=categories,
+            min_trace_chars=_int("min_trace_chars", 200, 0, 1_000_000),
+            max_trace_chars=_int("max_trace_chars", 20_000, 1, 10_000_000),
+            max_traces_per_scan=_int("max_traces_per_scan", 500, 1, 1_000_000),
+            scan_lookback_days=_int("scan_lookback_days", 30, 0, 100_000),
+            retention_days=_int("retention_days", 90, 1, 100_000),
+            max_traces_total=_int("max_traces_total", 20_000, 1, 100_000_000),
+            min_cluster_support=_int("min_cluster_support", 3, 1, 100_000),
+            max_patterns_per_run=_int("max_patterns_per_run", 10, 1, 100_000),
+            min_confidence=min_confidence,
+            min_patterns_per_category=_int("min_patterns_per_category", 3, 1, 100_000),
+            injection_max_patterns=_int("injection_max_patterns", 5, 1, 1000),
+            injection_max_chars=_int("injection_max_chars", 4000, 1, 1_000_000),
+            distill_use_llm=bool(data.get("distill_use_llm", False)),
+            redact_secrets=bool(data.get("redact_secrets", True)),
+        )
+
+
+def _load_reasoning_settings(data: dict[str, Any]) -> ReasoningTrainingConfig:
+    """Build ReasoningTrainingConfig from config.toml, letting env vars override.
+
+    Env precedence (env wins over config.toml, config.toml wins over defaults):
+        SURREAL_MEMORY_REASONING_MINING        -> mining_enabled (truthy parse)
+        SURREAL_MEMORY_REASONING_INJECTION     -> injection_enabled (truthy parse)
+        SURREAL_MEMORY_REASONING_MODELS        -> mining_models (comma-separated globs)
+        SURREAL_MEMORY_REASONING_INJECTION_MAP -> injection_map ("target=source,..." pairs)
+    """
+    base = ReasoningTrainingConfig.from_dict(data)
+    overrides: dict[str, Any] = {}
+
+    env_mining = _env_truthy(os.environ.get("SURREAL_MEMORY_REASONING_MINING"))
+    if env_mining is not None:
+        overrides["mining_enabled"] = env_mining
+
+    env_injection = _env_truthy(os.environ.get("SURREAL_MEMORY_REASONING_INJECTION"))
+    if env_injection is not None:
+        overrides["injection_enabled"] = env_injection
+
+    env_models = os.environ.get("SURREAL_MEMORY_REASONING_MODELS")
+    if env_models is not None and env_models.strip():
+        overrides["mining_models"] = tuple(m.strip() for m in env_models.split(",") if m.strip())
+
+    env_map = os.environ.get("SURREAL_MEMORY_REASONING_INJECTION_MAP")
+    if env_map is not None and env_map.strip():
+        pairs: list[tuple[str, str]] = []
+        for chunk in env_map.split(","):
+            target, sep, source = chunk.partition("=")
+            if sep and target.strip() and source.strip():
+                pairs.append((target.strip(), source.strip()))
+        overrides["injection_map"] = tuple(pairs)
+
+    if overrides:
+        return dataclasses.replace(base, **overrides)
+    return base
+
+
 @dataclass(frozen=True)
 class TelegramConfig:
     """Telegram backup integration configuration.
@@ -1469,6 +1652,9 @@ class UnifiedConfig:
     # Retrieval-trace telemetry (schema v9, opt-in; neutral default = off)
     trace: TraceConfig = field(default_factory=TraceConfig)
 
+    # Reasoning-training (mining reasoning traces + injection; opt-in, off by default)
+    reasoning_training: ReasoningTrainingConfig = field(default_factory=ReasoningTrainingConfig)
+
     # CLI preferences
     json_output: bool = False
     default_depth: int | None = None
@@ -1566,11 +1752,47 @@ class UnifiedConfig:
             response=ResponseConfig.from_dict(data.get("response", {})),
             budget=BudgetRetrievalConfig.from_dict(data.get("budget", {})),
             trace=TraceConfig.from_dict(data.get("trace", {})),
+            reasoning_training=_load_reasoning_settings(data.get("reasoning_training", {})),
             json_output=data.get("cli", {}).get("json_output", False),
             default_depth=data.get("cli", {}).get("default_depth"),
             default_max_tokens=data.get("cli", {}).get("default_max_tokens", 500),
             version=data.get("version", "1.0"),
         )
+
+    def _reasoning_toml_lines(self) -> list[str]:
+        """Render the [reasoning_training] TOML section (+ injection_map subtable)."""
+        rt = self.reasoning_training
+        models = ", ".join(f'"{g}"' for m in rt.mining_models if (g := _sanitize_toml_glob(m)))
+        cats = ", ".join(f'"{g}"' for c in rt.categories if (g := _sanitize_toml_glob(c)))
+        lines = [
+            "# Reasoning-training (mining reasoning traces + injection; opt-in, off by default)",
+            "[reasoning_training]",
+            f"mining_enabled = {'true' if rt.mining_enabled else 'false'}",
+            f"injection_enabled = {'true' if rt.injection_enabled else 'false'}",
+            f"mining_models = [{models}]",
+            f"categories = [{cats}]",
+            f"min_trace_chars = {rt.min_trace_chars}",
+            f"max_trace_chars = {rt.max_trace_chars}",
+            f"max_traces_per_scan = {rt.max_traces_per_scan}",
+            f"scan_lookback_days = {rt.scan_lookback_days}",
+            f"retention_days = {rt.retention_days}",
+            f"max_traces_total = {rt.max_traces_total}",
+            f"min_cluster_support = {rt.min_cluster_support}",
+            f"max_patterns_per_run = {rt.max_patterns_per_run}",
+            f"min_confidence = {rt.min_confidence}",
+            f"min_patterns_per_category = {rt.min_patterns_per_category}",
+            f"injection_max_patterns = {rt.injection_max_patterns}",
+            f"injection_max_chars = {rt.injection_max_chars}",
+            f"distill_use_llm = {'true' if rt.distill_use_llm else 'false'}",
+            f"redact_secrets = {'true' if rt.redact_secrets else 'false'}",
+            "[reasoning_training.injection_map]",
+        ]
+        for target, source in rt.injection_map:
+            gk = _sanitize_toml_glob(target)
+            gv = _sanitize_toml_glob(source)
+            if gk and gv:
+                lines.append(f'"{gk}" = "{gv}"')
+        return lines
 
     def save(self) -> None:
         """Save configuration to TOML file (atomic write via temp+rename)."""
@@ -1784,6 +2006,8 @@ class UnifiedConfig:
             f"sample_rate = {self.trace.sample_rate}",
             f"retention_days = {self.trace.retention_days}",
             f"max_traces = {self.trace.max_traces}",
+            "",
+            *self._reasoning_toml_lines(),
             "",
             "# CLI preferences",
             "[cli]",

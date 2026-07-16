@@ -9,6 +9,7 @@ import pytest
 from surreal_memory.cli.config import _sync_brain_to_toml
 from surreal_memory.unified_config import (
     _MIN_LEGACY_DB_BYTES,
+    ReasoningTrainingConfig,
     UnifiedConfig,
     _migrate_legacy_db,
     _read_current_brain_from_toml,
@@ -527,3 +528,109 @@ class TestWarnMissingSurrealPass:
             uc._warn_missing_surreal_pass()
         warnings = [r for r in caplog.records if "SURREALDB_PASS" in r.message]
         assert len(warnings) == 1
+
+
+class TestReasoningTrainingConfig:
+    """Tests for the [reasoning_training] config section (mining + injection)."""
+
+    _ENV_VARS = (
+        "SURREAL_MEMORY_REASONING_MINING",
+        "SURREAL_MEMORY_REASONING_INJECTION",
+        "SURREAL_MEMORY_REASONING_MODELS",
+        "SURREAL_MEMORY_REASONING_INJECTION_MAP",
+    )
+
+    def _clear_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        for var in self._ENV_VARS:
+            monkeypatch.delenv(var, raising=False)
+
+    def test_defaults_are_opt_in_off(self) -> None:
+        rt = ReasoningTrainingConfig()
+        assert rt.mining_enabled is False
+        assert rt.injection_enabled is False
+        assert rt.mining_models == ()
+        assert rt.injection_map == ()
+        assert "debugging" in rt.categories
+        assert "data-analysis" in rt.categories
+        assert rt.min_confidence == 0.2
+        assert rt.redact_secrets is True
+
+    def test_from_dict_to_dict_roundtrip(self) -> None:
+        rt = ReasoningTrainingConfig(
+            mining_enabled=True,
+            injection_enabled=True,
+            mining_models=("claude-fable-*",),
+            injection_map=(("claude-opus-*", "claude-fable-5"),),
+            min_confidence=0.5,
+            max_traces_total=1234,
+        )
+        assert ReasoningTrainingConfig.from_dict(rt.to_dict()) == rt
+
+    def test_from_dict_clamps_min_confidence(self) -> None:
+        assert ReasoningTrainingConfig.from_dict({"min_confidence": 5}).min_confidence == 1.0
+        assert ReasoningTrainingConfig.from_dict({"min_confidence": -1}).min_confidence == 0.0
+
+    def test_from_dict_injection_map_dict_and_list_forms(self) -> None:
+        from_dict = ReasoningTrainingConfig.from_dict(
+            {"injection_map": {"claude-opus-*": "claude-fable-5"}}
+        )
+        assert from_dict.injection_map == (("claude-opus-*", "claude-fable-5"),)
+        # Malformed list entries (wrong arity) are dropped; valid pairs kept.
+        from_list = ReasoningTrainingConfig.from_dict({"injection_map": [["a", "b"], ["bad"]]})
+        assert from_list.injection_map == (("a", "b"),)
+
+    def test_toml_roundtrip_preserves_globs_and_injection_map(
+        self, tmp_data_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._clear_env(monkeypatch)
+        rt = ReasoningTrainingConfig(
+            mining_enabled=True,
+            injection_enabled=True,
+            mining_models=("claude-fable-*", "glm-5.2"),
+            injection_map=(("claude-opus-*", "claude-fable-5"),),
+            min_confidence=0.35,
+            scan_lookback_days=0,
+        )
+        UnifiedConfig(data_dir=tmp_data_dir, current_brain="default", reasoning_training=rt).save()
+        reloaded = UnifiedConfig.load(config_path=tmp_data_dir / "config.toml")
+
+        got = reloaded.reasoning_training
+        assert got.mining_enabled is True
+        assert got.injection_enabled is True
+        # Globs survive save/load (would be silently dropped by _sanitize_toml_str).
+        assert got.mining_models == ("claude-fable-*", "glm-5.2")
+        assert got.injection_map == (("claude-opus-*", "claude-fable-5"),)
+        assert got.min_confidence == 0.35
+        assert got.scan_lookback_days == 0
+
+    def test_env_overrides_toml(self, tmp_data_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._clear_env(monkeypatch)
+        UnifiedConfig(data_dir=tmp_data_dir, current_brain="default").save()  # mining off
+        monkeypatch.setenv("SURREAL_MEMORY_REASONING_MINING", "true")
+        monkeypatch.setenv("SURREAL_MEMORY_REASONING_INJECTION", "1")
+        monkeypatch.setenv("SURREAL_MEMORY_REASONING_MODELS", "claude-fable-*, glm-5.2")
+        monkeypatch.setenv(
+            "SURREAL_MEMORY_REASONING_INJECTION_MAP",
+            "claude-opus-*=claude-fable-5, claude-haiku-*=glm-5.2",
+        )
+        cfg = UnifiedConfig.load(config_path=tmp_data_dir / "config.toml")
+
+        assert cfg.reasoning_training.mining_enabled is True
+        assert cfg.reasoning_training.injection_enabled is True
+        assert cfg.reasoning_training.mining_models == ("claude-fable-*", "glm-5.2")
+        assert cfg.reasoning_training.injection_map == (
+            ("claude-opus-*", "claude-fable-5"),
+            ("claude-haiku-*", "glm-5.2"),
+        )
+
+    def test_empty_env_does_not_override(
+        self, tmp_data_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._clear_env(monkeypatch)
+        rt = ReasoningTrainingConfig(mining_enabled=True, mining_models=("x-*",))
+        UnifiedConfig(data_dir=tmp_data_dir, current_brain="default", reasoning_training=rt).save()
+        monkeypatch.setenv("SURREAL_MEMORY_REASONING_MODELS", "")  # empty → ignored
+        cfg = UnifiedConfig.load(config_path=tmp_data_dir / "config.toml")
+
+        assert cfg.reasoning_training.mining_enabled is True
+        assert cfg.reasoning_training.mining_models == ("x-*",)
