@@ -49,6 +49,8 @@ class InMemoryStorage(
         self._brains: dict[str, Brain] = {}
         self._co_activations: dict[str, list[dict[str, Any]]] = defaultdict(list)
         self._action_events: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        self._reasoning_traces: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        self._reasoning_trace_seq: dict[str, int] = defaultdict(int)
         self._retrieval_traces: dict[str, list[RetrievalTrace]] = defaultdict(list)
         self._versions: dict[str, dict[str, tuple[BrainVersion, str]]] = defaultdict(dict)
         self._review_schedules: dict[str, dict[str, Any]] = defaultdict(dict)
@@ -825,6 +827,132 @@ class InMemoryStorage(
 
     async def mark_events_processed(self, brain_id: str, event_ids: list[int]) -> None:
         """Mark events as processed (no-op for in-memory storage)."""
+
+    # ========== Reasoning Traces (in-memory staging buffer) ==========
+
+    async def insert_reasoning_traces(self, brain_id: str, traces: list[dict[str, Any]]) -> int:
+        """Insert reasoning traces into the in-memory buffer (dedup by trace_hash)."""
+        if not traces:
+            return 0
+        existing = {r["trace_hash"] for r in self._reasoning_traces[brain_id]}
+        now = utcnow().isoformat()
+        inserted = 0
+        for tr in traces:
+            trace_hash = str(tr.get("trace_hash", ""))
+            if not trace_hash or trace_hash in existing:
+                continue
+            existing.add(trace_hash)
+            self._reasoning_trace_seq[brain_id] += 1
+            content = str(tr.get("content", ""))
+            raw_chars = tr.get("content_chars")
+            content_chars = int(raw_chars) if raw_chars is not None else len(content)
+            self._reasoning_traces[brain_id].append(
+                {
+                    "id": self._reasoning_trace_seq[brain_id],
+                    "trace_hash": trace_hash,
+                    "model": tr.get("model", ""),
+                    "session_id": tr.get("session_id", ""),
+                    "project": tr.get("project", ""),
+                    "task_context": str(tr.get("task_context", ""))[:500],
+                    "content": content,
+                    "content_chars": content_chars,
+                    "category": tr.get("category", ""),
+                    "processed": False,
+                    "created_at": tr.get("created_at", now),
+                    "ingested_at": now,
+                }
+            )
+            inserted += 1
+        return inserted
+
+    async def get_unprocessed_reasoning_traces(
+        self, brain_id: str, limit: int = 200, model: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Return unprocessed reasoning traces (oldest first), optional model filter."""
+        rows = [
+            r
+            for r in self._reasoning_traces[brain_id]
+            if not r["processed"] and (model is None or r["model"] == model)
+        ]
+        rows.sort(key=lambda r: str(r["created_at"]))
+        fields = (
+            "id",
+            "trace_hash",
+            "model",
+            "session_id",
+            "project",
+            "task_context",
+            "content",
+            "content_chars",
+            "category",
+            "created_at",
+        )
+        return [{k: r[k] for k in fields} for r in rows[: min(int(limit), 10000)]]
+
+    async def mark_reasoning_traces_processed(self, brain_id: str, trace_ids: list[Any]) -> None:
+        """Mark reasoning traces as processed by row id."""
+        ids = set(trace_ids)
+        for r in self._reasoning_traces[brain_id]:
+            if r["id"] in ids:
+                r["processed"] = True
+
+    async def set_trace_categories(self, brain_id: str, categories: dict[Any, str]) -> None:
+        """Set category labels on reasoning traces (id -> category)."""
+        for r in self._reasoning_traces[brain_id]:
+            if r["id"] in categories:
+                r["category"] = categories[r["id"]]
+
+    async def prune_reasoning_traces(self, brain_id: str, keep_days: int = 90) -> int:
+        """Delete processed reasoning traces older than keep_days."""
+        cutoff = (utcnow() - timedelta(days=keep_days)).isoformat()
+        rows = self._reasoning_traces[brain_id]
+        kept = [r for r in rows if not (r["processed"] and str(r["created_at"]) < cutoff)]
+        deleted = len(rows) - len(kept)
+        self._reasoning_traces[brain_id] = kept
+        return deleted
+
+    async def cap_reasoning_traces(self, brain_id: str, max_total: int = 20_000) -> int:
+        """Enforce a per-brain cap by deleting oldest processed traces."""
+        rows = self._reasoning_traces[brain_id]
+        if len(rows) <= max_total:
+            return 0
+        excess = len(rows) - max_total
+        processed_sorted = sorted(
+            (r for r in rows if r["processed"]), key=lambda r: str(r["created_at"])
+        )
+        victims = {r["id"] for r in processed_sorted[:excess]}
+        kept = [r for r in rows if r["id"] not in victims]
+        deleted = len(rows) - len(kept)
+        self._reasoning_traces[brain_id] = kept
+        return deleted
+
+    async def get_reasoning_stats(self, brain_id: str) -> dict[str, Any]:
+        """Aggregate reasoning-trace stats: per model, per category, totals."""
+        by_model: dict[str, dict[str, Any]] = {}
+        by_category: dict[str, int] = {}
+        for r in self._reasoning_traces[brain_id]:
+            model = r["model"]
+            entry = by_model.setdefault(
+                model, {"trace_count": 0, "unprocessed": 0, "last_trace_at": ""}
+            )
+            entry["trace_count"] += 1
+            if not r["processed"]:
+                entry["unprocessed"] += 1
+            if str(r["created_at"]) > str(entry["last_trace_at"]):
+                entry["last_trace_at"] = r["created_at"]
+            by_category[r["category"]] = by_category.get(r["category"], 0) + 1
+        total = sum(m["trace_count"] for m in by_model.values())
+        unprocessed = sum(m["unprocessed"] for m in by_model.values())
+        return {
+            "by_model": by_model,
+            "by_category": by_category,
+            "total": total,
+            "unprocessed": unprocessed,
+        }
+
+    async def get_reasoning_trace_models(self, brain_id: str) -> list[str]:
+        """Return DISTINCT model names in reasoning_traces (sorted)."""
+        return sorted({r["model"] for r in self._reasoning_traces[brain_id] if r["model"]})
 
     # ========== Cleanup ==========
 

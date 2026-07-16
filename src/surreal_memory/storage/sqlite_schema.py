@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Schema version for migrations
-SCHEMA_VERSION = 39
+SCHEMA_VERSION = 40
 
 # â”€â”€ Migrations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Each entry maps (from_version -> to_version) with a list of SQL statements.
@@ -664,6 +664,32 @@ MIGRATIONS: dict[tuple[int, int], list[str]] = {
         "CREATE INDEX IF NOT EXISTS idx_retrieval_traces_brain ON retrieval_traces(brain_id)",
         "CREATE INDEX IF NOT EXISTS idx_retrieval_traces_created "
         "ON retrieval_traces(brain_id, created_at)",
+    ],
+    (39, 40): [
+        # Reasoning traces: staging buffer for reasoning-trace mining (run 007).
+        "CREATE TABLE IF NOT EXISTS reasoning_traces ("
+        " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " brain_id TEXT NOT NULL,"
+        " trace_hash TEXT NOT NULL,"
+        " model TEXT NOT NULL DEFAULT '',"
+        " session_id TEXT NOT NULL DEFAULT '',"
+        " project TEXT NOT NULL DEFAULT '',"
+        " task_context TEXT NOT NULL DEFAULT '',"
+        " content TEXT NOT NULL DEFAULT '',"
+        " content_chars INTEGER NOT NULL DEFAULT 0,"
+        " category TEXT NOT NULL DEFAULT '',"
+        " processed INTEGER NOT NULL DEFAULT 0,"
+        " created_at TEXT NOT NULL,"
+        " ingested_at TEXT NOT NULL,"
+        " UNIQUE (brain_id, trace_hash),"
+        " FOREIGN KEY (brain_id) REFERENCES brains(id) ON DELETE CASCADE"
+        ")",
+        "CREATE INDEX IF NOT EXISTS idx_reasoning_traces_model "
+        "ON reasoning_traces(brain_id, model)",
+        "CREATE INDEX IF NOT EXISTS idx_reasoning_traces_processed "
+        "ON reasoning_traces(brain_id, processed)",
+        "CREATE INDEX IF NOT EXISTS idx_reasoning_traces_created "
+        "ON reasoning_traces(brain_id, created_at)",
     ],
 }
 
@@ -1339,4 +1365,26 @@ CREATE TABLE IF NOT EXISTS merkle_hashes (
     PRIMARY KEY (brain_id, entity_type, prefix)
 );
 CREATE INDEX IF NOT EXISTS idx_merkle_hashes_brain ON merkle_hashes(brain_id, entity_type);
+
+-- Reasoning traces (staging buffer for reasoning-trace mining) [schema v40]
+CREATE TABLE IF NOT EXISTS reasoning_traces (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    brain_id TEXT NOT NULL,
+    trace_hash TEXT NOT NULL,
+    model TEXT NOT NULL DEFAULT '',
+    session_id TEXT NOT NULL DEFAULT '',
+    project TEXT NOT NULL DEFAULT '',
+    task_context TEXT NOT NULL DEFAULT '',
+    content TEXT NOT NULL DEFAULT '',
+    content_chars INTEGER NOT NULL DEFAULT 0,
+    category TEXT NOT NULL DEFAULT '',
+    processed INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    ingested_at TEXT NOT NULL,
+    UNIQUE (brain_id, trace_hash),
+    FOREIGN KEY (brain_id) REFERENCES brains(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_reasoning_traces_model ON reasoning_traces(brain_id, model);
+CREATE INDEX IF NOT EXISTS idx_reasoning_traces_processed ON reasoning_traces(brain_id, processed);
+CREATE INDEX IF NOT EXISTS idx_reasoning_traces_created ON reasoning_traces(brain_id, created_at);
 """

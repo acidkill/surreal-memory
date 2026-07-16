@@ -30,6 +30,7 @@ from surreal_memory.storage.surrealdb.depth_priors import SurrealDBDepthPriorsMi
 from surreal_memory.storage.surrealdb.keyword_entity import SurrealDBKeywordEntityMixin
 from surreal_memory.storage.surrealdb.maturation import SurrealDBMaturationMixin
 from surreal_memory.storage.surrealdb.projects import SurrealDBProjectsMixin
+from surreal_memory.storage.surrealdb.reasoning_traces import SurrealDBReasoningTracesMixin
 from surreal_memory.storage.surrealdb.retrieval_trace import SurrealDBRetrievalTraceMixin
 from surreal_memory.storage.surrealdb.review_schedules import SurrealDBReviewSchedulesMixin
 from surreal_memory.storage.surrealdb.schema import ensure_schema
@@ -351,6 +352,7 @@ class SurrealDBStorage(
     SurrealDBCompressionMixin,
     SurrealDBActivityMixin,
     SurrealDBDepthPriorsMixin,
+    SurrealDBReasoningTracesMixin,
     SurrealDBToolEventsMixin,
     NeuralStorage,
 ):

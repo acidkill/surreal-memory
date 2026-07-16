@@ -1213,6 +1213,69 @@ class NeuralStorage(ABC):
         """
         return []
 
+    # ---- Reasoning traces (staging buffer; graceful no-op defaults) ----
+
+    async def insert_reasoning_traces(
+        self,
+        brain_id: str,
+        traces: list[dict[str, Any]],
+    ) -> int:
+        """Insert reasoning traces into the staging buffer (dedup by trace_hash).
+
+        Default: no reasoning-trace storage → 0 inserted. Backends that buffer
+        reasoning traces (SQLite, SurrealDB, in-memory) override this.
+        """
+        return 0
+
+    async def get_unprocessed_reasoning_traces(
+        self,
+        brain_id: str,
+        limit: int = 200,
+        model: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return unprocessed reasoning traces (oldest first). Default: empty."""
+        return []
+
+    async def mark_reasoning_traces_processed(
+        self,
+        brain_id: str,
+        trace_ids: list[Any],
+    ) -> None:
+        """Mark reasoning traces as processed by id. Default: no-op."""
+        return None
+
+    async def set_trace_categories(
+        self,
+        brain_id: str,
+        categories: dict[Any, str],
+    ) -> None:
+        """Set category labels on reasoning traces. Default: no-op."""
+        return None
+
+    async def prune_reasoning_traces(
+        self,
+        brain_id: str,
+        keep_days: int = 90,
+    ) -> int:
+        """Delete processed reasoning traces older than keep_days. Default: 0."""
+        return 0
+
+    async def cap_reasoning_traces(
+        self,
+        brain_id: str,
+        max_total: int = 20_000,
+    ) -> int:
+        """Enforce a per-brain cap on reasoning traces. Default: 0."""
+        return 0
+
+    async def get_reasoning_stats(self, brain_id: str) -> dict[str, Any]:
+        """Aggregate reasoning-trace stats. Default: empty aggregates."""
+        return {"by_model": {}, "by_category": {}, "total": 0, "unprocessed": 0}
+
+    async def get_reasoning_trace_models(self, brain_id: str) -> list[str]:
+        """Return DISTINCT model names present in reasoning_traces. Default: empty."""
+        return []
+
     async def add_retrieval_trace(self, trace: RetrievalTrace) -> str:
         """Persist a retrieval trace. Returns the trace ID."""
         raise NotImplementedError

@@ -430,6 +430,27 @@ DEFINE INDEX idx_tevt_brain   ON tool_events FIELDS brain_id;
 DEFINE INDEX idx_tevt_unproc  ON tool_events FIELDS brain_id, processed;
 DEFINE INDEX idx_tevt_eventid ON tool_events FIELDS brain_id, event_id;
 DEFINE INDEX idx_tevt_time    ON tool_events FIELDS brain_id, created_at;
+
+-- Reasoning traces (staging buffer for reasoning-trace mining / distillation)
+DEFINE TABLE reasoning_traces SCHEMAFULL;
+DEFINE FIELD id            ON reasoning_traces TYPE string;
+DEFINE FIELD trace_hash    ON reasoning_traces TYPE string;
+DEFINE FIELD brain_id      ON reasoning_traces TYPE string;
+DEFINE FIELD model         ON reasoning_traces TYPE string DEFAULT '';
+DEFINE FIELD session_id    ON reasoning_traces TYPE string DEFAULT '';
+DEFINE FIELD project       ON reasoning_traces TYPE string DEFAULT '';
+DEFINE FIELD task_context  ON reasoning_traces TYPE string DEFAULT '';
+DEFINE FIELD content       ON reasoning_traces TYPE string DEFAULT '';
+DEFINE FIELD content_chars ON reasoning_traces TYPE int DEFAULT 0;
+DEFINE FIELD category      ON reasoning_traces TYPE string DEFAULT '';
+DEFINE FIELD processed     ON reasoning_traces TYPE bool DEFAULT false;
+DEFINE FIELD created_at    ON reasoning_traces TYPE datetime DEFAULT time::now();
+DEFINE FIELD ingested_at   ON reasoning_traces TYPE datetime DEFAULT time::now();
+DEFINE INDEX idx_rtr_brain  ON reasoning_traces FIELDS brain_id;
+DEFINE INDEX idx_rtr_hash   ON reasoning_traces FIELDS brain_id, trace_hash;
+DEFINE INDEX idx_rtr_model  ON reasoning_traces FIELDS brain_id, model;
+DEFINE INDEX idx_rtr_unproc ON reasoning_traces FIELDS brain_id, processed;
+DEFINE INDEX idx_rtr_time   ON reasoning_traces FIELDS brain_id, created_at;
 """
 
 

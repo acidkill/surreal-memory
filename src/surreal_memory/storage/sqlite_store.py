@@ -36,6 +36,7 @@ from surreal_memory.storage.sqlite_maturation import SQLiteMaturationMixin
 from surreal_memory.storage.sqlite_merkle import SQLiteMerkleMixin
 from surreal_memory.storage.sqlite_neurons import SQLiteNeuronMixin
 from surreal_memory.storage.sqlite_projects import SQLiteProjectMixin
+from surreal_memory.storage.sqlite_reasoning_traces import SQLiteReasoningTracesMixin
 from surreal_memory.storage.sqlite_retrieval_trace import SQLiteRetrievalTraceMixin
 from surreal_memory.storage.sqlite_reviews import SQLiteReviewsMixin
 from surreal_memory.storage.sqlite_schema import (
@@ -81,6 +82,7 @@ class SQLiteStorage(
     SQLiteDriftMixin,
     SQLiteEntityRefsMixin,
     SQLiteSourcesMixin,
+    SQLiteReasoningTracesMixin,
     SQLiteToolEventsMixin,
     SQLiteTrainingFilesMixin,
     SQLiteMerkleMixin,
