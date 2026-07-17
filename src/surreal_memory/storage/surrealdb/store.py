@@ -697,8 +697,14 @@ class SurrealDBStorage(
         params: dict[str, Any] = {}
 
         if type is not None:
-            conditions.append("type = $ntype")
-            params["ntype"] = type.value
+            # Inline type as a literal too — same planner gotcha as brain_id: a
+            # parameterized ``$ntype`` makes the planner pick idx_neuron_brain
+            # (single-col) and filter type over all brain rows, instead of the
+            # composite idx_neuron_type (brain_id, type). Measured 1147 ms/q vs
+            # single-digit ms/q with the literal on a 92k-neuron brain. type.value
+            # comes from the NeuronType enum (uppercase identifier), so inlining
+            # is injection-safe.
+            conditions.append(f"type = '{type.value}'")
 
         if content_exact is not None:
             conditions.append("content = $content_exact")
@@ -742,10 +748,10 @@ class SurrealDBStorage(
     ) -> dict[str, Neuron]:
         """Batched exact-content lookup — one round-trip for N contents.
 
-        Overrides the base N+1 default (sequential ``find_neurons`` per content).
-        Uses ``content IN $contents`` with the brain_id inlined as a literal so
-        the planner uses the brain_id/content indexes (a parameterized brain_id
-        full-scans). Returns the first match per content string.
+        Uses ``content IN $contents`` with brain_id inlined. On a 92k-neuron
+        brain this is ~1.3 s/call but still 4-5x faster than the base N+1
+        default (each individual find_neurons with type scans the type
+        partition at ~750 ms; for N=8 candidates that's 6 s vs 1.3 s).
         """
         if not contents:
             return {}
@@ -753,14 +759,11 @@ class SurrealDBStorage(
         conds = [f"brain_id = {_brain_literal(brain_id)}", "content IN $contents"]
         params: dict[str, Any] = {"contents": list(dict.fromkeys(contents))}
         if type is not None:
-            conds.append("type = $ntype")
-            params["ntype"] = type.value
+            conds.append(f"type = '{type.value}'")
         if ephemeral is not None:
             conds.append("ephemeral = $ephemeral")
             params["ephemeral"] = ephemeral
         where = " AND ".join(conds)
-        # OMIT embedding_vec — callers only need identity/type/content, and the
-        # 1024-3072-float vector is ~4-8 KB/row across a result set of N matches.
         rows = await self._query(f"SELECT * OMIT embedding_vec FROM neuron WHERE {where}", **params)
         out: dict[str, Neuron] = {}
         for r in rows:

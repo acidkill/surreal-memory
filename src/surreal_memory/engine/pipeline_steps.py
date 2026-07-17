@@ -1126,6 +1126,10 @@ class EmotionStep:
         config: BrainConfig,
     ) -> PipelineContext:
         assert ctx.anchor_neuron is not None
+        # Bulk doc-training: skip emotion extraction (find_neurons type=STATE
+        # scans type partition; doc knowledge has no emotional valence).
+        if ctx.skip_conflicts:
+            return ctx
         result = self.sentiment_extractor.extract(ctx.content, language=ctx.language)
 
         if result.valence == Valence.NEUTRAL or not result.emotion_tags:
@@ -1436,6 +1440,14 @@ class SemanticLinkingStep:
         config: BrainConfig,
     ) -> PipelineContext:
         # Collect entity and concept neurons from this encode
+        # Bulk doc-training: skip cross-linking to existing neurons. Each
+        # find_neurons(type, content_exact) call scans the full type partition
+        # (40k+ rows on a large brain) because SDB 3.2.0's planner picks
+        # idx_neuron_type and filters content post-index — ~1 s/call, 3+/chunk.
+        # ENRICH consolidation (post-train) adds cross-links anyway.
+        if ctx.skip_conflicts:
+            return ctx
+
         linkable = [
             n
             for n in ctx.entity_neurons
@@ -1531,6 +1543,9 @@ class CrossMemoryLinkStep:
         config: BrainConfig,
     ) -> PipelineContext:
         if ctx.anchor_neuron is None or not ctx.entity_neurons:
+            return ctx
+        # Bulk doc-training: skip (same rationale as SemanticLinkingStep).
+        if ctx.skip_conflicts:
             return ctx
 
         anchor_id = ctx.anchor_neuron.id
