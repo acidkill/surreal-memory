@@ -17,6 +17,7 @@ from surreal_memory.core.memory_types import MemoryType, TypedMemory
 from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.core.retrieval_trace import RetrievalTrace
 from surreal_memory.utils.timeutils import utcnow
+from tests.unit._surrealdb_live import cleanup_live_brains, ensure_real_surrealdb_sdk
 
 SURREALDB_URL = os.getenv("SURREALDB_URL")
 
@@ -28,6 +29,7 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture
 async def storage():  # type: ignore[no-untyped-def]
+    ensure_real_surrealdb_sdk()
     from surreal_memory.storage.surrealdb.store import SurrealDBStorage
 
     store = SurrealDBStorage(url=SURREALDB_URL)
@@ -39,6 +41,10 @@ async def storage():  # type: ignore[no-untyped-def]
     # Best-effort cleanup of this throwaway brain's traces on the shared DB.
     try:
         await store.prune_retrieval_traces(max_traces=0)
+    except Exception:
+        pass
+    try:
+        await cleanup_live_brains(store, own_brain_id=brain.id)
     except Exception:
         pass
     try:

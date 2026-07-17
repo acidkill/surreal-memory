@@ -865,6 +865,43 @@ class CreateAnchorStep:
 # ── Step 7: Create Synapses (anchor → time/entity/concept) ──
 
 
+async def _persist_synapses(
+    storage: NeuralStorage,
+    synapses: list[Synapse],
+    ctx: Any,
+) -> None:
+    """Persist a batch of synapses in one round-trip, with a per-synapse fallback.
+
+    Steps that collect synapses into a list (CreateSynapses, CoOccurrence, …)
+    used to ``asyncio.gather`` individual ``add_synapse`` calls — N concurrent
+    but separate round-trips that dominated per-chunk encode cost. This uses the
+    backend's ``add_synapses_batch`` (multi-statement INSERT RELATION) when
+    available, falling back to the gather otherwise. ``ctx.synapses_created`` is
+    extended only for synapses that succeeded.
+    """
+    if not synapses:
+        return
+    batch_fn = getattr(storage, "add_synapses_batch", None)
+    added = False
+    if batch_fn is not None:
+        try:
+            await batch_fn(synapses)
+            ctx.synapses_created.extend(synapses)
+            added = True
+        except Exception:
+            logger.debug("add_synapses_batch failed; falling back", exc_info=True)
+    if not added:
+        results = await asyncio.gather(
+            *[storage.add_synapse(s) for s in synapses],
+            return_exceptions=True,
+        )
+        for synapse, result in zip(synapses, results, strict=True):
+            if isinstance(result, BaseException):
+                logger.warning("Synapse add failed: %s", result)
+            else:
+                ctx.synapses_created.append(synapse)
+
+
 class CreateSynapsesStep:
     """Wire anchor to time, entity, and concept neurons."""
 
@@ -976,17 +1013,8 @@ class CreateSynapsesStep:
                 )
             )
 
-        # Batch add all synapses in parallel
-        if synapses_to_add:
-            results = await asyncio.gather(
-                *[storage.add_synapse(s) for s in synapses_to_add],
-                return_exceptions=True,
-            )
-            for synapse, result in zip(synapses_to_add, results, strict=True):
-                if isinstance(result, BaseException):
-                    logger.warning("Synapse add failed in CreateSynapsesStep: %s", result)
-                else:
-                    ctx.synapses_created.append(synapse)
+        # Persist all anchor→X synapses in one round-trip (see _persist_synapses).
+        await _persist_synapses(storage, synapses_to_add, ctx)
 
         # Record deferred entity refs (lazy promotion B7)
         deferred_refs = getattr(ctx, "deferred_entity_refs", [])
@@ -1072,16 +1100,8 @@ class CoOccurrenceStep:
                     )
                 )
 
-        if synapses_to_add:
-            results = await asyncio.gather(
-                *[storage.add_synapse(s) for s in synapses_to_add],
-                return_exceptions=True,
-            )
-            for synapse, result in zip(synapses_to_add, results, strict=True):
-                if isinstance(result, BaseException):
-                    logger.warning("Co-occurrence synapse add failed: %s", result)
-                else:
-                    ctx.synapses_created.append(synapse)
+        # Persist co-occurrence synapses in one round-trip (see _persist_synapses).
+        await _persist_synapses(storage, synapses_to_add, ctx)
 
         return ctx
 

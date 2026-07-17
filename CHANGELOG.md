@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.11.0] — Fast bulk doc-training
+
+`smem train` on large documents is dramatically faster on big brains, and the
+encoder now batches its writes instead of issuing one round-trip per neuron /
+synapse. Three layers of work.
+
+### Added
+
+- `SurrealDBStorage.add_synapses_batch` (multi-statement `INSERT RELATION`)
+  plus a base `add_synapses_batch` default with a per-synapse fallback, so
+  non-SurrealDB backends stay correct.
+- `SurrealDBStorage.find_neurons_exact_batch` override — one `content IN $contents`
+  round-trip for N exact-content lookups (the base default was an N+1 sequential
+  loop). `brain_id` is inlined as a literal here too.
+- `tqdm` progress bar in `smem train` (optional import — tqdm is a transitive
+  dependency, not declared — with a `logger.info` fallback every 50 chunks so a
+  clean install without tqdm still reports progress).
+
+### Changed
+
+- **`increment_keyword_df`**: per-keyword SELECT-then-merge/insert N+1 → a single
+  multi-statement UPSERT (`fiber_count = (fiber_count ?? 0) + 1`). This was the
+  #1 per-chunk op count during doc-training (~93 keyword-DF SELECTs/chunk on a
+  6651-chunk doc); it is now 1 query/chunk.
+- **`CreateSynapsesStep` + `CoOccurrenceStep`** persist their synapses through a
+  new `_persist_synapses` helper that uses `add_synapses_batch` (an `asyncio.gather`
+  of N `add_synapse` collapses into one round-trip).
+- **`find_neurons`**: `brain_id` is now an inline, charset-validated literal
+  instead of a parameterized `$brain_id`. SurrealDB 3.2.0's planner only uses the
+  `brain_id` index for an inline literal; a parameterized value full-scans the
+  neuron table — the root cause of per-chunk doc-train cost scaling with brain
+  size. EXPLAIN confirms the plan changes from `TableScan` to
+  `IndexScan [idx_neuron_brain]`.
+
+### Performance
+
+- Isolated in-memory SDB 3.2.0, N=100 chunks: batch writes took per-chunk encode
+  from **1.446 s → 0.847 s (-41%, under the 1 s target)**.
+- DB-op count per chunk is ~10× lower (**581 → 58**) on a full 6651-chunk run.
+- `find_neurons` is now index-driven on large brains — the dominant lever on
+  disk-backed brains (a manual `smem train` on a 68k-neuron default brain
+  previously ran at **7–15 s/chunk** for this reason; the index vs full-scan gap
+  is the single biggest per-chunk cost on disk).
+
+### Notes
+
+- The doc-trainer now batches create/insert round-trips and uses the brain_id
+  index, but per-chunk reads and Python-side extraction remain the next
+  bottleneck on very large (>50k-neuron) brains — material for a follow-up.
+
 ## [2.10.5] — Consolidation scales, prune stops eating memories
 
 Full `smem consolidate` now finishes without per-strategy timeouts on large

@@ -18,9 +18,13 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 # Stub the optional surrealdb dependency so store.py can be imported in CI.
-if "surrealdb" not in sys.modules:
-    _fake_surrealdb = MagicMock()
-    sys.modules["surrealdb"] = _fake_surrealdb
+# Stub ONLY when the SDK is genuinely not installed: an `if not in sys.modules`
+# guard would shadow an installed SDK for the rest of the pytest session and
+# break the live (SURREALDB_URL) tests that run after this module.
+try:
+    import surrealdb  # noqa: F401
+except ImportError:  # pragma: no cover - CI unit env has no surrealdb SDK
+    sys.modules["surrealdb"] = MagicMock()
     sys.modules["surrealdb.errors"] = MagicMock()
 
 
