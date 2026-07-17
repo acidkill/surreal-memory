@@ -10,6 +10,7 @@ from surreal_memory.server.routes.integration_status import (
 from surreal_memory.server.routes.memory import router as memory_router
 from surreal_memory.server.routes.oauth import router as oauth_router
 from surreal_memory.server.routes.openclaw_api import router as openclaw_router
+from surreal_memory.server.routes.reasoning_training import router as reasoning_training_router
 from surreal_memory.server.routes.sync import router as sync_router
 
 __all__ = [
@@ -21,5 +22,6 @@ __all__ = [
     "memory_router",
     "oauth_router",
     "openclaw_router",
+    "reasoning_training_router",
     "sync_router",
 ]

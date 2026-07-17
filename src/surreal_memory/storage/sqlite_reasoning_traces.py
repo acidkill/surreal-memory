@@ -270,3 +270,16 @@ class SQLiteReasoningTracesMixin:
                 if row["model"]:
                     results.append(row["model"])
         return results
+
+    async def delete_reasoning_traces_by_model(self, brain_id: str, model: str) -> int:
+        """Delete all reasoning traces for a model (privacy wipe). Returns rows deleted."""
+        if not model:
+            return 0
+        conn = self._ensure_conn()
+        cursor = await conn.execute(
+            "DELETE FROM reasoning_traces WHERE brain_id = ? AND model = ?",
+            (brain_id, model),
+        )
+        deleted = cursor.rowcount
+        await conn.commit()
+        return deleted

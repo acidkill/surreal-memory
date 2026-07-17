@@ -112,6 +112,25 @@ async def test_distill_creates_pattern_fiber(tmp_path: Path, no_embedder: None) 
     assert cat_neuron
 
 
+async def test_distill_honors_mining_models_filter(tmp_path: Path, no_embedder: None) -> None:
+    # Pre-existing unprocessed traces for two models; a mining_models glob must
+    # restrict distillation to the matching model only (HIGH-2 regression: the
+    # POST /mine models= override must actually gate distillation, not just ingest).
+    storage = InMemoryStorage()
+    storage.set_brain(BRAIN)
+    await _seed(storage, "claude-fable-5", _DEBUG_TRACES)
+    await _seed(storage, "claude-sonnet-5", _DEBUG_TRACES)
+
+    cfg = _ucfg(tmp_path, mining_models=("claude-fable-5",))
+    await distill_reasoning_patterns(storage, BRAIN, cfg)
+
+    fibers = await storage.find_fibers(metadata_key="_reasoning_pattern", limit=100)
+    assert {f.metadata["_source_model"] for f in fibers} == {"claude-fable-5"}
+    # sonnet's traces are untouched (not consumed by the restricted run).
+    remaining = await storage.get_unprocessed_reasoning_traces(BRAIN, limit=100)
+    assert {t["model"] for t in remaining} == {"claude-sonnet-5"}
+
+
 async def test_distill_is_idempotent(tmp_path: Path, no_embedder: None) -> None:
     storage = InMemoryStorage()
     storage.set_brain(BRAIN)

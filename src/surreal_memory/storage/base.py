@@ -1276,6 +1276,14 @@ class NeuralStorage(ABC):
         """Return DISTINCT model names present in reasoning_traces. Default: empty."""
         return []
 
+    async def delete_reasoning_traces_by_model(self, brain_id: str, model: str) -> int:
+        """Delete all reasoning traces for a model (privacy wipe). Default: 0.
+
+        Backends that buffer reasoning traces (SQLite, SurrealDB, in-memory)
+        override this.
+        """
+        return 0
+
     async def add_retrieval_trace(self, trace: RetrievalTrace) -> str:
         """Persist a retrieval trace. Returns the trace ID."""
         raise NotImplementedError

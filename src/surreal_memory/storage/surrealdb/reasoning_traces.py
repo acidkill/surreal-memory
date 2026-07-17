@@ -286,3 +286,21 @@ class SurrealDBReasoningTracesMixin:
             bid=brain_id,
         )
         return sorted({r.get("model", "") for r in rows if r.get("model")})
+
+    async def delete_reasoning_traces_by_model(self, brain_id: str, model: str) -> int:
+        """Delete all reasoning traces for a model (privacy wipe); return count."""
+        if not model:
+            return 0
+        rows = await self._query(
+            "SELECT count() AS c FROM reasoning_traces"
+            " WHERE brain_id = $bid AND model = $model GROUP ALL",
+            bid=brain_id,
+            model=model,
+        )
+        deleted = int(rows[0]["c"]) if rows else 0
+        await self._query(
+            "DELETE reasoning_traces WHERE brain_id = $bid AND model = $model",
+            bid=brain_id,
+            model=model,
+        )
+        return deleted

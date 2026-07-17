@@ -26,6 +26,7 @@ import os
 import re
 from collections import Counter
 from dataclasses import dataclass
+from fnmatch import fnmatch
 from typing import TYPE_CHECKING, Any
 
 from surreal_memory.core.fiber import Fiber
@@ -561,6 +562,11 @@ async def distill_reasoning_patterns(
     patterns_created = 0
     processed_ids: list[Any] = []
     models = await storage.get_reasoning_trace_models(brain_id)
+    if rt.mining_models:
+        # Honor the configured source-model globs so distillation is restricted to
+        # the same models as ingestion (and to POST /mine's models= override). An
+        # empty mining_models means "all models" (unchanged default behavior).
+        models = [m for m in models if any(fnmatch(m, pat) for pat in rt.mining_models)]
 
     for model in models:
         budget = rt.max_patterns_per_run - patterns_created

@@ -954,6 +954,16 @@ class InMemoryStorage(
         """Return DISTINCT model names in reasoning_traces (sorted)."""
         return sorted({r["model"] for r in self._reasoning_traces[brain_id] if r["model"]})
 
+    async def delete_reasoning_traces_by_model(self, brain_id: str, model: str) -> int:
+        """Delete all reasoning traces for a model (privacy wipe)."""
+        if not model:
+            return 0
+        rows = self._reasoning_traces[brain_id]
+        kept = [r for r in rows if r["model"] != model]
+        deleted = len(rows) - len(kept)
+        self._reasoning_traces[brain_id] = kept
+        return deleted
+
     # ========== Cleanup ==========
 
     async def clear(self, brain_id: str) -> None:

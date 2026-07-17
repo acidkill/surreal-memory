@@ -212,6 +212,37 @@ async def test_get_reasoning_trace_models_distinct_sorted(storage: SQLiteStorage
     ]
 
 
+async def test_delete_reasoning_traces_by_model(storage: SQLiteStorage) -> None:
+    await storage.insert_reasoning_traces(
+        BRAIN,
+        [
+            _trace("h1", model="claude-fable-5"),
+            _trace("h2", model="claude-fable-5"),
+            _trace("h3", model="claude-sonnet-5"),
+        ],
+    )
+    deleted = await storage.delete_reasoning_traces_by_model(BRAIN, "claude-fable-5")
+    assert deleted == 2
+    assert await storage.get_reasoning_trace_models(BRAIN) == ["claude-sonnet-5"]
+    # Empty model is a no-op (never a blanket wipe).
+    assert await storage.delete_reasoning_traces_by_model(BRAIN, "") == 0
+
+
+async def test_delete_reasoning_traces_by_model_in_memory() -> None:
+    # The in-memory backend is a real, selectable production backend — cover it too.
+    from surreal_memory.storage.memory_store import InMemoryStorage
+
+    store = InMemoryStorage()
+    store.set_brain(BRAIN)
+    await store.insert_reasoning_traces(
+        BRAIN,
+        [_trace("h1", model="claude-fable-5"), _trace("h2", model="claude-sonnet-5")],
+    )
+    assert await store.delete_reasoning_traces_by_model(BRAIN, "claude-fable-5") == 1
+    assert await store.get_reasoning_trace_models(BRAIN) == ["claude-sonnet-5"]
+    assert await store.delete_reasoning_traces_by_model(BRAIN, "") == 0
+
+
 async def test_traces_are_brain_scoped(storage: SQLiteStorage) -> None:
     await storage._ensure_conn().execute(
         "INSERT OR IGNORE INTO brains (id, name, config, created_at, updated_at) "

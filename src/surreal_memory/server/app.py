@@ -25,6 +25,7 @@ from surreal_memory.server.routes import (
     memory_router,
     oauth_router,
     openclaw_router,
+    reasoning_training_router,
     sync_router,
 )
 from surreal_memory.storage.base import NeuralStorage
@@ -532,6 +533,7 @@ def create_app(
     app.include_router(integration_status_router)
     app.include_router(oauth_router)
     app.include_router(openclaw_router)
+    app.include_router(reasoning_training_router)
 
     # Health check endpoint
     @app.get("/health", response_model=HealthResponse, tags=["health"])

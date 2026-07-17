@@ -2490,6 +2490,22 @@ async def _get_sqlite_storage(
 _surrealdb_storage: NeuralStorage | None = None
 
 
+def _resolve_embedding_dim(config: UnifiedConfig) -> int:
+    """Resolve the embedding vector dimension the SurrealDB HNSW index must match.
+
+    Priority: explicit config.embedding.dimension (e.g. a local bge-m3 server →
+    1024) > known Gemini model dim > 3072 default.
+    """
+    if config.embedding.enabled:
+        if config.embedding.dimension and config.embedding.dimension > 0:
+            return int(config.embedding.dimension)
+        if config.embedding.model:
+            from surreal_memory.engine.embedding.gemini_embedding import _MODEL_DIMENSIONS
+
+            return _MODEL_DIMENSIONS.get(config.embedding.model, 3072)
+    return 3072  # Gemini 2.0 default
+
+
 async def _get_surrealdb_storage(config: UnifiedConfig, name: str) -> NeuralStorage:
     """Create or return cached SurrealDBStorage."""
     global _surrealdb_storage
@@ -2506,17 +2522,8 @@ async def _get_surrealdb_storage(config: UnifiedConfig, name: str) -> NeuralStor
         _surrealdb_storage.set_brain(name)
         return _surrealdb_storage
 
-    # Resolve the embedding vector dimension that the SurrealDB HNSW index must
-    # match. Priority: explicit config.embedding.dimension (e.g. a local
-    # OpenAI-compatible bge-m3 server → 1024) > known Gemini model dim > 3072.
-    emb_dim = 3072  # Gemini 2.0 default
-    if config.embedding.enabled:
-        if config.embedding.dimension and config.embedding.dimension > 0:
-            emb_dim = int(config.embedding.dimension)
-        elif config.embedding.model:
-            from surreal_memory.engine.embedding.gemini_embedding import _MODEL_DIMENSIONS
-
-            emb_dim = _MODEL_DIMENSIONS.get(config.embedding.model, 3072)
+    # Resolve the embedding vector dimension that the SurrealDB HNSW index must match.
+    emb_dim = _resolve_embedding_dim(config)
 
     _warn_missing_surreal_pass()
 
@@ -2557,3 +2564,47 @@ async def _get_surrealdb_storage(config: UnifiedConfig, name: str) -> NeuralStor
     _surrealdb_storage = storage
     logger.info("SurrealDB storage initialized for brain '%s'", name)
     return storage
+
+
+async def create_isolated_storage(brain_name: str | None = None) -> NeuralStorage:
+    """Create a FRESH, non-cached storage bound to *brain_name*.
+
+    Unlike get_shared_storage, this never returns the module-global SurrealDB
+    singleton, so a long-running background job (e.g. reasoning mining) can hold
+    its own brain context without a concurrently-served request's set_brain()
+    racing it and cross-writing into the wrong brain. The caller MUST close() the
+    returned storage. SQLite already caches per brain-file (each brain a separate
+    instance) and the in-memory backend is test-only, so those return the shared
+    instance — only the SurrealDB global singleton needs true isolation.
+    """
+    config = get_config()
+    name = brain_name or config.current_brain
+
+    if config.storage_backend == "surrealdb":
+        from surreal_memory.core.brain import Brain
+        from surreal_memory.storage.surrealdb import SurrealDBStorage
+        from surreal_memory.storage.surrealdb.connection import SurrealSettings
+
+        _warn_missing_surreal_pass()
+        settings = SurrealSettings.from_env()
+        storage = SurrealDBStorage(
+            url=settings.url,
+            namespace=settings.namespace,
+            database=settings.database,
+            user=settings.user,
+            password=settings.password,
+            embedding_dim=_resolve_embedding_dim(config),
+        )
+        await storage.initialize()
+        brain = await storage.get_brain(name)
+        if brain is None:
+            brain = await storage.find_brain_by_name(name)
+        if brain is None:
+            brain = Brain.create(name, brain_id=name)
+            await storage.save_brain(brain)
+        storage.set_brain(name)
+        return storage
+
+    # SQLite (per-brain cached) and in-memory (test-only) are not shared across
+    # brains in a racy way; reuse the shared instance.
+    return await get_shared_storage(name)

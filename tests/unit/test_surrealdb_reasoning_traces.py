@@ -54,6 +54,8 @@ class _RTStore(SurrealDBReasoningTracesMixin):
             if params.get("model"):
                 rows = [r for r in rows if r.get("model") == params["model"]]
             return rows
+        if "AND model = $model GROUP ALL" in sql:
+            return [{"c": c.get("del_count", 0)}]
         if "processed = true AND created_at < $cutoff GROUP ALL" in sql:
             return [{"c": c.get("prune_count", 0)}]
         if "count() AS c FROM reasoning_traces WHERE brain_id = $bid GROUP ALL" in sql:
@@ -106,6 +108,23 @@ async def test_insert_empty_returns_zero() -> None:
     store = _RTStore()
     assert await store.insert_reasoning_traces("default", []) == 0
     assert store.inserts == []
+
+
+async def test_delete_by_model_counts_and_deletes() -> None:
+    store = _RTStore(del_count=3)
+    n = await store.delete_reasoning_traces_by_model("default", "claude-fable-5")
+    assert n == 3
+    # A parameterized DELETE was issued for that model (no string interpolation).
+    assert any(
+        sql.startswith("DELETE reasoning_traces") and p.get("model") == "claude-fable-5"
+        for sql, p in store.queries
+    )
+
+
+async def test_delete_by_model_empty_is_noop() -> None:
+    store = _RTStore(del_count=99)
+    assert await store.delete_reasoning_traces_by_model("default", "") == 0
+    assert store.queries == []  # short-circuits before issuing any query
 
 
 async def test_insert_truncates_task_context_and_computes_chars() -> None:
