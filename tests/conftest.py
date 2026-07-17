@@ -15,6 +15,15 @@ from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.core.synapse import Synapse, SynapseType
 from surreal_memory.storage.memory_store import InMemoryStorage
 
+# Import the real surrealdb SDK early (when installed) so it is present in
+# sys.modules before any unit test module runs its
+# `if "surrealdb" not in sys.modules: sys.modules["surrealdb"] = MagicMock()`
+# stub. Otherwise that MagicMock leaks into the live SurrealDB tests in the same
+# serial session, breaking `from surrealdb import AsyncSurreal` and awaits on the
+# fake connection. No-op when surrealdb isn't installed (the stubs then apply).
+with contextlib.suppress(ImportError):
+    import surrealdb  # noqa: F401
+
 
 @pytest.fixture
 def brain_config() -> BrainConfig:

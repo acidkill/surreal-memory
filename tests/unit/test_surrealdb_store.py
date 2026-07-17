@@ -9,7 +9,9 @@ import pytest
 
 # surrealdb is an optional dependency not installed in the base test environment.
 # Inject a stub so that the lazy `from surrealdb import AsyncSurreal` inside
-# store.py succeeds and the mock can override it.
+# store.py succeeds and the mock can override it. (tests/conftest.py imports the
+# real SDK early when installed, so this stub only fires in the base env — it no
+# longer leaks a MagicMock into the live SurrealDB tests.)
 if "surrealdb" not in sys.modules:
     _fake_surrealdb = MagicMock()
     sys.modules["surrealdb"] = _fake_surrealdb
