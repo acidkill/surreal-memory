@@ -1,0 +1,429 @@
+"""Reasoning-trace miner: scan Claude Code transcripts for model ``thinking``.
+
+Mirrors the tool-events ingest pipeline, but reads reasoning (``thinking``)
+blocks out of ``~/.claude/projects/*/*.jsonl`` transcripts into the
+``reasoning_traces`` staging table. Runs inside consolidation (strategy
+``PROCESS_REASONING_TRACES``), never on the hooks' hot path.
+
+Privacy: mining is opt-in (``reasoning_training.mining_enabled``); thinking text
+is redacted via ``safety.sensitive.auto_redact_content`` BEFORE it is staged.
+Deduplicated by ``trace_hash = sha256(sessionId:uuid:block_index)``; an
+incremental scan-state file skips unchanged transcripts.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import re
+import time
+from dataclasses import dataclass
+from datetime import UTC
+from fnmatch import fnmatch
+from functools import lru_cache
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+from surreal_memory.safety.sensitive import (
+    SensitivePattern,
+    SensitiveType,
+    auto_redact_content,
+    get_default_patterns,
+)
+from surreal_memory.utils.timeutils import utcnow
+
+if TYPE_CHECKING:
+    from datetime import datetime
+
+    from surreal_memory.storage.base import NeuralStorage
+    from surreal_memory.unified_config import ReasoningTrainingConfig, UnifiedConfig
+
+logger = logging.getLogger(__name__)
+
+# Models whose thinking blocks are empty (signature-only) — never a mining
+# source. opus-4.8 is already excluded by the non-empty-thinking filter; this is
+# a belt-and-suspenders prefix denylist (see run 007 BINDING CORRECTION #5).
+_MODELS_WITHOUT_THINKING = ("claude-opus-4-8",)
+
+# The synthetic attribution used for non-model turns — never mine it.
+_SYNTHETIC_MODEL = "<synthetic>"
+
+_TASK_CONTEXT_MAX = 400
+_DATE_SUFFIX = re.compile(r"-\d{8}$")
+
+# Skip absurdly large transcript lines before json.loads (crafted/corrupted
+# transcript DoS guard). Normal entries (even with big tool_results) are well
+# under this; a single reasoning trace is capped far lower by max_trace_chars.
+_MAX_LINE_CHARS = 1_000_000
+
+
+@lru_cache(maxsize=1)
+def _reasoning_redaction_patterns() -> tuple[SensitivePattern, ...]:
+    """Default redaction patterns plus prose / vendor-token patterns.
+
+    Reasoning ``thinking`` is free-form narration (paraphrased configs, curl
+    commands, error output), so the ``key=value``-anchored defaults miss Bearer
+    headers and bare vendor keys. These extra severity-3 patterns close that gap.
+    """
+    extra = (
+        SensitivePattern(
+            name="Bearer Token (prose)",
+            pattern=r"(?i)bearer\s+[A-Za-z0-9._\-]{16,}",
+            type=SensitiveType.TOKEN,
+            description="Bearer token in narrative prose",
+            severity=3,
+        ),
+        SensitivePattern(
+            name="OpenAI Secret Key",
+            # \b anchor avoids matching "sk-" mid-word (task-, desk-, risk-, disk-…).
+            pattern=r"\bsk-(?:proj-)?[A-Za-z0-9_\-]{16,}",
+            type=SensitiveType.API_KEY,
+            description="OpenAI-style secret key",
+            severity=3,
+        ),
+        SensitivePattern(
+            name="GitHub Token",
+            pattern=r"gh[pousr]_[A-Za-z0-9]{20,}",
+            type=SensitiveType.TOKEN,
+            description="GitHub personal/OAuth token",
+            severity=3,
+        ),
+        SensitivePattern(
+            name="Slack Token",
+            pattern=r"xox[baprs]-[A-Za-z0-9\-]{10,}",
+            type=SensitiveType.TOKEN,
+            description="Slack token",
+            severity=3,
+        ),
+        SensitivePattern(
+            name="Google API Key",
+            pattern=r"AIza[0-9A-Za-z_\-]{16,}",
+            type=SensitiveType.API_KEY,
+            description="Google API key",
+            severity=3,
+        ),
+        SensitivePattern(
+            name="AWS Access Key ID (standalone)",
+            pattern=r"\bAKIA[0-9A-Z]{16}\b",
+            type=SensitiveType.AWS_KEY,
+            description="AWS access key id",
+            severity=3,
+        ),
+    )
+    return get_default_patterns() + extra
+
+
+def _redact(text: str, config: ReasoningTrainingConfig) -> str:
+    """Redact secrets from *text* when ``config.redact_secrets`` is set.
+
+    Uses ``min_severity=2`` (so JWTs, which are severity 2, are caught) with the
+    reasoning-specific pattern set. Applied to BOTH thinking content and the
+    user-prompt ``task_context`` before anything is staged.
+    """
+    if not config.redact_secrets:
+        return text
+    redacted, _matches, _orig_hash = auto_redact_content(
+        text, min_severity=2, patterns=list(_reasoning_redaction_patterns())
+    )
+    return redacted
+
+
+def normalize_model(model: str) -> str:
+    """Canonicalize a model id by stripping a trailing ``-YYYYMMDD`` date suffix.
+
+    ``claude-haiku-4-5-20251001`` -> ``claude-haiku-4-5``. Keeps mining,
+    distillation and injection agreeing on one canonical model name.
+    """
+    return _DATE_SUFFIX.sub("", model.strip())
+
+
+def _is_denylisted(model: str) -> bool:
+    return any(model.startswith(prefix) for prefix in _MODELS_WITHOUT_THINKING)
+
+
+def _model_matches(model: str, patterns: tuple[str, ...]) -> bool:
+    """Return True if *model* matches any glob in *patterns* (empty = all)."""
+    if not patterns:
+        return True
+    return any(fnmatch(model, pattern) for pattern in patterns)
+
+
+def _extract_user_text(entry: dict[str, Any]) -> str:
+    """Extract plain user prompt text from a transcript entry (best-effort)."""
+    message = entry.get("message")
+    source = message if isinstance(message, dict) else entry
+    content = source.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = [
+            item.get("text", "")
+            for item in content
+            if isinstance(item, dict) and item.get("type") == "text" and item.get("text")
+        ]
+        return "\n".join(parts)
+    return ""
+
+
+def _project_from_path(jsonl: Path) -> str:
+    """Derive a readable project name from the transcript's parent directory."""
+    return jsonl.parent.name
+
+
+def _now_ts(now: datetime | None) -> float:
+    if now is None:
+        return time.time()
+    aware = now if now.tzinfo is not None else now.replace(tzinfo=UTC)
+    return aware.timestamp()
+
+
+def _load_scan_state(state_path: Path | None) -> dict[str, dict[str, Any]]:
+    if state_path is None or not state_path.exists():
+        return {}
+    try:
+        data = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_scan_state(state_path: Path | None, state: dict[str, dict[str, Any]]) -> None:
+    if state_path is None:
+        return
+    try:
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+    except OSError:
+        logger.debug("reasoning scan-state write failed: %s", state_path, exc_info=True)
+
+
+@dataclass
+class ReasoningIngestResult:
+    """Outcome of a reasoning-trace ingest pass."""
+
+    traces_ingested: int = 0
+    traces_scanned: int = 0
+
+
+def scan_transcripts(
+    config: ReasoningTrainingConfig,
+    *,
+    state_path: Path | None = None,
+    claude_dir: Path | None = None,
+    now: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """Scan ``~/.claude/projects/*/*.jsonl`` for mineable reasoning traces.
+
+    Returns staging-ready dicts (trace_hash, model, session_id, project,
+    task_context, content, content_chars, created_at). Honors the config's
+    model globs, char limits, per-scan cap, lookback window and redaction flag,
+    and updates the incremental scan-state file.
+
+    The per-scan cap is a soft target: a file is always scanned whole (so its
+    recorded state never hides un-returned traces), and scanning simply stops
+    after the running total reaches ``max_traces_per_scan``.
+    """
+    claude_root = (claude_dir or (Path.home() / ".claude")).resolve()
+    projects_dir = claude_root / "projects"
+    if not projects_dir.is_dir():
+        return []
+
+    now_ts = _now_ts(now)
+    cutoff_ts = (
+        now_ts - config.scan_lookback_days * 86400 if config.scan_lookback_days > 0 else None
+    )
+    fallback_created = (now or utcnow()).isoformat()
+
+    state = _load_scan_state(state_path)
+    traces: list[dict[str, Any]] = []
+    seen_hashes: set[str] = set()
+
+    for jsonl in sorted(projects_dir.glob("*/*.jsonl")):
+        resolved = jsonl.resolve()
+        # Path-escape guard: never read outside ~/.claude (symlink / traversal).
+        if not resolved.is_relative_to(claude_root):
+            continue
+        try:
+            st = resolved.stat()
+        except OSError:
+            continue
+        # Lookback window: skip transcripts untouched within scan_lookback_days.
+        if cutoff_ts is not None and st.st_mtime < cutoff_ts:
+            continue
+        key = str(resolved)
+        prev = state.get(key, {})
+        # Incremental: skip files whose size+mtime are unchanged since last scan.
+        if prev.get("size") == st.st_size and prev.get("mtime") == st.st_mtime:
+            continue
+        # Resume after the last processed line on append-only growth; otherwise
+        # (shrunk / rewritten / edited-in-place) rescan from the top — trace_hash
+        # dedup keeps any re-emitted traces harmless at insert time.
+        start_line = int(prev.get("last_line", 0)) if st.st_size > int(prev.get("size", 0)) else 0
+
+        file_traces, line_count = _scan_file(
+            resolved, config, seen_hashes, fallback_created, start_line=start_line
+        )
+        traces.extend(file_traces)
+        state[key] = {"mtime": st.st_mtime, "size": st.st_size, "last_line": line_count}
+        if len(traces) >= config.max_traces_per_scan:
+            break
+
+    _save_scan_state(state_path, state)
+    return traces
+
+
+def _scan_file(
+    resolved: Path,
+    config: ReasoningTrainingConfig,
+    seen_hashes: set[str],
+    fallback_created: str,
+    *,
+    start_line: int = 0,
+) -> tuple[list[dict[str, Any]], int]:
+    """Scan a single transcript file. Returns (traces, line_count).
+
+    ``start_line`` resumes after an already-processed prefix (append-only
+    growth), so a resumed scan does not re-emit traces from earlier passes.
+    """
+    project = _project_from_path(resolved)
+    out: list[dict[str, Any]] = []
+    prev_user_text = ""
+    line_count = start_line
+    try:
+        with resolved.open(encoding="utf-8", errors="replace") as f:
+            for idx, raw in enumerate(f, start=1):
+                line_count = idx
+                if idx <= start_line:
+                    continue
+                if len(raw) > _MAX_LINE_CHARS:
+                    continue
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    entry = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(entry, dict):
+                    continue
+                etype = entry.get("type")
+                if etype == "user":
+                    # Redact the user prompt before it becomes task_context — it
+                    # can contain pasted secrets just like thinking content.
+                    prev_user_text = _redact(_extract_user_text(entry)[:_TASK_CONTEXT_MAX], config)
+                    continue
+                if etype != "assistant":
+                    continue
+                out.extend(
+                    _traces_from_assistant(
+                        entry, config, seen_hashes, project, prev_user_text, fallback_created
+                    )
+                )
+    except OSError:
+        logger.debug("reasoning transcript read failed: %s", resolved, exc_info=True)
+    return out, line_count
+
+
+def _traces_from_assistant(
+    entry: dict[str, Any],
+    config: ReasoningTrainingConfig,
+    seen_hashes: set[str],
+    project: str,
+    task_context: str,
+    fallback_created: str,
+) -> list[dict[str, Any]]:
+    message = entry.get("message")
+    if not isinstance(message, dict):
+        return []
+    model = normalize_model(str(message.get("model") or ""))
+    if not model or model == _SYNTHETIC_MODEL or _is_denylisted(model):
+        return []
+    if not _model_matches(model, config.mining_models):
+        return []
+    content = message.get("content")
+    if not isinstance(content, list):
+        return []
+    session_id = str(entry.get("sessionId") or "")
+    uuid_ = str(entry.get("uuid") or "")
+    created_at = str(entry.get("timestamp") or fallback_created)
+    out: list[dict[str, Any]] = []
+    for block_index, block in enumerate(content):
+        trace = _build_trace(
+            block,
+            block_index,
+            config,
+            model=model,
+            session_id=session_id,
+            uuid_=uuid_,
+            project=project,
+            task_context=task_context,
+            created_at=created_at,
+            seen_hashes=seen_hashes,
+        )
+        if trace is not None:
+            out.append(trace)
+    return out
+
+
+def _build_trace(
+    block: Any,
+    block_index: int,
+    config: ReasoningTrainingConfig,
+    *,
+    model: str,
+    session_id: str,
+    uuid_: str,
+    project: str,
+    task_context: str,
+    created_at: str,
+    seen_hashes: set[str],
+) -> dict[str, Any] | None:
+    if not isinstance(block, dict) or block.get("type") != "thinking":
+        return None
+    thinking = block.get("thinking")
+    if not isinstance(thinking, str) or not thinking.strip():
+        return None
+    if len(thinking) < config.min_trace_chars:
+        return None
+    trace_hash = hashlib.sha256(f"{session_id}:{uuid_}:{block_index}".encode()).hexdigest()
+    if trace_hash in seen_hashes:
+        return None
+    seen_hashes.add(trace_hash)
+    text = _redact(thinking[: config.max_trace_chars], config)
+    return {
+        "trace_hash": trace_hash,
+        "model": model,
+        "session_id": session_id,
+        "project": project,
+        "task_context": task_context,
+        "content": text,
+        "content_chars": len(text),
+        "created_at": created_at,
+    }
+
+
+async def ingest_reasoning_traces(
+    storage: NeuralStorage,
+    brain_id: str,
+    config: UnifiedConfig,
+    *,
+    claude_dir: Path | None = None,
+    state_path: Path | None = None,
+    now: datetime | None = None,
+) -> ReasoningIngestResult:
+    """Scan transcripts and insert new reasoning traces into staging.
+
+    The scan-state file lives under ``config.data_dir`` unless overridden.
+    """
+    resolved_state = state_path or (config.data_dir / "reasoning_scan_state.json")
+    traces = scan_transcripts(
+        config.reasoning_training,
+        state_path=resolved_state,
+        claude_dir=claude_dir,
+        now=now,
+    )
+    if not traces:
+        return ReasoningIngestResult(traces_ingested=0, traces_scanned=0)
+    ingested = await storage.insert_reasoning_traces(brain_id, traces)
+    return ReasoningIngestResult(traces_ingested=ingested, traces_scanned=len(traces))

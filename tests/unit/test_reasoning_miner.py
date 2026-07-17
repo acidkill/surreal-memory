@@ -1,0 +1,379 @@
+"""Tests for engine/reasoning_miner.py — transcript scanning + ingest.
+
+Uses synthetic JSONL transcript fixtures under a temporary ``.claude`` dir (no
+real thinking text). Covers dedup, model glob filter, truncation, ``<synthetic>``
+and opus (empty/denylisted) skipping, min-length gating, secret redaction,
+task_context capture, model normalization, incremental scan-state, and the
+async ingest path against InMemoryStorage.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import UTC, datetime
+from pathlib import Path
+
+from surreal_memory.engine.reasoning_miner import (
+    ingest_reasoning_traces,
+    normalize_model,
+    scan_transcripts,
+)
+from surreal_memory.storage.memory_store import InMemoryStorage
+from surreal_memory.unified_config import ReasoningTrainingConfig, UnifiedConfig
+
+_NOW = datetime(2026, 3, 1, 12, 0, 0, tzinfo=UTC)
+
+
+def _cfg(**kw: object) -> ReasoningTrainingConfig:
+    base: dict[str, object] = {
+        "mining_enabled": True,
+        "min_trace_chars": 10,
+        "max_trace_chars": 10_000,
+        "scan_lookback_days": 0,
+    }
+    base.update(kw)
+    return ReasoningTrainingConfig(**base)  # type: ignore[arg-type]
+
+
+def _assistant(
+    thinking: str,
+    *,
+    model: str = "claude-fable-5",
+    session: str = "s1",
+    uuid: str = "u1",
+    timestamp: str = "2026-03-01T10:00:00Z",
+    extra_blocks: list | None = None,
+) -> dict:
+    blocks: list = [{"type": "thinking", "thinking": thinking, "signature": "sig"}]
+    if extra_blocks:
+        blocks = extra_blocks
+    return {
+        "type": "assistant",
+        "sessionId": session,
+        "uuid": uuid,
+        "cwd": "/home/x/proj",
+        "timestamp": timestamp,
+        "message": {"model": model, "role": "assistant", "content": blocks},
+    }
+
+
+def _user(text: str, *, session: str = "s1", uuid: str = "u0") -> dict:
+    return {
+        "type": "user",
+        "sessionId": session,
+        "uuid": uuid,
+        "message": {"role": "user", "content": [{"type": "text", "text": text}]},
+    }
+
+
+def _write_transcript(
+    claude_dir: Path, entries: list[dict], *, slug: str = "proj-a", name: str = "t.jsonl"
+) -> Path:
+    d = claude_dir / "projects" / slug
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / name
+    p.write_text("\n".join(json.dumps(e) for e in entries) + "\n", encoding="utf-8")
+    return p
+
+
+def _scan(claude_dir: Path, cfg: ReasoningTrainingConfig, state: Path) -> list[dict]:
+    return scan_transcripts(cfg, state_path=state, claude_dir=claude_dir, now=_NOW)
+
+
+def test_normalize_model_strips_date_suffix() -> None:
+    assert normalize_model("claude-haiku-4-5-20251001") == "claude-haiku-4-5"
+    assert normalize_model("claude-fable-5") == "claude-fable-5"
+    assert normalize_model("  claude-sonnet-5  ") == "claude-sonnet-5"
+
+
+def test_scan_extracts_thinking_with_task_context(tmp_path: Path) -> None:
+    claude = tmp_path / ".claude"
+    _write_transcript(
+        claude,
+        [
+            _user("please fix the failing test in module X"),
+            _assistant("restate the goal, decompose, then verify the edge cases carefully"),
+        ],
+    )
+    traces = _scan(claude, _cfg(), tmp_path / "state.json")
+    assert len(traces) == 1
+    tr = traces[0]
+    assert tr["model"] == "claude-fable-5"
+    assert "verify the edge cases" in tr["content"]
+    assert tr["task_context"] == "please fix the failing test in module X"
+    assert tr["session_id"] == "s1"
+    assert len(tr["trace_hash"]) == 64
+    assert tr["created_at"] == "2026-03-01T10:00:00Z"
+
+
+def test_dedup_identical_entries(tmp_path: Path) -> None:
+    claude = tmp_path / ".claude"
+    entry = _assistant("a fairly long reasoning trace about verification", uuid="dup")
+    _write_transcript(claude, [entry, entry])  # same session:uuid:block_index
+    traces = _scan(claude, _cfg(), tmp_path / "state.json")
+    assert len(traces) == 1
+
+
+def test_incremental_state_skips_unchanged(tmp_path: Path) -> None:
+    claude = tmp_path / ".claude"
+    state = tmp_path / "state.json"
+    _write_transcript(claude, [_assistant("a long enough reasoning trace here")])
+    assert len(_scan(claude, _cfg(), state)) == 1
+    # Second scan, file unchanged → skipped entirely.
+    assert _scan(claude, _cfg(), state) == []
+
+
+def test_incremental_state_rescans_changed(tmp_path: Path) -> None:
+    claude = tmp_path / ".claude"
+    state = tmp_path / "state.json"
+    p = _write_transcript(claude, [_assistant("first reasoning trace long enough", uuid="a")])
+    assert len(_scan(claude, _cfg(), state)) == 1
+    # Append a new entry → file changes → rescan yields only the NEW trace (dedup).
+    with p.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(_assistant("second reasoning trace long enough", uuid="b")) + "\n")
+    traces = _scan(claude, _cfg(), state)
+    assert len(traces) == 1
+    assert "second reasoning" in traces[0]["content"]
+
+
+def test_model_glob_filter(tmp_path: Path) -> None:
+    claude = tmp_path / ".claude"
+    _write_transcript(
+        claude,
+        [
+            _assistant("fable reasoning trace long enough", model="claude-fable-5", uuid="a"),
+            _assistant("sonnet reasoning trace long enough", model="claude-sonnet-5", uuid="b"),
+        ],
+    )
+    traces = _scan(claude, _cfg(mining_models=("claude-fable-*",)), tmp_path / "state.json")
+    assert [t["model"] for t in traces] == ["claude-fable-5"]
+
+
+def test_synthetic_and_opus_are_skipped(tmp_path: Path) -> None:
+    claude = tmp_path / ".claude"
+    _write_transcript(
+        claude,
+        [
+            _assistant("synthetic reasoning trace long enough", model="<synthetic>", uuid="a"),
+            _assistant("opus reasoning trace long enough", model="claude-opus-4-8", uuid="b"),
+            _assistant("fable reasoning trace long enough", model="claude-fable-5", uuid="c"),
+        ],
+    )
+    traces = _scan(claude, _cfg(), tmp_path / "state.json")
+    assert [t["model"] for t in traces] == ["claude-fable-5"]
+
+
+def test_empty_thinking_skipped(tmp_path: Path) -> None:
+    claude = tmp_path / ".claude"
+    _write_transcript(claude, [_assistant("   ", uuid="a")])  # opus-style empty thinking
+    assert _scan(claude, _cfg(), tmp_path / "state.json") == []
+
+
+def test_min_trace_chars_gate(tmp_path: Path) -> None:
+    claude = tmp_path / ".claude"
+    _write_transcript(claude, [_assistant("short", uuid="a")])
+    assert _scan(claude, _cfg(min_trace_chars=50), tmp_path / "state.json") == []
+
+
+def test_truncation_to_max_chars(tmp_path: Path) -> None:
+    claude = tmp_path / ".claude"
+    _write_transcript(claude, [_assistant("x" * 500, uuid="a")])
+    traces = _scan(claude, _cfg(max_trace_chars=100), tmp_path / "state.json")
+    assert len(traces[0]["content"]) == 100
+    assert traces[0]["content_chars"] == 100
+
+
+def test_secret_redaction_before_staging(tmp_path: Path) -> None:
+    claude = tmp_path / ".claude"
+    secret = "password = hunter2supersecret"  # noqa: S105 — synthetic test secret
+    thinking = f"first I reason about the config, then note that {secret}, then continue"
+    _write_transcript(claude, [_assistant(thinking, uuid="a")])
+
+    redacted = _scan(claude, _cfg(redact_secrets=True), tmp_path / "s1.json")
+    assert "hunter2supersecret" not in redacted[0]["content"]
+    assert "[REDACTED]" in redacted[0]["content"]
+
+    kept = _scan(claude, _cfg(redact_secrets=False), tmp_path / "s2.json")
+    assert "hunter2supersecret" in kept[0]["content"]
+
+
+def test_task_context_is_redacted(tmp_path: Path) -> None:
+    claude = tmp_path / ".claude"
+    _write_transcript(
+        claude,
+        [
+            _user("my config has password = topsecret123 in it, help"),
+            _assistant("reasoning about the config problem in detail here"),
+        ],
+    )
+    traces = _scan(claude, _cfg(redact_secrets=True), tmp_path / "state.json")
+    assert "topsecret123" not in traces[0]["task_context"]
+    assert "[REDACTED]" in traces[0]["task_context"]
+
+
+def test_content_redacts_bearer_jwt_and_vendor_keys(tmp_path: Path) -> None:
+    claude = tmp_path / ".claude"
+    jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abc123def456ghi"
+    bearer_tok = "abcdefghijklmnop12345"
+    openai_key = "sk-proj-ABCDEFGHIJKLMNOP1234"
+    thinking = (
+        f"I inspect the request; it sends Authorization: Bearer {bearer_tok} "
+        f"and a jwt {jwt} and an openai key {openai_key} to the API endpoint"
+    )
+    _write_transcript(claude, [_assistant(thinking, uuid="a")])
+    content = _scan(claude, _cfg(redact_secrets=True), tmp_path / "state.json")[0]["content"]
+    assert bearer_tok not in content
+    assert jwt not in content
+    assert openai_key not in content
+    assert "[REDACTED]" in content
+
+
+def test_redaction_does_not_mangle_benign_hyphenated_prose(tmp_path: Path) -> None:
+    claude = tmp_path / ".claude"
+    # "task-"/"disk-" contain the substring "sk-" but must NOT be redacted.
+    thinking = "the task-queue-processor-v2-implementation refactors the disk-cache-layer module"
+    _write_transcript(claude, [_assistant(thinking, uuid="a")])
+    content = _scan(claude, _cfg(redact_secrets=True), tmp_path / "state.json")[0]["content"]
+    assert "[REDACTED]" not in content
+    assert "task-queue-processor-v2-implementation" in content
+
+
+def test_model_normalization_applied(tmp_path: Path) -> None:
+    claude = tmp_path / ".claude"
+    _write_transcript(
+        claude,
+        [_assistant("dated model reasoning trace", model="claude-haiku-4-5-20251001", uuid="a")],
+    )
+    traces = _scan(claude, _cfg(), tmp_path / "state.json")
+    assert traces[0]["model"] == "claude-haiku-4-5"
+
+
+def test_files_outside_projects_glob_ignored(tmp_path: Path) -> None:
+    claude = tmp_path / ".claude"
+    (claude / "projects").mkdir(parents=True, exist_ok=True)
+    # A jsonl directly under .claude (not projects/*/) must not be scanned.
+    (claude / "stray.jsonl").write_text(
+        json.dumps(_assistant("stray reasoning trace long enough", uuid="a")) + "\n",
+        encoding="utf-8",
+    )
+    assert _scan(claude, _cfg(), tmp_path / "state.json") == []
+
+
+def test_max_traces_per_scan_soft_cap(tmp_path: Path) -> None:
+    claude = tmp_path / ".claude"
+    entries = [
+        _assistant(f"reasoning trace number {i} long enough", uuid=f"u{i}") for i in range(5)
+    ]
+    _write_transcript(claude, entries)
+    traces = _scan(claude, _cfg(max_traces_per_scan=3), tmp_path / "state.json")
+    # Whole file is scanned (no mid-file loss); cap only stops scanning MORE files.
+    assert len(traces) == 5
+
+
+async def test_ingest_reasoning_traces_into_storage(tmp_path: Path) -> None:
+    claude = tmp_path / ".claude"
+    _write_transcript(
+        claude,
+        [
+            _user("do the thing"),
+            _assistant("reasoning trace one long enough", model="claude-fable-5", uuid="a"),
+            _assistant("reasoning trace two long enough", model="claude-sonnet-5", uuid="b"),
+        ],
+    )
+    storage = InMemoryStorage()
+    storage.set_brain("b1")
+    cfg = UnifiedConfig(
+        data_dir=tmp_path / ".surrealmemory",
+        current_brain="default",
+        reasoning_training=_cfg(),
+    )
+    result = await ingest_reasoning_traces(
+        storage, "b1", cfg, claude_dir=claude, state_path=tmp_path / "state.json", now=_NOW
+    )
+    assert result.traces_ingested == 2
+    assert result.traces_scanned == 2
+    stats = await storage.get_reasoning_stats("b1")
+    assert stats["total"] == 2
+    assert set(stats["by_model"]) == {"claude-fable-5", "claude-sonnet-5"}
+
+
+def _fake_unified_config(tmp_path: Path, *, mining_enabled: bool) -> UnifiedConfig:
+    return UnifiedConfig(
+        data_dir=tmp_path / ".surrealmemory",
+        current_brain="default",
+        reasoning_training=_cfg(mining_enabled=mining_enabled),
+    )
+
+
+async def test_consolidation_skips_when_mining_disabled(tmp_path, monkeypatch) -> None:
+    from surreal_memory.engine.consolidation import ConsolidationEngine, ConsolidationStrategy
+
+    fake = _fake_unified_config(tmp_path, mining_enabled=False)
+    monkeypatch.setattr(UnifiedConfig, "load", staticmethod(lambda config_path=None: fake))
+    calls = {"n": 0}
+
+    async def _spy_ingest(*a, **k):  # pragma: no cover - must NOT be reached
+        calls["n"] += 1
+        from surreal_memory.engine.reasoning_miner import ReasoningIngestResult
+
+        return ReasoningIngestResult(traces_ingested=9)
+
+    monkeypatch.setattr(
+        "surreal_memory.engine.reasoning_miner.ingest_reasoning_traces", _spy_ingest
+    )
+
+    storage = InMemoryStorage()
+    storage.set_brain("b1")
+    report = await ConsolidationEngine(storage).run(
+        [ConsolidationStrategy.PROCESS_REASONING_TRACES]
+    )
+    assert report.reasoning_traces_ingested == 0
+    assert calls["n"] == 0  # guard short-circuits before invoking the miner
+
+
+async def test_consolidation_ingests_when_enabled(tmp_path, monkeypatch) -> None:
+    from surreal_memory.engine.consolidation import ConsolidationEngine, ConsolidationStrategy
+    from surreal_memory.engine.reasoning_miner import ReasoningIngestResult
+
+    fake = _fake_unified_config(tmp_path, mining_enabled=True)
+    monkeypatch.setattr(UnifiedConfig, "load", staticmethod(lambda config_path=None: fake))
+
+    async def _fake_ingest(storage, brain_id, config, **k):
+        return ReasoningIngestResult(traces_ingested=3, traces_scanned=3)
+
+    monkeypatch.setattr(
+        "surreal_memory.engine.reasoning_miner.ingest_reasoning_traces", _fake_ingest
+    )
+
+    storage = InMemoryStorage()
+    storage.set_brain("b1")
+    report = await ConsolidationEngine(storage).run(
+        [ConsolidationStrategy.PROCESS_REASONING_TRACES]
+    )
+    assert report.reasoning_traces_ingested == 3
+
+
+async def test_consolidation_dry_run_skips_ingest(tmp_path, monkeypatch) -> None:
+    from surreal_memory.engine.consolidation import ConsolidationEngine, ConsolidationStrategy
+
+    fake = _fake_unified_config(tmp_path, mining_enabled=True)
+    monkeypatch.setattr(UnifiedConfig, "load", staticmethod(lambda config_path=None: fake))
+    calls = {"n": 0}
+
+    async def _spy_ingest(*a, **k):  # pragma: no cover - must NOT be reached
+        calls["n"] += 1
+        from surreal_memory.engine.reasoning_miner import ReasoningIngestResult
+
+        return ReasoningIngestResult(traces_ingested=9)
+
+    monkeypatch.setattr(
+        "surreal_memory.engine.reasoning_miner.ingest_reasoning_traces", _spy_ingest
+    )
+
+    storage = InMemoryStorage()
+    storage.set_brain("b1")
+    report = await ConsolidationEngine(storage).run(
+        [ConsolidationStrategy.PROCESS_REASONING_TRACES], dry_run=True
+    )
+    assert report.reasoning_traces_ingested == 0
+    assert calls["n"] == 0

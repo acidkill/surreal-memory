@@ -48,6 +48,7 @@ class ConsolidationStrategy(StrEnum):
     COMPRESS = "compress"
     LIFECYCLE = "lifecycle"
     PROCESS_TOOL_EVENTS = "process_tool_events"
+    PROCESS_REASONING_TRACES = "process_reasoning_traces"
     ESSENCE_BACKFILL = "essence_backfill"
     DETECT_DRIFT = "detect_drift"
     REPLAY = "replay"  # Hippocampal replay: LTP/LTD on recent fibers
@@ -113,6 +114,7 @@ class ConsolidationReport:
     tokens_saved: int = 0
     neurons_reactivated: int = 0
     essences_generated: int = 0
+    reasoning_traces_ingested: int = 0
     merge_details: list[MergeDetail] = field(default_factory=list)
     dry_run: bool = False
     extra: dict[str, Any] = field(default_factory=dict)
@@ -212,6 +214,7 @@ class ConsolidationEngine:
                 ConsolidationStrategy.LEARN_HABITS,
                 ConsolidationStrategy.DEDUP,
                 ConsolidationStrategy.PROCESS_TOOL_EVENTS,
+                ConsolidationStrategy.PROCESS_REASONING_TRACES,
             }
         ),
         frozenset(
@@ -284,6 +287,9 @@ class ConsolidationEngine:
                 report, reference_time, dry_run
             ),
             ConsolidationStrategy.PROCESS_TOOL_EVENTS: lambda: self._process_tool_events(
+                report, dry_run
+            ),
+            ConsolidationStrategy.PROCESS_REASONING_TRACES: lambda: self._process_reasoning_traces(
                 report, dry_run
             ),
             ConsolidationStrategy.DETECT_DRIFT: lambda: self._detect_drift(report, dry_run),
@@ -1869,6 +1875,52 @@ class ConsolidationEngine:
                 result.events_processed,
                 result.neurons_created,
                 result.synapses_created,
+            )
+
+    async def _process_reasoning_traces(
+        self,
+        report: ConsolidationReport,
+        dry_run: bool,
+    ) -> None:
+        """Mine reasoning traces from transcripts into the staging table.
+
+        Scans ~/.claude transcripts for model thinking blocks and stages them
+        (redacted) via reasoning_miner. Only runs when
+        reasoning_training.mining_enabled is set (opt-in for privacy). Mirrors
+        PROCESS_TOOL_EVENTS and is likewise excluded from scheduled defaults.
+        """
+        import logging as _logging
+
+        from surreal_memory.unified_config import UnifiedConfig
+
+        _logger = _logging.getLogger(__name__)
+
+        brain_id = self._storage.current_brain_id
+        if not brain_id:
+            _logger.debug("PROCESS_REASONING_TRACES skipped: no brain context")
+            return
+
+        try:
+            config = UnifiedConfig.load()
+        except Exception:
+            _logger.debug("PROCESS_REASONING_TRACES skipped: config load failed", exc_info=True)
+            return
+
+        if not config.reasoning_training.mining_enabled:
+            return
+
+        if dry_run:
+            _logger.debug("PROCESS_REASONING_TRACES skipped: dry_run mode")
+            return
+
+        from surreal_memory.engine.reasoning_miner import ingest_reasoning_traces
+
+        result = await ingest_reasoning_traces(self._storage, brain_id, config)
+        report.reasoning_traces_ingested = result.traces_ingested
+        if result.traces_ingested > 0:
+            _logger.debug(
+                "PROCESS_REASONING_TRACES: ingested %d reasoning traces",
+                result.traces_ingested,
             )
 
     async def _detect_drift(self, report: ConsolidationReport, dry_run: bool) -> None:
