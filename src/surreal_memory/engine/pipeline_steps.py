@@ -1128,7 +1128,7 @@ class EmotionStep:
         assert ctx.anchor_neuron is not None
         # Bulk doc-training: skip emotion extraction (find_neurons type=STATE
         # scans type partition; doc knowledge has no emotional valence).
-        if ctx.skip_conflicts:
+        if getattr(ctx, "skip_conflicts", False):
             return ctx
         result = self.sentiment_extractor.extract(ctx.content, language=ctx.language)
 
@@ -1295,7 +1295,7 @@ class ConflictDetectionStep:
         storage: NeuralStorage,
         config: BrainConfig,
     ) -> PipelineContext:
-        if ctx.skip_conflicts:
+        if getattr(ctx, "skip_conflicts", False):
             return ctx
 
         assert ctx.anchor_neuron is not None
@@ -1445,7 +1445,7 @@ class SemanticLinkingStep:
         # (40k+ rows on a large brain) because SDB 3.2.0's planner picks
         # idx_neuron_type and filters content post-index — ~1 s/call, 3+/chunk.
         # ENRICH consolidation (post-train) adds cross-links anyway.
-        if ctx.skip_conflicts:
+        if getattr(ctx, "skip_conflicts", False):
             return ctx
 
         linkable = [
@@ -1545,7 +1545,7 @@ class CrossMemoryLinkStep:
         if ctx.anchor_neuron is None or not ctx.entity_neurons:
             return ctx
         # Bulk doc-training: skip (same rationale as SemanticLinkingStep).
-        if ctx.skip_conflicts:
+        if getattr(ctx, "skip_conflicts", False):
             return ctx
 
         anchor_id = ctx.anchor_neuron.id
