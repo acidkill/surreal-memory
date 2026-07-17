@@ -188,10 +188,19 @@ jobs:
             echo "::notice::NPM_TOKEN not set — skipping npm publish."
             exit 0
           fi
+          VERSION="${GITHUB_REF_NAME#v}"
+          # Idempotent re-run guard: skip ONLY if this exact version is already live.
+          if [ "$(npm view "surrealmemory@$VERSION" version 2>/dev/null)" = "$VERSION" ]; then
+            echo "::notice::surrealmemory@$VERSION already on npm — nothing to do."
+            exit 0
+          fi
           npm ci || npm install
+          # Sync the package version to the release tag (package.json drift was the
+          # root cause of releases 2.11.0/2.12.0 silently re-publishing 2.10.5).
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
           npm run build
-          npm publish --access public \
-            || echo "::warning::npm publish failed (already published or name/permissions) — skipping"
+          # No fallback mask: a real publish failure must fail the job loudly.
+          npm publish --access public
 
   # ── Publish TypeScript SDK ─────────────────────────────────────
   publish-sdk:
@@ -216,11 +225,19 @@ jobs:
             echo "::notice::NPM_TOKEN not set — skipping SDK publish."
             exit 0
           fi
+          VERSION="${GITHUB_REF_NAME#v}"
+          # Idempotent re-run guard: skip ONLY if this exact version is already live.
+          if [ "$(npm view "@acidkill/surreal-memory-client@$VERSION" version 2>/dev/null)" = "$VERSION" ]; then
+            echo "::notice::@acidkill/surreal-memory-client@$VERSION already on npm — nothing to do."
+            exit 0
+          fi
           npm ci || npm install
+          # Sync the package version to the release tag (same drift class as publish-npm).
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
           npm run typecheck
           npm run build
-          npm publish --access public \
-            || echo "::warning::SDK publish failed (already published or name/permissions) — skipping"
+          # No fallback mask: a real publish failure must fail the job loudly.
+          npm publish --access public
 
   # ── Publish to ClawHub ─────────────────────────────────────────
   publish-clawhub:
@@ -267,20 +284,22 @@ jobs:
           OVSX_PAT: ${{ secrets.OVSX_PAT }}
         run: |
           npm ci || npm install
+          # Sync the extension version to the release tag (same drift class as publish-npm).
+          VERSION="${GITHUB_REF_NAME#v}"
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
           npm run compile 2>/dev/null || npm run build 2>/dev/null || true
 
-          # VS Code Marketplace
+          # VS Code Marketplace — no fallback mask: with a PAT set, a publish
+          # failure must fail the job loudly instead of reporting green.
           if [ -n "$VSCE_PAT" ]; then
-            npx @vscode/vsce publish --pat "$VSCE_PAT" \
-              || echo "::warning::VS Code Marketplace publish failed"
+            npx @vscode/vsce publish --pat "$VSCE_PAT"
           else
             echo "::warning::VSCE_PAT not set — skipping VS Code Marketplace"
           fi
 
           # Open VSX Registry
           if [ -n "$OVSX_PAT" ]; then
-            npx ovsx publish --pat "$OVSX_PAT" \
-              || echo "::warning::Open VSX publish failed"
+            npx ovsx publish --pat "$OVSX_PAT"
           else
             echo "::warning::OVSX_PAT not set — skipping Open VSX"
           fi

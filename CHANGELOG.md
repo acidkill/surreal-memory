@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.12.1] — Release pipeline: npm packages actually ship again
+
+Patch release. No runtime changes — it exists to fix the release pipeline and
+re-align every published package on one version. npm packages had been silently
+stuck at 2.10.5: versions 2.11.0 and 2.12.0 were never published to npm (the
+registry rejected the re-upload of 2.10.5 with E403 and the workflow masked the
+failure as a warning). Those npm versions are intentionally skipped — npm jumps
+2.10.5 → 2.12.1.
+
+### Fixed
+
+- **Release workflow syncs npm package versions to the tag** — `publish-npm`
+  (`surrealmemory`), `publish-sdk` (`@acidkill/surreal-memory-client`) and
+  `publish-vscode` now run `npm version <tag> --no-git-tag-version` before
+  building, so a release can never re-publish a stale `package.json` version
+  again (the root cause: the pipeline bumped `pyproject.toml`/`__init__.py`
+  but never the npm manifests).
+- **Publish failures are no longer masked** — the `|| echo "::warning::…"`
+  fallbacks are gone; with a token set, a failed `npm publish`/`vsce publish`
+  now fails the job loudly. A graceful skip remains only for a missing token
+  and for an idempotent re-run (this exact version already live).
+
+### Changed
+
+- `integrations/surrealmemory`, `integrations/surreal-memory-client` and
+  `vscode-extension` manifests bumped to 2.12.1 so the repo matches the
+  published artifacts.
+
 ## [2.12.0] — Reasoning training: learn how models think
 
 An opt-in pipeline that mines a model's `thinking` blocks from `~/.claude`
