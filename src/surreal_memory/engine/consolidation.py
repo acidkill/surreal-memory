@@ -49,6 +49,7 @@ class ConsolidationStrategy(StrEnum):
     LIFECYCLE = "lifecycle"
     PROCESS_TOOL_EVENTS = "process_tool_events"
     PROCESS_REASONING_TRACES = "process_reasoning_traces"
+    LEARN_REASONING = "learn_reasoning"
     ESSENCE_BACKFILL = "essence_backfill"
     DETECT_DRIFT = "detect_drift"
     REPLAY = "replay"  # Hippocampal replay: LTP/LTD on recent fibers
@@ -115,6 +116,7 @@ class ConsolidationReport:
     neurons_reactivated: int = 0
     essences_generated: int = 0
     reasoning_traces_ingested: int = 0
+    reasoning_patterns_learned: int = 0
     merge_details: list[MergeDetail] = field(default_factory=list)
     dry_run: bool = False
     extra: dict[str, Any] = field(default_factory=dict)
@@ -141,6 +143,8 @@ class ConsolidationReport:
             f"  Memories promoted: {self.memories_promoted}",
             f"  Fibers compressed: {self.fibers_compressed}",
             f"  Tokens saved: {self.tokens_saved}",
+            f"  Reasoning traces ingested: {self.reasoning_traces_ingested}",
+            f"  Reasoning patterns learned: {self.reasoning_patterns_learned}",
             f"  Duration: {self.duration_ms:.1f}ms",
         ]
         if self.merge_details:
@@ -232,6 +236,7 @@ class ConsolidationEngine:
                 ConsolidationStrategy.INFER,
                 ConsolidationStrategy.SCHEMA,
                 ConsolidationStrategy.ESSENCE_BACKFILL,
+                ConsolidationStrategy.LEARN_REASONING,
             }
         ),
         frozenset(
@@ -292,6 +297,7 @@ class ConsolidationEngine:
             ConsolidationStrategy.PROCESS_REASONING_TRACES: lambda: self._process_reasoning_traces(
                 report, dry_run
             ),
+            ConsolidationStrategy.LEARN_REASONING: lambda: self._learn_reasoning(report, dry_run),
             ConsolidationStrategy.DETECT_DRIFT: lambda: self._detect_drift(report, dry_run),
             ConsolidationStrategy.ESSENCE_BACKFILL: lambda: self._essence_backfill(report, dry_run),
             ConsolidationStrategy.REPLAY: lambda: self._replay(report, dry_run),
@@ -1915,12 +1921,66 @@ class ConsolidationEngine:
 
         from surreal_memory.engine.reasoning_miner import ingest_reasoning_traces
 
-        result = await ingest_reasoning_traces(self._storage, brain_id, config)
+        try:
+            result = await ingest_reasoning_traces(self._storage, brain_id, config)
+        except Exception:
+            _logger.debug("PROCESS_REASONING_TRACES: ingest failed (non-critical)", exc_info=True)
+            return
         report.reasoning_traces_ingested = result.traces_ingested
         if result.traces_ingested > 0:
             _logger.debug(
                 "PROCESS_REASONING_TRACES: ingested %d reasoning traces",
                 result.traces_ingested,
+            )
+
+    async def _learn_reasoning(
+        self,
+        report: ConsolidationReport,
+        dry_run: bool,
+    ) -> None:
+        """Distill staged reasoning traces into ReasoningBank pattern fibers.
+
+        Runs in the SUMMARIZE tier (after PROCESS_REASONING_TRACES ingest). Only
+        runs when reasoning_training.mining_enabled is set; excluded from
+        scheduled defaults (like PROCESS_REASONING_TRACES / LEARN_HABITS).
+        """
+        import logging as _logging
+
+        from surreal_memory.unified_config import UnifiedConfig
+
+        _logger = _logging.getLogger(__name__)
+
+        brain_id = self._storage.current_brain_id
+        if not brain_id:
+            _logger.debug("LEARN_REASONING skipped: no brain context")
+            return
+
+        try:
+            config = UnifiedConfig.load()
+        except Exception:
+            _logger.debug("LEARN_REASONING skipped: config load failed", exc_info=True)
+            return
+
+        if not config.reasoning_training.mining_enabled:
+            return
+
+        if dry_run:
+            _logger.debug("LEARN_REASONING skipped: dry_run mode")
+            return
+
+        from surreal_memory.engine.reasoning_distiller import distill_reasoning_patterns
+
+        try:
+            result = await distill_reasoning_patterns(self._storage, brain_id, config)
+        except Exception:
+            _logger.debug("LEARN_REASONING: distillation failed (non-critical)", exc_info=True)
+            return
+        report.reasoning_patterns_learned = result.patterns_learned
+        if result.patterns_learned > 0:
+            _logger.debug(
+                "LEARN_REASONING: learned %d reasoning patterns from %d traces",
+                result.patterns_learned,
+                result.traces_processed,
             )
 
     async def _detect_drift(self, report: ConsolidationReport, dry_run: bool) -> None:

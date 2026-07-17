@@ -1,0 +1,620 @@
+"""Reasoning distiller: staged reasoning_traces -> ReasoningBank patterns.
+
+Heuristic (no-LLM) distillation, run inside consolidation (strategy
+``LEARN_REASONING``, SUMMARIZE tier, after ``PROCESS_REASONING_TRACES`` ingest):
+
+  batch unprocessed traces per model
+    -> segment each thinking into ~12 closed-vocabulary reasoning "moves"
+    -> classify a category (bge-m3 embedding vs seed centroids; keyword fallback)
+    -> cluster within (model, category) by cosine (embeddings) or move-set Jaccard
+    -> for each cluster >= min_cluster_support: build a ReasoningBank pattern
+       (title / description / strategy / confidence / frequency) and materialize
+       it as a fiber (_reasoning_pattern) + CONCEPT neuron + EFFECTIVE_FOR synapse
+    -> mark traces processed; prune + cap the staging table.
+
+Fully fail-soft: with the embedding provider DOWN, classification falls back to
+keywords and clustering to move-set Jaccard, so distillation still produces
+patterns (never raises on a missing provider).
+"""
+
+from __future__ import annotations
+
+import hashlib
+import logging
+import math
+import os
+import re
+from collections import Counter
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
+
+from surreal_memory.core.fiber import Fiber
+from surreal_memory.core.neuron import Neuron, NeuronType
+from surreal_memory.core.synapse import Direction, Synapse, SynapseType
+from surreal_memory.engine.clustering import UnionFind
+
+if TYPE_CHECKING:
+    from surreal_memory.engine.embedding.provider import EmbeddingProvider
+    from surreal_memory.storage.base import NeuralStorage
+    from surreal_memory.unified_config import ReasoningTrainingConfig, UnifiedConfig
+
+logger = logging.getLogger(__name__)
+
+_CLUSTER_COSINE = 0.83
+_CATEGORY_COS_THRESHOLD = 0.35
+_MOVE_JACCARD = 0.6
+_CLASSIFY_CHARS = 500
+_BATCH_PER_MODEL = 200
+
+# ── Reasoning moves (closed vocabulary; regex discourse markers) ──────────────
+_REASONING_MOVES: dict[str, re.Pattern[str]] = {
+    "restate-goal": re.compile(
+        r"(?i)\b(the goal is|the task is|i need to|we need to|objective is)\b"
+    ),
+    "decompose": re.compile(
+        r"(?i)\b(break (this|it) down|decompose|sub-?problem|break into|the steps are)\b"
+    ),
+    "hypothesize": re.compile(
+        r"(?i)\b(hypothes\w*|i suspect|maybe|might be|could be|perhaps|likely because)\b"
+    ),
+    "gather-evidence": re.compile(
+        r"(?i)\b(let me (check|look|read|grep)|looking at|the evidence|i see that|the code shows|confirmed that)\b"
+    ),
+    "verify": re.compile(r"(?i)\b(verify|confirm|double-?check|make sure|ensure that|validate)\b"),
+    "test-first": re.compile(
+        r"(?i)\b(write a test|test first|failing test|red test|tdd|add a test)\b"
+    ),
+    "check-edge-cases": re.compile(
+        r"(?i)\b(edge case|corner case|what if|boundary|off by one|empty (list|input)|null case|none case)\b"
+    ),
+    "backtrack": re.compile(
+        r"(?i)\b(actually|wait|let me reconsider|scratch that|on second thought|rethink|hold on)\b"
+    ),
+    "compare-alternatives": re.compile(
+        r"(?i)\b(option [a-z0-9]|alternative|versus|vs\.?|instead of|trade-?off|on the other hand|compared to)\b"
+    ),
+    "plan-steps": re.compile(
+        r"(?i)\b(my plan|the approach|step \d|next,? i|i'?ll (start|do|then)|let me first)\b"
+    ),
+    "self-correct": re.compile(
+        r"(?i)\b(i was wrong|correction|that'?s incorrect|my mistake|got it wrong|oops)\b"
+    ),
+    "summarize-decision": re.compile(
+        r"(?i)\b(in summary|to summarize|conclusion|so i'?ll|decided to|the decision|therefore)\b"
+    ),
+}
+
+# ── Category classification: seed descriptions (embeddings) + keyword fallback ─
+_CATEGORY_SEEDS: dict[str, str] = {
+    "debugging": "debugging errors, root cause analysis, stack traces, fixing bugs and failures",
+    "planning": "planning steps, breaking down a task, deciding the approach and order of actions",
+    "implementation": "implementing code, writing functions, adding a feature, coding the solution",
+    "refactoring": "refactoring, cleaning up and restructuring code, improving readability, no behavior change",
+    "research": "researching, reading documentation, exploring the codebase, understanding how something works",
+    "verification": "verifying and testing, confirming correctness, checking outputs and edge cases",
+    "architecture": "architecture and system design, module boundaries, data flow, design decisions",
+    "data-analysis": "analyzing data, computing statistics, aggregating metrics, interpreting results",
+}
+_CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "debugging": (
+        "bug",
+        "error",
+        "exception",
+        "stack trace",
+        "root cause",
+        "traceback",
+        "crash",
+        "failing",
+        "debug",
+    ),
+    "refactoring": (
+        "refactor",
+        "clean up",
+        "rename",
+        "restructure",
+        "simplify",
+        "extract",
+        "dead code",
+        "tidy up",
+    ),
+    "verification": (
+        "verify",
+        "test",
+        "confirm",
+        "validate",
+        "assert",
+        "make sure",
+        "edge case",
+        "double-check",
+    ),
+    "architecture": (
+        "architecture",
+        "design",
+        "module",
+        "boundary",
+        "data flow",
+        "interface",
+        "layer",
+        "component",
+    ),
+    "data-analysis": (
+        "analyze",
+        "statistics",
+        "metric",
+        "aggregate",
+        "distribution",
+        "compute",
+        "measure",
+    ),
+    "research": (
+        "read",
+        "documentation",
+        "docs",
+        "explore",
+        "investigate",
+        "grep",
+        "find out",
+        "look up",
+    ),
+    "planning": ("plan", "approach", "steps", "strategy", "break down", "sequence", "outline"),
+    "implementation": (
+        "implement",
+        "write the",
+        "add a",
+        "function",
+        "build",
+        "create the",
+        "feature",
+        "method",
+    ),
+}
+# Keyword-fallback precedence (specific -> generic).
+_CATEGORY_ORDER: tuple[str, ...] = (
+    "debugging",
+    "refactoring",
+    "verification",
+    "architecture",
+    "data-analysis",
+    "research",
+    "planning",
+    "implementation",
+)
+
+_OTHER = "other"
+
+
+def _has_keyword(content_lower: str, keyword: str) -> bool:
+    """Whole-word (single token) / substring (phrase) keyword match."""
+    if " " in keyword or "-" in keyword:
+        return keyword in content_lower
+    return re.search(rf"\b{re.escape(keyword)}\b", content_lower) is not None
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b, strict=False))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    if norm_a == 0.0 or norm_b == 0.0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+def segment_moves(text: str) -> list[str]:
+    """Return the reasoning moves present in *text*, in closed-vocabulary order."""
+    if not text:
+        return []
+    return [move for move, pattern in _REASONING_MOVES.items() if pattern.search(text)]
+
+
+def _classify_by_vector(vec: list[float], seeds: dict[str, list[float]]) -> str:
+    best_cat, best_sim = _OTHER, _CATEGORY_COS_THRESHOLD
+    for cat, cvec in seeds.items():
+        sim = _cosine(vec, cvec)
+        if sim >= best_sim:
+            best_sim, best_cat = sim, cat
+    return best_cat
+
+
+def _classify_by_keywords(text: str, categories: tuple[str, ...]) -> str:
+    low = text.lower()
+    for cat in _CATEGORY_ORDER:
+        if cat not in categories:
+            continue
+        if any(_has_keyword(low, kw) for kw in _CATEGORY_KEYWORDS.get(cat, ())):
+            return cat
+    return _OTHER
+
+
+def _lcs_two(a: list[str], b: list[str]) -> list[str]:
+    m, n = len(a), len(b)
+    dp = [[0] * (n + 1) for _ in range(m + 1)]
+    for i in range(m - 1, -1, -1):
+        for j in range(n - 1, -1, -1):
+            dp[i][j] = dp[i + 1][j + 1] + 1 if a[i] == b[j] else max(dp[i + 1][j], dp[i][j + 1])
+    out: list[str] = []
+    i = j = 0
+    while i < m and j < n:
+        if a[i] == b[j]:
+            out.append(a[i])
+            i += 1
+            j += 1
+        elif dp[i + 1][j] >= dp[i][j + 1]:
+            i += 1
+        else:
+            j += 1
+    return out
+
+
+def _lcs_all(seqs: list[list[str]]) -> list[str]:
+    seqs = [s for s in seqs if s]
+    if not seqs:
+        return []
+    acc = seqs[0]
+    for s in seqs[1:]:
+        acc = _lcs_two(acc, s)
+        if not acc:
+            break
+    return acc
+
+
+def _medoid_index(vectors: list[list[float]]) -> int:
+    best_i, best_score = 0, -2.0
+    for i in range(len(vectors)):
+        score = sum(_cosine(vectors[i], vectors[j]) for j in range(len(vectors)) if j != i)
+        if score > best_score:
+            best_score, best_i = score, i
+    return best_i
+
+
+def _cluster(
+    vectors: list[list[float]] | None,
+    moves: list[list[str]],
+) -> list[list[int]]:
+    """Cluster items by cosine (vectors) or move-set Jaccard (fallback)."""
+    n = len(moves)
+    uf = UnionFind(n)
+    for i in range(n):
+        for j in range(i + 1, n):
+            if vectors is not None:
+                if _cosine(vectors[i], vectors[j]) >= _CLUSTER_COSINE:
+                    uf.union(i, j)
+            else:
+                a, b = set(moves[i]), set(moves[j])
+                union = a | b
+                if union and len(a & b) / len(union) >= _MOVE_JACCARD:
+                    uf.union(i, j)
+    return list(uf.groups().values())
+
+
+def _build_pattern(
+    cluster_traces: list[dict[str, Any]],
+    cluster_vectors: list[list[float]] | None,
+    cluster_moves: list[list[str]],
+    model: str,
+    category: str,
+    traces_in_category: int,
+) -> dict[str, Any]:
+    size = len(cluster_traces)
+    if cluster_vectors:
+        mi = _medoid_index(cluster_vectors)
+    else:
+        mi = max(range(size), key=lambda i: len(str(cluster_traces[i].get("content", ""))))
+    medoid_content = str(cluster_traces[mi].get("content", ""))
+
+    move_counts = Counter(m for moves in cluster_moves for m in moves)
+    top_moves = [m for m, _ in move_counts.most_common(3)]
+    title = f"{category}: " + ", ".join(top_moves) if top_moves else category
+
+    lcs = _lcs_all(cluster_moves)
+    strategy_moves = " -> ".join(lcs) if lcs else " -> ".join(top_moves)
+    strategy = f"Moves: {strategy_moves}\n{medoid_content[:400]}"[:600]
+
+    confidence = min(1.0, size / traces_in_category) if traces_in_category else 0.0
+    # Signature keys on the cluster's exact trace set (not the display title) so
+    # two distinct clusters that share the same top-moves title never collide.
+    trace_key = ",".join(sorted(str(t.get("trace_hash", "")) for t in cluster_traces))
+    signature = hashlib.sha256(f"{model}:{category}:{trace_key}".encode()).hexdigest()
+    return {
+        "model": model,
+        "category": category,
+        "title": title,
+        "description": medoid_content[:200],
+        "strategy": strategy,
+        "confidence": round(confidence, 4),
+        "frequency": size,
+        "signature": signature,
+    }
+
+
+async def _find_or_create_concept(
+    storage: NeuralStorage, content: str, metadata: dict[str, Any] | None = None
+) -> str:
+    existing = await storage.find_neurons(content_exact=content, limit=1)
+    if existing:
+        return existing[0].id
+    neuron = Neuron.create(type=NeuronType.CONCEPT, content=content, metadata=metadata or {})
+    await storage.add_neuron(neuron)
+    return neuron.id
+
+
+async def _materialize_pattern(
+    storage: NeuralStorage,
+    pattern: dict[str, Any],
+    existing_sigs: set[str],
+) -> bool:
+    """Create a fiber + CONCEPT neuron + EFFECTIVE_FOR synapse for *pattern*.
+
+    Idempotent by ``_reasoning_signature``: returns False (no-op) if the pattern
+    was already materialized.
+    """
+    sig = pattern["signature"]
+    if sig in existing_sigs:
+        return False
+
+    category_nid = await _find_or_create_concept(
+        storage, f"reasoning_category:{pattern['category']}", {"_reasoning_category_concept": True}
+    )
+    pattern_nid = await _find_or_create_concept(
+        storage, pattern["title"], {"_reasoning_pattern_concept": True}
+    )
+
+    existing_syn = await storage.get_synapses(
+        source_id=pattern_nid, target_id=category_nid, type=SynapseType.EFFECTIVE_FOR
+    )
+    if existing_syn:
+        synapse_id = existing_syn[0].id
+    else:
+        synapse = Synapse.create(
+            source_id=pattern_nid,
+            target_id=category_nid,
+            type=SynapseType.EFFECTIVE_FOR,
+            weight=min(1.0, float(pattern["confidence"])),
+            direction=Direction.UNIDIRECTIONAL,
+        )
+        await storage.add_synapse(synapse)
+        synapse_id = synapse.id
+
+    fiber = Fiber.create(
+        neuron_ids={pattern_nid, category_nid},
+        synapse_ids={synapse_id},
+        anchor_neuron_id=pattern_nid,
+        pathway=[pattern_nid, category_nid],
+        summary=pattern["title"],
+        tags=set(),
+        metadata={
+            "_reasoning_pattern": True,
+            "_source_model": pattern["model"],
+            "_reasoning_category": pattern["category"],
+            "_reasoning_title": pattern["title"],
+            "_reasoning_description": pattern["description"],
+            "_reasoning_strategy": pattern["strategy"],
+            "_reasoning_frequency": pattern["frequency"],
+            "_reasoning_confidence": pattern["confidence"],
+            "_reasoning_signature": sig,
+        },
+    )
+    await storage.add_fiber(fiber)
+    return True
+
+
+def _get_embedder() -> EmbeddingProvider | None:
+    """Best-effort LOCAL embedding provider; None if unavailable (fail-soft).
+
+    Mirrors the stop-hook pattern: only a local Ollama or a loopback
+    OpenAI-compatible endpoint (llamastash bge-m3) is used, so distillation stays
+    local + fast and never blocks on a remote/heavy provider. Any failure -> None
+    and the caller falls back to keyword classification + move-set clustering.
+    """
+    try:
+        from surreal_memory.engine.semantic_discovery import _auto_detect_provider
+
+        provider_name, model_name = _auto_detect_provider()
+    except Exception:
+        logger.debug("reasoning distiller: no embedding provider detected", exc_info=True)
+        return None
+
+    try:
+        endpoint = os.environ.get("SURREAL_MEMORY_EMBEDDING_ENDPOINT", "")
+        is_local = any(host in endpoint for host in ("127.0.0.1", "localhost", "::1"))
+        if provider_name == "ollama":
+            from surreal_memory.engine.embedding.ollama_embedding import OllamaEmbedding
+
+            return OllamaEmbedding(model=model_name)
+        if provider_name in ("openai", "openrouter") and is_local:
+            from surreal_memory.engine.embedding.openai_embedding import OpenAIEmbedding
+
+            return OpenAIEmbedding(model=model_name)
+    except Exception:
+        logger.debug("reasoning distiller: embedding provider construction failed", exc_info=True)
+    return None
+
+
+async def _seed_centroids(
+    embedder: EmbeddingProvider, categories: tuple[str, ...]
+) -> dict[str, list[float]] | None:
+    try:
+        descriptions = [_CATEGORY_SEEDS.get(c, c) for c in categories]
+        vectors = await embedder.embed_batch(descriptions)
+        return {c: list(v) for c, v in zip(categories, vectors, strict=False)}
+    except Exception:
+        logger.debug("reasoning distiller: seed embedding failed", exc_info=True)
+        return None
+
+
+async def _embed_texts(
+    embedder: EmbeddingProvider | None, texts: list[str]
+) -> list[list[float]] | None:
+    if embedder is None or not texts:
+        return None
+    try:
+        return [list(v) for v in await embedder.embed_batch(texts)]
+    except Exception:
+        logger.debug("reasoning distiller: trace embedding failed", exc_info=True)
+        return None
+
+
+@dataclass
+class DistillResult:
+    """Outcome of a distillation pass."""
+
+    patterns_learned: int = 0
+    traces_processed: int = 0
+    models_seen: int = 0
+
+
+async def _process_model_batch(
+    storage: NeuralStorage,
+    brain_id: str,
+    rt: ReasoningTrainingConfig,
+    model: str,
+    traces: list[dict[str, Any]],
+    embedder: EmbeddingProvider | None,
+    seeds: dict[str, list[float]] | None,
+    existing_sigs: set[str],
+    budget: int,
+) -> tuple[int, list[Any]]:
+    """Distill one model's trace batch. Returns (patterns_created, consumed_ids).
+
+    ``consumed_ids`` are the traces safe to mark processed: ``other`` traces,
+    under-support categories, and every category fully clustered before the
+    ``budget`` (remaining max_patterns_per_run) ran out. A category left
+    unreached — or cut off mid-cluster — by the cap is NOT consumed, so the next
+    run revisits it (already-materialized patterns are skipped by signature).
+    """
+    clf_texts = [
+        f"{t.get('task_context', '')} {str(t.get('content', ''))[:_CLASSIFY_CHARS]}".strip()
+        for t in traces
+    ]
+    moves_list = [segment_moves(str(t.get("content", ""))) for t in traces]
+    vectors = await _embed_texts(embedder, clf_texts)
+    categories = [
+        _classify_by_vector(vectors[i], seeds)
+        if (vectors is not None and seeds)
+        else _classify_by_keywords(clf_texts[i], rt.categories)
+        for i in range(len(traces))
+    ]
+    await storage.set_trace_categories(
+        brain_id, {t["id"]: categories[i] for i, t in enumerate(traces)}
+    )
+
+    consumed: list[Any] = [traces[i]["id"] for i, c in enumerate(categories) if c == _OTHER]
+    by_category: dict[str, list[int]] = {}
+    for i, cat in enumerate(categories):
+        if cat != _OTHER:
+            by_category.setdefault(cat, []).append(i)
+
+    created = 0
+    for category, idxs in by_category.items():
+        if created >= budget:
+            break  # cap reached before this category → leave its traces unprocessed
+        if len(idxs) < rt.min_cluster_support:
+            consumed.extend(traces[i]["id"] for i in idxs)  # too few to cluster; done
+            continue
+        sub_vectors = [vectors[i] for i in idxs] if vectors is not None else None
+        sub_moves = [moves_list[i] for i in idxs]
+        sub_traces = [traces[i] for i in idxs]
+        capped_mid_category = False
+        for local_cluster in _cluster(sub_vectors, sub_moves):
+            if len(local_cluster) < rt.min_cluster_support:
+                continue
+            if created >= budget:
+                capped_mid_category = True
+                break
+            cluster_traces = [sub_traces[k] for k in local_cluster]
+            cluster_vecs = [sub_vectors[k] for k in local_cluster] if sub_vectors else None
+            cluster_moves = [sub_moves[k] for k in local_cluster]
+            pattern = _build_pattern(
+                cluster_traces, cluster_vecs, cluster_moves, model, category, len(idxs)
+            )
+            if await _materialize_pattern(storage, pattern, existing_sigs):
+                existing_sigs.add(pattern["signature"])
+                created += 1
+        if capped_mid_category:
+            break  # do NOT consume this category's traces — revisit next run
+        consumed.extend(traces[i]["id"] for i in idxs)
+    return created, consumed
+
+
+async def distill_reasoning_patterns(
+    storage: NeuralStorage,
+    brain_id: str,
+    config: UnifiedConfig,
+    *,
+    embedder: EmbeddingProvider | None = None,
+) -> DistillResult:
+    """Distill unprocessed reasoning traces into ReasoningBank pattern fibers.
+
+    ``storage`` must already be on ``brain_id`` (graph writes use the current
+    brain). Marks only the consumed traces processed, then prunes/caps staging.
+    """
+    rt = config.reasoning_training
+    embedder = embedder or _get_embedder()
+    seeds = await _seed_centroids(embedder, rt.categories) if embedder is not None else None
+
+    existing = await storage.find_fibers(metadata_key="_reasoning_pattern", limit=5000)
+    existing_sigs = {
+        str(f.metadata.get("_reasoning_signature"))
+        for f in existing
+        if f.metadata.get("_reasoning_signature")
+    }
+
+    patterns_created = 0
+    processed_ids: list[Any] = []
+    models = await storage.get_reasoning_trace_models(brain_id)
+
+    for model in models:
+        budget = rt.max_patterns_per_run - patterns_created
+        if budget <= 0:
+            break
+        traces = await storage.get_unprocessed_reasoning_traces(
+            brain_id, limit=rt.max_traces_per_scan, model=model
+        )
+        traces = traces[:_BATCH_PER_MODEL]  # one bounded batch per model per run
+        if not traces:
+            continue
+        created, consumed = await _process_model_batch(
+            storage, brain_id, rt, model, traces, embedder, seeds, existing_sigs, budget
+        )
+        patterns_created += created
+        processed_ids.extend(consumed)
+
+    if processed_ids:
+        await storage.mark_reasoning_traces_processed(brain_id, processed_ids)
+        await storage.prune_reasoning_traces(brain_id, rt.retention_days)
+        await storage.cap_reasoning_traces(brain_id, rt.max_traces_total)
+
+    return DistillResult(
+        patterns_learned=patterns_created,
+        traces_processed=len(processed_ids),
+        models_seen=len(models),
+    )
+
+
+async def reasoning_coverage(
+    storage: NeuralStorage,
+    model: str,
+    config: UnifiedConfig,
+) -> dict[str, Any]:
+    """Per-category coverage for *model*.
+
+    A category is covered iff it has >= ``min_patterns_per_category`` pattern
+    fibers with ``_source_model == model`` and confidence >= ``min_confidence``.
+    ``coverage_percent`` = covered / len(categories) * 100 (``other`` excluded —
+    it is never in ``categories``). ``storage`` must be on the target brain.
+    """
+    rt = config.reasoning_training
+    fibers = await storage.find_fibers(metadata_key="_reasoning_pattern", limit=5000)
+    counts: dict[str, int] = dict.fromkeys(rt.categories, 0)
+    for f in fibers:
+        md = f.metadata
+        if md.get("_source_model") != model:
+            continue
+        if float(md.get("_reasoning_confidence", 0.0)) < rt.min_confidence:
+            continue
+        cat = md.get("_reasoning_category")
+        if cat in counts:
+            counts[cat] += 1
+    covered = {c: counts[c] >= rt.min_patterns_per_category for c in rt.categories}
+    n_covered = sum(1 for v in covered.values() if v)
+    percent = (n_covered / len(rt.categories) * 100.0) if rt.categories else 0.0
+    return {"by_category": counts, "covered": covered, "coverage_percent": round(percent, 1)}
