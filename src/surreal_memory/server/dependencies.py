@@ -6,6 +6,7 @@ import ipaddress
 import logging
 from functools import lru_cache
 from typing import Annotated
+from urllib.parse import urlsplit
 
 from fastapi import Depends, Header, HTTPException, Request
 
@@ -60,15 +61,54 @@ def is_trusted_host(host: str) -> bool:
     return any(addr in net for net in parsed)
 
 
+def _header_host(value: str | None) -> str | None:
+    """Extract the lowercased hostname from an Origin/Referer header value.
+
+    Returns None when the value is empty or has no parseable host — including
+    the opaque ``Origin: null`` that browsers send for sandboxed iframes,
+    ``file://`` pages, and some cross-origin redirects.
+    """
+    if not value:
+        return None
+    try:
+        return urlsplit(value).hostname
+    except ValueError:
+        return None
+
+
 async def require_local_request(request: Request) -> None:
     """Reject requests from untrusted sources.
 
-    Allows localhost and any IP within SURREAL_MEMORY_TRUSTED_NETWORKS CIDRs.
+    Two independent checks are applied and both must pass:
+
+    * **Client IP** — allows localhost and any IP within
+      ``SURREAL_MEMORY_TRUSTED_NETWORKS`` CIDRs.
+    * **Origin / Referer** — defense-in-depth against the "local dev server +
+      web attacker" CSRF class: a browser tab open to any website is also
+      "local" from the server's point of view, so the client IP alone is not
+      enough. Browsers always send an ``Origin`` header on cross-origin
+      fetch/XHR; if one is present (falling back to ``Referer``) and its host
+      is not trusted, the request is rejected — *regardless* of the configured
+      CORS policy, which ``SURREAL_MEMORY_CORS_ORIGINS=*`` would otherwise
+      disable. Same-origin requests and non-browser clients omit the header
+      (or send a trusted host) and pass.
     """
     if request.client is None:
         raise HTTPException(status_code=403, detail="Forbidden")
     if not is_trusted_host(request.client.host):
         raise HTTPException(status_code=403, detail="Forbidden")
+
+    # Prefer Origin (sent on every cross-origin browser request); fall back to
+    # Referer. Decide on the first header that is present: a trusted host passes,
+    # anything else (untrusted host or an unparseable/``null`` origin) is rejected.
+    for header_name in ("origin", "referer"):
+        value = request.headers.get(header_name)
+        if not value:
+            continue
+        host = _header_host(value)
+        if host is None or not is_trusted_host(host):
+            raise HTTPException(status_code=403, detail="Forbidden")
+        break
 
 
 async def get_storage(

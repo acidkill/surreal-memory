@@ -260,6 +260,39 @@ class TestFiberDiagramEndpoint:
         assert len(data["synapses"]) == 0  # External synapse filtered
 
 
+class TestOriginCsrfProtection:
+    """require_local_request rejects cross-origin browser requests (CSRF defense-in-depth).
+
+    Exercised end-to-end through a real dashboard route so the whole router's
+    Depends(require_local_request) is covered, not just the dependency in isolation.
+    """
+
+    def test_cross_origin_rejected(self, client: TestClient) -> None:
+        resp = client.get(
+            "/api/dashboard/timeline",
+            headers={"Origin": "https://evil.example.com"},
+        )
+        assert resp.status_code == 403
+
+    def test_same_origin_allowed(self, client: TestClient) -> None:
+        resp = client.get(
+            "/api/dashboard/timeline",
+            headers={"Origin": "http://localhost:3000"},
+        )
+        assert resp.status_code == 200
+
+    def test_absent_origin_allowed(self, client: TestClient) -> None:
+        resp = client.get("/api/dashboard/timeline")
+        assert resp.status_code == 200
+
+    def test_untrusted_referer_rejected(self, client: TestClient) -> None:
+        resp = client.get(
+            "/api/dashboard/timeline",
+            headers={"Referer": "https://evil.example.com/page"},
+        )
+        assert resp.status_code == 403
+
+
 class TestStorageStatusEndpoint:
     """Tests for GET /api/dashboard/storage/status (SurrealDB-only)."""
 
