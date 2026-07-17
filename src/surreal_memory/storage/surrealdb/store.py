@@ -686,8 +686,13 @@ class SurrealDBStorage(
         include_embedding: bool = True,
     ) -> list[Neuron]:
         brain_id = self._get_brain_id()
-        conditions = ["brain_id = $brain_id"]
-        params: dict[str, Any] = {"brain_id": brain_id}
+        # Inline brain_id as a literal — SurrealDB 3.2.0's planner only uses the
+        # brain_id index for an inline literal; a parameterized ``$brain_id``
+        # falls back to a full scan that grows linearly with the brain (the
+        # doc-training per-chunk cost scaled with brain size entirely because of
+        # this). brain_id is charset-validated, so inlining is injection-safe.
+        conditions = [f"brain_id = {_brain_literal(brain_id)}"]
+        params: dict[str, Any] = {}
 
         if type is not None:
             conditions.append("type = $ntype")
@@ -726,6 +731,41 @@ class SurrealDBStorage(
             **params,
         )
         return [_row_to_neuron(r) for r in rows]
+
+    async def find_neurons_exact_batch(
+        self,
+        contents: list[str],
+        type: NeuronType | None = None,
+        ephemeral: bool | None = None,
+    ) -> dict[str, Neuron]:
+        """Batched exact-content lookup — one round-trip for N contents.
+
+        Overrides the base N+1 default (sequential ``find_neurons`` per content).
+        Uses ``content IN $contents`` with the brain_id inlined as a literal so
+        the planner uses the brain_id/content indexes (a parameterized brain_id
+        full-scans). Returns the first match per content string.
+        """
+        if not contents:
+            return {}
+        brain_id = self._get_brain_id()
+        conds = [f"brain_id = {_brain_literal(brain_id)}", "content IN $contents"]
+        params: dict[str, Any] = {"contents": list(dict.fromkeys(contents))}
+        if type is not None:
+            conds.append("type = $ntype")
+            params["ntype"] = type.value
+        if ephemeral is not None:
+            conds.append("ephemeral = $ephemeral")
+            params["ephemeral"] = ephemeral
+        where = " AND ".join(conds)
+        # OMIT embedding_vec — callers only need identity/type/content, and the
+        # 1024-3072-float vector is ~4-8 KB/row across a result set of N matches.
+        rows = await self._query(f"SELECT * OMIT embedding_vec FROM neuron WHERE {where}", **params)
+        out: dict[str, Neuron] = {}
+        for r in rows:
+            c = r.get("content")
+            if c is not None and c not in out:
+                out[str(c)] = _row_to_neuron(r)
+        return out
 
     async def find_neurons_by_ids(
         self, neuron_ids: list[str], include_embedding: bool = False
