@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -19,6 +20,7 @@ from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.engine.reasoning_injection import (
     already_injected,
     build_injection_context,
+    get_reasoning_context,
     mark_injected,
     resolve_active_model,
 )
@@ -283,6 +285,56 @@ async def test_build_block_warns_on_fetch_ceiling(
 
     assert "ceiling" in caplog.text
     assert block  # still renders from whatever was fetched
+
+
+# ── get_reasoning_context (shared hook orchestrator) ─────────────────────────
+
+
+async def test_get_reasoning_context_disabled_returns_empty(
+    clean_env: Path, tmp_path: Path
+) -> None:
+    cfg = _ucfg(tmp_path, injection_enabled=False)
+    with patch("surreal_memory.unified_config.get_config", return_value=cfg):
+        assert await get_reasoning_context({"session_id": "s-disabled"}) == ""
+
+
+async def test_get_reasoning_context_builds_and_marks_session(
+    clean_env: Path, tmp_path: Path
+) -> None:
+    storage = InMemoryStorage()
+    storage.set_brain("default")
+    await _add_pattern(storage, "claude-fable-5", "debugging", "debugging: verify", "s", 1.0, 3)
+    cfg = _ucfg(tmp_path, injection_map=(("claude-opus-*", "claude-fable-5"),))
+    with (
+        patch("surreal_memory.unified_config.get_config", return_value=cfg),
+        patch(
+            "surreal_memory.unified_config.get_shared_storage",
+            new=AsyncMock(return_value=storage),
+        ),
+    ):
+        block = await get_reasoning_context({"session_id": "s-happy", "model": "claude-opus-4-8"})
+
+    assert "learned from claude-fable-5" in block
+    # Session marker set → the sibling UserPromptSubmit hook won't re-inject.
+    assert already_injected("s-happy") is True
+
+
+async def test_get_reasoning_context_skips_when_already_injected(
+    clean_env: Path, tmp_path: Path
+) -> None:
+    mark_injected("s-dup")  # e.g. SessionStart already injected this session
+    cfg = _ucfg(tmp_path, injection_map=(("claude-opus-*", "claude-fable-5"),))
+
+    async def _must_not_open(_name: str) -> object:
+        raise AssertionError("storage must not open when the session is already injected")
+
+    with (
+        patch("surreal_memory.unified_config.get_config", return_value=cfg),
+        patch("surreal_memory.unified_config.get_shared_storage", new=_must_not_open),
+    ):
+        result = await get_reasoning_context({"session_id": "s-dup", "model": "claude-opus-4-8"})
+
+    assert result == ""
 
 
 # ── session idempotency markers ──────────────────────────────────────────────

@@ -6,7 +6,7 @@ making prior knowledge available from the very first turn.
 
 Usage as Claude Code hook:
     Reads JSON from stdin (may be empty for SessionStart).
-    Outputs {"type": "context", "content": "<markdown>"} to stdout.
+    Outputs hookSpecificOutput JSON (hookEventName + additionalContext) to stdout.
     Status messages go to stderr.
 
 Usage standalone:
@@ -84,37 +84,13 @@ def read_hook_input() -> dict[str, Any]:
 async def get_reasoning_injection(hook_input: dict[str, Any]) -> str:
     """Build the reasoning-strategies context block for this session (or "").
 
-    Opt-in via reasoning_training.injection_enabled. Injects at most once per
-    session via a marker shared with the UserPromptSubmit hook.
+    Thin delegate to the shared engine orchestrator, which SessionStart and the
+    UserPromptSubmit hook both call. Opt-in via reasoning_training.injection_enabled;
+    injects at most once per session via a marker shared between the two hooks.
     """
-    from surreal_memory.engine.reasoning_injection import (
-        already_injected,
-        build_injection_context,
-        mark_injected,
-        resolve_active_model,
-    )
-    from surreal_memory.unified_config import get_config, get_shared_storage
+    from surreal_memory.engine.reasoning_injection import get_reasoning_context
 
-    config = get_config()
-    if not config.reasoning_training.injection_enabled:
-        return ""
-    session_id = str(hook_input.get("session_id") or "")
-    if already_injected(session_id):
-        return ""
-
-    model = resolve_active_model(hook_input)
-    storage = await get_shared_storage(config.current_brain)
-    try:
-        block = await build_injection_context(storage, model, config)
-    finally:
-        try:
-            await storage.close()
-        except Exception:
-            logger.debug("storage.close() failed (non-fatal)", exc_info=True)
-
-    if block:
-        mark_injected(session_id)
-    return block
+    return await get_reasoning_context(hook_input)
 
 
 def main() -> None:
@@ -152,7 +128,19 @@ def main() -> None:
         print("[Surreal-Memory] No session-start context to inject", file=sys.stderr)  # noqa: T201
         sys.exit(0)
 
-    print(json.dumps({"type": "context", "content": "\n\n".join(sections)}))  # noqa: T201
+    # Claude Code adds a SessionStart hook's context to the model ONLY via the
+    # hookSpecificOutput.additionalContext JSON field (a top-level {"type":"context"}
+    # is parsed as JSON but carries no recognized field, so nothing is injected).
+    print(  # noqa: T201
+        json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "SessionStart",
+                    "additionalContext": "\n\n".join(sections),
+                }
+            }
+        )
+    )
 
 
 if __name__ == "__main__":

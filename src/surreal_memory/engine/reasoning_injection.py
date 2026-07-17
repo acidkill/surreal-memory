@@ -228,6 +228,43 @@ async def build_injection_context(
     return "\n".join(parts)
 
 
+# ── Hook orchestration (shared by SessionStart + UserPromptSubmit) ────────────
+
+
+async def get_reasoning_context(hook_input: dict[str, Any]) -> str:
+    """Resolve the active model, build its reasoning block, mark the session.
+
+    Shared by the SessionStart and UserPromptSubmit hooks. Opt-in via
+    reasoning_training.injection_enabled; injects at most once per session via the
+    marker (already_injected/mark_injected), so whichever hook fires first wins and
+    the other is a no-op. Storage is opened on the current brain and always closed.
+    Returns "" when injection is disabled, already done this session, or nothing
+    matched.
+    """
+    from surreal_memory.unified_config import get_config, get_shared_storage
+
+    config = get_config()
+    if not config.reasoning_training.injection_enabled:
+        return ""
+    session_id = str(hook_input.get("session_id") or "")
+    if already_injected(session_id):
+        return ""
+
+    model = resolve_active_model(hook_input)
+    storage = await get_shared_storage(config.current_brain)
+    try:
+        block = await build_injection_context(storage, model, config)
+    finally:
+        try:
+            await storage.close()
+        except Exception:
+            logger.debug("reasoning storage.close() failed (non-fatal)", exc_info=True)
+
+    if block:
+        mark_injected(session_id)
+    return block
+
+
 # ── Session idempotency markers ──────────────────────────────────────────────
 
 

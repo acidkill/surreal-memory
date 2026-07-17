@@ -122,15 +122,16 @@ def test_read_hook_input_valid_json() -> None:
 
 
 def test_main_outputs_context_json_on_success(capsys: pytest.CaptureFixture[str]) -> None:
-    """When memories exist, main() writes a JSON context response to stdout."""
+    """When memories exist, main() writes a hookSpecificOutput JSON response."""
     with patch("sys.stdin", io.StringIO("{}")):
         with patch("asyncio.run", return_value="- Fixed auth bug\n- Added retry logic"):
             main()  # happy path — no sys.exit, just returns
 
     captured = capsys.readouterr()
     response = json.loads(captured.out.strip())
-    assert response["type"] == "context"
-    assert "Fixed auth bug" in response["content"]
+    hook_out = response["hookSpecificOutput"]
+    assert hook_out["hookEventName"] == "SessionStart"
+    assert "Fixed auth bug" in hook_out["additionalContext"]
 
 
 def test_main_exits_silently_when_no_memories(capsys: pytest.CaptureFixture[str]) -> None:
@@ -168,8 +169,9 @@ def test_main_combines_memories_and_reasoning_blocks(
         main()
 
     response = json.loads(capsys.readouterr().out.strip())
-    assert response["type"] == "context"
-    content = response["content"]
+    hook_out = response["hookSpecificOutput"]
+    assert hook_out["hookEventName"] == "SessionStart"
+    content = hook_out["additionalContext"]
     assert "## Recent Memories — project: proj" in content
     assert "- mem bullet" in content
     assert "## Reasoning strategies (learned from claude-fable-5)" in content
@@ -196,9 +198,9 @@ def test_main_reasoning_failure_isolated_from_memories(
         main()
 
     captured = capsys.readouterr()
-    response = json.loads(captured.out.strip())
-    assert "- mem bullet" in response["content"]
-    assert "Reasoning strategies" not in response["content"]
+    content = json.loads(captured.out.strip())["hookSpecificOutput"]["additionalContext"]
+    assert "- mem bullet" in content
+    assert "Reasoning strategies" not in content
     assert "reasoning injection failed" in captured.err.lower()
 
 
@@ -221,7 +223,7 @@ def test_main_memories_failure_isolated_from_reasoning(
         main()
 
     captured = capsys.readouterr()
-    response = json.loads(captured.out.strip())
-    assert "Reasoning strategies" in response["content"]
-    assert "Recent Memories" not in response["content"]
+    content = json.loads(captured.out.strip())["hookSpecificOutput"]["additionalContext"]
+    assert "Reasoning strategies" in content
+    assert "Recent Memories" not in content
     assert "context load failed" in captured.err.lower()

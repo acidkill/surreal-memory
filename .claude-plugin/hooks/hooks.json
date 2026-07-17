@@ -23,6 +23,12 @@
       "command": "smem-hook-session-start",
       "description": "Inject recent memories as context at the start of a new session",
       "timeout": 10
+    },
+    {
+      "event": "UserPromptSubmit",
+      "command": "smem-hook-user-prompt-submit",
+      "description": "Inject learned reasoning strategies for the active model (opt-in)",
+      "timeout": 10
     }
   ]
 }

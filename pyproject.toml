@@ -146,6 +146,7 @@ smem-hook-pre-compact = "surreal_memory.hooks.pre_compact:main"
 smem-hook-stop = "surreal_memory.hooks.stop:main"
 smem-hook-post-tool-use = "surreal_memory.hooks.post_tool_use:main"
 smem-hook-session-start = "surreal_memory.hooks.session_start:main"
+smem-hook-user-prompt-submit = "surreal_memory.hooks.user_prompt_submit:main"
 smem-hook-task-context = "surreal_memory.hooks.task_context:main"
 
 [tool.hatch.build.targets.sdist]
