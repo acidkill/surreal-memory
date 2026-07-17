@@ -16,6 +16,7 @@ const OraclePage = lazy(() => import("@/features/oracle/OraclePage"))
 const ToolStatsPage = lazy(() => import("@/features/tool-stats/ToolStatsPage"))
 const VisualizePage = lazy(() => import("@/features/visualize/VisualizePage"))
 const StoragePage = lazy(() => import("@/features/storage/StoragePage"))
+const ReasoningPage = lazy(() => import("@/features/reasoning/ReasoningPage"))
 
 export default function App() {
   return (
@@ -122,6 +123,14 @@ export default function App() {
           element={
             <Suspense fallback={<PageSkeleton />}>
               <StoragePage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="reasoning"
+          element={
+            <Suspense fallback={<PageSkeleton />}>
+              <ReasoningPage />
             </Suspense>
           }
         />

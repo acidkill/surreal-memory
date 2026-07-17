@@ -474,3 +474,130 @@ export interface UncertaintyOverview {
   scan: UncertaintyScan
   samples: UncertaintySamples
 }
+
+/* ------------------------------------------------------------------ */
+/*  Reasoning training (matches server/routes/reasoning_training.py)   */
+/* ------------------------------------------------------------------ */
+
+export interface ReasoningConfig {
+  mining_enabled: boolean
+  injection_enabled: boolean
+  mining_models: string[]
+  injection_map: Record<string, string>
+  categories: string[]
+  min_trace_chars: number
+  max_trace_chars: number
+  max_traces_per_scan: number
+  scan_lookback_days: number
+  retention_days: number
+  max_traces_total: number
+  min_cluster_support: number
+  max_patterns_per_run: number
+  min_confidence: number
+  min_patterns_per_category: number
+  injection_max_patterns: number
+  injection_max_chars: number
+  distill_use_llm: boolean
+  redact_secrets: boolean
+}
+
+export interface ModelTraceStats {
+  model: string
+  trace_count: number
+  unprocessed: number
+  pattern_count: number
+  has_thinking_text: boolean
+  last_trace_at: string | null
+  coverage_percent: number
+}
+
+export interface CategoryCoverage {
+  category: string
+  pattern_count: number
+  covered: boolean
+}
+
+export interface MiningJobState {
+  running: boolean
+  started_at: string | null
+  finished_at: string | null
+  traces_ingested: number
+  patterns_learned: number
+  dry_run: boolean
+  error: string | null
+}
+
+// GET /api/dashboard/reasoning/status
+export interface ReasoningStatusResponse {
+  config: ReasoningConfig
+  detected_models: string[]
+  per_model: ModelTraceStats[]
+  coverage_by_model: Record<string, CategoryCoverage[]>
+  total_traces: number
+  unprocessed_traces: number
+  total_patterns: number
+  mining: MiningJobState
+}
+
+// PUT /api/dashboard/reasoning/config (all fields optional)
+export interface ReasoningConfigUpdate {
+  mining_enabled?: boolean
+  injection_enabled?: boolean
+  mining_models?: string[]
+  injection_map?: Record<string, string>
+  categories?: string[]
+  scan_lookback_days?: number
+  retention_days?: number
+  max_traces_total?: number
+  min_cluster_support?: number
+  max_patterns_per_run?: number
+  min_confidence?: number
+  min_patterns_per_category?: number
+  injection_max_patterns?: number
+  injection_max_chars?: number
+}
+
+export interface ReasoningConfigUpdateResponse {
+  status: string
+  config: ReasoningConfig
+}
+
+// POST /api/dashboard/reasoning/mine
+export interface MineRequest {
+  backfill?: boolean
+  dry_run?: boolean
+  models?: string[]
+}
+
+export interface MineResponse {
+  status: string
+  mining: MiningJobState
+}
+
+export interface PatternSummary {
+  id: string
+  source_model: string
+  category: string
+  title: string
+  confidence: number
+  frequency: number
+  signature: string
+}
+
+export interface PatternDetail extends PatternSummary {
+  strategy: string
+  description: string
+  summary: string
+}
+
+// GET /api/dashboard/reasoning/patterns
+export interface PatternsListResponse {
+  patterns: PatternSummary[]
+  total: number
+  limit: number
+  offset: number
+}
+
+export interface ReasoningDeleteResponse {
+  deleted: number
+}

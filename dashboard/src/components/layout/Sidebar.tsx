@@ -14,6 +14,7 @@ import {
   Sparkle,
   ChartBar,
   ChartLine,
+  GraduationCap,
 } from "@phosphor-icons/react"
 import { cn } from "@/lib/utils"
 import { useLayoutStore } from "@/stores/useLayoutStore"
@@ -30,6 +31,7 @@ const navItems = [
   { to: "/sync", icon: Cloud, labelKey: "nav.sync" },
   { to: "/oracle", icon: Sparkle, labelKey: "nav.oracle" },
   { to: "/tool-stats", icon: ChartBar, labelKey: "nav.toolStats" },
+  { to: "/reasoning", icon: GraduationCap, labelKey: "nav.reasoningTraining" },
   { to: "/visualize", icon: ChartLine, labelKey: "nav.visualize" },
   { to: "/storage", icon: HardDrive, labelKey: "nav.storage" },
   { to: "/settings", icon: Gear, labelKey: "nav.settings" },

@@ -22,3 +22,8 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Playwright transient outputs (not baselines)
+test-results
+playwright-report
+e2e/__screenshots__

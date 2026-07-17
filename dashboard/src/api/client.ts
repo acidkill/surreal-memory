@@ -60,4 +60,22 @@ export const api = {
     request<T>(path, { ...options, method: "DELETE" }),
 }
 
+/**
+ * Extract a human-readable message from an ApiError. FastAPI returns
+ * `{"detail": "..."}` bodies, which `request()` stores verbatim as the error
+ * message — parse it out so toasts show the message, not raw JSON.
+ */
+export function apiErrorMessage(err: unknown, fallback: string): string {
+  if (err instanceof ApiError) {
+    try {
+      const parsed = JSON.parse(err.message)
+      if (parsed && typeof parsed.detail === "string") return parsed.detail
+    } catch {
+      /* body was not JSON — fall through to the raw text */
+    }
+    return err.message || fallback
+  }
+  return fallback
+}
+
 export { ApiError }
