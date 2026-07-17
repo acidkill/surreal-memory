@@ -207,6 +207,7 @@ Sync uses **Merkle delta** — only diffs travel, not the full brain.
 #### Knowledge Ingestion
 - **Train from documents** — PDF, DOCX, PPTX, HTML, JSON, XLSX, CSV ingested into permanent brain knowledge
 - **Train from database schemas** — extract table structures and FK relationships
+- **Fast bulk training** — `smem train` batches DB writes (one round-trip per N synapses via `add_synapses_batch`) and the `find_neurons` brain_id index is now used, so large docs stay cheap per chunk even on big brains (previously 7–15 s/chunk on a 68k-neuron brain; ~10× fewer DB ops/chunk). Shows live `tqdm` progress.
 - **Import adapters** — migrate from ChromaDB, Mem0, Cognee, Graphiti, LlamaIndex
 
 #### Lifecycle & Storage
