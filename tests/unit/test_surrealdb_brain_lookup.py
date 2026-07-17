@@ -154,3 +154,54 @@ async def test_surrealdb_bootstrap_creates_brain_with_deterministic_id(
     assert len(storage.saved) == 1
     assert storage.saved[0].id == "my-brain.v2"  # deterministic, not a UUID
     assert storage.brain_context == "my-brain.v2"
+
+
+async def test_surrealdb_bootstrap_reinitializes_after_close(monkeypatch: Any) -> None:
+    # A previously close()d cached instance nulls _conn. The bootstrap must NOT
+    # return that dead handle (find_fibers would raise "not initialized") — it must
+    # reinitialize a fresh store. Regression for the session_start memories→reasoning
+    # double-open sequence: the memories block closes shared storage, so the reasoning
+    # block's get_shared_storage() must reconnect rather than reuse the closed handle.
+    class _ClosedStore:
+        _conn = None
+
+        def set_brain(self, _name: str) -> None:  # pragma: no cover - must not run
+            raise AssertionError("closed instance must not be reused")
+
+    closed = _ClosedStore()
+    existing = Brain.create("my-brain.v2", brain_id="my-brain.v2")
+    fake = _make_fake_store(existing=None, found_by_name=existing)
+    monkeypatch.setattr(_surrealdb_pkg, "SurrealDBStorage", fake)
+    monkeypatch.setattr(unified_config, "_surrealdb_storage", closed)
+
+    storage = await unified_config._get_surrealdb_storage(_fake_config(), "my-brain.v2")
+
+    assert storage is not closed  # reinitialized, not the dead handle
+    assert storage.brain_context == "my-brain.v2"
+
+
+async def test_surrealdb_bootstrap_reuses_live_connection(monkeypatch: Any) -> None:
+    # A cached instance with a live _conn is returned as-is (no reinitialize); only
+    # set_brain runs to switch the brain context. Constructing SurrealDBStorage here
+    # would mean the liveness check wrongly fell through — so make that path fail loud.
+    class _LiveStore:
+        _conn = object()
+
+        def __init__(self) -> None:
+            self.brain_context: str | None = None
+
+        def set_brain(self, name: str) -> None:
+            self.brain_context = name
+
+    live = _LiveStore()
+
+    def _boom(**_kwargs: Any) -> Any:  # pragma: no cover - must not run
+        raise AssertionError("must not reinitialize a cached store with a live _conn")
+
+    monkeypatch.setattr(_surrealdb_pkg, "SurrealDBStorage", _boom)
+    monkeypatch.setattr(unified_config, "_surrealdb_storage", live)
+
+    storage = await unified_config._get_surrealdb_storage(_fake_config(), "brain-3")
+
+    assert storage is live  # same instance, reused
+    assert live.brain_context == "brain-3"

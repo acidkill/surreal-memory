@@ -81,6 +81,42 @@ def read_hook_input() -> dict[str, Any]:
         return {}
 
 
+async def get_reasoning_injection(hook_input: dict[str, Any]) -> str:
+    """Build the reasoning-strategies context block for this session (or "").
+
+    Opt-in via reasoning_training.injection_enabled. Injects at most once per
+    session via a marker shared with the UserPromptSubmit hook.
+    """
+    from surreal_memory.engine.reasoning_injection import (
+        already_injected,
+        build_injection_context,
+        mark_injected,
+        resolve_active_model,
+    )
+    from surreal_memory.unified_config import get_config, get_shared_storage
+
+    config = get_config()
+    if not config.reasoning_training.injection_enabled:
+        return ""
+    session_id = str(hook_input.get("session_id") or "")
+    if already_injected(session_id):
+        return ""
+
+    model = resolve_active_model(hook_input)
+    storage = await get_shared_storage(config.current_brain)
+    try:
+        block = await build_injection_context(storage, model, config)
+    finally:
+        try:
+            await storage.close()
+        except Exception:
+            logger.debug("storage.close() failed (non-fatal)", exc_info=True)
+
+    if block:
+        mark_injected(session_id)
+    return block
+
+
 def main() -> None:
     """Entry point for SessionStart hook."""
     logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
@@ -91,34 +127,32 @@ def main() -> None:
     from surreal_memory.hooks.project_context import derive_project_name
 
     project_name = derive_project_name(hook_input)
-    if not project_name:
-        print("[Surreal-Memory] No project resolved at session start", file=sys.stderr)  # noqa: T201
-        sys.exit(0)
+    sections: list[str] = []
 
+    # Recent-memories block (scoped to the resolved project).
+    if project_name:
+        try:
+            memories = asyncio.run(get_recent_memories(project_name))
+        except Exception:
+            memories = ""
+            print("[Surreal-Memory] Session start context load failed", file=sys.stderr)  # noqa: T201
+        if memories:
+            sections.append(f"## Recent Memories — project: {project_name}\n\n{memories}")
+
+    # Reasoning-strategies block (opt-in; model-based, not project-scoped).
     try:
-        context_text = asyncio.run(get_recent_memories(project_name))
+        reasoning = asyncio.run(get_reasoning_injection(hook_input))
     except Exception:
-        print("[Surreal-Memory] Session start context load failed", file=sys.stderr)  # noqa: T201
-        sys.exit(0)  # Never block Claude Code
+        reasoning = ""
+        print("[Surreal-Memory] Session start reasoning injection failed", file=sys.stderr)  # noqa: T201
+    if reasoning:
+        sections.append(reasoning)
 
-    if not context_text:
-        print(  # noqa: T201
-            f"[Surreal-Memory] No memories to inject for project '{project_name}'",
-            file=sys.stderr,
-        )
+    if not sections:
+        print("[Surreal-Memory] No session-start context to inject", file=sys.stderr)  # noqa: T201
         sys.exit(0)
 
-    count = context_text.count("\n") + 1
-    print(  # noqa: T201
-        f"[Surreal-Memory] Injecting {count} memories for project '{project_name}'",
-        file=sys.stderr,
-    )
-
-    response = {
-        "type": "context",
-        "content": f"## Recent Memories — project: {project_name}\n\n{context_text}",
-    }
-    print(json.dumps(response))  # noqa: T201
+    print(json.dumps({"type": "context", "content": "\n\n".join(sections)}))  # noqa: T201
 
 
 if __name__ == "__main__":

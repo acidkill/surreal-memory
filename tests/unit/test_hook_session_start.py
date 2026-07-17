@@ -143,3 +143,85 @@ def test_main_exits_silently_when_no_memories(capsys: pytest.CaptureFixture[str]
     assert exc_info.value.code == 0
     captured = capsys.readouterr()
     assert captured.out.strip() == ""
+
+
+_REASONING_BLOCK = "## Reasoning strategies (learned from claude-fable-5)\n\n1. **plan**"
+
+
+def test_main_combines_memories_and_reasoning_blocks(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Both blocks present → main() emits one context with the memories block
+    followed by the reasoning block."""
+    with (
+        patch("sys.stdin", io.StringIO("{}")),
+        patch("surreal_memory.hooks.project_context.derive_project_name", return_value="proj"),
+        patch(
+            "surreal_memory.hooks.session_start.get_recent_memories",
+            new=AsyncMock(return_value="- mem bullet"),
+        ),
+        patch(
+            "surreal_memory.hooks.session_start.get_reasoning_injection",
+            new=AsyncMock(return_value=_REASONING_BLOCK),
+        ),
+    ):
+        main()
+
+    response = json.loads(capsys.readouterr().out.strip())
+    assert response["type"] == "context"
+    content = response["content"]
+    assert "## Recent Memories — project: proj" in content
+    assert "- mem bullet" in content
+    assert "## Reasoning strategies (learned from claude-fable-5)" in content
+    # Memories block comes before the reasoning block.
+    assert content.index("Recent Memories") < content.index("Reasoning strategies")
+
+
+def test_main_reasoning_failure_isolated_from_memories(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A reasoning-block exception must not drop the memories block."""
+    with (
+        patch("sys.stdin", io.StringIO("{}")),
+        patch("surreal_memory.hooks.project_context.derive_project_name", return_value="proj"),
+        patch(
+            "surreal_memory.hooks.session_start.get_recent_memories",
+            new=AsyncMock(return_value="- mem bullet"),
+        ),
+        patch(
+            "surreal_memory.hooks.session_start.get_reasoning_injection",
+            new=AsyncMock(side_effect=RuntimeError("boom")),
+        ),
+    ):
+        main()
+
+    captured = capsys.readouterr()
+    response = json.loads(captured.out.strip())
+    assert "- mem bullet" in response["content"]
+    assert "Reasoning strategies" not in response["content"]
+    assert "reasoning injection failed" in captured.err.lower()
+
+
+def test_main_memories_failure_isolated_from_reasoning(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A memories-block exception must not drop the reasoning block."""
+    with (
+        patch("sys.stdin", io.StringIO("{}")),
+        patch("surreal_memory.hooks.project_context.derive_project_name", return_value="proj"),
+        patch(
+            "surreal_memory.hooks.session_start.get_recent_memories",
+            new=AsyncMock(side_effect=RuntimeError("boom")),
+        ),
+        patch(
+            "surreal_memory.hooks.session_start.get_reasoning_injection",
+            new=AsyncMock(return_value=_REASONING_BLOCK),
+        ),
+    ):
+        main()
+
+    captured = capsys.readouterr()
+    response = json.loads(captured.out.strip())
+    assert "Reasoning strategies" in response["content"]
+    assert "Recent Memories" not in response["content"]
+    assert "context load failed" in captured.err.lower()

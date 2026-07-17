@@ -2498,7 +2498,11 @@ async def _get_surrealdb_storage(config: UnifiedConfig, name: str) -> NeuralStor
     from surreal_memory.storage.surrealdb import SurrealDBStorage
     from surreal_memory.storage.surrealdb.connection import SurrealSettings
 
-    if _surrealdb_storage is not None:
+    # Reuse the cached instance only if its connection is still open. A prior
+    # caller may have close()d it (which nulls _conn but leaves this module-level
+    # reference set); returning it as-is would raise "not initialized" on first
+    # use. Mirror the SQLite cache's liveness check and reinitialize otherwise.
+    if _surrealdb_storage is not None and getattr(_surrealdb_storage, "_conn", None) is not None:
         _surrealdb_storage.set_brain(name)
         return _surrealdb_storage
 
