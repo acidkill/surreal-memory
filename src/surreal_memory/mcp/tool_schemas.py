@@ -830,6 +830,50 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "smem_reasoning",
+        "description": "Reasoning training: status, mine, patterns, or config.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["status", "mine", "patterns", "config"],
+                    "description": (
+                        "status=trace/pattern stats + per-model coverage, "
+                        "mine=scan ~/.claude thinking and distill patterns (needs mining_enabled), "
+                        "patterns=list learned patterns, config=show reasoning_training config"
+                    ),
+                },
+                "model": {
+                    "type": "string",
+                    "description": "Filter patterns by source model (patterns action)",
+                },
+                "category": {
+                    "type": "string",
+                    "description": "Filter patterns by category (patterns action)",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max patterns to return, 1-100 (patterns action, default 50)",
+                },
+                "models": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Restrict mining to these source models (mine action)",
+                },
+                "backfill": {
+                    "type": "boolean",
+                    "description": "Scan the full history for mining (mine action)",
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "Mine as a no-op without writing (mine action)",
+                },
+            },
+            "required": ["action"],
+        },
+    },
+    {
         "name": "smem_version",
         "description": "Brain version control: snapshot, list, rollback, diff.",
         "inputSchema": {

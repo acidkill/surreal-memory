@@ -44,7 +44,7 @@ class TestMCPServer:
         with patch("surreal_memory.plugins.get_plugin_tools", return_value=[]):
             tools = server.get_tools()
 
-        assert len(tools) == 57
+        assert len(tools) == 58
         tool_names = {tool["name"] for tool in tools}
         assert tool_names == {
             "smem_remember",
@@ -63,6 +63,7 @@ class TestMCPServer:
             "smem_health",
             "smem_evolution",
             "smem_habits",
+            "smem_reasoning",
             "smem_version",
             "smem_transplant",
             "smem_conflicts",
@@ -1057,7 +1058,7 @@ class TestMCPProtocol:
         assert response["id"] == 2
         assert "result" in response
         assert "tools" in response["result"]
-        assert len(response["result"]["tools"]) == 57
+        assert len(response["result"]["tools"]) == 58
 
     @pytest.mark.asyncio
     async def test_tools_call_message(self, server: MCPServer) -> None:

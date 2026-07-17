@@ -44,6 +44,7 @@ from surreal_memory.mcp.mem0_sync_handler import Mem0SyncHandler
 from surreal_memory.mcp.narrative_handler import NarrativeHandler
 from surreal_memory.mcp.onboarding_handler import OnboardingHandler
 from surreal_memory.mcp.prompt import get_mcp_instructions, get_system_prompt
+from surreal_memory.mcp.reasoning_handler import ReasoningHandler
 from surreal_memory.mcp.review_handler import ReviewHandler
 from surreal_memory.mcp.scheduled_consolidation_handler import ScheduledConsolidationHandler
 from surreal_memory.mcp.session_handler import SessionHandler
@@ -109,6 +110,7 @@ class MCPServer(
     SyncToolHandler,
     TelegramHandler,
     DriftHandler,
+    ReasoningHandler,
 ):
     """MCP server that exposes Surreal-Memory tools.
 
@@ -245,6 +247,7 @@ class MCPServer(
             "smem_health": self._health,
             "smem_evolution": self._evolution,
             "smem_habits": self._habits,
+            "smem_reasoning": self._reasoning,
             "smem_version": self._version,
             "smem_transplant": self._transplant,
             "smem_conflicts": self._conflicts,
