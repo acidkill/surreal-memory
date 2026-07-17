@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.12.0] — Reasoning training: learn how models think
+
+An opt-in pipeline that mines a model's `thinking` blocks from `~/.claude`
+transcripts, distills them into reusable reasoning-pattern fibers, and injects
+the learned strategies into other models' sessions — surfaced across the
+dashboard, CLI, and MCP. Off by default: nothing is mined or injected until you
+enable it, and traces are redacted before they are ever stored.
+
+### Added
+
+- **`reasoning_traces` staging store** across all four backends (SQLite,
+  SurrealDB, in-memory, base) with a schema migration (v39 → v40) and a
+  `delete_reasoning_traces_by_model` wipe.
+- **`reasoning_miner`** — scans `~/.claude` transcripts for model `thinking`,
+  redacts secrets via `safety/sensitive` **before** insert, and stages the traces
+  (`PROCESS_REASONING_TRACES` consolidation step).
+- **`reasoning_distiller`** — segments reasoning moves → classifies → clusters
+  them into ReasoningBank pattern fibers (idempotent by signature), restricted to
+  the configured `mining_models` (`LEARN_REASONING` consolidation step).
+- **`reasoning_injection`** — `SessionStart` and `UserPromptSubmit` hooks inject
+  the learned patterns for the active model.
+- **Dashboard reasoning page** at `/ui` — mining config, injection mapping, and a
+  patterns table.
+- **`smem reasoning` CLI** (`status` / `mine` / `patterns` / `clear`) and the
+  **`smem_reasoning` MCP tool** (58 tools total).
+- **`[reasoning_training]` config** — `mining_enabled` / `injection_enabled`
+  (both default off), `mining_models`, plus backfill and privacy controls.
+
+### Fixed
+
+- **Hook output contract** — hooks now emit
+  `{"hookSpecificOutput": {"hookEventName", "additionalContext"}}`; the previous
+  `{"type": "context"}` shape was silently ignored by Claude Code, so
+  `SessionStart` memory/reasoning injection never actually reached the model.
+- **Shared-storage brain race** — long-running mining runs on an isolated,
+  non-cached storage instance (`create_isolated_storage`) so a concurrent
+  request's `set_brain` cannot redirect its graph writes into the wrong brain.
+
+### Notes
+
+- Fully opt-in and privacy-preserving: thinking traces are redacted before
+  storage, no secrets reach evidence, and both mining and injection default off.
+
 ## [2.11.0] — Fast bulk doc-training
 
 `smem train` on large documents is dramatically faster on big brains, and the

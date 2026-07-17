@@ -209,6 +209,7 @@ Sync uses **Merkle delta** — only diffs travel, not the full brain.
 - **Train from database schemas** — extract table structures and FK relationships
 - **Fast bulk training** — `smem train` batches DB writes (one round-trip per N synapses via `add_synapses_batch`) and the `find_neurons` brain_id index is now used, so large docs stay cheap per chunk even on big brains (previously 7–15 s/chunk on a 68k-neuron brain; ~10× fewer DB ops/chunk). Shows live `tqdm` progress.
 - **Import adapters** — migrate from ChromaDB, Mem0, Cognee, Graphiti, LlamaIndex
+- **Reasoning training** (opt-in) — mine a model's own `thinking` from `~/.claude` transcripts, distill it into reusable reasoning-pattern fibers, and inject the learned strategies into other models' sessions (dashboard + `smem reasoning` CLI + `smem_reasoning` MCP tool). Off by default; traces are redacted before storage.
 
 #### Lifecycle & Storage
 - **Memory consolidation** — episodic memories mature into semantic knowledge
