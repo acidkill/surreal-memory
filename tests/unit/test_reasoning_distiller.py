@@ -38,7 +38,9 @@ def _ucfg(tmp_path: Path, **rt_kw: object) -> UnifiedConfig:
         "min_cluster_support": 2,
         "min_patterns_per_category": 1,
         "min_confidence": 0.2,
-        "max_patterns_per_run": 10,
+        # Generous per-model targets so the existing fixtures (which create at
+        # most a couple of patterns) distill freely; individual tests override.
+        "pattern_targets": {"claude-fable-5": 100, "claude-sonnet-5": 100},
     }
     base.update(rt_kw)
     return UnifiedConfig(
@@ -70,6 +72,17 @@ _DEBUG_TRACES = [
     "I need to fix this. Let me check the error traceback. I verify the bug is gone.",
     "I need to look at this. Let me check the exception. Verify the crash is fixed.",
     "I need to resolve it. Let me check the failing traceback. I verify the error.",
+]
+
+# Three 2-trace clusters with DISTINCT move-sets (→ distinct signatures), ordered
+# so a small per-model batch fetches one cluster at a time.
+_THREE_CLUSTERS = [
+    "I need to fix the bug. Let me check the error traceback. I verify it.",
+    "I need to fix the bug. Let me check the error traceback. I verify it.",
+    "What if the edge case is null? Actually, wait, let me reconsider the boundary.",
+    "What if the edge case is null? Actually, wait, let me reconsider the boundary.",
+    "My plan: step 1 decompose the problem. Compare option A versus option B.",
+    "My plan: step 1 decompose the problem. Compare option A versus option B.",
 ]
 
 
@@ -270,11 +283,11 @@ async def test_cap_marks_only_consumed_traces(tmp_path: Path, no_embedder: None)
     )
     await _seed(storage, "claude-fable-5", contents)
     result = await distill_reasoning_patterns(
-        storage, BRAIN, _ucfg(tmp_path, max_patterns_per_run=2)
+        storage, BRAIN, _ucfg(tmp_path, pattern_targets={"claude-fable-5": 2})
     )
     assert result.patterns_learned == 2
     # Only the 2 fully-clustered categories are marked processed; the 2 categories
-    # the cap never reached keep their traces for the next run (no silent loss).
+    # the budget never reached keep their traces for the next run (no silent loss).
     assert result.traces_processed == 4
     remaining = await storage.get_unprocessed_reasoning_traces(
         BRAIN, model="claude-fable-5", limit=100
@@ -300,6 +313,99 @@ async def test_distinct_clusters_same_top_moves_not_dropped(
     fibers = await storage.find_fibers(metadata_key="_reasoning_pattern", limit=100)
     assert len(fibers) == 2
     assert len({f.metadata["_reasoning_signature"] for f in fibers}) == 2
+
+
+# ── Per-model pattern targets (sliders) ──────────────────────────────────────
+
+
+async def test_target_zero_skips_model_and_leaves_traces(tmp_path: Path, no_embedder: None) -> None:
+    # With no target set for the model (default 0), distillation is skipped and
+    # its traces stay UNPROCESSED — a preliminary Mine only detects models.
+    storage = InMemoryStorage()
+    storage.set_brain(BRAIN)
+    await _seed(storage, "claude-fable-5", _DEBUG_TRACES)
+    cfg = _ucfg(tmp_path, pattern_targets={})
+    result = await distill_reasoning_patterns(storage, BRAIN, cfg, drain=True)
+    assert result.patterns_learned == 0
+    remaining = await storage.get_unprocessed_reasoning_traces(BRAIN, model="claude-fable-5")
+    assert len(remaining) == len(_DEBUG_TRACES)  # untouched, not marked processed
+
+
+async def test_existing_patterns_count_toward_budget_and_raising_distills_remainder(
+    tmp_path: Path, no_embedder: None
+) -> None:
+    storage = InMemoryStorage()
+    storage.set_brain(BRAIN)
+    await _seed(storage, "claude-fable-5", _THREE_CLUSTERS)
+    # First run: target 1 → only the first cluster distills (budget 1); the rest
+    # stay unprocessed.
+    run1 = await distill_reasoning_patterns(
+        storage, BRAIN, _ucfg(tmp_path, pattern_targets={"claude-fable-5": 1}), drain=True
+    )
+    assert run1.patterns_learned == 1
+    # Raise the target to 3: 1 already exists → budget 2 → the 2 remaining
+    # clusters distill (raising a target picks up exactly the remainder).
+    run2 = await distill_reasoning_patterns(
+        storage, BRAIN, _ucfg(tmp_path, pattern_targets={"claude-fable-5": 3}), drain=True
+    )
+    assert run2.patterns_learned == 2
+    fibers = await storage.find_fibers(metadata_key="_reasoning_pattern", limit=100)
+    assert len(fibers) == 3
+
+
+async def test_drain_clears_backlog_across_multiple_fetches(
+    tmp_path: Path, no_embedder: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A tiny per-model batch forces the drain loop to fetch more than twice.
+    monkeypatch.setattr("surreal_memory.engine.reasoning_distiller._BATCH_PER_MODEL", 2)
+    storage = InMemoryStorage()
+    storage.set_brain(BRAIN)
+    await _seed(storage, "claude-fable-5", _THREE_CLUSTERS)  # 3 clusters, batch=2
+    result = await distill_reasoning_patterns(
+        storage, BRAIN, _ucfg(tmp_path, pattern_targets={"claude-fable-5": 100}), drain=True
+    )
+    assert result.patterns_learned == 3  # all three clusters drained (3 fetches)
+    remaining = await storage.get_unprocessed_reasoning_traces(BRAIN, model="claude-fable-5")
+    assert remaining == []
+
+
+async def test_background_run_processes_one_batch_per_model(
+    tmp_path: Path, no_embedder: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # drain=False (background consolidation) does ONE batch per model per run
+    # even with a large budget and a bigger backlog.
+    monkeypatch.setattr("surreal_memory.engine.reasoning_distiller._BATCH_PER_MODEL", 2)
+    storage = InMemoryStorage()
+    storage.set_brain(BRAIN)
+    await _seed(storage, "claude-fable-5", _THREE_CLUSTERS)
+    result = await distill_reasoning_patterns(
+        storage, BRAIN, _ucfg(tmp_path, pattern_targets={"claude-fable-5": 100})
+    )
+    assert result.patterns_learned == 1  # only the first batch this run
+    remaining = await storage.get_unprocessed_reasoning_traces(
+        BRAIN, model="claude-fable-5", limit=100
+    )
+    assert len(remaining) == 4
+
+
+async def test_drain_terminates_when_a_batch_makes_no_progress(
+    tmp_path: Path, no_embedder: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # If a batch consumes nothing (pathological no-forward-progress), the drain
+    # loop must break rather than re-fetch the same traces forever.
+    async def _no_progress(*_a: object, **_k: object) -> tuple[int, list[object]]:
+        return 0, []
+
+    monkeypatch.setattr(
+        "surreal_memory.engine.reasoning_distiller._process_model_batch", _no_progress
+    )
+    storage = InMemoryStorage()
+    storage.set_brain(BRAIN)
+    await _seed(storage, "claude-fable-5", _DEBUG_TRACES)
+    result = await distill_reasoning_patterns(
+        storage, BRAIN, _ucfg(tmp_path, pattern_targets={"claude-fable-5": 100}), drain=True
+    )
+    assert result.patterns_learned == 0  # terminated without hanging
 
 
 # ── Consolidation LEARN_REASONING handler ────────────────────────────────────

@@ -237,6 +237,30 @@ def test_config_rejects_bad_model_name(client: TestClient, config_capture: dict[
     assert resp.status_code == 422
 
 
+def test_config_pattern_targets_roundtrip(
+    client: TestClient, config_capture: dict[str, Any]
+) -> None:
+    # Valid targets round-trip; an out-of-range value clamps to 0..100.
+    resp = client.put(
+        "/api/dashboard/reasoning/config",
+        json={"pattern_targets": {"claude-fable-5": 30, "claude-sonnet-5": 150}},
+    )
+    assert resp.status_code == 200
+    saved = config_capture["cfg"].reasoning_training.pattern_targets
+    assert saved == {"claude-fable-5": 30, "claude-sonnet-5": 100}
+    assert resp.json()["config"]["pattern_targets"]["claude-fable-5"] == 30
+
+
+def test_config_rejects_bad_pattern_target_name(
+    client: TestClient, config_capture: dict[str, Any]
+) -> None:
+    resp = client.put(
+        "/api/dashboard/reasoning/config",
+        json={"pattern_targets": {"bad name!;drop": 10}},
+    )
+    assert resp.status_code == 422
+
+
 def test_config_rejects_glob_injection_source(
     client: TestClient, config_capture: dict[str, Any]
 ) -> None:

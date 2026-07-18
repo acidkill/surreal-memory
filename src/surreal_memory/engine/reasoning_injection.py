@@ -43,7 +43,7 @@ _TRANSCRIPT_TAIL_LINES = 300
 # the distiller's own fetch limit. If it is ever hit, we warn rather than let a
 # source model's patterns silently fall outside the window (the post-LIMIT
 # metadata-filter failure mode documented in storage.find_fibers).
-_PATTERN_FETCH_LIMIT = 5000
+_PATTERN_FETCH_LIMIT = 20_000
 
 # Claude Code short model aliases -> canonical ids used across the reasoning
 # pipeline. Full ids pass through ``normalize_model`` unchanged.

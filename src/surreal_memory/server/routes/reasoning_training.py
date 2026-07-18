@@ -42,7 +42,7 @@ router = APIRouter(
 
 # Pattern fibers are idempotent by _reasoning_signature (bounded population);
 # matches the distiller / injection fetch ceiling.
-_PATTERN_FETCH_LIMIT = 5000
+_PATTERN_FETCH_LIMIT = 20_000
 _MAX_PAGE = 100
 # Model names / injection globs: letters, digits, dot, underscore, dash, glob chars.
 _MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9._*?-]{1,128}$")
@@ -129,11 +129,12 @@ class ReasoningConfigUpdate(BaseModel):
     retention_days: int | None = Field(None, ge=1, le=100_000)
     max_traces_total: int | None = Field(None, ge=1, le=10_000_000)
     min_cluster_support: int | None = Field(None, ge=1, le=100_000)
-    max_patterns_per_run: int | None = Field(None, ge=1, le=100_000)
     min_confidence: float | None = Field(None, ge=0.0, le=1.0)
     min_patterns_per_category: int | None = Field(None, ge=1, le=100_000)
     injection_max_patterns: int | None = Field(None, ge=1, le=1000)
     injection_max_chars: int | None = Field(None, ge=1, le=1_000_000)
+    # Per-model distillation targets (model -> 0..100). Validated in update_config.
+    pattern_targets: dict[str, int] | None = None
 
 
 class MineRequest(BaseModel):
@@ -384,6 +385,25 @@ async def update_config(body: ReasoningConfigUpdate) -> dict[str, Any]:
             raise HTTPException(status_code=422, detail="categories cannot be empty")
         changes["categories"] = deduped
 
+    if body.pattern_targets is not None:
+        targets: dict[str, int] = {}
+        for model, count in body.pattern_targets.items():
+            name = _validate_model_name(model, field="pattern_targets")
+            # A target model must actually produce thinking text to be distillable.
+            if not _has_thinking(name):
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Model {name!r} has no thinking text and cannot be a pattern target",
+                )
+            try:
+                targets[name] = max(0, min(int(count), 100))
+            except (ValueError, TypeError):
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"pattern_targets[{name!r}] must be an integer 0-100",
+                ) from None
+        changes["pattern_targets"] = targets
+
     for field_name in (
         "min_trace_chars",
         "max_trace_chars",
@@ -391,7 +411,6 @@ async def update_config(body: ReasoningConfigUpdate) -> dict[str, Any]:
         "retention_days",
         "max_traces_total",
         "min_cluster_support",
-        "max_patterns_per_run",
         "min_confidence",
         "min_patterns_per_category",
         "injection_max_patterns",
@@ -449,7 +468,8 @@ async def _run_mining(
         owns_storage = config.storage_backend == "surrealdb"
         try:
             ingest = await ingest_reasoning_traces(storage, brain_id, run_config, backfill=backfill)
-            distill = await distill_reasoning_patterns(storage, brain_id, run_config)
+            # Manual POST /mine drains each model to its per-target budget.
+            distill = await distill_reasoning_patterns(storage, brain_id, run_config, drain=True)
             state.update(
                 traces_ingested=ingest.traces_ingested,
                 patterns_learned=distill.patterns_learned,

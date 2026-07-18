@@ -33,9 +33,11 @@ from surreal_memory.core.fiber import Fiber
 from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.core.synapse import Direction, Synapse, SynapseType
 from surreal_memory.engine.clustering import UnionFind
+from surreal_memory.engine.reasoning_progress import PHASE_DISTILLING, MiningProgress
 
 if TYPE_CHECKING:
     from surreal_memory.engine.embedding.provider import EmbeddingProvider
+    from surreal_memory.engine.reasoning_progress import ProgressCallback
     from surreal_memory.storage.base import NeuralStorage
     from surreal_memory.unified_config import ReasoningTrainingConfig, UnifiedConfig
 
@@ -46,6 +48,9 @@ _CATEGORY_COS_THRESHOLD = 0.35
 _MOVE_JACCARD = 0.6
 _CLASSIFY_CHARS = 500
 _BATCH_PER_MODEL = 200
+# Ceiling on existing pattern fibers fetched for dedup/existing-count/coverage.
+# Raised from 5000 for full-corpus mining across many models (u008).
+_PATTERN_FETCH_LIMIT = 20_000
 
 # ── Reasoning moves (closed vocabulary; regex discourse markers) ──────────────
 _REASONING_MOVES: dict[str, re.Pattern[str]] = {
@@ -477,10 +482,10 @@ async def _process_model_batch(
     """Distill one model's trace batch. Returns (patterns_created, consumed_ids).
 
     ``consumed_ids`` are the traces safe to mark processed: ``other`` traces,
-    under-support categories, and every category fully clustered before the
-    ``budget`` (remaining max_patterns_per_run) ran out. A category left
-    unreached — or cut off mid-cluster — by the cap is NOT consumed, so the next
-    run revisits it (already-materialized patterns are skipped by signature).
+    under-support categories, and every category fully clustered before this
+    model's remaining per-target ``budget`` ran out. A category left unreached —
+    or cut off mid-cluster — by the budget is NOT consumed, so the next run
+    revisits it (already-materialized patterns are skipped by signature).
     """
     clf_texts = [
         f"{t.get('task_context', '')} {str(t.get('content', ''))[:_CLASSIFY_CHARS]}".strip()
@@ -507,7 +512,7 @@ async def _process_model_batch(
     created = 0
     for category, idxs in by_category.items():
         if created >= budget:
-            break  # cap reached before this category → leave its traces unprocessed
+            break  # budget reached before this category → leave its traces unprocessed
         if len(idxs) < rt.min_cluster_support:
             consumed.extend(traces[i]["id"] for i in idxs)  # too few to cluster; done
             continue
@@ -542,22 +547,43 @@ async def distill_reasoning_patterns(
     config: UnifiedConfig,
     *,
     embedder: EmbeddingProvider | None = None,
+    drain: bool = False,
+    progress: ProgressCallback | None = None,
 ) -> DistillResult:
     """Distill unprocessed reasoning traces into ReasoningBank pattern fibers.
 
     ``storage`` must already be on ``brain_id`` (graph writes use the current
-    brain). Marks only the consumed traces processed, then prunes/caps staging.
+    brain). Distillation is governed by per-model targets
+    (``reasoning_training.pattern_targets``): for each detected source model the
+    budget is ``max(0, target - existing_patterns_for_that_model)``. A model with
+    budget 0 (its target is unset/0, or already met) is SKIPPED entirely — its
+    traces stay unprocessed until a target is raised, so a preliminary Mine with
+    no targets set only DETECTS models without distilling anything.
+
+    ``drain=True`` (a manual ``POST /mine``) keeps fetching batches for a model
+    until its budget is spent or its backlog is exhausted; ``drain=False``
+    (background consolidation) processes at most one batch per model per run.
+    Consumed traces are marked processed per batch so the next fetch returns
+    fresh work. ``progress`` receives a distilling snapshot as each model
+    advances.
     """
     rt = config.reasoning_training
     embedder = embedder or _get_embedder()
     seeds = await _seed_centroids(embedder, rt.categories) if embedder is not None else None
 
-    existing = await storage.find_fibers(metadata_key="_reasoning_pattern", limit=5000)
+    existing = await storage.find_fibers(
+        metadata_key="_reasoning_pattern", limit=_PATTERN_FETCH_LIMIT
+    )
     existing_sigs = {
         str(f.metadata.get("_reasoning_signature"))
         for f in existing
         if f.metadata.get("_reasoning_signature")
     }
+    existing_by_model: dict[str, int] = {}
+    for f in existing:
+        source_model = f.metadata.get("_source_model")
+        if source_model:
+            existing_by_model[str(source_model)] = existing_by_model.get(str(source_model), 0) + 1
 
     patterns_created = 0
     processed_ids: list[Any] = []
@@ -567,32 +593,61 @@ async def distill_reasoning_patterns(
         # the same models as ingestion (and to POST /mine's models= override). An
         # empty mining_models means "all models" (unchanged default behavior).
         models = [m for m in models if any(fnmatch(m, pat) for pat in rt.mining_models)]
+    models_total = len(models)
 
-    for model in models:
-        budget = rt.max_patterns_per_run - patterns_created
+    def _emit(current_model: str | None, models_done: int) -> None:
+        if progress is not None:
+            progress(
+                MiningProgress(
+                    phase=PHASE_DISTILLING,
+                    traces_processed=len(processed_ids),
+                    patterns_learned=patterns_created,
+                    current_model=current_model,
+                    models_done=models_done,
+                    models_total=models_total,
+                )
+            )
+
+    for idx, model in enumerate(models):
+        budget = max(0, rt.pattern_targets.get(model, 0) - existing_by_model.get(model, 0))
         if budget <= 0:
-            break
-        traces = await storage.get_unprocessed_reasoning_traces(
-            brain_id, limit=_BATCH_PER_MODEL, model=model
-        )
-        traces = traces[:_BATCH_PER_MODEL]  # one bounded batch per model per run
-        if not traces:
+            # Target unset/0 or already met → leave this model's traces unprocessed.
+            _emit(model, idx + 1)
             continue
-        created, consumed = await _process_model_batch(
-            storage, brain_id, rt, model, traces, embedder, seeds, existing_sigs, budget
-        )
-        patterns_created += created
-        processed_ids.extend(consumed)
+        while budget > 0:
+            traces = await storage.get_unprocessed_reasoning_traces(
+                brain_id, limit=_BATCH_PER_MODEL, model=model
+            )
+            traces = traces[:_BATCH_PER_MODEL]
+            if not traces:
+                break  # backlog for this model exhausted
+            created, consumed = await _process_model_batch(
+                storage, brain_id, rt, model, traces, embedder, seeds, existing_sigs, budget
+            )
+            patterns_created += created
+            budget -= created
+            if consumed:
+                processed_ids.extend(consumed)
+                # Mark consumed processed NOW so the next fetch returns fresh
+                # traces — otherwise a drain loop re-fetches the same batch forever.
+                await storage.mark_reasoning_traces_processed(brain_id, consumed)
+            _emit(model, idx)
+            # Termination guard: a batch that consumes nothing makes no forward
+            # progress (budget hit 0 mid-category), so stop draining this model.
+            if not consumed:
+                break
+            if not drain:
+                break  # background consolidation: one batch per model per run
+        _emit(model, idx + 1)
 
     if processed_ids:
-        await storage.mark_reasoning_traces_processed(brain_id, processed_ids)
         await storage.prune_reasoning_traces(brain_id, rt.retention_days)
         await storage.cap_reasoning_traces(brain_id, rt.max_traces_total)
 
     return DistillResult(
         patterns_learned=patterns_created,
         traces_processed=len(processed_ids),
-        models_seen=len(models),
+        models_seen=models_total,
     )
 
 
@@ -609,7 +664,9 @@ async def reasoning_coverage(
     it is never in ``categories``). ``storage`` must be on the target brain.
     """
     rt = config.reasoning_training
-    fibers = await storage.find_fibers(metadata_key="_reasoning_pattern", limit=5000)
+    fibers = await storage.find_fibers(
+        metadata_key="_reasoning_pattern", limit=_PATTERN_FETCH_LIMIT
+    )
     counts: dict[str, int] = dict.fromkeys(rt.categories, 0)
     for f in fibers:
         md = f.metadata

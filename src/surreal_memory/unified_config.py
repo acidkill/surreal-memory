@@ -1090,6 +1090,10 @@ _DEFAULT_REASONING_CATEGORIES: tuple[str, ...] = (
     "data-analysis",
 )
 
+# Model-name / glob shape for reasoning config keys — mirrors the route's
+# _validate_model_name so config-level and API-level validation agree.
+_REASONING_MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9._*?-]{1,128}$")
+
 
 @dataclass(frozen=True)
 class ReasoningTrainingConfig:
@@ -1114,13 +1118,17 @@ class ReasoningTrainingConfig:
     retention_days: int = 90
     max_traces_total: int = 20_000
     min_cluster_support: int = 3
-    max_patterns_per_run: int = 10
     min_confidence: float = 0.2
     min_patterns_per_category: int = 3
     injection_max_patterns: int = 5
     injection_max_chars: int = 4000
     distill_use_llm: bool = False
     redact_secrets: bool = True
+    # Per-model distillation targets: model name -> desired pattern count (0-100).
+    # An unlisted model defaults to 0 → distillation is skipped for it (the
+    # preliminary Mine only DETECTS models; a UI slider raises a target to
+    # actually distill). Mutable default, but the config is loaded read-only.
+    pattern_targets: dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -1135,13 +1143,13 @@ class ReasoningTrainingConfig:
             "retention_days": self.retention_days,
             "max_traces_total": self.max_traces_total,
             "min_cluster_support": self.min_cluster_support,
-            "max_patterns_per_run": self.max_patterns_per_run,
             "min_confidence": self.min_confidence,
             "min_patterns_per_category": self.min_patterns_per_category,
             "injection_max_patterns": self.injection_max_patterns,
             "injection_max_chars": self.injection_max_chars,
             "distill_use_llm": self.distill_use_llm,
             "redact_secrets": self.redact_secrets,
+            "pattern_targets": dict(self.pattern_targets),
         }
 
     @classmethod
@@ -1183,6 +1191,22 @@ class ReasoningTrainingConfig:
         except (ValueError, TypeError):
             min_confidence = 0.2
 
+        # Per-model pattern targets: {model: 0..100}. Keys must be model-name
+        # shaped (bad keys skipped, not fatal — this loads from disk); values
+        # clamp to 0..100. Legacy keys like max_patterns_per_run are ignored
+        # simply by never being read here.
+        targets_raw = data.get("pattern_targets", {})
+        pattern_targets: dict[str, int] = {}
+        if isinstance(targets_raw, dict):
+            for model, count in targets_raw.items():
+                name = str(model).strip()
+                if not name or not _REASONING_MODEL_NAME_RE.match(name):
+                    continue
+                try:
+                    pattern_targets[name[:128]] = max(0, min(int(count), 100))
+                except (ValueError, TypeError):
+                    continue
+
         return cls(
             mining_enabled=bool(data.get("mining_enabled", False)),
             injection_enabled=bool(data.get("injection_enabled", False)),
@@ -1195,13 +1219,13 @@ class ReasoningTrainingConfig:
             retention_days=_int("retention_days", 90, 1, 100_000),
             max_traces_total=_int("max_traces_total", 20_000, 1, 100_000_000),
             min_cluster_support=_int("min_cluster_support", 3, 1, 100_000),
-            max_patterns_per_run=_int("max_patterns_per_run", 10, 1, 100_000),
             min_confidence=min_confidence,
             min_patterns_per_category=_int("min_patterns_per_category", 3, 1, 100_000),
             injection_max_patterns=_int("injection_max_patterns", 5, 1, 1000),
             injection_max_chars=_int("injection_max_chars", 4000, 1, 1_000_000),
             distill_use_llm=bool(data.get("distill_use_llm", False)),
             redact_secrets=bool(data.get("redact_secrets", True)),
+            pattern_targets=pattern_targets,
         )
 
 
@@ -1774,7 +1798,6 @@ class UnifiedConfig:
             f"retention_days = {rt.retention_days}",
             f"max_traces_total = {rt.max_traces_total}",
             f"min_cluster_support = {rt.min_cluster_support}",
-            f"max_patterns_per_run = {rt.max_patterns_per_run}",
             f"min_confidence = {rt.min_confidence}",
             f"min_patterns_per_category = {rt.min_patterns_per_category}",
             f"injection_max_patterns = {rt.injection_max_patterns}",
@@ -1788,6 +1811,12 @@ class UnifiedConfig:
             gv = _sanitize_toml_glob(source)
             if gk and gv:
                 lines.append(f'"{gk}" = "{gv}"')
+        # Per-model pattern targets subtable (model = 0..100). Empty is fine.
+        lines.append("[reasoning_training.pattern_targets]")
+        for model, count in rt.pattern_targets.items():
+            gk = _sanitize_toml_glob(model)
+            if gk:
+                lines.append(f'"{gk}" = {int(count)}')
         return lines
 
     def save(self) -> None:

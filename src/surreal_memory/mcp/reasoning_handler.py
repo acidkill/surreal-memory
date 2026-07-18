@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_PATTERN_FETCH_LIMIT = 5000
+_PATTERN_FETCH_LIMIT = 20_000
 
 
 class ReasoningHandler:
@@ -153,7 +153,7 @@ class ReasoningHandler:
         owns_storage = self.config.storage_backend == "surrealdb"
         try:
             ingest = await ingest_reasoning_traces(storage, brain_id, run_cfg, backfill=backfill)
-            distill = await distill_reasoning_patterns(storage, brain_id, run_cfg)
+            distill = await distill_reasoning_patterns(storage, brain_id, run_cfg, drain=True)
             return {
                 "traces_ingested": ingest.traces_ingested,
                 "patterns_learned": distill.patterns_learned,

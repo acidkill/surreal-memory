@@ -16,7 +16,7 @@ reasoning_app = typer.Typer(
     help="Reasoning-training commands (mine model thinking into strategies)"
 )
 
-_PATTERN_FETCH_LIMIT = 5000
+_PATTERN_FETCH_LIMIT = 20_000
 
 
 def _split_models(models: str | None) -> tuple[str, ...]:
@@ -175,7 +175,7 @@ def reasoning_mine(
             run_cfg = dc_replace(ucfg, reasoning_training=dc_replace(rt, **overrides))
 
             ingest = await ingest_reasoning_traces(storage, brain_id, run_cfg, backfill=backfill)
-            distill = await distill_reasoning_patterns(storage, brain_id, run_cfg)
+            distill = await distill_reasoning_patterns(storage, brain_id, run_cfg, drain=True)
             result = {
                 "traces_ingested": ingest.traces_ingested,
                 "patterns_learned": distill.patterns_learned,
