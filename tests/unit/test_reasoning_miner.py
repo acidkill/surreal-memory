@@ -12,12 +12,16 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 from surreal_memory.engine.reasoning_miner import (
     ingest_reasoning_traces,
     normalize_model,
     scan_transcripts,
 )
+from surreal_memory.engine.reasoning_progress import MiningProgress
 from surreal_memory.storage.memory_store import InMemoryStorage
 from surreal_memory.unified_config import ReasoningTrainingConfig, UnifiedConfig
 
@@ -527,3 +531,129 @@ async def test_consolidation_dry_run_skips_ingest(tmp_path, monkeypatch) -> None
     )
     assert report.reasoning_traces_ingested == 0
     assert calls["n"] == 0
+
+
+class _CountingStorage(InMemoryStorage):
+    """InMemoryStorage that records how many times insert is called."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.insert_calls = 0
+
+    async def insert_reasoning_traces(self, brain_id: str, traces: list[dict[str, Any]]) -> int:
+        self.insert_calls += 1
+        return await super().insert_reasoning_traces(brain_id, traces)
+
+
+class _CrashOnNthInsert(InMemoryStorage):
+    """InMemoryStorage that raises on the *nth* insert call (1-based)."""
+
+    def __init__(self, crash_on: int) -> None:
+        super().__init__()
+        self._crash_on = crash_on
+        self.insert_calls = 0
+
+    async def insert_reasoning_traces(self, brain_id: str, traces: list[dict[str, Any]]) -> int:
+        self.insert_calls += 1
+        if self.insert_calls == self._crash_on:
+            raise RuntimeError("simulated storage failure mid-ingest")
+        return await super().insert_reasoning_traces(brain_id, traces)
+
+
+def _ingest_cfg(tmp_path: Path) -> UnifiedConfig:
+    return UnifiedConfig(
+        data_dir=tmp_path / ".surrealmemory",
+        current_brain="default",
+        reasoning_training=_cfg(),
+    )
+
+
+async def test_ingest_inserts_per_file_not_once(tmp_path: Path) -> None:
+    # Two separate transcript FILES → two separate storage inserts (per-file
+    # ingest bounds memory), not one batched insert at the end.
+    claude = tmp_path / ".claude"
+    _write_transcript(
+        claude, [_assistant("file one reasoning long enough", uuid="a")], slug="proj-a"
+    )
+    _write_transcript(
+        claude, [_assistant("file two reasoning long enough", uuid="b")], slug="proj-b"
+    )
+    storage = _CountingStorage()
+    storage.set_brain("b1")
+    result = await ingest_reasoning_traces(
+        storage,
+        "b1",
+        _ingest_cfg(tmp_path),
+        claude_dir=claude,
+        state_path=tmp_path / "state.json",
+        now=_NOW,
+    )
+    assert storage.insert_calls == 2
+    assert result.files_total == 2
+    assert result.files_scanned == 2
+    assert result.traces_ingested == 2
+
+
+async def test_ingest_progress_is_monotonic_and_complete(tmp_path: Path) -> None:
+    claude = tmp_path / ".claude"
+    for i in range(3):
+        _write_transcript(
+            claude,
+            [_assistant(f"reasoning trace {i} long enough", uuid=f"u{i}")],
+            slug=f"proj-{i}",
+        )
+    storage = InMemoryStorage()
+    storage.set_brain("b1")
+    snapshots: list[MiningProgress] = []
+    result = await ingest_reasoning_traces(
+        storage,
+        "b1",
+        _ingest_cfg(tmp_path),
+        claude_dir=claude,
+        state_path=tmp_path / "state.json",
+        now=_NOW,
+        progress=snapshots.append,
+    )
+    assert snapshots, "progress callback was never invoked"
+    # A scanning snapshot with the total known precedes ingesting.
+    assert snapshots[0].phase == "scanning"
+    assert any(s.phase == "ingesting" for s in snapshots)
+    # files_scanned and traces_found only ever increase.
+    files_seen = [s.files_scanned for s in snapshots]
+    assert files_seen == sorted(files_seen)
+    found_seen = [s.traces_found for s in snapshots]
+    assert found_seen == sorted(found_seen)
+    # The final snapshot reflects a fully-scanned corpus.
+    assert snapshots[-1].files_scanned == snapshots[-1].files_total == 3
+    assert result.files_scanned == 3
+    assert result.traces_ingested == 3
+
+
+async def test_ingest_state_survives_a_crash_mid_run(tmp_path: Path) -> None:
+    # File 1 ingests cleanly, file 2's insert raises → file 1's scan-state is
+    # persisted (finally block), file 2's is not (recorded only after insert).
+    claude = tmp_path / ".claude"
+    _write_transcript(
+        claude, [_assistant("first file reasoning long enough", uuid="a")], slug="proj-a"
+    )
+    _write_transcript(
+        claude, [_assistant("second file reasoning long enough", uuid="b")], slug="proj-b"
+    )
+    storage = _CrashOnNthInsert(crash_on=2)
+    storage.set_brain("b1")
+    state_file = tmp_path / "state.json"
+    with pytest.raises(RuntimeError):
+        await ingest_reasoning_traces(
+            storage,
+            "b1",
+            _ingest_cfg(tmp_path),
+            claude_dir=claude,
+            state_path=state_file,
+            now=_NOW,
+        )
+    saved = json.loads(state_file.read_text(encoding="utf-8"))
+    # Exactly the first file (proj-a) is recorded; the crashed file (proj-b) is not.
+    assert len(saved) == 1
+    only_key = next(iter(saved))
+    assert "proj-a" in only_key
+    assert not any("proj-b" in k for k in saved)

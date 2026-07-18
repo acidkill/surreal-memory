@@ -13,19 +13,25 @@ incremental scan-state file skips unchanged transcripts.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
 import os
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC
 from fnmatch import fnmatch
 from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from surreal_memory.engine.reasoning_progress import (
+    PHASE_INGESTING,
+    PHASE_SCANNING,
+    MiningProgress,
+)
 from surreal_memory.safety.sensitive import (
     SensitivePattern,
     SensitiveType,
@@ -37,8 +43,15 @@ from surreal_memory.utils.timeutils import utcnow
 if TYPE_CHECKING:
     from datetime import datetime
 
+    from surreal_memory.engine.reasoning_progress import ProgressCallback
     from surreal_memory.storage.base import NeuralStorage
     from surreal_memory.unified_config import ReasoningTrainingConfig, UnifiedConfig
+
+# Persist scan-state to disk this often (in files) during a long ingest, so a
+# crash midway keeps most of the progress; a full save also runs in ``finally``.
+_STATE_SAVE_EVERY = 50
+# Emit a milestone log line this often (in files) so ``docker logs`` shows life.
+_LOG_EVERY = 250
 
 logger = logging.getLogger(__name__)
 
@@ -280,6 +293,8 @@ class ReasoningIngestResult:
 
     traces_ingested: int = 0
     traces_scanned: int = 0
+    files_total: int = 0
+    files_scanned: int = 0
 
 
 def scan_transcripts(
@@ -488,23 +503,114 @@ async def ingest_reasoning_traces(
     state_path: Path | None = None,
     now: datetime | None = None,
     backfill: bool = False,
+    progress: ProgressCallback | None = None,
 ) -> ReasoningIngestResult:
-    """Scan transcripts and insert new reasoning traces into staging.
+    """Scan transcripts and insert new reasoning traces into staging, per file.
 
-    The scan-state file lives under ``config.data_dir`` unless overridden.
-    ``backfill=True`` forwards to ``scan_transcripts`` and forces a full
-    re-scan bypass (see its docstring) — it is never set for background
-    consolidation, only for an explicit user-triggered mining run.
+    Unlike the synchronous :func:`scan_transcripts` (which gathers every trace
+    into one list), this async path discovers the transcript corpus, then scans
+    and INSERTS one file at a time: each file's blocking read runs in
+    ``asyncio.to_thread`` and its traces are staged immediately before the next
+    file is opened. That bounds peak memory to a single file's traces regardless
+    of corpus size (what makes the un-capped full-corpus scan safe) and lets it
+    report live :class:`MiningProgress` through *progress* as it goes.
+
+    Scan-state is written every ``_STATE_SAVE_EVERY`` files and again in a
+    ``finally`` block, and a file's state entry is recorded only AFTER its
+    traces are successfully inserted — so a crash mid-insert leaves the failed
+    file un-recorded (it is re-scanned next run) while completed files persist.
+    The state file lives under ``config.data_dir`` unless overridden and is
+    never deleted; ``backfill=True`` bypasses the per-file skip (see
+    :func:`_plan_file_scan`) but is only ever set for an explicit user-triggered
+    run, never for background consolidation.
     """
     resolved_state = state_path or (config.data_dir / "reasoning_scan_state.json")
-    traces = scan_transcripts(
-        config.reasoning_training,
-        state_path=resolved_state,
-        claude_dir=claude_dir,
-        now=now,
-        backfill=backfill,
+    rt = config.reasoning_training
+    claude_root = (claude_dir or (Path.home() / ".claude")).resolve()
+    projects_dir = claude_root / "projects"
+
+    prog = MiningProgress(phase=PHASE_SCANNING)
+
+    def _emit() -> None:
+        if progress is not None:
+            progress(replace(prog))
+
+    if not projects_dir.is_dir():
+        _emit()
+        return ReasoningIngestResult()
+
+    discovered = _discover_transcripts(projects_dir, claude_root)
+    prog.files_total = len(discovered)
+    _emit()
+
+    now_ts = _now_ts(now)
+    cutoff_ts = now_ts - rt.scan_lookback_days * 86400 if rt.scan_lookback_days > 0 else None
+    fallback_created = (now or utcnow()).isoformat()
+
+    state = _load_scan_state(resolved_state)
+    seen_hashes: set[str] = set()
+    traces_scanned = 0
+    traces_ingested = 0
+    files_scanned = 0
+
+    prog.phase = PHASE_INGESTING
+    try:
+        for _jsonl, resolved in discovered:
+            try:
+                st = resolved.stat()
+            except OSError:
+                files_scanned += 1
+                prog.files_scanned = files_scanned
+                continue
+
+            key = str(resolved)
+            prev = state.get(key, {})
+            skip, start_line = _plan_file_scan(st, prev, cutoff_ts, backfill=backfill)
+            if not skip:
+                project = _project_from_path(resolved, projects_dir)
+                # The blocking file read runs off the event-loop thread and
+                # RETURNS its traces; the callback below is only ever invoked
+                # from this (event-loop) thread.
+                file_traces, line_count = await asyncio.to_thread(
+                    _scan_file,
+                    resolved,
+                    rt,
+                    seen_hashes,
+                    fallback_created,
+                    project,
+                    start_line=start_line,
+                )
+                if file_traces:
+                    # Insert this file's traces before opening the next file, so
+                    # peak memory is one file's worth of traces, not the corpus.
+                    inserted = await storage.insert_reasoning_traces(brain_id, file_traces)
+                    traces_scanned += len(file_traces)
+                    traces_ingested += inserted
+                # Record this file's scan-state ONLY after a successful insert:
+                # a crash mid-insert leaves it un-recorded so it is re-scanned.
+                state[key] = {"mtime": st.st_mtime, "size": st.st_size, "last_line": line_count}
+
+            files_scanned += 1
+            prog.files_scanned = files_scanned
+            prog.traces_found = traces_scanned
+            prog.traces_ingested = traces_ingested
+            if files_scanned % _STATE_SAVE_EVERY == 0:
+                _save_scan_state(resolved_state, state)
+            if files_scanned % _LOG_EVERY == 0:
+                logger.info(
+                    "reasoning ingest: %d/%d files scanned, %d traces (%d new)",
+                    files_scanned,
+                    prog.files_total,
+                    traces_scanned,
+                    traces_ingested,
+                )
+            _emit()
+    finally:
+        _save_scan_state(resolved_state, state)
+
+    return ReasoningIngestResult(
+        traces_ingested=traces_ingested,
+        traces_scanned=traces_scanned,
+        files_total=prog.files_total,
+        files_scanned=files_scanned,
     )
-    if not traces:
-        return ReasoningIngestResult(traces_ingested=0, traces_scanned=0)
-    ingested = await storage.insert_reasoning_traces(brain_id, traces)
-    return ReasoningIngestResult(traces_ingested=ingested, traces_scanned=len(traces))
