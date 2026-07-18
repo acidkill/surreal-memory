@@ -555,6 +555,21 @@ class TestReasoningTrainingConfig:
         assert rt.min_confidence == 0.2
         assert rt.redact_secrets is True
 
+    def test_default_max_trace_chars_is_100k(self) -> None:
+        # Bumped 20_000 -> 100_000: content safety, not a real-world cut (no
+        # per-scan cap left to bound total volume, so the char cap stays the
+        # only safety valve — raised because real traces were being truncated).
+        assert ReasoningTrainingConfig().max_trace_chars == 100_000
+        assert ReasoningTrainingConfig.from_dict({}).max_trace_chars == 100_000
+
+    def test_from_dict_ignores_legacy_max_traces_per_scan_key(self) -> None:
+        # max_traces_per_scan was removed (u2): an old config.toml/dict still
+        # carrying the key must load without raising, and the field must not
+        # reappear on the resulting instance.
+        rt = ReasoningTrainingConfig.from_dict({"max_traces_per_scan": 500, "min_confidence": 0.4})
+        assert not hasattr(rt, "max_traces_per_scan")
+        assert rt.min_confidence == 0.4
+
     def test_from_dict_to_dict_roundtrip(self) -> None:
         rt = ReasoningTrainingConfig(
             mining_enabled=True,

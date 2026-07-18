@@ -261,13 +261,12 @@ def scan_transcripts(
     direct ``projects/<project>/*.jsonl`` layer. Returns staging-ready dicts
     (trace_hash, model, session_id, project, task_context, content,
     content_chars, created_at). Honors the config's model globs, char limits,
-    per-scan cap, lookback window and redaction flag, and updates the
-    incremental scan-state file (keyed by each file's full resolved path, so
-    the extra discovery depth simply accrues new entries).
+    lookback window and redaction flag, and updates the incremental
+    scan-state file (keyed by each file's full resolved path, so the extra
+    discovery depth simply accrues new entries).
 
-    The per-scan cap is a soft target: a file is always scanned whole (so its
-    recorded state never hides un-returned traces), and scanning simply stops
-    after the running total reaches ``max_traces_per_scan``.
+    There is no per-scan cap: every matching file is scanned in full and all
+    its traces are returned, unbounded.
     """
     claude_root = (claude_dir or (Path.home() / ".claude")).resolve()
     projects_dir = claude_root / "projects"
@@ -308,8 +307,6 @@ def scan_transcripts(
         )
         traces.extend(file_traces)
         state[key] = {"mtime": st.st_mtime, "size": st.st_size, "last_line": line_count}
-        if len(traces) >= config.max_traces_per_scan:
-            break
 
     _save_scan_state(state_path, state)
     return traces

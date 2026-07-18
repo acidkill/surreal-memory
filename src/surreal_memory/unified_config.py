@@ -1109,8 +1109,7 @@ class ReasoningTrainingConfig:
     injection_map: tuple[tuple[str, str], ...] = ()
     categories: tuple[str, ...] = _DEFAULT_REASONING_CATEGORIES
     min_trace_chars: int = 200
-    max_trace_chars: int = 20_000
-    max_traces_per_scan: int = 500
+    max_trace_chars: int = 100_000
     scan_lookback_days: int = 30  # 0 = full backfill
     retention_days: int = 90
     max_traces_total: int = 20_000
@@ -1132,7 +1131,6 @@ class ReasoningTrainingConfig:
             "categories": list(self.categories),
             "min_trace_chars": self.min_trace_chars,
             "max_trace_chars": self.max_trace_chars,
-            "max_traces_per_scan": self.max_traces_per_scan,
             "scan_lookback_days": self.scan_lookback_days,
             "retention_days": self.retention_days,
             "max_traces_total": self.max_traces_total,
@@ -1192,8 +1190,7 @@ class ReasoningTrainingConfig:
             injection_map=tuple(injection_pairs),
             categories=categories,
             min_trace_chars=_int("min_trace_chars", 200, 0, 1_000_000),
-            max_trace_chars=_int("max_trace_chars", 20_000, 1, 10_000_000),
-            max_traces_per_scan=_int("max_traces_per_scan", 500, 1, 1_000_000),
+            max_trace_chars=_int("max_trace_chars", 100_000, 1, 10_000_000),
             scan_lookback_days=_int("scan_lookback_days", 30, 0, 100_000),
             retention_days=_int("retention_days", 90, 1, 100_000),
             max_traces_total=_int("max_traces_total", 20_000, 1, 100_000_000),
@@ -1773,7 +1770,6 @@ class UnifiedConfig:
             f"categories = [{cats}]",
             f"min_trace_chars = {rt.min_trace_chars}",
             f"max_trace_chars = {rt.max_trace_chars}",
-            f"max_traces_per_scan = {rt.max_traces_per_scan}",
             f"scan_lookback_days = {rt.scan_lookback_days}",
             f"retention_days = {rt.retention_days}",
             f"max_traces_total = {rt.max_traces_total}",

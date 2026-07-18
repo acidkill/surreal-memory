@@ -123,6 +123,8 @@ class ReasoningConfigUpdate(BaseModel):
     mining_models: list[str] | None = None
     injection_map: dict[str, str] | None = None
     categories: list[str] | None = None
+    min_trace_chars: int | None = Field(None, ge=0, le=1_000_000)
+    max_trace_chars: int | None = Field(None, ge=1, le=10_000_000)
     scan_lookback_days: int | None = Field(None, ge=0, le=100_000)
     retention_days: int | None = Field(None, ge=1, le=100_000)
     max_traces_total: int | None = Field(None, ge=1, le=10_000_000)
@@ -383,6 +385,8 @@ async def update_config(body: ReasoningConfigUpdate) -> dict[str, Any]:
         changes["categories"] = deduped
 
     for field_name in (
+        "min_trace_chars",
+        "max_trace_chars",
         "scan_lookback_days",
         "retention_days",
         "max_traces_total",

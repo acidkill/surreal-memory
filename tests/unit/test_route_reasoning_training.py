@@ -263,6 +263,20 @@ def test_config_rejects_bad_category_name(
     assert resp.status_code == 422
 
 
+def test_config_trace_chars_roundtrip(client: TestClient, config_capture: dict[str, Any]) -> None:
+    resp = client.put(
+        "/api/dashboard/reasoning/config",
+        json={"min_trace_chars": 500, "max_trace_chars": 50_000},
+    )
+    assert resp.status_code == 200
+    body = resp.json()["config"]
+    assert body["min_trace_chars"] == 500
+    assert body["max_trace_chars"] == 50_000
+    assert config_capture["cfg"].reasoning_training.min_trace_chars == 500
+    assert config_capture["cfg"].reasoning_training.max_trace_chars == 50_000
+    assert config_capture["saved"] is not None  # persisted
+
+
 # ── POST /mine ────────────────────────────────────────────────────────────────
 
 

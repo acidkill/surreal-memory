@@ -573,7 +573,7 @@ async def distill_reasoning_patterns(
         if budget <= 0:
             break
         traces = await storage.get_unprocessed_reasoning_traces(
-            brain_id, limit=rt.max_traces_per_scan, model=model
+            brain_id, limit=_BATCH_PER_MODEL, model=model
         )
         traces = traces[:_BATCH_PER_MODEL]  # one bounded batch per model per run
         if not traces:

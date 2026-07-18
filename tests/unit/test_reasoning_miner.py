@@ -321,15 +321,24 @@ def test_symlink_escape_blocked_at_depth(tmp_path: Path) -> None:
     assert _scan(claude, _cfg(), tmp_path / "state.json") == []
 
 
-def test_max_traces_per_scan_soft_cap(tmp_path: Path) -> None:
+def test_scan_returns_all_traces_unbounded(tmp_path: Path) -> None:
+    """No per-scan cap: many files' worth of traces are all returned, uncapped."""
     claude = tmp_path / ".claude"
-    entries = [
-        _assistant(f"reasoning trace number {i} long enough", uuid=f"u{i}") for i in range(5)
-    ]
-    _write_transcript(claude, entries)
-    traces = _scan(claude, _cfg(max_traces_per_scan=3), tmp_path / "state.json")
-    # Whole file is scanned (no mid-file loss); cap only stops scanning MORE files.
-    assert len(traces) == 5
+    files = 6
+    per_file = 4
+    total = files * per_file
+    for f in range(files):
+        entries = [
+            _assistant(
+                f"reasoning trace file {f} number {i} long enough to qualify",
+                session=f"s{f}",
+                uuid=f"u{f}-{i}",
+            )
+            for i in range(per_file)
+        ]
+        _write_transcript(claude, entries, slug=f"proj-{f}")
+    traces = _scan(claude, _cfg(), tmp_path / "state.json")
+    assert len(traces) == total
 
 
 async def test_ingest_reasoning_traces_into_storage(tmp_path: Path) -> None:
