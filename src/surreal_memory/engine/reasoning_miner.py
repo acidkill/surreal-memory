@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass
@@ -239,6 +240,40 @@ def _save_scan_state(state_path: Path | None, state: dict[str, dict[str, Any]]) 
         logger.debug("reasoning scan-state write failed: %s", state_path, exc_info=True)
 
 
+def _plan_file_scan(
+    st: os.stat_result,
+    prev: dict[str, Any],
+    cutoff_ts: float | None,
+    *,
+    backfill: bool,
+) -> tuple[bool, int]:
+    """Decide whether to skip a transcript file and which line to resume from.
+
+    Normal scans (``backfill=False``) apply today's incrementality exactly as
+    before: honor the lookback cutoff, skip files whose size+mtime are
+    unchanged since the last scan, and resume after the last processed line on
+    append-only growth (falling back to line 0 on shrink/rewrite).
+
+    A backfill scan (``backfill=True``) is a full re-scan BYPASS, not a
+    state-deletion: it ignores the lookback cutoff and the size+mtime skip and
+    always reads from line 0, regardless of what the scan-state says. It never
+    deletes or resets the state file — the caller still records this file's
+    fresh ``(mtime, size, last_line)`` afterward exactly as a normal scan
+    would, so trace_hash dedup at insert time makes the re-emission harmless
+    and a LATER normal scan sees the file as unchanged and skips it again.
+
+    Returns ``(skip, start_line)``.
+    """
+    if backfill:
+        return False, 0
+    if cutoff_ts is not None and st.st_mtime < cutoff_ts:
+        return True, 0
+    if prev.get("size") == st.st_size and prev.get("mtime") == st.st_mtime:
+        return True, 0
+    start_line = int(prev.get("last_line", 0)) if st.st_size > int(prev.get("size", 0)) else 0
+    return False, start_line
+
+
 @dataclass
 class ReasoningIngestResult:
     """Outcome of a reasoning-trace ingest pass."""
@@ -253,6 +288,7 @@ def scan_transcripts(
     state_path: Path | None = None,
     claude_dir: Path | None = None,
     now: datetime | None = None,
+    backfill: bool = False,
 ) -> list[dict[str, Any]]:
     """Scan ``~/.claude/projects/**/*.jsonl`` for mineable reasoning traces.
 
@@ -267,6 +303,14 @@ def scan_transcripts(
 
     There is no per-scan cap: every matching file is scanned in full and all
     its traces are returned, unbounded.
+
+    ``backfill=True`` is a full re-scan BYPASS (see ``_plan_file_scan``): it
+    ignores the lookback cutoff, the size+mtime skip and any resume line for
+    EVERY discovered file, re-reading each one from the top. It is not
+    state-deletion — the scan-state entry for each file is still (re)written
+    afterward exactly as in a normal scan, so trace_hash dedup at insert time
+    keeps the re-emission harmless and a later normal (``backfill=False``)
+    scan again sees unchanged files and skips them cheaply.
     """
     claude_root = (claude_dir or (Path.home() / ".claude")).resolve()
     projects_dir = claude_root / "projects"
@@ -288,18 +332,11 @@ def scan_transcripts(
             st = resolved.stat()
         except OSError:
             continue
-        # Lookback window: skip transcripts untouched within scan_lookback_days.
-        if cutoff_ts is not None and st.st_mtime < cutoff_ts:
-            continue
         key = str(resolved)
         prev = state.get(key, {})
-        # Incremental: skip files whose size+mtime are unchanged since last scan.
-        if prev.get("size") == st.st_size and prev.get("mtime") == st.st_mtime:
+        skip, start_line = _plan_file_scan(st, prev, cutoff_ts, backfill=backfill)
+        if skip:
             continue
-        # Resume after the last processed line on append-only growth; otherwise
-        # (shrunk / rewritten / edited-in-place) rescan from the top — trace_hash
-        # dedup keeps any re-emitted traces harmless at insert time.
-        start_line = int(prev.get("last_line", 0)) if st.st_size > int(prev.get("size", 0)) else 0
 
         project = _project_from_path(resolved, projects_dir)
         file_traces, line_count = _scan_file(
@@ -450,10 +487,14 @@ async def ingest_reasoning_traces(
     claude_dir: Path | None = None,
     state_path: Path | None = None,
     now: datetime | None = None,
+    backfill: bool = False,
 ) -> ReasoningIngestResult:
     """Scan transcripts and insert new reasoning traces into staging.
 
     The scan-state file lives under ``config.data_dir`` unless overridden.
+    ``backfill=True`` forwards to ``scan_transcripts`` and forces a full
+    re-scan bypass (see its docstring) — it is never set for background
+    consolidation, only for an explicit user-triggered mining run.
     """
     resolved_state = state_path or (config.data_dir / "reasoning_scan_state.json")
     traces = scan_transcripts(
@@ -461,6 +502,7 @@ async def ingest_reasoning_traces(
         state_path=resolved_state,
         claude_dir=claude_dir,
         now=now,
+        backfill=backfill,
     )
     if not traces:
         return ReasoningIngestResult(traces_ingested=0, traces_scanned=0)

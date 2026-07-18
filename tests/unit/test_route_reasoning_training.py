@@ -350,6 +350,38 @@ def test_mine_isolated_per_brain(
     assert client.post("/api/dashboard/reasoning/mine", json={}).status_code == 202
 
 
+async def test_run_mining_forwards_backfill_to_ingest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # _run_mining must forward backfill=True into ingest_reasoning_traces (the
+    # miner's real full-rescan bypass), on top of the scan_lookback_days=0
+    # override it already applies.
+    monkeypatch.setattr(
+        "surreal_memory.unified_config.get_config",
+        lambda: _cfg(tmp_path, mining_enabled=True),
+    )
+    storage = AsyncMock()
+    storage.close = AsyncMock()
+    monkeypatch.setattr(
+        "surreal_memory.unified_config.create_isolated_storage",
+        AsyncMock(return_value=storage),
+    )
+    ingest_mock = AsyncMock(return_value=SimpleNamespace(traces_ingested=1, traces_scanned=1))
+    distill_mock = AsyncMock(
+        return_value=SimpleNamespace(patterns_learned=0, traces_processed=1, models_seen=1)
+    )
+    monkeypatch.setattr(
+        "surreal_memory.engine.reasoning_miner.ingest_reasoning_traces", ingest_mock
+    )
+    monkeypatch.setattr(
+        "surreal_memory.engine.reasoning_distiller.distill_reasoning_patterns", distill_mock
+    )
+
+    await rt_module._run_mining(BRAIN_ID, True, False, None)
+
+    assert ingest_mock.await_args.kwargs["backfill"] is True
+
+
 # ── GET/DELETE patterns ───────────────────────────────────────────────────────
 
 

@@ -136,6 +136,40 @@ def test_incremental_state_rescans_changed(tmp_path: Path) -> None:
     assert "second reasoning" in traces[0]["content"]
 
 
+def test_backfill_bypasses_unchanged_skip(tmp_path: Path) -> None:
+    # A normal scan skips a file whose size+mtime are unchanged since the
+    # last scan (see test_incremental_state_skips_unchanged), but a backfill
+    # scan re-emits its traces regardless — bypass, not state-deletion.
+    claude = tmp_path / ".claude"
+    state = tmp_path / "state.json"
+    _write_transcript(claude, [_assistant("a long enough reasoning trace here", uuid="a")])
+    assert len(_scan(claude, _cfg(), state)) == 1
+    assert _scan(claude, _cfg(), state) == []  # normal 2nd scan: unchanged → skipped
+
+    backfilled = scan_transcripts(
+        _cfg(), state_path=state, claude_dir=claude, now=_NOW, backfill=True
+    )
+    assert len(backfilled) == 1
+    assert "long enough reasoning trace" in backfilled[0]["content"]
+
+
+def test_normal_scan_after_backfill_yields_nothing_new(tmp_path: Path) -> None:
+    # After a backfill re-scan, the scan-state entry is rewritten just like a
+    # normal scan would (never deleted) — so a THIRD, normal scan sees the
+    # file as unchanged again and stays cheap.
+    claude = tmp_path / ".claude"
+    state = tmp_path / "state.json"
+    _write_transcript(claude, [_assistant("a long enough reasoning trace here", uuid="a")])
+    assert len(_scan(claude, _cfg(), state)) == 1  # 1st: normal, populates state
+
+    backfilled = scan_transcripts(
+        _cfg(), state_path=state, claude_dir=claude, now=_NOW, backfill=True
+    )
+    assert len(backfilled) == 1  # 2nd: backfill, bypasses skip, rewrites state
+
+    assert _scan(claude, _cfg(), state) == []  # 3rd: normal, nothing new
+
+
 def test_model_glob_filter(tmp_path: Path) -> None:
     claude = tmp_path / ".claude"
     _write_transcript(
@@ -366,6 +400,51 @@ async def test_ingest_reasoning_traces_into_storage(tmp_path: Path) -> None:
     stats = await storage.get_reasoning_stats("b1")
     assert stats["total"] == 2
     assert set(stats["by_model"]) == {"claude-fable-5", "claude-sonnet-5"}
+
+
+async def test_second_consecutive_backfill_ingest_is_noop_at_storage(tmp_path: Path) -> None:
+    # Backfill bypasses the miner's size+mtime skip, so a 2nd backfill still
+    # RE-SCANS the file and re-emits its trace — but trace_hash dedup at the
+    # storage layer means nothing NEW actually gets inserted the 2nd time.
+    claude = tmp_path / ".claude"
+    _write_transcript(
+        claude,
+        [_assistant("reasoning trace long enough for backfill dedup test", uuid="a")],
+    )
+    storage = InMemoryStorage()
+    storage.set_brain("b1")
+    cfg = UnifiedConfig(
+        data_dir=tmp_path / ".surrealmemory",
+        current_brain="default",
+        reasoning_training=_cfg(),
+    )
+    state_path = tmp_path / "state.json"
+
+    first = await ingest_reasoning_traces(
+        storage,
+        "b1",
+        cfg,
+        claude_dir=claude,
+        state_path=state_path,
+        now=_NOW,
+        backfill=True,
+    )
+    assert first.traces_ingested == 1
+
+    second = await ingest_reasoning_traces(
+        storage,
+        "b1",
+        cfg,
+        claude_dir=claude,
+        state_path=state_path,
+        now=_NOW,
+        backfill=True,
+    )
+    assert second.traces_scanned == 1  # the miner still re-emits it (bypass)
+    assert second.traces_ingested == 0  # but storage-layer dedup drops it
+
+    stats = await storage.get_reasoning_stats("b1")
+    assert stats["total"] == 1  # no duplicate row was created
 
 
 def _fake_unified_config(tmp_path: Path, *, mining_enabled: bool) -> UnifiedConfig:

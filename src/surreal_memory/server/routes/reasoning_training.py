@@ -448,7 +448,7 @@ async def _run_mining(
         # return the shared instance, which must NOT be closed out from under others.
         owns_storage = config.storage_backend == "surrealdb"
         try:
-            ingest = await ingest_reasoning_traces(storage, brain_id, run_config)
+            ingest = await ingest_reasoning_traces(storage, brain_id, run_config, backfill=backfill)
             distill = await distill_reasoning_patterns(storage, brain_id, run_config)
             state.update(
                 traces_ingested=ingest.traces_ingested,

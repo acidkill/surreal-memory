@@ -174,7 +174,7 @@ def reasoning_mine(
                 overrides["mining_models"] = model_list
             run_cfg = dc_replace(ucfg, reasoning_training=dc_replace(rt, **overrides))
 
-            ingest = await ingest_reasoning_traces(storage, brain_id, run_cfg)
+            ingest = await ingest_reasoning_traces(storage, brain_id, run_cfg, backfill=backfill)
             distill = await distill_reasoning_patterns(storage, brain_id, run_cfg)
             result = {
                 "traces_ingested": ingest.traces_ingested,
