@@ -96,7 +96,18 @@
     "wipeTracesTitle": "Wipe traces?",
     "wipeTracesDesc": "Permanently delete all staged reasoning traces for \"{{model}}\"? This cannot be undone.",
     "tracesWiped": "Wiped {{count}} trace(s).",
-    "duplicateTarget": "Duplicate target \"{{target}}\" — each target maps to only one source."
+    "duplicateTarget": "Duplicate target \"{{target}}\" — each target maps to only one source.",
+    "targetsTitle": "Pattern targets",
+    "targetsHint": "How many strategy patterns to distill per model. 0 = detect only; raise a slider, then run mining.",
+    "targetsZeroHint": "Set a target above 0 and run mining to distill this model.",
+    "targetCounts": "{{patterns}} patterns · {{traces}} traces",
+    "progressScanning": "Scanning transcripts",
+    "progressIngesting": "Ingesting traces",
+    "progressDistilling": "Distilling patterns",
+    "progressDone": "Done",
+    "progressFiles": "{{scanned}} / {{total}} files",
+    "progressTraces": "{{found}} found · {{ingested}} new",
+    "progressModels": "{{model}} ({{done}}/{{total}}) · {{patterns}} patterns"
   },
   "overview": {
     "title": "Overview",

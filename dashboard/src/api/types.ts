@@ -487,18 +487,18 @@ export interface ReasoningConfig {
   categories: string[]
   min_trace_chars: number
   max_trace_chars: number
-  max_traces_per_scan: number
   scan_lookback_days: number
   retention_days: number
   max_traces_total: number
   min_cluster_support: number
-  max_patterns_per_run: number
   min_confidence: number
   min_patterns_per_category: number
   injection_max_patterns: number
   injection_max_chars: number
   distill_use_llm: boolean
   redact_secrets: boolean
+  // Per-model distillation targets (model -> desired pattern count, 0..100).
+  pattern_targets: Record<string, number>
 }
 
 export interface ModelTraceStats {
@@ -517,12 +517,22 @@ export interface CategoryCoverage {
   covered: boolean
 }
 
+export type MiningPhase = "idle" | "scanning" | "ingesting" | "distilling" | "done"
+
 export interface MiningJobState {
   running: boolean
   started_at: string | null
   finished_at: string | null
+  phase: MiningPhase
+  files_total: number
+  files_scanned: number
+  traces_found: number
   traces_ingested: number
+  traces_processed: number
   patterns_learned: number
+  current_model: string | null
+  models_done: number
+  models_total: number
   dry_run: boolean
   error: string | null
 }
@@ -546,15 +556,17 @@ export interface ReasoningConfigUpdate {
   mining_models?: string[]
   injection_map?: Record<string, string>
   categories?: string[]
+  min_trace_chars?: number
+  max_trace_chars?: number
   scan_lookback_days?: number
   retention_days?: number
   max_traces_total?: number
   min_cluster_support?: number
-  max_patterns_per_run?: number
   min_confidence?: number
   min_patterns_per_category?: number
   injection_max_patterns?: number
   injection_max_chars?: number
+  pattern_targets?: Record<string, number>
 }
 
 export interface ReasoningConfigUpdateResponse {

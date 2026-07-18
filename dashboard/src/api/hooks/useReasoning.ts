@@ -22,8 +22,8 @@ export function useReasoningStatus() {
   return useQuery({
     queryKey: keys.status,
     queryFn: () => api.get<ReasoningStatusResponse>("/api/dashboard/reasoning/status"),
-    // Poll while a mining job is running so counts/coverage update live.
-    refetchInterval: (query) => (query.state.data?.mining.running ? 3000 : false),
+    // Poll while a mining job is running so live progress + counts update.
+    refetchInterval: (query) => (query.state.data?.mining.running ? 1500 : false),
   })
 }
 

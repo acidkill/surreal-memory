@@ -11,10 +11,64 @@ import {
   useUpdateReasoningConfig,
   useWipeTraces,
 } from "@/api/hooks/useReasoning"
-import type { ReasoningStatusResponse } from "@/api/types"
+import type { MiningJobState, ReasoningStatusResponse } from "@/api/types"
 
 interface Props {
   status: ReasoningStatusResponse
+}
+
+function MiningProgressBlock({ mining }: { mining: MiningJobState }) {
+  const { t } = useTranslation()
+  const { phase, files_total, files_scanned, traces_found, traces_ingested } = mining
+  const pct = files_total > 0 ? Math.round((files_scanned / files_total) * 100) : 0
+  const scanning = phase === "scanning" || phase === "ingesting"
+  const phaseLabel =
+    phase === "scanning"
+      ? t("reasoning.progressScanning")
+      : phase === "ingesting"
+        ? t("reasoning.progressIngesting")
+        : phase === "distilling"
+          ? t("reasoning.progressDistilling")
+          : t("reasoning.progressDone")
+
+  return (
+    <div
+      data-testid="mining-progress"
+      className="space-y-2 rounded-md border border-border bg-muted/40 p-3"
+    >
+      <div className="flex items-center justify-between text-xs">
+        <span className="font-medium">{phaseLabel}</span>
+        {scanning && files_total > 0 && (
+          <span className="font-mono tabular-nums text-muted-foreground">
+            {t("reasoning.progressFiles", { scanned: files_scanned, total: files_total })}
+          </span>
+        )}
+      </div>
+      {scanning && files_total > 0 && (
+        <div className="h-2 overflow-hidden rounded-full bg-muted">
+          <div
+            className="h-full rounded-full bg-primary transition-all duration-300"
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+      )}
+      {scanning && (
+        <p className="text-xs text-muted-foreground">
+          {t("reasoning.progressTraces", { found: traces_found, ingested: traces_ingested })}
+        </p>
+      )}
+      {phase === "distilling" && (
+        <p className="font-mono text-xs text-muted-foreground">
+          {t("reasoning.progressModels", {
+            model: mining.current_model ?? "",
+            done: mining.models_done,
+            total: mining.models_total,
+            patterns: mining.patterns_learned,
+          })}
+        </p>
+      )}
+    </div>
+  )
 }
 
 export function MiningConfigCard({ status }: Props) {
@@ -169,6 +223,8 @@ export function MiningConfigCard({ status }: Props) {
             {running ? t("reasoning.miningRunning") : t("reasoning.runMining")}
           </Button>
         </div>
+
+        {running && <MiningProgressBlock mining={status.mining} />}
       </CardContent>
 
       <ConfirmDialog

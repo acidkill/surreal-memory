@@ -8,6 +8,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { useReasoningStatus } from "@/api/hooks/useReasoning"
 import type { ReasoningStatusResponse } from "@/api/types"
 import { MiningConfigCard } from "./MiningConfigCard"
+import { PatternTargetsCard } from "./PatternTargetsCard"
 import { InjectionMappingCard } from "./InjectionMappingCard"
 import { PatternsTable } from "./PatternsTable"
 
@@ -126,8 +127,10 @@ export default function ReasoningPage() {
 
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
             <MiningConfigCard status={status} />
-            <InjectionMappingCard status={status} />
+            <PatternTargetsCard status={status} />
           </div>
+
+          <InjectionMappingCard status={status} />
 
           <PatternsTable
             detectedModels={status.detected_models}
