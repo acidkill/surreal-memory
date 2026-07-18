@@ -259,6 +259,68 @@ def test_files_outside_projects_glob_ignored(tmp_path: Path) -> None:
     assert _scan(claude, _cfg(), tmp_path / "state.json") == []
 
 
+def test_nested_session_directory_discovered(tmp_path: Path) -> None:
+    # projects/<project>/<session>/t.jsonl — one level deeper than the old
+    # `projects/*/*.jsonl` glob covered.
+    claude = tmp_path / ".claude"
+    _write_transcript(
+        claude,
+        [_assistant("nested session reasoning trace long enough", uuid="n1")],
+        slug="proj-a/2026-03-01-session1",
+    )
+    traces = _scan(claude, _cfg(), tmp_path / "state.json")
+    assert len(traces) == 1
+    assert traces[0]["project"] == "proj-a"
+
+
+def test_subagent_transcript_discovered_and_attributed_to_project(tmp_path: Path) -> None:
+    # projects/<project>/<session>/subagents/agent-*.jsonl — Task-tool subagent
+    # transcripts must be discovered AND attributed to the top-level project,
+    # not to a literal "subagents" pseudo-project.
+    claude = tmp_path / ".claude"
+    entry = _assistant("subagent reasoning trace long enough to mine", uuid="sa1")
+    entry["isSidechain"] = True
+    _write_transcript(
+        claude,
+        [entry],
+        slug="proj-a/session1/subagents",
+        name="agent-1.jsonl",
+    )
+    traces = _scan(claude, _cfg(), tmp_path / "state.json")
+    assert len(traces) == 1
+    assert traces[0]["project"] == "proj-a"
+
+
+def test_stray_file_directly_in_projects_dir_ignored(tmp_path: Path) -> None:
+    # A jsonl sitting directly in projects/ (no project subdirectory) isn't
+    # associated with any project and must be skipped, even though it's a
+    # deeper scan than the old glob.
+    claude = tmp_path / ".claude"
+    (claude / "projects").mkdir(parents=True, exist_ok=True)
+    (claude / "projects" / "stray.jsonl").write_text(
+        json.dumps(_assistant("stray at projects root long enough", uuid="s1")) + "\n",
+        encoding="utf-8",
+    )
+    assert _scan(claude, _cfg(), tmp_path / "state.json") == []
+
+
+def test_symlink_escape_blocked_at_depth(tmp_path: Path) -> None:
+    # A symlink nested several directories deep that resolves outside
+    # ~/.claude must still be rejected by the path-escape guard.
+    claude = tmp_path / ".claude"
+    session_dir = claude / "projects" / "proj-a" / "session1"
+    session_dir.mkdir(parents=True, exist_ok=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    real = outside / "evil.jsonl"
+    real.write_text(
+        json.dumps(_assistant("escaped reasoning trace long enough", uuid="e1")) + "\n",
+        encoding="utf-8",
+    )
+    (session_dir / "evil.jsonl").symlink_to(real)
+    assert _scan(claude, _cfg(), tmp_path / "state.json") == []
+
+
 def test_max_traces_per_scan_soft_cap(tmp_path: Path) -> None:
     claude = tmp_path / ".claude"
     entries = [

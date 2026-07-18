@@ -166,9 +166,50 @@ def _extract_user_text(entry: dict[str, Any]) -> str:
     return ""
 
 
-def _project_from_path(jsonl: Path) -> str:
-    """Derive a readable project name from the transcript's parent directory."""
-    return jsonl.parent.name
+def _project_from_path(resolved: Path, projects_dir: Path) -> str:
+    """Derive the top-level project name from the transcript's location under *projects_dir*.
+
+    Uses the first path segment under ``projects/`` (e.g. ``proj-a`` for both
+    ``proj-a/session.jsonl`` and ``proj-a/session/subagents/agent-1.jsonl``),
+    NOT the immediate parent directory — so nested session transcripts and Task-tool
+    subagent transcripts attribute to their actual project instead of a literal
+    session-id or ``"subagents"`` pseudo-project.
+    """
+    try:
+        rel = resolved.relative_to(projects_dir.resolve())
+    except ValueError:
+        return resolved.parent.name
+    return rel.parts[0]
+
+
+def _discover_transcripts(projects_dir: Path, claude_root: Path) -> list[tuple[Path, Path]]:
+    """Recursively discover transcript files under *projects_dir*.
+
+    Covers not just the direct ``projects/<project>/*.jsonl`` layer but also
+    session transcripts nested in dated/session subdirectories and Task-tool
+    subagent transcripts (``projects/<project>/<session>/subagents/agent-*.jsonl``),
+    which a one-level glob misses entirely.
+
+    Each candidate must (a) resolve inside *claude_root* — a path-escape guard
+    against symlink/traversal tricks, checked at every depth, not just the top
+    level — and (b) sit at least one directory below *projects_dir*: a stray
+    file placed directly in ``projects/`` isn't associated with any project and
+    is skipped. Returns ``(original, resolved)`` pairs sorted by original path.
+    """
+    projects_root = projects_dir.resolve()
+    discovered: list[tuple[Path, Path]] = []
+    for jsonl in sorted(projects_dir.rglob("*.jsonl")):
+        resolved = jsonl.resolve()
+        if not resolved.is_relative_to(claude_root):
+            continue
+        try:
+            rel = resolved.relative_to(projects_root)
+        except ValueError:
+            continue
+        if len(rel.parts) < 2:
+            continue
+        discovered.append((jsonl, resolved))
+    return discovered
 
 
 def _now_ts(now: datetime | None) -> float:
@@ -213,12 +254,16 @@ def scan_transcripts(
     claude_dir: Path | None = None,
     now: datetime | None = None,
 ) -> list[dict[str, Any]]:
-    """Scan ``~/.claude/projects/*/*.jsonl`` for mineable reasoning traces.
+    """Scan ``~/.claude/projects/**/*.jsonl`` for mineable reasoning traces.
 
-    Returns staging-ready dicts (trace_hash, model, session_id, project,
-    task_context, content, content_chars, created_at). Honors the config's
-    model globs, char limits, per-scan cap, lookback window and redaction flag,
-    and updates the incremental scan-state file.
+    Discovery is recursive (see ``_discover_transcripts``): it covers nested
+    session transcripts and Task-tool subagent transcripts, not just the
+    direct ``projects/<project>/*.jsonl`` layer. Returns staging-ready dicts
+    (trace_hash, model, session_id, project, task_context, content,
+    content_chars, created_at). Honors the config's model globs, char limits,
+    per-scan cap, lookback window and redaction flag, and updates the
+    incremental scan-state file (keyed by each file's full resolved path, so
+    the extra discovery depth simply accrues new entries).
 
     The per-scan cap is a soft target: a file is always scanned whole (so its
     recorded state never hides un-returned traces), and scanning simply stops
@@ -239,11 +284,7 @@ def scan_transcripts(
     traces: list[dict[str, Any]] = []
     seen_hashes: set[str] = set()
 
-    for jsonl in sorted(projects_dir.glob("*/*.jsonl")):
-        resolved = jsonl.resolve()
-        # Path-escape guard: never read outside ~/.claude (symlink / traversal).
-        if not resolved.is_relative_to(claude_root):
-            continue
+    for _jsonl, resolved in _discover_transcripts(projects_dir, claude_root):
         try:
             st = resolved.stat()
         except OSError:
@@ -261,8 +302,9 @@ def scan_transcripts(
         # dedup keeps any re-emitted traces harmless at insert time.
         start_line = int(prev.get("last_line", 0)) if st.st_size > int(prev.get("size", 0)) else 0
 
+        project = _project_from_path(resolved, projects_dir)
         file_traces, line_count = _scan_file(
-            resolved, config, seen_hashes, fallback_created, start_line=start_line
+            resolved, config, seen_hashes, fallback_created, project, start_line=start_line
         )
         traces.extend(file_traces)
         state[key] = {"mtime": st.st_mtime, "size": st.st_size, "last_line": line_count}
@@ -278,6 +320,7 @@ def _scan_file(
     config: ReasoningTrainingConfig,
     seen_hashes: set[str],
     fallback_created: str,
+    project: str,
     *,
     start_line: int = 0,
 ) -> tuple[list[dict[str, Any]], int]:
@@ -286,7 +329,6 @@ def _scan_file(
     ``start_line`` resumes after an already-processed prefix (append-only
     growth), so a resumed scan does not re-emit traces from earlier passes.
     """
-    project = _project_from_path(resolved)
     out: list[dict[str, Any]] = []
     prev_user_text = ""
     line_count = start_line
