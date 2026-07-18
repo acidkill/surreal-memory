@@ -51,6 +51,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     _logger = logging.getLogger(__name__)
 
+    # Ensure surreal_memory.* INFO logs (mining milestones, consolidation) reach
+    # container stdout: uvicorn configures only its own loggers (not the root),
+    # so without this our INFO lines are swallowed by the WARNING-only lastResort
+    # handler. Only act when nothing else has configured logging, to avoid
+    # duplicate lines under an external log config.
+    _sm_logger = logging.getLogger("surreal_memory")
+    if _sm_logger.getEffectiveLevel() > logging.INFO:
+        _sm_logger.setLevel(logging.INFO)
+    if not _sm_logger.handlers and not logging.getLogger().handlers:
+        _handler = logging.StreamHandler()
+        _handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        _sm_logger.addHandler(_handler)
+        _sm_logger.propagate = False
+
     # Register community plugin for full Pro features (no license required)
     try:
         from surreal_memory.plugins import has_pro, register

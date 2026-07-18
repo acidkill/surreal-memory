@@ -137,6 +137,12 @@ def reasoning_mine(
 
         from surreal_memory.engine.reasoning_distiller import distill_reasoning_patterns
         from surreal_memory.engine.reasoning_miner import ingest_reasoning_traces
+        from surreal_memory.engine.reasoning_progress import (
+            PHASE_DISTILLING,
+            PHASE_INGESTING,
+            PHASE_SCANNING,
+            MiningProgress,
+        )
         from surreal_memory.unified_config import get_config as get_unified_config
 
         config = get_config()
@@ -174,11 +180,40 @@ def reasoning_mine(
                 overrides["mining_models"] = model_list
             run_cfg = dc_replace(ucfg, reasoning_training=dc_replace(rt, **overrides))
 
-            ingest = await ingest_reasoning_traces(storage, brain_id, run_cfg, backfill=backfill)
-            distill = await distill_reasoning_patterns(storage, brain_id, run_cfg, drain=True)
+            # Live progress printer (human output only; keeps --json machine-clean).
+            _prog: dict[str, Any] = {"phase": "", "model": "", "files": -1}
+
+            def _progress(p: MiningProgress) -> None:
+                if json_output:
+                    return
+                if p.phase != _prog["phase"]:
+                    _prog["phase"] = p.phase
+                    typer.echo(f"[{p.phase}]")
+                if p.phase in (PHASE_SCANNING, PHASE_INGESTING):
+                    if p.files_total and p.files_scanned - int(_prog["files"]) >= 250:
+                        _prog["files"] = p.files_scanned
+                        typer.echo(
+                            f"  scanned {p.files_scanned}/{p.files_total} files "
+                            f"· {p.traces_found} traces"
+                        )
+                elif (
+                    p.phase == PHASE_DISTILLING
+                    and p.current_model
+                    and p.current_model != _prog["model"]
+                ):
+                    _prog["model"] = p.current_model
+                    typer.echo(f"  distilling {p.current_model} ({p.models_done}/{p.models_total})")
+
+            ingest = await ingest_reasoning_traces(
+                storage, brain_id, run_cfg, backfill=backfill, progress=_progress
+            )
+            distill = await distill_reasoning_patterns(
+                storage, brain_id, run_cfg, drain=True, progress=_progress
+            )
             result = {
                 "traces_ingested": ingest.traces_ingested,
                 "patterns_learned": distill.patterns_learned,
+                "files_scanned": ingest.files_scanned,
             }
             if json_output:
                 output_result(result, True)

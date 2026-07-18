@@ -157,6 +157,8 @@ class ReasoningHandler:
             return {
                 "traces_ingested": ingest.traces_ingested,
                 "patterns_learned": distill.patterns_learned,
+                "files_scanned": ingest.files_scanned,
+                "files_total": ingest.files_total,
             }
         finally:
             if owns_storage:

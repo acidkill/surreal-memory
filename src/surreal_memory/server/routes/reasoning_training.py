@@ -27,6 +27,14 @@ from pydantic import BaseModel, Field
 
 from surreal_memory.core.brain import Brain
 from surreal_memory.engine.reasoning_miner import _MODELS_WITHOUT_THINKING, normalize_model
+from surreal_memory.engine.reasoning_progress import (
+    PHASE_DISTILLING,
+    PHASE_DONE,
+    PHASE_IDLE,
+    PHASE_INGESTING,
+    PHASE_SCANNING,
+    MiningProgress,
+)
 from surreal_memory.server.dependencies import get_brain, get_storage, require_local_request
 from surreal_memory.server.models import ErrorResponse
 from surreal_memory.storage.base import NeuralStorage
@@ -60,8 +68,16 @@ def _idle_mining_state() -> dict[str, Any]:
         "running": False,
         "started_at": None,
         "finished_at": None,
+        "phase": PHASE_IDLE,
+        "files_total": 0,
+        "files_scanned": 0,
+        "traces_found": 0,
         "traces_ingested": 0,
+        "traces_processed": 0,
         "patterns_learned": 0,
+        "current_model": None,
+        "models_done": 0,
+        "models_total": 0,
         "dry_run": False,
         "error": None,
     }
@@ -96,8 +112,16 @@ class MiningJobState(BaseModel):
     running: bool
     started_at: str | None = None
     finished_at: str | None = None
+    phase: str = PHASE_IDLE
+    files_total: int = 0
+    files_scanned: int = 0
+    traces_found: int = 0
     traces_ingested: int = 0
+    traces_processed: int = 0
     patterns_learned: int = 0
+    current_model: str | None = None
+    models_done: int = 0
+    models_total: int = 0
     dry_run: bool = False
     error: str | None = None
 
@@ -450,7 +474,7 @@ async def _run_mining(
     try:
         if dry_run:
             # Parity with consolidation dry_run: no scanning, no writes.
-            state.update(traces_ingested=0, patterns_learned=0)
+            state.update(phase=PHASE_DONE, traces_ingested=0, patterns_learned=0)
             return
 
         config = get_config()
@@ -462,17 +486,68 @@ async def _run_mining(
             overrides["mining_models"] = tuple(models)
         run_config = dc_replace(config, reasoning_training=dc_replace(rt, **overrides))
 
+        def _on_progress(p: MiningProgress) -> None:
+            # Merge per phase so distill snapshots (which don't know file counts)
+            # don't zero out the ingest phase's file/trace counters.
+            updates: dict[str, Any] = {"phase": p.phase}
+            if p.phase in (PHASE_SCANNING, PHASE_INGESTING):
+                updates.update(
+                    files_total=p.files_total,
+                    files_scanned=p.files_scanned,
+                    traces_found=p.traces_found,
+                    traces_ingested=p.traces_ingested,
+                )
+            elif p.phase == PHASE_DISTILLING:
+                updates.update(
+                    traces_processed=p.traces_processed,
+                    patterns_learned=p.patterns_learned,
+                    current_model=p.current_model,
+                    models_done=p.models_done,
+                    models_total=p.models_total,
+                )
+            state.update(updates)
+
         storage = await create_isolated_storage(brain_id)
         # We own the isolated SurrealDB instance and must close it; SQLite / in-memory
         # return the shared instance, which must NOT be closed out from under others.
         owns_storage = config.storage_backend == "surrealdb"
         try:
-            ingest = await ingest_reasoning_traces(storage, brain_id, run_config, backfill=backfill)
-            # Manual POST /mine drains each model to its per-target budget.
-            distill = await distill_reasoning_patterns(storage, brain_id, run_config, drain=True)
+            logger.info("reasoning mining started for brain %s (backfill=%s)", brain_id, backfill)
+            state["phase"] = PHASE_SCANNING
+            ingest = await ingest_reasoning_traces(
+                storage, brain_id, run_config, backfill=backfill, progress=_on_progress
+            )
+            logger.info(
+                "reasoning ingest done for brain %s: %d/%d files, %d traces (%d new)",
+                brain_id,
+                ingest.files_scanned,
+                ingest.files_total,
+                ingest.traces_scanned,
+                ingest.traces_ingested,
+            )
             state.update(
+                phase=PHASE_DISTILLING,
+                files_total=ingest.files_total,
+                files_scanned=ingest.files_scanned,
+                traces_found=ingest.traces_scanned,
                 traces_ingested=ingest.traces_ingested,
+            )
+            distill = await distill_reasoning_patterns(
+                storage, brain_id, run_config, drain=True, progress=_on_progress
+            )
+            state.update(
+                phase=PHASE_DONE,
+                traces_ingested=ingest.traces_ingested,
+                traces_processed=distill.traces_processed,
                 patterns_learned=distill.patterns_learned,
+                models_done=distill.models_seen,
+                models_total=distill.models_seen,
+            )
+            logger.info(
+                "reasoning mining done for brain %s: %d patterns from %d traces processed",
+                brain_id,
+                distill.patterns_learned,
+                distill.traces_processed,
             )
         finally:
             if owns_storage:

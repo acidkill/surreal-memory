@@ -162,6 +162,99 @@ def test_status_denylisted_model_has_no_thinking(
     assert opus["has_thinking_text"] is False
 
 
+def test_status_idle_has_progress_fields(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("surreal_memory.unified_config.get_config", lambda: _cfg(tmp_path))
+    mining = client.get("/api/dashboard/reasoning/status").json()["mining"]
+    assert mining["phase"] == "idle"
+    assert mining["files_total"] == 0
+    assert mining["files_scanned"] == 0
+    assert mining["traces_found"] == 0
+    assert mining["traces_processed"] == 0
+    assert mining["current_model"] is None
+    assert mining["models_done"] == 0
+    assert mining["models_total"] == 0
+
+
+async def test_run_mining_wires_progress_and_finishes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from surreal_memory.engine.reasoning_progress import (
+        PHASE_DISTILLING,
+        PHASE_INGESTING,
+        MiningProgress,
+    )
+
+    cfg = _cfg(tmp_path, mining_enabled=True)
+    monkeypatch.setattr("surreal_memory.unified_config.get_config", lambda *a, **k: cfg)
+    monkeypatch.setattr(
+        "surreal_memory.unified_config.create_isolated_storage",
+        AsyncMock(return_value=AsyncMock()),
+    )
+
+    captured: list[dict[str, Any]] = []
+
+    async def _fake_ingest(
+        storage: Any, brain_id: str, config: Any, *, backfill: bool = False, progress: Any = None
+    ) -> SimpleNamespace:
+        if progress is not None:
+            progress(
+                MiningProgress(
+                    phase=PHASE_INGESTING,
+                    files_total=10,
+                    files_scanned=5,
+                    traces_found=3,
+                    traces_ingested=2,
+                )
+            )
+            captured.append(dict(rt_module._mining_states[brain_id]))
+        return SimpleNamespace(
+            traces_ingested=2, traces_scanned=3, files_scanned=10, files_total=10
+        )
+
+    async def _fake_distill(
+        storage: Any, brain_id: str, config: Any, *, drain: bool = False, progress: Any = None
+    ) -> SimpleNamespace:
+        if progress is not None:
+            progress(
+                MiningProgress(
+                    phase=PHASE_DISTILLING,
+                    current_model="claude-fable-5",
+                    models_done=0,
+                    models_total=1,
+                    patterns_learned=1,
+                    traces_processed=2,
+                )
+            )
+        return SimpleNamespace(patterns_learned=1, traces_processed=2, models_seen=1)
+
+    monkeypatch.setattr(
+        "surreal_memory.engine.reasoning_miner.ingest_reasoning_traces", _fake_ingest
+    )
+    monkeypatch.setattr(
+        "surreal_memory.engine.reasoning_distiller.distill_reasoning_patterns", _fake_distill
+    )
+
+    rt_module._mining_states[BRAIN_ID] = rt_module._idle_mining_state()
+    rt_module._mining_states[BRAIN_ID].update(running=True)
+    await rt_module._run_mining(BRAIN_ID, backfill=False, dry_run=False, models=None)
+
+    # An intermediate ingest snapshot was visible mid-run.
+    assert captured and captured[0]["phase"] == PHASE_INGESTING
+    assert captured[0]["files_scanned"] == 5
+    assert captured[0]["traces_found"] == 3
+
+    final = rt_module._mining_states[BRAIN_ID]
+    assert final["phase"] == "done"
+    assert final["running"] is False
+    assert final["finished_at"] is not None
+    assert final["patterns_learned"] == 1
+    assert final["traces_processed"] == 2
+    assert final["files_scanned"] == 10
+    assert final["models_total"] == 1
+
+
 # ── PUT /config ───────────────────────────────────────────────────────────────
 
 
