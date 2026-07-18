@@ -149,17 +149,22 @@ def test_status_with_traces_and_patterns(
 def test_status_denylisted_model_has_no_thinking(
     client: TestClient, mock_storage: AsyncMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # opus-4-8 is no longer denylisted, so use a FICTIONAL denylisted model to
+    # exercise the has_thinking_text=False path (the mechanism still works).
+    monkeypatch.setattr(rt_module, "_MODELS_WITHOUT_THINKING", ("fictional-no-think-model",))
     monkeypatch.setattr("surreal_memory.unified_config.get_config", lambda: _cfg(tmp_path))
     mock_storage.get_reasoning_stats.return_value = {
-        "by_model": {"claude-opus-4-8": {"trace_count": 0, "unprocessed": 0, "last_trace_at": ""}},
+        "by_model": {
+            "fictional-no-think-model": {"trace_count": 0, "unprocessed": 0, "last_trace_at": ""}
+        },
         "by_category": {},
         "total": 0,
         "unprocessed": 0,
     }
     resp = client.get("/api/dashboard/reasoning/status")
     data = resp.json()
-    opus = next(m for m in data["per_model"] if m["model"] == "claude-opus-4-8")
-    assert opus["has_thinking_text"] is False
+    model = next(m for m in data["per_model"] if m["model"] == "fictional-no-think-model")
+    assert model["has_thinking_text"] is False
 
 
 def test_status_idle_has_progress_fields(
@@ -277,36 +282,45 @@ def test_config_toggle_mining(client: TestClient, config_capture: dict[str, Any]
 
 
 def test_config_rejects_model_without_thinking(
-    client: TestClient, config_capture: dict[str, Any]
+    client: TestClient, config_capture: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # opus is mineable now; a genuinely thinking-less model (fictional denylist
+    # entry) is still rejected for mining_models.
+    monkeypatch.setattr(rt_module, "_MODELS_WITHOUT_THINKING", ("fictional-no-think-model",))
     resp = client.put(
-        "/api/dashboard/reasoning/config", json={"mining_models": ["claude-opus-4-8"]}
+        "/api/dashboard/reasoning/config",
+        json={"mining_models": ["fictional-no-think-model"]},
     )
     assert resp.status_code == 422
     assert "thinking" in resp.json()["detail"].lower()
 
 
 def test_config_rejects_injection_source_without_thinking(
-    client: TestClient, config_capture: dict[str, Any]
+    client: TestClient, config_capture: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # A thinking-less injection SOURCE (fictional denylist entry) is rejected.
+    monkeypatch.setattr(rt_module, "_MODELS_WITHOUT_THINKING", ("fictional-no-think-model",))
     resp = client.put(
         "/api/dashboard/reasoning/config",
-        json={"injection_map": {"claude-fable-5": "claude-opus-4-8"}},
+        json={"injection_map": {"claude-fable-5": "fictional-no-think-model"}},
     )
     assert resp.status_code == 422
 
 
 def test_config_allows_denylisted_target(
-    client: TestClient, config_capture: dict[str, Any]
+    client: TestClient, config_capture: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # opus is a valid injection TARGET (recipient); fable is a thinking source.
+    # A denylisted (thinking-less) model is still a valid injection TARGET
+    # (recipient); the source must have thinking text. opus is no longer
+    # denylisted, so pin a fictional denylisted model as the target here.
+    monkeypatch.setattr(rt_module, "_MODELS_WITHOUT_THINKING", ("fictional-no-think-model",))
     resp = client.put(
         "/api/dashboard/reasoning/config",
-        json={"injection_map": {"claude-opus-4-8": "claude-fable-5"}},
+        json={"injection_map": {"fictional-no-think-model": "claude-fable-5"}},
     )
     assert resp.status_code == 200
     assert config_capture["cfg"].reasoning_training.injection_map == (
-        ("claude-opus-4-8", "claude-fable-5"),
+        ("fictional-no-think-model", "claude-fable-5"),
     )
 
 

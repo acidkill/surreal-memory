@@ -55,10 +55,13 @@ _LOG_EVERY = 250
 
 logger = logging.getLogger(__name__)
 
-# Models whose thinking blocks are empty (signature-only) — never a mining
-# source. opus-4.8 is already excluded by the non-empty-thinking filter; this is
-# a belt-and-suspenders prefix denylist (see run 007 BINDING CORRECTION #5).
-_MODELS_WITHOUT_THINKING = ("claude-opus-4-8",)
+# Prefix denylist of models whose thinking blocks are empty (signature-only) and
+# must never be mined. Currently EMPTY: run-007 assumed claude-opus-4-8 emitted
+# signature-only thinking, but the real corpus has ~933 opus-4-8 traces averaging
+# ~1166 chars of genuine reasoning, so opus is now mined like any other model.
+# The mechanism (_is_denylisted, the route's _has_thinking / PUT-config 422 path)
+# is kept for a future model that genuinely lacks thinking text.
+_MODELS_WITHOUT_THINKING: tuple[str, ...] = ()
 
 # The synthetic attribution used for non-model turns — never mine it.
 _SYNTHETIC_MODEL = "<synthetic>"

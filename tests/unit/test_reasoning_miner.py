@@ -2,7 +2,8 @@
 
 Uses synthetic JSONL transcript fixtures under a temporary ``.claude`` dir (no
 real thinking text). Covers dedup, model glob filter, truncation, ``<synthetic>``
-and opus (empty/denylisted) skipping, min-length gating, secret redaction,
+skipping (opus-4-8 is no longer denylisted — it IS mined), min-length gating,
+secret redaction,
 task_context capture, model normalization, incremental scan-state, and the
 async ingest path against InMemoryStorage.
 """
@@ -187,18 +188,33 @@ def test_model_glob_filter(tmp_path: Path) -> None:
     assert [t["model"] for t in traces] == ["claude-fable-5"]
 
 
-def test_synthetic_and_opus_are_skipped(tmp_path: Path) -> None:
+def test_synthetic_skipped(tmp_path: Path) -> None:
+    # The <synthetic> pseudo-model (non-model turns) is never mined.
     claude = tmp_path / ".claude"
     _write_transcript(
         claude,
         [
             _assistant("synthetic reasoning trace long enough", model="<synthetic>", uuid="a"),
-            _assistant("opus reasoning trace long enough", model="claude-opus-4-8", uuid="b"),
             _assistant("fable reasoning trace long enough", model="claude-fable-5", uuid="c"),
         ],
     )
     traces = _scan(claude, _cfg(), tmp_path / "state.json")
     assert [t["model"] for t in traces] == ["claude-fable-5"]
+
+
+def test_opus_4_8_is_mined(tmp_path: Path) -> None:
+    # opus-4-8 is NO LONGER denylisted — its thinking traces are mined like any
+    # other model (run-008 correction: opus emits real thinking, ~1166 chars avg).
+    claude = tmp_path / ".claude"
+    _write_transcript(
+        claude,
+        [
+            _assistant("opus reasoning trace long enough", model="claude-opus-4-8", uuid="b"),
+            _assistant("fable reasoning trace long enough", model="claude-fable-5", uuid="c"),
+        ],
+    )
+    traces = _scan(claude, _cfg(), tmp_path / "state.json")
+    assert {t["model"] for t in traces} == {"claude-opus-4-8", "claude-fable-5"}
 
 
 def test_empty_thinking_skipped(tmp_path: Path) -> None:
