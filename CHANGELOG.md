@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Docker: reasoning mining found zero traces.** `docker-compose.surrealdb.yml`
+  now mounts the host's `~/.claude/projects` read-only into the dashboard
+  container at `/home/appuser/.claude/projects`. Without it the in-container miner
+  scanned an empty `~/.claude` and every dashboard "Mine" finished instantly with
+  0 traces (no error) — looking like nothing happened. Projects-only, read-only
+  mount (not the whole `~/.claude`); override via `HOST_CLAUDE_PROJECTS` in `.env`.
+
 ## [2.12.1] — Release pipeline: npm packages actually ship again
 
 Patch release. No runtime changes — it exists to fix the release pipeline and

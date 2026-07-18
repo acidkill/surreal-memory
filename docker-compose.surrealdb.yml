@@ -101,6 +101,13 @@ services:
         condition: service_healthy
     volumes:
       - nm_data:/data
+      # Reasoning-training mining reads the host's Claude transcripts from
+      # ~/.claude/projects/*/*.jsonl. Mounted READ-ONLY and projects-only (not the
+      # whole ~/.claude, which also holds settings/credentials). Without this the
+      # dashboard "Mine" runs in-container against an empty ~/.claude and silently
+      # finds zero traces. Container user is appuser (uid 1000); override the host
+      # path via HOST_CLAUDE_PROJECTS in .env if your home differs.
+      - ${HOST_CLAUDE_PROJECTS:-${HOME}/.claude/projects}:/home/appuser/.claude/projects:ro
     restart: unless-stopped
 
 volumes:
