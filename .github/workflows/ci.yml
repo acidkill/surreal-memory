@@ -19,7 +19,10 @@ jobs:
           python-version: "3.11"
 
       - name: Install ruff
-        run: pip install ruff
+        # Pinned on purpose: an unpinned install makes Lint a moving target. ruff 0.16.0
+        # started reporting RUF100/RUF036 on files nobody had touched, so `main` and every
+        # open PR went red on the same day without a single line of code changing.
+        run: pip install ruff==0.16.0
 
       - name: Run ruff check
         run: ruff check src/ tests/
@@ -106,7 +109,10 @@ jobs:
           python-version: "3.11"
 
       - name: Install ruff
-        run: pip install ruff
+        # Pinned on purpose: an unpinned install makes Lint a moving target. ruff 0.16.0
+        # started reporting RUF100/RUF036 on files nobody had touched, so `main` and every
+        # open PR went red on the same day without a single line of code changing.
+        run: pip install ruff==0.16.0
 
       - name: Run security rules
         run: ruff check src/ --select S --ignore S101,S110,S112,S311,S324
