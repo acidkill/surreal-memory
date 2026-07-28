@@ -72,7 +72,6 @@ def check_versions() -> None:
         ".claude-plugin/marketplace.json (metadata)": None,
         ".claude-plugin/marketplace.json (plugins)": None,
         "tests/unit/test_health_fixes.py": None,
-        "tests/unit/test_markdown_export.py": None,
     }
 
     # pyproject.toml
@@ -106,13 +105,12 @@ def check_versions() -> None:
     m = re.search(r'__version__\s*==\s*"([^"]+)"', text)
     version_files["tests/unit/test_health_fixes.py"] = m.group(1) if m else "NOT_FOUND"
 
-    # test_markdown_export.py
-    text = (ROOT / "tests/unit/test_markdown_export.py").read_text()
-    m = re.search(r'"version"\s*:\s*"([^"]+)"', text)
-    version_files["tests/unit/test_markdown_export.py"] = m.group(1) if m else "NOT_FOUND"
+    # NOT checked: tests/unit/test_markdown_export.py. Its `"version"` field is the
+    # brain-snapshot schema version in a test fixture, not the package version, so
+    # matching it against the release version was a permanent false failure.
 
     all_match = all(v == canonical for v in version_files.values())
-    check("All 6 files match", all_match, f"Expected {canonical}")
+    check(f"All {len(version_files)} files match", all_match, f"Expected {canonical}")
 
     if not all_match:
         for path, ver in version_files.items():

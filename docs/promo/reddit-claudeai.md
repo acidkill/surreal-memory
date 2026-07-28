@@ -1,6 +1,6 @@
 # Reddit r/ClaudeAI Post
 
-**Title:** I built a persistent memory system for Claude Code that works like a brain — Surreal-Memory (open source, 56 MCP tools, $0/query)
+**Title:** I built a persistent memory system for Claude Code that works like a brain — Surreal-Memory (open source, 58 MCP tools, $0/query)
 
 **Body:**
 
@@ -16,7 +16,7 @@ When you remember "Alice", it doesn't just find text containing "Alice". It acti
 
 ## What it does
 
-- **56 MCP tools**: 3-tool core (`smem_remember`, `smem_recall`, `smem_health`) — the other 53 fire automatically
+- **58 MCP tools**: 3-tool core (`smem_remember`, `smem_recall`, `smem_health`) — the other 53 fire automatically
 - **Spreading activation retrieval**: memories surface through association, not search
 - **41 synapse types** (`CAUSED_BY`, `LEADS_TO`, `CONTRADICTS`, `RESOLVED_BY`) — causal reasoning, not just similarity
 - **15 memory types**: fact, decision, error, insight, preference, workflow, todo, and more
@@ -49,7 +49,7 @@ Works with Claude Code, Cursor, Windsurf, VS Code, Cline, Zed, and Gemini CLI.
 
 ## Numbers
 
-- **56 MCP tools** · **5,500+ unit tests** · **67%+ CI coverage**
+- **58 MCP tools** · **5,500+ unit tests** · **67%+ CI coverage**
 - **$0.00/query** — no API calls for core encode + recall
 - 15 memory types · 41 synapse types
 - Python 3.11+ · async · MIT license

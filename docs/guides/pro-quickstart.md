@@ -186,10 +186,10 @@ Sync uses **Merkle delta** — only changes are transmitted. A brain with 100K n
 | Recall method | Keyword matching | Semantic similarity + graph traversal |
 | Consolidation | O(N²) brute force | O(N x k) Smart Merge |
 | Compression | Text-level trimming | 5-tier vector lifecycle |
-| MCP tools | 56 tools | 56 tools + cone_query, tier_info, pro_merge |
+| MCP tools | 58 tools | 58 tools + cone_query, tier_info, pro_merge |
 | Setup | Built-in, zero config | Requires SurrealDB instance |
 
-**Everything stays the same.** All 56 MCP tools work with both backends. Your existing memories are preserved — when you switch to SurrealDB, they're auto-migrated on first startup.
+**Everything stays the same.** All 58 MCP tools work with both backends. Your existing memories are preserved — when you switch to SurrealDB, they're auto-migrated on first startup.
 
 ---
 

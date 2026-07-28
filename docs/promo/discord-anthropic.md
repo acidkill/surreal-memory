@@ -17,7 +17,7 @@ smem-mcp  # starts the MCP server
 ```
 
 **What you get:**
-- **56 MCP tools** — 3-tool core (remember / recall / health), the rest fire automatically
+- **58 MCP tools** — 3-tool core (remember / recall / health), the rest fire automatically
 - **SurrealDB backend** — document + graph + vector HNSW in one database, no separate vector store
 - **$0.00/query** — no LLM/embedding API calls for core encode + recall; no API keys required for core ops
 - Memory lifecycle: Ebbinghaus decay, Hebbian reinforcement, sleep consolidation (ENRICH / PRUNE / MERGE / DREAM)

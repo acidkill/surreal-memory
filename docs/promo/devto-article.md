@@ -68,7 +68,7 @@ Memories have a full lifecycle modelled on human cognition:
 
 ## 56 MCP Tools
 
-Surreal-Memory exposes **56 tools** via the [Model Context Protocol](https://modelcontextprotocol.io/). The 3-tool core drives daily use; the rest fire automatically or on demand:
+Surreal-Memory exposes **58 tools** via the [Model Context Protocol](https://modelcontextprotocol.io/). The 3-tool core drives daily use; the rest fire automatically or on demand:
 
 | Tool | What it does |
 |------|-------------|
@@ -156,7 +156,7 @@ If you need a lightweight SQLite-backed version, the upstream project is the rig
 
 ## Numbers
 
-- **56 MCP tools** — 3-tool core, 53 fire automatically or on demand
+- **58 MCP tools** — 3-tool core, 53 fire automatically or on demand
 - **5,500+ unit tests**, 67%+ CI coverage
 - **15 memory types**: fact, decision, error, insight, preference, workflow, todo, and more
 - **41 synapse types**: `CAUSED_BY`, `LEADS_TO`, `RESOLVED_BY`, `CONTRADICTS`, and 37 more

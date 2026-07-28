@@ -3,7 +3,7 @@
 
 Last updated: **2026-03-16**
 
-> **⚠️ Historical figures.** These benchmarks were measured on the legacy **SQLite** backend (`SQLiteStorage`) and old upstream version numbering (e.g. "v4.7.0"). Surreal-Memory has been **SurrealDB-only since v2.0.0** (schema v8, v2.7.x); SQLite is now a test fixture only. A re-run on the SurrealDB backend is pending — the numbers below reflect the algorithmic approach, not the current production backend.
+> **⚠️ Historical figures.** These benchmarks were measured on the legacy **SQLite** backend (`SQLiteStorage`) and old upstream version numbering (e.g. "v4.7.0"). Surreal-Memory has been **SurrealDB-only since v2.0.0** (schema v40, v2.7.x); SQLite is now a test fixture only. A re-run on the SurrealDB backend is pending — the numbers below reflect the algorithmic approach, not the current production backend.
 
 
 ## Surreal-Memory vs Mem0 — Competitive Benchmark

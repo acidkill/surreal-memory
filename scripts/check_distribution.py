@@ -17,7 +17,6 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 # ── Constants ───────────────────────────────────────────────────────────────
 
@@ -36,8 +35,12 @@ ALL_VERSION_FILES: list[str] = [
     ".claude-plugin/plugin.json",
     ".claude-plugin/marketplace.json",  # 2 occurrences
     "tests/unit/test_health_fixes.py",
-    "tests/unit/test_markdown_export.py",
 ]
+# NOT a version file: tests/unit/test_markdown_export.py. Its `"version": "4.24.0"`
+# is the brain-snapshot schema version inside a test fixture, not the package
+# version, so the old `"version":` regex reported a permanent false mismatch and
+# "bumping" it would have corrupted the fixture. test_health_fixes.py is the test
+# that really pins the package version (it asserts surreal_memory.__version__).
 
 # ANSI colors — disable if stdout is not a TTY or on Windows without VT support
 _USE_COLOR = sys.stdout.isatty() and (sys.platform != "win32" or os.environ.get("TERM"))
@@ -62,7 +65,7 @@ STATUS_WARN = "warn"
 @dataclass
 class ChannelResult:
     name: str
-    version: Optional[str]
+    version: str | None
     status: str  # STATUS_OK | STATUS_MISMATCH | STATUS_WARN
     detail: str = ""
 
@@ -101,7 +104,7 @@ def _run(cmd: list[str], timeout: int = 15) -> tuple[int, str, str]:
         return -1, "", str(exc)
 
 
-def _fetch_json(url: str, timeout: int = 10) -> Optional[dict]:
+def _fetch_json(url: str, timeout: int = 10) -> dict | None:
     """Fetch a URL and parse as JSON. Returns None on any error."""
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "check_distribution/1.0"})
@@ -160,18 +163,22 @@ def check_marketplace_json() -> list[ChannelResult]:
         text = path.read_text(encoding="utf-8")
         versions = re.findall(r'"version"\s*:\s*"([^"]+)"', text)
         results: list[ChannelResult] = []
-        results.append(ChannelResult(
-            "marketplace.json (metadata)",
-            versions[0] if len(versions) > 0 else None,
-            STATUS_OK if versions else STATUS_WARN,
-            "" if versions else "Pattern not found",
-        ))
-        results.append(ChannelResult(
-            "marketplace.json (plugins)",
-            versions[1] if len(versions) > 1 else None,
-            STATUS_OK if len(versions) > 1 else STATUS_WARN,
-            "" if len(versions) > 1 else "Second occurrence not found",
-        ))
+        results.append(
+            ChannelResult(
+                "marketplace.json (metadata)",
+                versions[0] if len(versions) > 0 else None,
+                STATUS_OK if versions else STATUS_WARN,
+                "" if versions else "Pattern not found",
+            )
+        )
+        results.append(
+            ChannelResult(
+                "marketplace.json (plugins)",
+                versions[1] if len(versions) > 1 else None,
+                STATUS_OK if len(versions) > 1 else STATUS_WARN,
+                "" if len(versions) > 1 else "Second occurrence not found",
+            )
+        )
         return results
     except OSError as exc:
         return [
@@ -191,19 +198,6 @@ def check_test_health_fixes() -> ChannelResult:
         return ChannelResult("test_health_fixes.py", None, STATUS_WARN, "Pattern not found")
     except OSError as exc:
         return ChannelResult("test_health_fixes.py", None, STATUS_WARN, str(exc))
-
-
-def check_test_markdown_export() -> ChannelResult:
-    """Read hardcoded version from tests/unit/test_markdown_export.py."""
-    path = ROOT / "tests" / "unit" / "test_markdown_export.py"
-    try:
-        text = path.read_text(encoding="utf-8")
-        match = re.search(r'"version"\s*:\s*"([^"]+)"', text)
-        if match:
-            return ChannelResult("test_markdown_export.py", match.group(1), STATUS_OK)
-        return ChannelResult("test_markdown_export.py", None, STATUS_WARN, "Pattern not found")
-    except OSError as exc:
-        return ChannelResult("test_markdown_export.py", None, STATUS_WARN, str(exc))
 
 
 def check_pypi() -> ChannelResult:
@@ -235,10 +229,12 @@ def check_vscode_marketplace() -> ChannelResult:
     """Fetch extension version from VS Code Marketplace REST API."""
     url = "https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery"
     publisher, ext_name = VSCE_ID.split(".", 1)
-    payload = json.dumps({
-        "filters": [{"criteria": [{"filterType": 7, "value": VSCE_ID}]}],
-        "flags": 0x200,
-    }).encode()
+    payload = json.dumps(
+        {
+            "filters": [{"criteria": [{"filterType": 7, "value": VSCE_ID}]}],
+            "flags": 0x200,
+        }
+    ).encode()
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json;api-version=7.1-preview.1",
@@ -250,10 +246,19 @@ def check_vscode_marketplace() -> ChannelResult:
             data = json.loads(resp.read().decode())
         extensions = data.get("results", [{}])[0].get("extensions", [])
         if not extensions:
-            return ChannelResult("VS Code Marketplace", None, STATUS_WARN, "Extension not published yet")
+            return ChannelResult(
+                "VS Code Marketplace", None, STATUS_WARN, "Extension not published yet"
+            )
         version = extensions[0]["versions"][0]["version"]
         return ChannelResult("VS Code Marketplace", version, STATUS_OK)
-    except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, OSError, KeyError, IndexError) as exc:
+    except (
+        urllib.error.URLError,
+        urllib.error.HTTPError,
+        json.JSONDecodeError,
+        OSError,
+        KeyError,
+        IndexError,
+    ) as exc:
         return ChannelResult("VS Code Marketplace", None, STATUS_WARN, str(exc)[:120])
 
 
@@ -313,7 +318,9 @@ def check_github_release() -> ChannelResult:
     # No release yet
     if "release not found" in stderr.lower() or "no releases" in stderr.lower():
         return ChannelResult("GitHub Release", None, STATUS_WARN, "No releases published yet")
-    return ChannelResult("GitHub Release", None, STATUS_WARN, (stderr or stdout)[:120] or "Unknown error")
+    return ChannelResult(
+        "GitHub Release", None, STATUS_WARN, (stderr or stdout)[:120] or "Unknown error"
+    )
 
 
 # ── Fix hints ────────────────────────────────────────────────────────────────
@@ -364,7 +371,9 @@ def _fix_hints(channel: ChannelResult, local_version: str) -> list[str]:
     if "plugin.json" in name:
         return [f'# Update .claude-plugin/plugin.json: "version": "{local_version}"']
     if "marketplace.json" in name:
-        return [f'# Update .claude-plugin/marketplace.json (both occurrences): "version": "{local_version}"']
+        return [
+            f'# Update .claude-plugin/marketplace.json (both occurrences): "version": "{local_version}"'
+        ]
     if "test_health_fixes" in name:
         return [f'# Update tests/unit/test_health_fixes.py: __version__ == "{local_version}"']
     if "test_markdown_export" in name:
@@ -386,9 +395,7 @@ def print_table(results: list[ChannelResult]) -> None:
     col_version = 14
     col_status = 8
 
-    header = (
-        f"  {'Channel':<{col_channel}} {'Version':<{col_version}} Status"
-    )
+    header = f"  {'Channel':<{col_channel}} {'Version':<{col_version}} Status"
     divider = "  " + "-" * (col_channel + col_version + col_status + 4)
 
     print(header)
@@ -421,7 +428,9 @@ def main() -> int:
         print(f"\n{_RED}ERROR: Could not read local __version__ from __init__.py{_RESET}")
         return 1
 
-    print(f"\n  Canonical version: {_BOLD}{local_version}{_RESET}  (from src/surreal_memory/__init__.py)\n")
+    print(
+        f"\n  Canonical version: {_BOLD}{local_version}{_RESET}  (from src/surreal_memory/__init__.py)\n"
+    )
 
     # Step 2: Collect all channel results
     print("  Checking channels (network calls may take a moment)...")
@@ -435,7 +444,6 @@ def main() -> int:
     all_results.append(check_plugin_json())
     all_results.extend(check_marketplace_json())
     all_results.append(check_test_health_fixes())
-    all_results.append(check_test_markdown_export())
 
     # --- Remote / CLI checks (may involve network) ---
     all_results.append(check_pypi())
@@ -476,7 +484,9 @@ def main() -> int:
         sync_label = f"{_GREEN}{ok_count}/{total} channels in sync{_RESET}"
         if warn_results:
             warn_names = ", ".join(r.name for r in warn_results)
-            print(f"  {sync_label}  |  {_YELLOW}{_ICON_WARN} {len(warn_results)} could not be checked: {warn_names}{_RESET}")
+            print(
+                f"  {sync_label}  |  {_YELLOW}{_ICON_WARN} {len(warn_results)} could not be checked: {warn_names}{_RESET}"
+            )
         else:
             print(f"  {sync_label} {_ICON_OK}")
     else:

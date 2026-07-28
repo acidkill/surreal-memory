@@ -110,7 +110,7 @@ smem recall "auth bug"
 
 ## 3 Tools. That's It.
 
-57 MCP tools are available, but you only need three:
+58 MCP tools are available, but you only need three:
 
 | Tool | What it does |
 |------|-------------|
@@ -126,7 +126,7 @@ Everything else — sessions, context loading, habit tracking, maintenance — w
 
 ```
                     ┌──────────────────────────────┐
-                    │       MCP Server (57 tools)   │
+                    │       MCP Server (58 tools)   │
                     └──────────┬───────────────────┘
                                │
                     ┌──────────▼───────────────────┐
@@ -438,7 +438,7 @@ with `RunnableWithMessageHistory`.
 git clone https://github.com/acidkill/surreal-memory
 cd surreal-memory && pip install -e ".[dev]"
 smem doctor --dev        # Verify contributor setup
-pytest tests/ -v          # 5500+ tests
+pytest tests/ -v          # 6900+ tests
 ruff check src/ tests/    # Lint
 make verify               # Full CI gate
 ```

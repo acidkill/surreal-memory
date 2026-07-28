@@ -216,7 +216,7 @@ src/surreal_memory/
 │   ├── surrealdb/ # SurrealDB backend (primary — 163 methods across 10 mixins)
 │   ├── sqlite_*.py# SQLite/InMemory backends (test fixtures only — not the production backend)
 │   └── surrealdb/ # SurrealDB backend (recommended)
-├── mcp/           # MCP server for Claude (56 tools, ~30 handler files)
+├── mcp/           # MCP server for Claude (58 tools, ~30 handler files)
 ├── server/        # FastAPI REST server + dashboard static files
 ├── cli/           # Command-line interface (smem / surreal-memory)
 ├── plugins/       # Community plugin (bypasses Pro feature gates)

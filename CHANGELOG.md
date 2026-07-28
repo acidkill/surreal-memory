@@ -5,6 +5,105 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.16.0] — Consolidation honesty
+
+Every counter in the consolidation report now measures what its name says, and three
+subsystems that quietly did nothing have been repaired. Diagnosed by measuring the live
+brain rather than reading the code, which is why one widely-believed cause turned out to
+be wrong.
+
+### The report stops lying
+
+- **"Duplicates found: N"** was a *census* of anchors that look alike, printed as if it
+  were work performed. It is now `Duplicate anchors (census): N (new alias links: M)`,
+  where M is the number of ALIAS edges actually created this run. On a steady-state brain
+  M goes to zero while N stays high — that is correct, and it is no longer alarming.
+- **"Semantic synapses: 2000"** was the `semantic_discovery_max_pairs` cap printed as a
+  flat number, so a truncated run and a stuck system looked identical. It is now
+  `N created, K skipped (existing) [truncated at cap]`.
+- **"Memories promoted"** counted only `context → fact` type promotions. It is relabelled
+  `Memories promoted (type)`, and the real stage counter — `Stages advanced` — is finally
+  printed. It existed; it was simply never shown.
+- The `dedup` strategy's docstring, CLI help and docs all claimed it *merges* memories and
+  *redirects fibers*. It does neither: it records ALIAS edges. Fixed in all four places.
+  The community `smart_merge` docstring claimed it keeps the more-accessed neuron; it has
+  always kept the longer content.
+
+### Correcting a claim from 2.15.0
+
+2.15.0 said memories could finally mature. **Promotable was not the same as promoted.**
+`get_promotion_candidates` looked its fiber up with `id = $sid` bound to a `"fiber:<raw>"`
+*string*, which can never equal a record id — the same fiber yields `count 0` that way and
+`count 1` via `type::record` with a raw id. **No memory could be promoted at all.** That is
+fixed, and the query now returns real candidates on a live brain.
+
+Expect promotion to still take time: the gate requires 7 days in stage plus 3 distinct
+recall days (or 15 rehearsals across five 2-hour windows), and only `recall`/`review`
+rehearse — never `consolidate`. **The first organic promotions land after ≥3 days of
+actual recalling.** The consolidation ratio will jump once on upgrade as the backfill runs,
+then climb slowly.
+
+### Write-time dedup was running on one of ~18 write paths
+
+`MemoryEncoder` was given a dedup pipeline in exactly one place — the MCP `remember`
+handler. Every other entry point built it without one, and `DedupCheckStep` returns
+immediately when the pipeline is `None`, so the CLI, all three auto-capture hooks (the
+highest-volume writers), the HTTP API, the cognitive and session handlers and the
+integrations silently skipped dedup. Four CLI writes of byte-identical content produced
+four separate anchors. Construction now lives in one factory that every write path uses;
+the bulk trainers and the batch mapper opt out explicitly, at the call site, with reasons.
+
+The alias neuron minted on a dedup hit was also flagged `is_anchor: true`. Both the
+consolidation census and the write-time candidate pool select on that flag, so every alias
+re-entered as a fresh duplicate on the next pass. It is now `false`.
+
+### Health metrics
+
+`get_fiber_stage_counts` grouped by `compression_tier`, which is `NULL` for every row — the
+whole table collapsed into one bucket, so the caller's `.get("semantic")` was always 0 and
+`LOW_CONSOLIDATION` was permanently on. It now groups by maturation stage, matching the
+storage contract, the other two backends and `DiagnosticsEngine`. On the live brain that is
+`episodic 1856, semantic 9, stm 31, working 99` instead of a single null bucket.
+
+874 of 2819 fibers had no maturation row and so could never advance a stage. The maturation
+phase now backfills them (guarded on the counts, so a healthy brain pays two cheap counts),
+and reinforcement creates a row on miss instead of silently skipping.
+
+### What we expected to find and did not
+
+The reported "Semantic synapses: 2000 every run" was widely assumed to be lost idempotency
+— edges re-minted with fresh UUIDs on every pass. **It was not.** Two consecutive live runs
+added 2000 then 1077 edges, created 1077 genuinely new pairs, and re-minted **zero** edges
+over an existing pair; the duplicate-row count stayed at exactly 198 throughout. The
+existing-pairs guard works, and those 198 rows are historical residue. What was actually
+wrong was the *reporting*. Two real defects behind it were fixed anyway: that guard read
+the entire synapse table in one response (the `[Errno 104] Connection reset by peer`
+failure mode) and is now paged, and `SIMILAR_TO` edges now carry an id derived from the
+sorted endpoint pair so idempotency is structural rather than dependent on a full-table
+read.
+
+### `smem surface`
+
+`smem doctor` has always prescribed `smem surface generate`. **That command did not exist.**
+It does now, with `generate` and `show`, plus `--global-path` for one predictable location —
+surface paths were resolved from the process CWD, so `generate` run from home and `doctor`
+run from a repo disagreed about which file they meant. Brain names are validated before
+becoming filenames: a live install had a surface whose brain key was an entire
+`CLIConfig(data_dir=PosixPath(...))` repr.
+
+### Fixed
+
+- `get_synapses` accepts `offset` on every backend, with a stable order, so large slices can
+  be paged instead of loaded whole.
+- `find_maturations` is paged rather than capped at 5000 rows.
+- A dedup failure can no longer fail a write that would otherwise have succeeded.
+- `make verify` passes on a clean checkout again: two stress tests still mocked
+  `write_gate.enabled` after the gate moved to `effective_mode`, and `make install-dev`
+  omitted the `surrealdb` extra the integration suite needs.
+- `scripts/check_distribution.py` no longer reports a permanent false mismatch against a
+  test fixture's snapshot-schema version, and the `.claude-plugin` manifests — stale at
+  2.0.0 — are back in sync.
+
 ## [2.15.0] — Memories can finally mature, and the health metrics stop flattering the graph
 
 Correctness release, and the most consequential one so far for anyone with a brain more

@@ -3,7 +3,7 @@
 This guide walks you through Surreal-Memory setup and usage in 5 minutes.
 
 !!! tip "3 tools you need"
-    Surreal-Memory has 56 tools, but you only need three: **`smem_remember`**, **`smem_recall`**, and **`smem_health`**. The agent handles the other 53 automatically. See [all tools](../guides/mcp-server.md#available-tools).
+    Surreal-Memory has 58 tools, but you only need three: **`smem_remember`**, **`smem_recall`**, and **`smem_health`**. The agent handles the other 55 automatically. See [all tools](../guides/mcp-server.md#available-tools).
 
 ## Why Surreal-Memory?
 

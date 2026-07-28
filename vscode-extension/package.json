@@ -2,7 +2,7 @@
   "name": "surrealmemory",
   "displayName": "Surreal-Memory",
   "description": "Visual brain explorer, inline recall, and memory management for Surreal-Memory",
-  "version": "2.15.0",
+  "version": "2.16.0",
   "publisher": "ai-flow-nowak",
   "license": "MIT",
   "preview": true,
