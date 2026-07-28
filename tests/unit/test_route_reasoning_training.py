@@ -602,3 +602,117 @@ def test_delete_traces_by_model(client: TestClient, mock_storage: AsyncMock) -> 
 def test_delete_traces_requires_model(client: TestClient) -> None:
     resp = client.request("DELETE", "/api/dashboard/reasoning/traces")
     assert resp.status_code == 422  # missing required query param
+
+
+# ── Brain scoping: the NAME, never the record UUID ────────────────────────────
+
+# Every fixture above builds the brain with `brain_id=BRAIN_ID`, so its id and
+# its name are the same string -- which is precisely why these bugs shipped: the
+# tests could not tell the two apart. Production brains carry a UUID primary key
+# and a human name, so this fixture keeps them distinct.
+REAL_UUID = "00000000-0000-4000-8000-000000000001"
+
+
+@pytest.fixture
+def realistic_client(mock_storage: AsyncMock) -> TestClient:
+    """A client whose brain has a UUID id and a separate name, as in production."""
+    app = FastAPI()
+    app.include_router(router)
+    brain = Brain.create(BRAIN_ID, brain_id=REAL_UUID)
+    assert brain.id != brain.name, "fixture must distinguish the UUID from the name"
+    app.dependency_overrides[get_storage] = lambda: mock_storage
+    app.dependency_overrides[get_brain] = lambda: brain
+    return TestClient(app)
+
+
+class TestBrainScopeIsTheName:
+    """Reasoning rows are written under the brain NAME; the UUID scope is empty.
+
+    Measured on the live brain before the fix: 196 pattern fibers, 92 neurons,
+    84 synapses and 6070 traces stranded under the UUID, while 10905 traces sat
+    under the name.
+    """
+
+    def test_scope_is_the_name_not_the_uuid(self) -> None:
+        brain = Brain.create(BRAIN_ID, brain_id=REAL_UUID)
+        assert rt_module._brain_scope(brain) == BRAIN_ID
+        assert rt_module._brain_scope(brain) != REAL_UUID
+
+    def test_scope_does_not_depend_on_ambient_storage_state(self) -> None:
+        """It must not read storage.brain_id -- that is the coupling being removed."""
+        import inspect
+
+        src = inspect.getsource(rt_module._brain_scope)
+        assert "storage" not in src.split('"""')[-1]
+
+    def test_privacy_wipe_deletes_under_the_name(
+        self, realistic_client: TestClient, mock_storage: AsyncMock
+    ) -> None:
+        """The wipe used the UUID, so traces stored under the name survived it."""
+        mock_storage.brain_id = "default"
+
+        resp = realistic_client.request(
+            "DELETE", "/api/dashboard/reasoning/traces", params={"model": "claude-fable-5"}
+        )
+
+        assert resp.status_code == 200
+        scope_used = mock_storage.delete_reasoning_traces_by_model.await_args.args[0]
+        assert scope_used == BRAIN_ID
+        assert scope_used != REAL_UUID
+
+    def test_mining_job_is_keyed_by_the_name_so_status_can_see_it(
+        self, realistic_client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Keying on the UUID made the status endpoint report idle mid-run."""
+        monkeypatch.setattr(
+            "surreal_memory.unified_config.get_config",
+            lambda: _cfg(tmp_path, mining_enabled=True),
+        )
+        monkeypatch.setattr(rt_module, "_run_mining", AsyncMock(return_value=None))
+
+        resp = realistic_client.post("/api/dashboard/reasoning/mine", json={})
+
+        assert resp.status_code in (200, 202)
+        assert BRAIN_ID in rt_module._mining_states
+        assert REAL_UUID not in rt_module._mining_states
+        assert BRAIN_ID in rt_module._mining_tasks
+        assert REAL_UUID not in rt_module._mining_tasks
+
+    def test_the_mined_scope_passed_to_the_job_is_the_name(
+        self, realistic_client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """create_isolated_storage(scope) binds the job's writes -- it must get the name."""
+        monkeypatch.setattr(
+            "surreal_memory.unified_config.get_config",
+            lambda: _cfg(tmp_path, mining_enabled=True),
+        )
+        spy = AsyncMock(return_value=None)
+        monkeypatch.setattr(rt_module, "_run_mining", spy)
+
+        realistic_client.post("/api/dashboard/reasoning/mine", json={})
+
+        assert spy.await_args.args[0] == BRAIN_ID
+
+    def test_no_endpoint_scopes_on_the_record_uuid(self) -> None:
+        """Source guard: `brain.id` must never be used as a scope in this router.
+
+        The status endpoint was fixed while mining and the privacy wipe were
+        missed. A source-level assertion catches the next one that drifts.
+        """
+        import ast
+        import pathlib
+
+        src = pathlib.Path(rt_module.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        offenders = [
+            node.lineno
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute)
+            and node.attr == "id"
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "brain"
+        ]
+        assert not offenders, (
+            f"reasoning_training.py scopes on brain.id (the record UUID) at lines {offenders}; "
+            "use _brain_scope(brain, storage) instead — reasoning rows live under the brain name."
+        )

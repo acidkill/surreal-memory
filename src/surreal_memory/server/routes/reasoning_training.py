@@ -63,6 +63,31 @@ _mining_tasks: dict[str, asyncio.Task[None]] = {}
 _mining_states: dict[str, dict[str, Any]] = {}
 
 
+def _brain_scope(brain: Brain) -> str:
+    """Return the key every reasoning row is scoped by: the brain NAME.
+
+    Never ``brain.id``. That attribute carries the brain record's UUID primary
+    key, while every reasoning row -- traces, pattern fibers, their neurons and
+    synapses -- is written under the brain *name*. Passing the UUID into
+    ``create_isolated_storage()`` binds the whole mining job to a scope nothing
+    else reads, so the patterns are mined into a brain recall never sees.
+
+    Measured on the live brain before this was fixed: 196 pattern fibers,
+    92 neurons, 84 synapses and 6070 reasoning traces stranded under the UUID
+    while 10905 traces sat under the name.
+
+    Deliberately does NOT consult ``storage.brain_id``: that reports whatever the
+    shared singleton is currently bound to, which is the same class of ambient
+    coupling this function exists to remove. ``brain`` comes from the request's
+    own dependency, so its name is authoritative here.
+
+    One helper, used by every endpoint in this router, so the derivations cannot
+    drift apart again -- which is how the status endpoint ended up correct while
+    mining and the privacy wipe stayed wrong.
+    """
+    return brain.name
+
+
 def _idle_mining_state() -> dict[str, Any]:
     return {
         "running": False,
@@ -265,11 +290,7 @@ async def get_status(
 
     config = get_config()
     rt = config.reasoning_training
-    # Rows are scoped by the brain *name*, never by the brain record's UUID
-    # primary key: passing brain.id into create_isolated_storage() bound the whole
-    # mining job to a UUID scope, so every mined neuron/fiber landed in a brain
-    # that recall never reads.
-    brain_id = storage.brain_id or brain.name
+    brain_id = _brain_scope(brain)
 
     stats = await storage.get_reasoning_stats(brain_id)
     by_model_traces: dict[str, Any] = stats.get("by_model", {})
@@ -587,7 +608,11 @@ async def trigger_mining(
         # Privacy: never scan ~/.claude transcripts unless mining is enabled.
         raise HTTPException(status_code=400, detail="Mining is disabled; enable it first")
 
-    existing = _mining_tasks.get(brain.id)
+    # Scope on the NAME. Keying the job on brain.id also made the status endpoint
+    # -- which reads by name -- miss a running job and report idle throughout.
+    scope = _brain_scope(brain)
+
+    existing = _mining_tasks.get(scope)
     if existing is not None and not existing.done():
         raise HTTPException(status_code=409, detail="A mining run is already in progress")
 
@@ -597,9 +622,9 @@ async def trigger_mining(
 
     state = _idle_mining_state()
     state.update(running=True, started_at=utcnow().isoformat(), dry_run=body.dry_run)
-    _mining_states[brain.id] = state
-    _mining_tasks[brain.id] = asyncio.create_task(
-        _run_mining(brain.id, body.backfill, body.dry_run, models)
+    _mining_states[scope] = state
+    _mining_tasks[scope] = asyncio.create_task(
+        _run_mining(scope, body.backfill, body.dry_run, models)
     )
     return MineResponse(status="started", mining=MiningJobState(**state))
 
@@ -712,6 +737,11 @@ async def delete_traces_by_model(
     brain: Annotated[Brain, Depends(get_brain)],
     model: str = Query(..., description="Delete all staged reasoning traces for this model"),
 ) -> DeleteResponse:
-    """Privacy wipe: delete all staged reasoning traces for a model."""
-    deleted = await storage.delete_reasoning_traces_by_model(brain.id, model)
+    """Privacy wipe: delete all staged reasoning traces for a model.
+
+    Scoped by name: wiping under brain.id deleted from a scope the ingest path
+    does not write to, so the user was told traces were removed while the ones
+    under the brain name survived.
+    """
+    deleted = await storage.delete_reasoning_traces_by_model(_brain_scope(brain), model)
     return DeleteResponse(deleted=deleted)
