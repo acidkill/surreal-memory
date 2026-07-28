@@ -522,9 +522,7 @@ class RememberHandler:
 
                 sr_engine = SpacedRepetitionEngine(storage, brain.config)
                 # Review rows are scoped by the brain *name*, not the record UUID.
-                await sr_engine.auto_schedule_fiber(
-                    result.fiber.id, storage.brain_id or brain.name
-                )
+                await sr_engine.auto_schedule_fiber(result.fiber.id, storage.brain_id or brain.name)
             except Exception:
                 logger.debug("Auto-schedule for review failed (non-critical)", exc_info=True)
 

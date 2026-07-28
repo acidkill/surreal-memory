@@ -87,9 +87,7 @@ def test_transient_failure_recovers_on_retry(monkeypatch: Any) -> None:
                 raise RuntimeError("model still loading")
             return [_RerankedItem("n2", 0.95), _RerankedItem("n1", 0.4)]
 
-    monkeypatch.setattr(
-        "surreal_memory.engine.reranker.HttpReranker", _FlakyReranker, raising=True
-    )
+    monkeypatch.setattr("surreal_memory.engine.reranker.HttpReranker", _FlakyReranker, raising=True)
 
     reasons: list[str] = []
 
@@ -111,9 +109,7 @@ def test_no_reranker_configured_is_reported(monkeypatch: Any) -> None:
     monkeypatch.setattr(
         "surreal_memory.engine.reranker._check_cross_encoder", lambda: False, raising=True
     )
-    monkeypatch.setattr(
-        "surreal_memory.engine.reranker._rerank_endpoint", lambda: "", raising=True
-    )
+    monkeypatch.setattr("surreal_memory.engine.reranker._rerank_endpoint", lambda: "", raising=True)
 
     reasons: list[str] = []
     activations = _activations()

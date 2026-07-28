@@ -61,7 +61,9 @@ def version_create(
 
             engine = VersioningEngine(storage)
             try:
-                version = await engine.create_version(storage.brain_id or brain.name, name, description)
+                version = await engine.create_version(
+                    storage.brain_id or brain.name, name, description
+                )
             except ValueError as e:
                 logger.error("Version create failed: %s", e)
                 return {"error": "Failed to create version: invalid parameters"}

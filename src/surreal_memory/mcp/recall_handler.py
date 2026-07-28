@@ -752,8 +752,7 @@ class RecallHandler:
             response["rerank_degraded"] = True
             response["rerank_degraded_reason"] = str(rerank_degraded)
             response["warning"] = (
-                "Results were NOT reranked (reranker enabled but unavailable): "
-                f"{rerank_degraded}"
+                f"Results were NOT reranked (reranker enabled but unavailable): {rerank_degraded}"
             )
 
         # Surface conflict info from retrieval
