@@ -111,6 +111,13 @@ async def get_brain(
     if brain is None:
         raise HTTPException(status_code=404, detail="Brain not found")
 
-    # Set brain context using the actual brain ID
-    storage.set_brain(brain.id)
+    # Scope by the brain *name*, never by ``brain.id``. Rows carry brain_id as a
+    # plain string equal to the brain name (see unified_config._get_surrealdb_storage
+    # and _get_sqlite_storage, which both set_brain(name) for exactly this reason),
+    # while a brain created by an older version has a random uuid4 primary key.
+    # This dependency resolves before any route body runs, so binding the scope to
+    # brain.id made every route read and write a UUID scope that holds no rows —
+    # which is also why the `storage.brain_id or brain.name` fix from #97 never
+    # took effect server-side: storage.brain_id was already the UUID.
+    storage.set_brain(brain.name)
     return brain

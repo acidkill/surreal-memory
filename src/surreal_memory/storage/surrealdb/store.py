@@ -11,9 +11,10 @@ import asyncio
 import dataclasses
 import logging
 import re
+from collections.abc import Iterator
 from datetime import datetime
 from hashlib import sha256
-from typing import Any, Literal
+from typing import Any, Literal, TypeVar
 from uuid import uuid4
 
 from surreal_memory.core.brain import Brain, BrainConfig, BrainSnapshot
@@ -98,6 +99,26 @@ _BRAIN_ID_SAFE = re.compile(r"^[a-zA-Z0-9_.\-]+$")
 # returns above this value (single-connection multiplexing, not true parallel
 # sockets).
 _BATCH_FETCH_CONCURRENCY = 16
+
+# Rows per multi-statement write round-trip (update_synapses_batch /
+# update_neuron_states_batch). Matches the ~500 already proven by
+# update_neuron_embeddings: big enough that the per-round-trip cost (~2ms of
+# HTTP + parse) amortises to noise, small enough that one oversized chunk can
+# neither blow the server's request-body limit nor lose more than 500 rows if
+# the statement batch fails.
+_BATCH_WRITE_CHUNK = 500
+
+_T = TypeVar("_T")
+
+
+def _chunked(items: list[_T], size: int = _BATCH_WRITE_CHUNK) -> Iterator[list[_T]]:
+    """Yield ``items`` in fixed-size slices; nothing at all for an empty list.
+
+    One shared chunker so the batch writers cannot drift apart on boundary
+    handling (an off-by-one here silently drops rows rather than failing).
+    """
+    for start in range(0, len(items), size):
+        yield items[start : start + size]
 
 
 def _brain_literal(brain_id: str) -> str:
@@ -305,6 +326,37 @@ def _row_to_synapse(row: dict[str, Any]) -> Synapse:
         reinforced_count=int(row.get("reinforced_count", 0)),
     )
     return syn
+
+
+def _change_payload(entity: Any | None) -> dict[str, Any] | None:
+    """Build the ``change_log.payload`` blob a peer needs to replay this write.
+
+    Extracted so the single-row (``_record_change_internal``) and bulk
+    (``_record_changes_bulk``) writers cannot drift into emitting different
+    payload shapes for the same entity — a drift a delta-sync peer would only
+    discover as a corrupt replay, long after the fact.
+    """
+    if isinstance(entity, Neuron):
+        meta = dict(entity.metadata)
+        # The vector is derived from content and can be recomputed locally, so it
+        # never rides along in the log (it would dwarf every other field).
+        meta.pop("_embedding", None)
+        return {
+            "type": entity.type.value,
+            "content": entity.content,
+            "metadata": meta,
+            "content_hash": entity.content_hash,
+            "ephemeral": entity.ephemeral,
+        }
+    if isinstance(entity, Synapse):
+        return {
+            "type": entity.type.value,
+            "source_id": entity.source_id,
+            "target_id": entity.target_id,
+            "weight": entity.weight,
+            "direction": entity.direction,
+        }
+    return None
 
 
 def _row_to_fiber(row: dict[str, Any]) -> Fiber:
@@ -1988,27 +2040,6 @@ class SurrealDBStorage(
         except ValueError:
             return
 
-        payload: dict[str, Any] | None = None
-        if entity is not None:
-            if isinstance(entity, Neuron):
-                meta = dict(entity.metadata)
-                meta.pop("_embedding", None)
-                payload = {
-                    "type": entity.type.value,
-                    "content": entity.content,
-                    "metadata": meta,
-                    "content_hash": entity.content_hash,
-                    "ephemeral": entity.ephemeral,
-                }
-            elif isinstance(entity, Synapse):
-                payload = {
-                    "type": entity.type.value,
-                    "source_id": entity.source_id,
-                    "target_id": entity.target_id,
-                    "weight": entity.weight,
-                    "direction": entity.direction,
-                }
-
         conn = self._ensure_conn()
         self._change_seq += 1
         change_id = f"change_{self._change_seq}_{uuid4().hex[:8]}"
@@ -2019,7 +2050,7 @@ class SurrealDBStorage(
             "entity_id": entity_id,
             "operation": operation,
             "device_id": device_id,
-            "payload": payload,
+            "payload": _change_payload(entity),
             "changed_at": utcnow(),
             "synced": False,
             "sequence": self._change_seq,
@@ -2028,6 +2059,63 @@ class SurrealDBStorage(
             await conn.insert("change_log", record)
         except Exception:
             pass
+
+    async def _record_changes_bulk(
+        self,
+        entity_type: str,
+        operation: str,
+        entities: list[Any],
+        device_id: str = "",
+    ) -> None:
+        """Append one ``change_log`` row per entity in a SINGLE bulk insert.
+
+        The per-entity ``_record_change_internal`` costs its own HTTP round-trip
+        (~3.7 ms measured), which made the change-log — not the entity write —
+        the majority of a batched update's wall clock: ~64% of the per-synapse
+        cost during ``smem decay``. The SDK's ``insert()`` accepts a LIST and
+        emits one ``INSERT INTO change_log $data``, so N rows cost one
+        round-trip.
+
+        Every entity still gets its own row with its own monotonically
+        increasing ``sequence`` — nothing is dropped or coalesced, because delta
+        sync replays the log per entity and a skipped row would silently
+        de-synchronise peers. Only the transport is batched. All rows share one
+        ``changed_at`` instant (they are one logical write); consumers order by
+        ``sequence``, not timestamp.
+        """
+        if self._skip_change_log or not entities:
+            return
+        try:
+            brain_id = self._get_brain_id()
+        except ValueError:
+            return
+
+        changed_at = utcnow()
+        records: list[dict[str, Any]] = []
+        for entity in entities:
+            self._change_seq += 1
+            records.append(
+                {
+                    "id": f"change_{self._change_seq}_{uuid4().hex[:8]}",
+                    "brain_id": brain_id,
+                    "entity_type": entity_type,
+                    "entity_id": entity.id,
+                    "operation": operation,
+                    "device_id": device_id,
+                    "payload": _change_payload(entity),
+                    "changed_at": changed_at,
+                    "synced": False,
+                    "sequence": self._change_seq,
+                }
+            )
+
+        conn = self._ensure_conn()
+        try:
+            await conn.insert("change_log", records)
+        except Exception:
+            # Same fail-soft contract as _record_change_internal: sync bookkeeping
+            # must never abort the entity write that already succeeded.
+            logger.debug("change_log bulk insert failed (%d rows)", len(records), exc_info=True)
 
     async def record_change(
         self,
@@ -2641,13 +2729,99 @@ class SurrealDBStorage(
         )
         return {str(r.get("compression_tier", 0)): int(r.get("c", 0)) for r in rows}
 
+    async def _merge_records_batch(
+        self,
+        table: str,
+        rows: list[tuple[str, dict[str, Any]]],
+    ) -> None:
+        """Apply ``(record_name, merge_data)`` pairs in ONE round-trip.
+
+        The multi-statement ``UPDATE type::record(<table>, $idN) MERGE $dN`` form
+        is exactly what a single ``conn.merge("<table>:<name>", data)`` sends —
+        MERGE, not SET, so a partial dict keeps existing keys it does not mention
+        — just pipelined instead of one HTTP round-trip apiece.
+
+        Callers chunk (see ``_chunked``); this issues one query for whatever it
+        is given.
+
+        SECURITY: table, record name and merge payload are ALL bound as query
+        params — the only text interpolated into the SurQL is the loop index, so
+        no caller value can reach the parser however the helper is later reused.
+        """
+        if not rows:
+            return
+        stmts: list[str] = []
+        params: dict[str, Any] = {"tbl": table}
+        for i, (record_name, data) in enumerate(rows):
+            params[f"id{i}"] = record_name
+            params[f"d{i}"] = data
+            stmts.append(f"UPDATE type::record($tbl, $id{i}) MERGE $d{i}")
+        await self._query(";\n".join(stmts) + ";", **params)
+
     async def update_neuron_states_batch(self, states: list[NeuronState]) -> None:
-        for state in states:
-            await self.update_neuron_state(state)
+        """Update many neuron states in ONE round-trip per 500-row chunk.
+
+        Was a plain ``for`` loop over ``update_neuron_state`` — i.e. the base
+        class's sequential fallback with extra steps, one HTTP round-trip
+        (~2 ms) per state. Decay rewrites every state whose activation moved,
+        so the loop cost scaled linearly with brain size for no reason: these
+        are independent point-merges with no ordering constraint between them.
+        """
+        for chunk in _chunked(states):
+            rows: list[tuple[str, dict[str, Any]]] = []
+            for state in chunk:
+                data: dict[str, Any] = {
+                    "activation_level": state.activation_level,
+                    "access_frequency": state.access_frequency,
+                    "decay_rate": state.decay_rate,
+                    "firing_threshold": state.firing_threshold,
+                    "refractory_period_ms": state.refractory_period_ms,
+                    "homeostatic_target": state.homeostatic_target,
+                }
+                # Omit rather than null out when unset — matches
+                # update_neuron_state, so a batched write can never clear a
+                # timestamp the single-row path would have left alone.
+                if state.last_activated:
+                    data["last_activated"] = state.last_activated
+                if state.refractory_until:
+                    data["refractory_until"] = state.refractory_until
+                rows.append((f"state_{_to_surreal_id(state.neuron_id)}", data))
+            await self._merge_records_batch("neuron_state", rows)
 
     async def update_synapses_batch(self, synapses: list[Synapse]) -> None:
-        for synapse in synapses:
-            await self.update_synapse(synapse)
+        """Update many synapses in ONE round-trip per 500-row chunk, plus one
+        bulk ``change_log`` insert per chunk.
+
+        Was a plain ``for`` loop over ``update_synapse``, which costs TWO HTTP
+        round-trips per synapse: the merge (~2.0 ms) and its own change_log
+        insert (~3.7 ms). On a 158k-synapse brain ``smem decay`` rewrote ~57k of
+        them, so the write loop alone was ~330 s of the 475 s run — 98% of it,
+        against 8.5 s of reads.
+
+        The change_log is batched, NOT skipped: every synapse still gets its own
+        row with its own sequence number, because delta sync replays the log per
+        entity and a dropped row would silently de-synchronise peers. Only the
+        transport collapses (see ``_record_changes_bulk``). Suppressing the log
+        stays the caller's explicit, global opt-in via the ``_skip_change_log``
+        flag — never a silent side effect of choosing the batch path.
+        """
+        for chunk in _chunked(synapses):
+            rows: list[tuple[str, dict[str, Any]]] = []
+            for synapse in chunk:
+                data: dict[str, Any] = {
+                    "type": synapse.type.value,
+                    "weight": synapse.weight,
+                    "direction": synapse.direction,
+                    "metadata": dict(synapse.metadata),
+                    "reinforced_count": synapse.reinforced_count,
+                }
+                if synapse.last_activated:
+                    data["last_activated"] = synapse.last_activated
+                rows.append((_to_surreal_id(synapse.id), data))
+            # Chunk the entity writes and their change-log rows together so a
+            # failure can never leave the log claiming a write that did not land.
+            await self._merge_records_batch("synapse", rows)
+            await self._record_changes_bulk("synapse", "update", chunk)
 
     async def cleanup_ephemeral_neurons(self, max_age_hours: float = 24.0) -> int:
         brain_id = self._get_brain_id()

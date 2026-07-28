@@ -235,6 +235,9 @@ class SurrealDBReasoningTracesMixin:
 
         ``last_trace_at`` is fetched per model with an ORDER BY ... LIMIT 1
         rather than a datetime aggregate, keeping the SurrealQL unambiguous.
+        That per-model query MUST keep its ``WITH INDEX idx_rtr_model`` hint —
+        see the comment on the query below; without it this whole endpoint
+        exceeds the SDK's 30s client timeout and the caller 500s.
         """
         model_rows = await self._query(
             "SELECT model, count() AS cnt FROM reasoning_traces"
@@ -251,8 +254,27 @@ class SurrealDBReasoningTracesMixin:
         by_model: dict[str, dict[str, Any]] = {}
         for r in model_rows:
             name = r.get("model", "")
+            # WITH INDEX idx_rtr_model is load-bearing, not a micro-optimisation.
+            # Left to its own devices the 3.2.x planner satisfies the ORDER BY by
+            # walking idx_rtr_time (brain_id, created_at) BACKWARD across the
+            # entire brain scope and applying `model` as a post-index Filter, so
+            # cost scales with the brain's total trace count, not the model's.
+            # Measured on a 10.5k-row brain: EXPLAIN FULL showed IndexScan
+            # idx_rtr_time direction=Backward output_rows=10496 taking 92.6s to
+            # answer for a model owning 57 rows — past the SDK's 30s client
+            # timeout, so /reasoning status raised TimeoutError and 500'd. The
+            # hint pins the composite (brain_id, model) index, so the scan reads
+            # only that model's rows and sorts them: 92.6s -> 2.2ms.
+            # Safe on installs predating idx_rtr_model: SurrealDB 3.2.3 does not
+            # error on an unknown index name in the hint, it just declines the
+            # backward-idx_rtr_time plan (measured 13-16ms, correct rows), so a
+            # missing index degrades to "merely fast" rather than hard-failing.
+            # A single grouped `time::max(created_at) ... GROUP BY model` would
+            # also collapse this N+1 (measured ~98ms for all models, identical
+            # values) — viable if the loop ever needs to go, but the hint alone
+            # removes the pathology.
             latest = await self._query(
-                "SELECT created_at FROM reasoning_traces"
+                "SELECT created_at FROM reasoning_traces WITH INDEX idx_rtr_model"
                 " WHERE brain_id = $bid AND model = $model"
                 " ORDER BY created_at DESC LIMIT 1",
                 bid=brain_id,
