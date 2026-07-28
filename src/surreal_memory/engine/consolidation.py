@@ -72,8 +72,13 @@ class ConsolidationConfig:
     infer_co_activation_threshold: int = 3
     infer_window_days: int = 7
     infer_max_per_run: int = 50
-    strategy_timeout_seconds: float = 120.0
-    total_timeout_seconds: float = 600.0
+    # 600s per strategy, not 120s: on large brains (10k+ neurons) the heavy passes
+    # — compress, lifecycle, essence backfill — legitimately need minutes, and a
+    # 120s cap aborted them mid-run so consolidation never converged.
+    strategy_timeout_seconds: float = 600.0
+    # The total must stay well above the per-strategy cap, otherwise a single slow
+    # strategy consumes the whole budget and every later strategy times out.
+    total_timeout_seconds: float = 3600.0
 
 
 @dataclass(frozen=True)
@@ -320,8 +325,8 @@ class ConsolidationEngine:
         within each tier. Tiers execute sequentially so that later
         strategies can depend on results from earlier ones.
 
-        Each strategy has a per-strategy timeout (default 120s) and the
-        entire consolidation has a total timeout (default 600s) to prevent
+        Each strategy has a per-strategy timeout (default 600s) and the
+        entire consolidation has a total timeout (default 3600s) to prevent
         runaway execution.
 
         Args:
@@ -1600,8 +1605,10 @@ class ConsolidationEngine:
         offset = 0
         anchors: list[Neuron] = []
         while True:
+            # Anchors are selected on metadata alone, so skip the embedding vector
+            # — it is ~4-8 KB/row and only inflates the response.
             batch = await self._storage.find_neurons(
-                limit=batch_size, offset=offset, ephemeral=False
+                limit=batch_size, offset=offset, ephemeral=False, include_embedding=False
             )
             if not batch:
                 break
@@ -1767,9 +1774,29 @@ class ConsolidationEngine:
             _logger.debug("LIFECYCLE skipped: no brain context")
             return
 
-        # Fetch neurons in batches via find_neurons (full scan)
+        # Page through the neurons instead of pulling 10k rows in one response, and
+        # drop the embedding vector: this pass only reads neuron.metadata
+        # (last_accessed_at / access_frequency / priority). A single
+        # `limit=10000` with embeddings meant a multi-hundred-MB HTTP body that
+        # SurrealDB dropped mid-transfer — "[Errno 104] Connection reset by peer",
+        # which aborted the whole LIFECYCLE pass.
+        neurons: list[Neuron] = []
+        batch_size = 500
+        offset = 0
         try:
-            neurons = await self._storage.find_neurons(limit=10000, ephemeral=False)
+            while len(neurons) < 10000:
+                batch = await self._storage.find_neurons(
+                    limit=batch_size,
+                    offset=offset,
+                    ephemeral=False,
+                    include_embedding=False,
+                )
+                if not batch:
+                    break
+                neurons.extend(batch)
+                offset += len(batch)
+                if len(batch) < batch_size:
+                    break
         except Exception:
             _logger.error("LIFECYCLE failed to fetch neurons", exc_info=True)
             return

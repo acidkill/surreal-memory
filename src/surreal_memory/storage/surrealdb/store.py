@@ -547,14 +547,38 @@ class SurrealDBStorage(
         that surfaces as a connection error, not a 401, so without this the dead
         cached connection fails every query until the process restarts (S-01).
         """
+        from surreal_memory.storage.surrealdb.connection import StorageAuthError
+
         try:
             result = await self._ensure_conn().query(sql, params)
         except Exception as exc:
             if not (_is_auth_error(exc) or _is_connection_error(exc)):
                 raise
-            async with self._reauth_lock:
-                await self._reconnect()
-            result = await self._ensure_conn().query(sql, params)
+            # A dropped transport often needs a moment before it accepts a new
+            # connection: reconnecting in the same instant tends to hit the very
+            # same reset ("[Errno 104] Connection reset by peer" during signin),
+            # which aborted the caller — e.g. an entire consolidation pass — on a
+            # single transient blip. Retry the reconnect with a short backoff.
+            last_exc: Exception = exc
+            result = None
+            for attempt, delay in enumerate((0.0, 1.0, 3.0), start=1):
+                if delay:
+                    await asyncio.sleep(delay)
+                try:
+                    async with self._reauth_lock:
+                        await self._reconnect()
+                    result = await self._ensure_conn().query(sql, params)
+                    break
+                except StorageAuthError:
+                    # Bad credentials never fix themselves — fail fast.
+                    raise
+                except Exception as retry_exc:  # re-raised below
+                    last_exc = retry_exc
+                    logger.warning(
+                        "SurrealDB reconnect attempt %d/3 failed: %s", attempt, retry_exc
+                    )
+            else:
+                raise last_exc
         if result and isinstance(result, list) and len(result) > 0:
             return result[0] if isinstance(result[0], list) else result
         return []
