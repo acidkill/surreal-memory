@@ -516,8 +516,10 @@ def brain_transplant(
             result = await transplant(
                 source_storage=source_storage,
                 target_storage=target_storage,
-                source_brain_id=source_brain.id,
-                target_brain_id=target_brain.id,
+                # Scope is the brain *name*; brain.id is a UUID for brains created
+                # by older versions and would transplant from/into an empty scope.
+                source_brain_id=source_brain.name,
+                target_brain_id=target_brain.name,
                 filt=filt,
                 strategy=merge_strategy,
             )

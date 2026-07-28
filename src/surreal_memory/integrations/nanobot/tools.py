@@ -353,7 +353,8 @@ class NMHealthTool(BaseNMTool):
         from surreal_memory.engine.diagnostics import DiagnosticsEngine
 
         engine = DiagnosticsEngine(self._ctx.storage)
-        report = await engine.analyze(self._ctx.brain.id)
+        # Scope is the brain *name* (storage.brain_id), not the record UUID.
+        report = await engine.analyze(self._ctx.storage.brain_id or self._ctx.brain.name)
 
         return self._json(
             {

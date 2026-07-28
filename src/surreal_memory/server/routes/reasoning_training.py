@@ -265,7 +265,11 @@ async def get_status(
 
     config = get_config()
     rt = config.reasoning_training
-    brain_id = brain.id
+    # Rows are scoped by the brain *name*, never by the brain record's UUID
+    # primary key: passing brain.id into create_isolated_storage() bound the whole
+    # mining job to a UUID scope, so every mined neuron/fiber landed in a brain
+    # that recall never reads.
+    brain_id = storage.brain_id or brain.name
 
     stats = await storage.get_reasoning_stats(brain_id)
     by_model_traces: dict[str, Any] = stats.get("by_model", {})

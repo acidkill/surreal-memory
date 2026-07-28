@@ -61,7 +61,7 @@ def version_create(
 
             engine = VersioningEngine(storage)
             try:
-                version = await engine.create_version(brain.id, name, description)
+                version = await engine.create_version(storage.brain_id or brain.name, name, description)
             except ValueError as e:
                 logger.error("Version create failed: %s", e)
                 return {"error": "Failed to create version: invalid parameters"}
@@ -122,7 +122,7 @@ def version_list(
             from surreal_memory.engine.brain_versioning import VersioningEngine
 
             engine = VersioningEngine(storage)
-            versions = await engine.list_versions(brain.id, limit=limit)
+            versions = await engine.list_versions(storage.brain_id or brain.name, limit=limit)
 
             return {
                 "versions": [
@@ -191,7 +191,7 @@ def version_rollback(
 
             engine = VersioningEngine(storage)
             try:
-                rollback_v = await engine.rollback(brain.id, version_id)
+                rollback_v = await engine.rollback(storage.brain_id or brain.name, version_id)
             except ValueError as e:
                 logger.error("Version rollback failed: %s", e)
                 return {"error": "Rollback failed: version not found or invalid"}
@@ -245,7 +245,7 @@ def version_diff(
 
             engine = VersioningEngine(storage)
             try:
-                diff = await engine.diff(brain.id, from_version, to_version)
+                diff = await engine.diff(storage.brain_id or brain.name, from_version, to_version)
             except ValueError as e:
                 logger.error("Version diff failed: %s", e)
                 return {"error": "Diff failed: one or both versions not found"}

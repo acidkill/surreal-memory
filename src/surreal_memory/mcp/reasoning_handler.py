@@ -42,7 +42,9 @@ class ReasoningHandler:
         brain, err = await _get_brain_or_error(storage)
         if err:
             return err
-        brain_id = brain.id
+        # Scope is the brain *name*, never the record's UUID primary key — a UUID
+        # here binds the whole mining job to a brain recall never reads.
+        brain_id = storage.brain_id or brain.name
 
         if action == "status":
             return await self._reasoning_status(storage, brain_id)

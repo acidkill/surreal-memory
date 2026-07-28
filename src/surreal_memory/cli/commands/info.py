@@ -32,7 +32,9 @@ def stats(
         if not brain:
             return {"error": "No brain configured"}
 
-        enhanced = await storage.get_enhanced_stats(brain.id)
+        # Rows are scoped by the brain *name* (storage.brain_id), not by the brain
+        # record's UUID primary key — brain.id would query an empty scope.
+        enhanced = await storage.get_enhanced_stats(storage.brain_id or brain.name)
 
         # Get fibers for freshness analysis
         fibers = await storage.get_fibers(limit=1000)
@@ -232,7 +234,7 @@ def status(
                 "error": "No brain configured. Run: smem brain create default && smem brain use default"
             }
 
-        stats_data = await storage.get_stats(brain.id)
+        stats_data = await storage.get_stats(storage.brain_id or brain.name)
 
         # Last memory timestamp
         fibers = await storage.get_fibers(limit=1)
@@ -362,7 +364,7 @@ def health(
         from surreal_memory.engine.diagnostics import DiagnosticsEngine
 
         engine = DiagnosticsEngine(storage)
-        report = await engine.analyze(brain.id)
+        report = await engine.analyze(storage.brain_id or brain.name)
 
         return {
             "brain": brain.name,

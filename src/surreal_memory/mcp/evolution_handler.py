@@ -38,7 +38,8 @@ class EvolutionHandler:
 
         try:
             engine = EvolutionEngine(storage)
-            evo = await engine.analyze(brain.id)
+            # Scope is the brain *name* (storage.brain_id), not the record UUID.
+            evo = await engine.analyze(storage.brain_id or brain.name)
         except Exception:
             logger.error("Evolution analysis failed", exc_info=True)
             return {"error": "Evolution analysis failed"}

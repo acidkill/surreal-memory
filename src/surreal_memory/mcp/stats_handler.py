@@ -227,7 +227,9 @@ class StatsHandler:
         from surreal_memory.engine.diagnostics import DiagnosticsEngine
 
         engine = DiagnosticsEngine(storage)
-        report = await engine.analyze(brain.id)
+        # Rows are scoped by the brain *name* (storage.brain_id), not by the brain
+        # record's UUID primary key — brain.id would analyse an empty scope.
+        report = await engine.analyze(storage.brain_id or brain.name)
 
         result: dict[str, Any] = {
             "brain": brain.name,

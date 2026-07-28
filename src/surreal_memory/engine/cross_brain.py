@@ -74,7 +74,9 @@ async def _query_single_brain(
         if not brain:
             return brain_name, [], 0, ""
 
-        storage.set_brain(brain.id)
+        # Rows are scoped by the brain *name*; brain.id is a UUID for brains
+        # created by older versions and would select an empty scope.
+        storage.set_brain(brain.name)
 
         from surreal_memory.engine.retrieval import ReflexPipeline
 

@@ -66,7 +66,8 @@ async def render_dashboard(storage: PersistentStorage) -> None:
         return
 
     # Gather data
-    stats = await storage.get_stats(brain.id)
+    # Rows are scoped by the brain *name* (storage.brain_id), not the record UUID.
+    stats = await storage.get_stats(storage.brain_id or brain.name)
     fibers = await storage.get_fibers(limit=100)
     typed_memories = await storage.find_typed_memories(limit=1000)
     expired_memories = await storage.get_expired_memories()
@@ -449,7 +450,8 @@ async def render_quick_stats(storage: PersistentStorage) -> str:
     if not brain:
         return "No brain configured"
 
-    stats = await storage.get_stats(brain.id)
+    # Rows are scoped by the brain *name* (storage.brain_id), not the record UUID.
+    stats = await storage.get_stats(storage.brain_id or brain.name)
     typed_memories = await storage.find_typed_memories(limit=1000)
 
     # Count by type

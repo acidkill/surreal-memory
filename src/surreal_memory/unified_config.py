@@ -2507,7 +2507,10 @@ async def _get_sqlite_storage(
         else:
             await _migrate_brain_runtime_config(storage, brain, config)
 
-        storage.set_brain(brain.id)
+        # Match the cache-hit path above (which uses `name`): brain.id is a UUID
+        # for brains created by older versions, and binding the scope to it would
+        # split writes into a brain that lookups by name never see.
+        storage.set_brain(name)
         _storage_cache[cache_key] = storage
         return storage
 
