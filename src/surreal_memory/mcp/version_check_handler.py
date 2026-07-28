@@ -211,7 +211,7 @@ async def _fetch_latest_version() -> str | None:
         try:
             if not _PYPI_URL.startswith("https://"):
                 return None
-            req = urllib.request.Request(  # noqa: S310
+            req = urllib.request.Request(
                 _PYPI_URL,
                 headers={"Accept": "application/json"},
             )
