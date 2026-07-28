@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -46,6 +48,27 @@ from surreal_memory.utils.tag_normalizer import TagNormalizer
 from surreal_memory.utils.timeutils import utcnow
 
 logger = logging.getLogger(__name__)
+
+
+def _inline_embed_timeout() -> float:
+    """Seconds the write path will wait for inline embeddings before giving up.
+
+    Default 10s: comfortably above a local endpoint (bge-m3 via llamastash answers
+    in ~15 ms) and comfortably below the 30s tool-call cap that MCP hosts such as
+    Claude Code and Claude Desktop enforce, so a slow provider can never turn a
+    successful write into a client-side timeout. Override with
+    ``SURREAL_MEMORY_INLINE_EMBED_TIMEOUT`` (<= 0 disables the bound).
+    """
+    raw = os.environ.get("SURREAL_MEMORY_INLINE_EMBED_TIMEOUT", "").strip()
+    if not raw:
+        return 10.0
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning("Invalid SURREAL_MEMORY_INLINE_EMBED_TIMEOUT=%r — falling back to 10s", raw)
+        return 10.0
+    return value if value > 0 else 0.0
+
 
 if TYPE_CHECKING:
     from surreal_memory.core.brain import BrainConfig
@@ -499,7 +522,27 @@ class MemoryEncoder:
 
         try:
             provider = _create_provider(self._config, task_type="RETRIEVAL_DOCUMENT")
-            vectors = await provider.embed_batch([n.content for n in candidates])
+            # Bound the wait. This method is fail-soft by design — "no provider"
+            # already means "keyword-only memory, no error" — but an *unavailable*
+            # provider and a *slow* one used to be treated differently: a remote or
+            # rate-limited endpoint blocked the write until its own timeout, pushing
+            # `smem_remember` past the 30s tool-call cap MCP hosts impose. The write
+            # itself had already succeeded, so the caller saw a timeout and could not
+            # tell whether the memory landed — the exact failure this tool exists to
+            # prevent. A local endpoint (bge-m3 via llamastash, ~15 ms) is nowhere
+            # near this budget; anything that is pays with a slightly later vector
+            # instead of a lost write. `smem reindex` back-fills.
+            budget = _inline_embed_timeout()
+            embed = provider.embed_batch([n.content for n in candidates])
+            vectors = await (asyncio.wait_for(embed, timeout=budget) if budget else embed)
+        except TimeoutError:
+            logger.warning(
+                "Inline embedding exceeded %.0fs for %d neuron(s) — memory saved "
+                "keyword-only; run `smem reindex` to back-fill the vectors.",
+                _inline_embed_timeout(),
+                len(candidates),
+            )
+            return
         except Exception:
             logger.debug("Inline embedding skipped (provider unavailable)", exc_info=True)
             return
