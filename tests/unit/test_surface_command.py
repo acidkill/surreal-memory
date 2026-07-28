@@ -38,6 +38,7 @@ def _plain(text: str) -> str:
     """
     return _ANSI.sub("", text)
 
+
 # The repr that really landed in a live surface file's `brain:` header.
 CLICONFIG_REPR = (
     "CLIConfig(data_dir=PosixPath('/home/user/.surrealmemory'), current_brain='default')"
