@@ -35,7 +35,7 @@ be wrong.
 `get_promotion_candidates` looked its fiber up with `id = $sid` bound to a `"fiber:<raw>"`
 *string*, which can never equal a record id — the same fiber yields `count 0` that way and
 `count 1` via `type::record` with a raw id. **No memory could be promoted at all.** That is
-fixed, and the query now returns real candidates on a live brain.
+fixed, and the query returns candidates again.
 
 Expect promotion to still take time: the gate requires 7 days in stage plus 3 distinct
 recall days (or 15 rehearsals across five 2-hour windows), and only `recall`/`review`
@@ -62,19 +62,20 @@ re-entered as a fresh duplicate on the next pass. It is now `false`.
 `get_fiber_stage_counts` grouped by `compression_tier`, which is `NULL` for every row — the
 whole table collapsed into one bucket, so the caller's `.get("semantic")` was always 0 and
 `LOW_CONSOLIDATION` was permanently on. It now groups by maturation stage, matching the
-storage contract, the other two backends and `DiagnosticsEngine`. On the live brain that is
-`episodic 1856, semantic 9, stm 31, working 99` instead of a single null bucket.
+storage contract, the other two backends and `DiagnosticsEngine`, so the ratio is computed
+from a real stage distribution instead of a single null bucket.
 
-874 of 2819 fibers had no maturation row and so could never advance a stage. The maturation
+Fibers created before the maturation subsystem existed have no maturation row at all and so can
+never advance a stage. The maturation
 phase now backfills them (guarded on the counts, so a healthy brain pays two cheap counts),
 and reinforcement creates a row on miss instead of silently skipping.
 
 ### What we expected to find and did not
 
 The reported "Semantic synapses: 2000 every run" was widely assumed to be lost idempotency
-— edges re-minted with fresh UUIDs on every pass. **It was not.** Two consecutive live runs
-added 2000 then 1077 edges, created 1077 genuinely new pairs, and re-minted **zero** edges
-over an existing pair; the duplicate-row count stayed at exactly 198 throughout. The
+— edges re-minted with fresh UUIDs on every pass. **It was not.** Two consecutive runs against a
+real deployment created only genuinely new pairs and re-minted **zero** edges over an existing
+pair, leaving the duplicate-row count unchanged. The
 existing-pairs guard works, and those 198 rows are historical residue. What was actually
 wrong was the *reporting*. Two real defects behind it were fixed anyway: that guard read
 the entire synapse table in one response (the `[Errno 104] Connection reset by peer`
@@ -88,8 +89,8 @@ read.
 It does now, with `generate` and `show`, plus `--global-path` for one predictable location —
 surface paths were resolved from the process CWD, so `generate` run from home and `doctor`
 run from a repo disagreed about which file they meant. Brain names are validated before
-becoming filenames: a live install had a surface whose brain key was an entire
-`CLIConfig(data_dir=PosixPath(...))` repr.
+becoming filenames: passing a config object where a name was expected could write a surface whose
+brain key was an entire `CLIConfig(...)` repr.
 
 ### Fixed
 
