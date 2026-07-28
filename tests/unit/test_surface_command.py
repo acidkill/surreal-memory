@@ -13,6 +13,7 @@ entire ``CLIConfig(data_dir=PosixPath(...), ...)`` repr.
 from __future__ import annotations
 
 import pathlib
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -23,6 +24,19 @@ from surreal_memory.mcp.surface_handler import _surface_brain_name
 from surreal_memory.surface.resolver import get_surface_path, validate_brain_name
 
 runner = CliRunner()
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _plain(text: str) -> str:
+    """Strip ANSI styling from CLI output before matching against it.
+
+    Rich colourises option names *inside* the word -- `--global-path` comes back
+    as `-\\x1b[0m\\x1b[1;36m-global\\x1b[0m\\x1b[1;36m-path` when a terminal
+    profile enables colour. Asserting on the raw output therefore passed locally
+    and failed in CI purely on styling.
+    """
+    return _ANSI.sub("", text)
 
 # The repr that really landed in a live surface file's `brain:` header.
 CLICONFIG_REPR = (
@@ -104,22 +118,22 @@ class TestSurfaceCommandExists:
     def test_the_command_doctor_prescribes_is_registered(self) -> None:
         result = runner.invoke(app, ["surface", "--help"])
         assert result.exit_code == 0
-        assert "No such command" not in result.output
+        assert "No such command" not in _plain(result.output)
 
     def test_it_offers_generate_and_show(self) -> None:
-        result = runner.invoke(app, ["surface", "--help"])
-        assert "generate" in result.output
-        assert "show" in result.output
+        output = _plain(runner.invoke(app, ["surface", "--help"]).output)
+        assert "generate" in output
+        assert "show" in output
 
     def test_generate_advertises_the_global_path_flag(self) -> None:
         result = runner.invoke(app, ["surface", "generate", "--help"])
         assert result.exit_code == 0
-        assert "--global-path" in result.output
+        assert "--global-path" in _plain(result.output)
 
     def test_an_invalid_brain_name_is_rejected_before_any_io(self) -> None:
         result = runner.invoke(app, ["surface", "show", "--brain", "../escape"])
         assert result.exit_code == 2
-        assert "Invalid brain name" in result.output
+        assert "Invalid brain name" in _plain(result.output)
 
 
 class TestSurfaceBrainKey:
