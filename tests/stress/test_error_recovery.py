@@ -93,7 +93,14 @@ class TestRelatedMemoryFailureGraceful:
         server.config = MagicMock()
         server.config.maintenance.enabled = False
         server.config.auto.enabled = False
-        server.config.write_gate.enabled = False
+        # Real WriteGateConfig (default mode="off") so the gate resolves via
+        # effective_mode/effective_auto_mode. Setting `.enabled` on a MagicMock
+        # leaves effective_mode a truthy mock, so the gate ran anyway and then
+        # compared len(content) against a MagicMock min_length. Same pattern as
+        # tests/unit/test_mcp.py.
+        from surreal_memory.unified_config import WriteGateConfig
+
+        server.config.write_gate = WriteGateConfig(enabled=False)
 
         # Create mock storage
         mock_storage = AsyncMock()

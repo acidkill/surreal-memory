@@ -95,7 +95,11 @@ class TestPassiveCaptureFailure:
         server.config = MagicMock()
         server.config.maintenance.enabled = False
         server.config.auto.enabled = False
-        server.config.write_gate.enabled = False
+        # Real WriteGateConfig (default mode="off") so the gate resolves via
+        # effective_mode/effective_auto_mode -- see tests/unit/test_mcp.py.
+        from surreal_memory.unified_config import WriteGateConfig
+
+        server.config.write_gate = WriteGateConfig(enabled=False)
 
         mock_storage = AsyncMock()
         mock_storage._current_brain_id = "test-brain"

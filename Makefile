@@ -5,8 +5,11 @@ install:
 	pip install -e .
 
 # Install with dev dependencies
+# The surrealdb extra is included because the integration suite runs against a
+# real SurrealDB whenever SURREALDB_URL is set -- which it is on any machine
+# that actually uses smem. Without the SDK those tests fail instead of skipping.
 install-dev:
-	pip install -e ".[dev,server]"
+	pip install -e ".[dev,server,surrealdb]"
 	pre-commit install
 
 # Run linter
