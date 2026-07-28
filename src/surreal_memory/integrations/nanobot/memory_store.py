@@ -72,10 +72,13 @@ class NMMemoryStore:
             TypedMemory,
             suggest_memory_type,
         )
+        from surreal_memory.engine.dedup.factory import build_dedup_pipeline
         from surreal_memory.engine.encoder import MemoryEncoder
 
         storage = self._ctx.storage
-        encoder = MemoryEncoder(storage, self._ctx.config)
+        encoder = MemoryEncoder(
+            storage, self._ctx.config, dedup_pipeline=build_dedup_pipeline(storage)
+        )
         auto_save_disabled = False
         if hasattr(storage, "disable_auto_save"):
             storage.disable_auto_save()
@@ -121,10 +124,13 @@ class NMMemoryStore:
             Priority,
             TypedMemory,
         )
+        from surreal_memory.engine.dedup.factory import build_dedup_pipeline
         from surreal_memory.engine.encoder import MemoryEncoder
 
         storage = self._ctx.storage
-        encoder = MemoryEncoder(storage, self._ctx.config)
+        encoder = MemoryEncoder(
+            storage, self._ctx.config, dedup_pipeline=build_dedup_pipeline(storage)
+        )
         auto_save_disabled = False
         if hasattr(storage, "disable_auto_save"):
             storage.disable_auto_save()

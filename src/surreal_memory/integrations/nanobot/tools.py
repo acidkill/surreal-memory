@@ -82,6 +82,7 @@ class NMRememberTool(BaseNMTool):
             suggest_memory_type,
         )
         from surreal_memory.core.neuron import NeuronState
+        from surreal_memory.engine.dedup.factory import build_dedup_pipeline
         from surreal_memory.engine.encoder import MemoryEncoder
         from surreal_memory.safety.sensitive import check_sensitive_content
         from surreal_memory.utils.timeutils import utcnow
@@ -112,7 +113,9 @@ class NMRememberTool(BaseNMTool):
         tags = set(kwargs.get("tags", []))
 
         storage = self._ctx.storage
-        encoder = MemoryEncoder(storage, self._ctx.config)
+        encoder = MemoryEncoder(
+            storage, self._ctx.config, dedup_pipeline=build_dedup_pipeline(storage)
+        )
         auto_save_disabled = False
         if hasattr(storage, "disable_auto_save"):
             storage.disable_auto_save()

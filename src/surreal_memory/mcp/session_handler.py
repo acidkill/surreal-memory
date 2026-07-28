@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from surreal_memory.core.memory_types import MemoryType, Priority, TypedMemory
+from surreal_memory.engine.dedup.factory import build_dedup_pipeline
 from surreal_memory.engine.encoder import MemoryEncoder
 from surreal_memory.git_context import detect_git_context
 from surreal_memory.utils.timeutils import utcnow
@@ -116,7 +117,7 @@ class SessionHandler:
         if not brain:
             return {"error": "No brain configured"}
 
-        encoder = MemoryEncoder(storage, brain.config)
+        encoder = MemoryEncoder(storage, brain.config, dedup_pipeline=build_dedup_pipeline(storage))
         storage.disable_auto_save()
 
         try:
@@ -173,7 +174,7 @@ class SessionHandler:
         if not brain:
             return {"error": "No brain configured"}
 
-        encoder = MemoryEncoder(storage, brain.config)
+        encoder = MemoryEncoder(storage, brain.config, dedup_pipeline=build_dedup_pipeline(storage))
         storage.disable_auto_save()
         now = utcnow()
 

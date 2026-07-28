@@ -13,6 +13,7 @@ from surreal_memory.core.memory_types import (
     get_decay_rate,
     suggest_memory_type,
 )
+from surreal_memory.engine.dedup.factory import build_dedup_pipeline
 from surreal_memory.engine.encoder import MemoryEncoder
 from surreal_memory.engine.hooks import HookEvent
 from surreal_memory.mcp.constants import MAX_CONTENT_LENGTH
@@ -285,41 +286,8 @@ class RememberHandler:
             auto_score = auto_importance_score(content, mem_type.value, args.get("tags", []))
             priority = Priority.from_int(auto_score)
 
-        # Build dedup pipeline if enabled
-        dedup_pipeline = None
-        try:
-            dedup_settings = self.config.dedup
-            if isinstance(dedup_settings.enabled, bool) and dedup_settings.enabled:
-                from surreal_memory.engine.dedup.config import DedupConfig
-                from surreal_memory.engine.dedup.pipeline import DedupPipeline
-
-                dedup_cfg = DedupConfig(
-                    enabled=True,
-                    simhash_threshold=int(dedup_settings.simhash_threshold),
-                    embedding_threshold=float(dedup_settings.embedding_threshold),
-                    embedding_ambiguous_low=float(dedup_settings.embedding_ambiguous_low),
-                    llm_enabled=bool(dedup_settings.llm_enabled),
-                    llm_provider=str(dedup_settings.llm_provider),
-                    llm_model=str(dedup_settings.llm_model),
-                    llm_max_pairs_per_encode=int(dedup_settings.llm_max_pairs_per_encode),
-                    merge_strategy=str(dedup_settings.merge_strategy),
-                    max_candidates=int(dedup_settings.max_candidates),
-                )
-
-                # Create LLM judge if enabled
-                llm_judge = None
-                if dedup_cfg.llm_enabled and dedup_cfg.llm_provider != "none":
-                    from surreal_memory.engine.dedup.llm_judge import create_judge
-
-                    llm_judge = create_judge(dedup_cfg.llm_provider, dedup_cfg.llm_model)
-
-                dedup_pipeline = DedupPipeline(
-                    config=dedup_cfg,
-                    storage=storage,
-                    llm_judge=llm_judge,
-                )
-        except (AttributeError, TypeError, ValueError):
-            dedup_pipeline = None
+        # Build dedup pipeline if enabled (shared with every other write path)
+        dedup_pipeline = build_dedup_pipeline(storage, self.config)
 
         encoder = MemoryEncoder(storage, brain.config, dedup_pipeline=dedup_pipeline)
 

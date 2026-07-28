@@ -196,9 +196,12 @@ def _step_test_memory(brain_name: str) -> None:
             storage = await get_storage(config)
             try:
                 from surreal_memory.core.brain import BrainConfig
+                from surreal_memory.engine.dedup.factory import build_dedup_pipeline
                 from surreal_memory.engine.encoder import MemoryEncoder
 
-                encoder = MemoryEncoder(storage, BrainConfig())
+                encoder = MemoryEncoder(
+                    storage, BrainConfig(), dedup_pipeline=build_dedup_pipeline(storage)
+                )
                 result = await encoder.encode(content)
                 return {"success": True, "neuron_id": result.fiber.anchor_neuron_id}
             finally:

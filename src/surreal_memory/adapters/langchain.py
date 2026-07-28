@@ -287,11 +287,12 @@ class SurrealMemoryChatMessageHistory(BaseChatMessageHistory):
         return _normalize_tag(f"{_LC_SESSION_PREFIX}{self.session_id}")
 
     async def _aadd_message(self, message: BaseMessage) -> None:
+        from surreal_memory.engine.dedup.factory import build_dedup_pipeline
         from surreal_memory.engine.encoder import MemoryEncoder
 
         storage = await self._aresolve_storage()
         config = await _current_brain_config(storage)
-        encoder = MemoryEncoder(storage, config)
+        encoder = MemoryEncoder(storage, config, dedup_pipeline=build_dedup_pipeline(storage))
         content = str(message.content)
         await encoder.encode(
             content=content,

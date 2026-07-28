@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, Literal
 
+from surreal_memory.engine.dedup.factory import build_dedup_pipeline
 from surreal_memory.mcp.constants import MAX_CONTENT_LENGTH
 from surreal_memory.mcp.tool_handler_utils import _require_brain_id
 
@@ -91,7 +92,7 @@ class CognitiveHandler:
         if not brain:
             return {"error": "Brain not found"}
 
-        encoder = MemoryEncoder(storage, brain.config)
+        encoder = MemoryEncoder(storage, brain.config, dedup_pipeline=build_dedup_pipeline(storage))
 
         try:
             storage.disable_auto_save()
@@ -323,7 +324,7 @@ class CognitiveHandler:
         if not brain:
             return {"error": "Brain not found"}
 
-        encoder = MemoryEncoder(storage, brain.config)
+        encoder = MemoryEncoder(storage, brain.config, dedup_pipeline=build_dedup_pipeline(storage))
 
         tags = set()
         for t in args.get("tags", []):
@@ -510,7 +511,7 @@ class CognitiveHandler:
             if not hyp_state:
                 return {"error": "Hypothesis not found"}
 
-        encoder = MemoryEncoder(storage, brain.config)
+        encoder = MemoryEncoder(storage, brain.config, dedup_pipeline=build_dedup_pipeline(storage))
 
         try:
             storage.disable_auto_save()
@@ -893,7 +894,9 @@ class CognitiveHandler:
                 from surreal_memory.core.memory_types import MemoryType, Priority, TypedMemory
                 from surreal_memory.engine.encoder import MemoryEncoder
 
-                encoder = MemoryEncoder(storage, brain.config)
+                encoder = MemoryEncoder(
+                    storage, brain.config, dedup_pipeline=build_dedup_pipeline(storage)
+                )
                 result = await encoder.encode(
                     content=content, timestamp=utcnow(), tags=tags if tags else None
                 )
@@ -1403,7 +1406,7 @@ class CognitiveHandler:
         if not brain:
             return {"error": "Brain not found"}
 
-        encoder = MemoryEncoder(storage, brain.config)
+        encoder = MemoryEncoder(storage, brain.config, dedup_pipeline=build_dedup_pipeline(storage))
         old_version = old_state.get("schema_version", 1)
 
         try:

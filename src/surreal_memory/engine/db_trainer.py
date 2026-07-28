@@ -103,6 +103,8 @@ class DBTrainer:
     def __init__(self, storage: NeuralStorage, config: BrainConfig) -> None:
         self._storage = storage
         self._config = config
+        # No dedup pipeline on purpose -- same reasoning as doc_trainer: schema
+        # training is a bulk pass whose rows are legitimately similar.
         self._encoder = MemoryEncoder(storage, config)
         self._introspector = SchemaIntrospector()
         self._extractor = KnowledgeExtractor()

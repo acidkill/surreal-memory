@@ -59,6 +59,7 @@ def quick_add(
         smem a "Always use UTC for timestamps" -p 8
         smem a "TODO: Review PR #123"
     """
+    from surreal_memory.engine.dedup.factory import build_dedup_pipeline
     from surreal_memory.engine.encoder import MemoryEncoder
 
     async def _add() -> None:
@@ -74,7 +75,7 @@ def quick_add(
         mem_type = suggest_memory_type(content)
         mem_priority = Priority.from_int(priority) if priority is not None else Priority.NORMAL
 
-        encoder = MemoryEncoder(storage, brain.config)
+        encoder = MemoryEncoder(storage, brain.config, dedup_pipeline=build_dedup_pipeline(storage))
         storage.disable_auto_save()
 
         result = await encoder.encode(

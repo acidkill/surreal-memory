@@ -18,6 +18,7 @@ from surreal_memory.core.memory_types import (
     TypedMemory,
     suggest_memory_type,
 )
+from surreal_memory.engine.dedup.factory import build_dedup_pipeline
 from surreal_memory.engine.encoder import MemoryEncoder
 from surreal_memory.engine.retrieval import DepthLevel, ReflexPipeline
 from surreal_memory.extraction.parser import QueryParser
@@ -98,7 +99,7 @@ async def _encode_and_store(
     ephemeral: bool = False,
 ) -> dict[str, Any]:
     """Encode content into neural graph and store typed memory metadata."""
-    encoder = MemoryEncoder(storage, brain_config)
+    encoder = MemoryEncoder(storage, brain_config, dedup_pipeline=build_dedup_pipeline(storage))
     storage.disable_auto_save()
 
     result = await encoder.encode(
@@ -340,7 +341,7 @@ def todo(
                 }
             project_id = proj.id
 
-        encoder = MemoryEncoder(storage, brain.config)
+        encoder = MemoryEncoder(storage, brain.config, dedup_pipeline=build_dedup_pipeline(storage))
         storage.disable_auto_save()
 
         result = await encoder.encode(

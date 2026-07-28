@@ -127,6 +127,11 @@ class DocTrainer:
     def __init__(self, storage: NeuralStorage, config: BrainConfig) -> None:
         self._storage = storage
         self._config = config
+        # No dedup pipeline on purpose. Every other write path builds one (see
+        # engine/dedup/factory.py), but document training ingests thousands of
+        # chunks in one pass and near-identical chunks are expected, not a
+        # defect -- paying a candidate search plus embeddings per chunk would
+        # dominate the run for no benefit.
         self._encoder = MemoryEncoder(storage, config)
 
     async def train_directory(

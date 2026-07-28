@@ -35,6 +35,7 @@ TASK_CONTEXT_PRIORITY = 7
 async def save_task_context(note: str, project_name: str | None) -> dict[str, Any]:
     """Persist a single structured task note as a project-scoped context memory."""
     from surreal_memory.core.memory_types import MemoryType, Priority, TypedMemory
+    from surreal_memory.engine.dedup.factory import build_dedup_pipeline
     from surreal_memory.engine.encoder import MemoryEncoder
     from surreal_memory.safety.input_firewall import check_content
     from surreal_memory.safety.sensitive import auto_redact_content
@@ -65,7 +66,7 @@ async def save_task_context(note: str, project_name: str | None) -> dict[str, An
         if matches:
             logger.debug("Auto-redacted %d matches in task-context note", len(matches))
 
-        encoder = MemoryEncoder(storage, brain.config)
+        encoder = MemoryEncoder(storage, brain.config, dedup_pipeline=build_dedup_pipeline(storage))
         storage.disable_auto_save()
 
         result = await encoder.encode(

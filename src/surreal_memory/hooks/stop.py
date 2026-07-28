@@ -321,6 +321,7 @@ async def capture_text(text: str, project_name: str | None = None) -> dict[str, 
     project (and tagged ``project:<name>``) for per-project recall.
     """
     from surreal_memory.core.memory_types import MemoryType, Priority, TypedMemory
+    from surreal_memory.engine.dedup.factory import build_dedup_pipeline
     from surreal_memory.engine.encoder import MemoryEncoder
     from surreal_memory.mcp.auto_capture import analyze_text_for_memories
     from surreal_memory.safety.input_firewall import check_content
@@ -370,7 +371,7 @@ async def capture_text(text: str, project_name: str | None = None) -> dict[str, 
         if not brain:
             return {"error": "No brain configured", "saved": 0}
 
-        encoder = MemoryEncoder(storage, brain.config)
+        encoder = MemoryEncoder(storage, brain.config, dedup_pipeline=build_dedup_pipeline(storage))
         storage.disable_auto_save()
 
         auto_redact_severity = config.safety.auto_redact_min_severity

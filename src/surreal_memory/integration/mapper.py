@@ -105,6 +105,9 @@ class RecordMapper:
     ) -> None:
         self._storage = storage
         self._config = config
+        # No dedup pipeline on the default encoder: this maps batches of
+        # external records, where the caller controls identity. Callers that
+        # want dedup pass their own encoder.
         self._encoder = encoder or MemoryEncoder(storage, config)
 
     def _resolve_memory_type(self, record: ExternalRecord) -> MemoryType:

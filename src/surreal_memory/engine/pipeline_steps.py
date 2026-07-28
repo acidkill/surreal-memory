@@ -772,21 +772,29 @@ class DedupCheckStep:
 
         from surreal_memory.engine.dedup.pipeline import DedupResult
 
-        dedup_result: DedupResult = await self.dedup_pipeline.check_duplicate(
-            ctx.content, content_hash=ctx.content_hash
-        )
-        if dedup_result.is_duplicate and dedup_result.existing_neuron_id:
-            batch = await storage.get_neurons_batch([dedup_result.existing_neuron_id])
-            existing_neuron = batch.get(dedup_result.existing_neuron_id)
-            if existing_neuron is not None:
-                # Store reused anchor in metadata for CreateAnchorStep
-                ctx.effective_metadata["_dedup_reused_anchor"] = existing_neuron
-                logger.debug(
-                    "Dedup: reusing anchor %s (tier=%d, score=%.3f)",
-                    dedup_result.existing_neuron_id,
-                    dedup_result.tier,
-                    dedup_result.similarity_score,
-                )
+        # Dedup is an optimisation, never a precondition for storing a memory.
+        # It now runs on every write path rather than just the MCP handler, so
+        # an unreachable embedding provider or a slow candidate search must not
+        # be able to fail a write that would otherwise have succeeded -- the
+        # worst outcome of skipping it is one duplicate anchor.
+        try:
+            dedup_result: DedupResult = await self.dedup_pipeline.check_duplicate(
+                ctx.content, content_hash=ctx.content_hash
+            )
+            if dedup_result.is_duplicate and dedup_result.existing_neuron_id:
+                batch = await storage.get_neurons_batch([dedup_result.existing_neuron_id])
+                existing_neuron = batch.get(dedup_result.existing_neuron_id)
+                if existing_neuron is not None:
+                    # Store reused anchor in metadata for CreateAnchorStep
+                    ctx.effective_metadata["_dedup_reused_anchor"] = existing_neuron
+                    logger.debug(
+                        "Dedup: reusing anchor %s (tier=%d, score=%.3f)",
+                        dedup_result.existing_neuron_id,
+                        dedup_result.tier,
+                        dedup_result.similarity_score,
+                    )
+        except Exception:
+            logger.debug("Dedup check failed; storing without dedup", exc_info=True)
         return ctx
 
 
@@ -815,7 +823,23 @@ class CreateAnchorStep:
                 type=NeuronType.CONCEPT,
                 content=ctx.content,
                 metadata={
-                    "is_anchor": True,
+                    # NOT an anchor. This neuron exists to preserve the
+                    # variant's own text, tags and provenance, but the
+                    # canonical memory is the anchor it aliases.
+                    #
+                    # Marking it True closed a loop the system could never
+                    # escape: the consolidation census (consolidation.py) and
+                    # the write-time candidate pool (dedup/pipeline.py) both
+                    # select on is_anchor, so every alias re-entered as a fresh
+                    # "duplicate" on the next pass, and the next near-duplicate
+                    # write could match the alias instead of the canonical
+                    # anchor. Duplicates therefore only ever grew.
+                    #
+                    # Verified before flipping: no consumer of
+                    # ctx.anchor_neuron reads metadata["is_anchor"] -- they use
+                    # .id, .content, or identity comparisons. The fiber still
+                    # resolves this neuron as its anchor_neuron_id.
+                    "is_anchor": False,
                     "timestamp": ctx.timestamp.isoformat(),
                     "_dedup_alias_of": anchor_neuron.id,
                     **ctx.effective_metadata,

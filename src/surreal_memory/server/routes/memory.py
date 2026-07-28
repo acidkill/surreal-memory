@@ -9,6 +9,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from surreal_memory.core.brain import Brain
+from surreal_memory.engine.dedup.factory import build_dedup_pipeline
 from surreal_memory.engine.encoder import MemoryEncoder
 from surreal_memory.engine.retrieval import DepthLevel, ReflexPipeline
 from surreal_memory.server.dependencies import get_brain, get_storage, require_local_request
@@ -65,7 +66,7 @@ async def encode_memory(
             "Remove secrets before storing.",
         )
 
-    encoder = MemoryEncoder(storage, brain.config)
+    encoder = MemoryEncoder(storage, brain.config, dedup_pipeline=build_dedup_pipeline(storage))
 
     tags = set(request.tags) if request.tags else None
 
