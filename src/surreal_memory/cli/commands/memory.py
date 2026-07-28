@@ -491,6 +491,14 @@ def recall(
         if freshness_warnings:
             response["freshness_warnings"] = list(dict.fromkeys(freshness_warnings))[:3]
 
+        # Never let reranking fail silently: raw SA ordering is indistinguishable
+        # from reranked output, so say it out loud when the reranker did not run.
+        rerank_degraded = (result.metadata or {}).get("rerank_degraded")
+        if rerank_degraded:
+            response["rerank_degraded_warning"] = (
+                f"[!] Results NOT reranked (reranker enabled but unavailable): {rerank_degraded}"
+            )
+
         return response
 
     result = run_async(_recall())

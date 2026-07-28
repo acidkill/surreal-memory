@@ -534,6 +534,15 @@ class ReflexPipeline:
         # for compatibility but are no longer the source of truth here.
         from surreal_memory.unified_config import get_config as _get_app_config
 
+        # Reranking degradation is reported, never silent: when the reranker is
+        # enabled but does not actually run, recall must say so instead of
+        # returning raw SA ordering that looks identical to a reranked result.
+        _rerank_degraded: str | None = None
+
+        def _mark_rerank_degraded(reason: str) -> None:
+            nonlocal _rerank_degraded
+            _rerank_degraded = reason
+
         _rr = _get_app_config().reranker
         if _rr.enabled and len(activations) > 1:
             try:
@@ -571,16 +580,26 @@ class ReflexPipeline:
                             max_candidates=_rr.max_candidates,
                             limit=50,
                             endpoint=_rr.endpoint,
+                            on_degraded=_mark_rerank_degraded,
                         )
                         logger.debug(
                             "Reranked %d → %d activations",
                             len(neuron_contents),
                             len(activations),
                         )
-            except ImportError:
+                    else:
+                        _mark_rerank_degraded("no candidate contents available to rerank")
+                else:
+                    _mark_rerank_degraded(
+                        "reranker enabled but neither an endpoint nor a local "
+                        "CrossEncoder is available"
+                    )
+            except ImportError as exc:
                 logger.debug("Reranker not available (sentence-transformers not installed)")
-            except Exception:
-                logger.debug("Reranking failed (non-critical)", exc_info=True)
+                _mark_rerank_degraded(f"reranker import failed: {exc}")
+            except Exception as exc:  # reported in result metadata
+                logger.warning("Reranking failed (non-critical): %s", exc, exc_info=True)
+                _mark_rerank_degraded(f"{type(exc).__name__}: {exc}")
 
         # 5. Find matching fibers
         query_tokens = set(query.lower().split())
@@ -677,6 +696,9 @@ class ReflexPipeline:
                 "disputed_ids": disputed_ids,
                 "sufficiency_gate": _sufficiency.gate,
                 "sufficiency_confidence": _sufficiency.confidence,
+                # None when reranking ran (or was disabled); a reason string when
+                # the reranker was enabled but did not actually rerank.
+                "rerank_degraded": _rerank_degraded,
                 "activation_levels": {
                     nid: round(ar.activation_level, 4) for nid, ar in activations.items()
                 },

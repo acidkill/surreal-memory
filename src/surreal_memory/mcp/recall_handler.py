@@ -744,6 +744,18 @@ class RecallHandler:
                 "recency_factor": round(result.score_breakdown.recency_factor, 4),
             }
 
+        # Surface reranking degradation: when the reranker is enabled but did not
+        # actually run, the results are raw spreading-activation ordering and look
+        # exactly like reranked ones. Reporting it prevents silent quality loss.
+        rerank_degraded = (result.metadata or {}).get("rerank_degraded")
+        if rerank_degraded:
+            response["rerank_degraded"] = True
+            response["rerank_degraded_reason"] = str(rerank_degraded)
+            response["warning"] = (
+                "Results were NOT reranked (reranker enabled but unavailable): "
+                f"{rerank_degraded}"
+            )
+
         # Surface conflict info from retrieval
         disputed_ids: list[str] = (result.metadata or {}).get("disputed_ids", [])
         if disputed_ids:

@@ -13,7 +13,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -255,6 +257,27 @@ def _normalize_scores(scores: list[float]) -> list[float]:
     return [_sigmoid(s) for s in scores]
 
 
+_URL_RE = re.compile(r"https?://\S+")
+
+
+def _degradation_reason(exc: Exception | None) -> str:
+    """Describe a rerank failure without echoing anything sensitive.
+
+    The reason travels all the way into the recall response (MCP
+    ``rerank_degraded_reason`` / the CLI warning), so it must stay a diagnostic
+    label rather than a raw exception dump: today the endpoint is a local
+    llamastash with no credentials, but a future remote endpoint could carry a
+    token in its URL and this channel would happily publish it. Strip URLs and
+    cap the length.
+    """
+    if exc is None:
+        return "unknown reranker failure"
+    detail = _URL_RE.sub("<endpoint>", str(exc)).strip()
+    if len(detail) > 160:
+        detail = detail[:157] + "..."
+    return f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
+
+
 def rerank_activations(
     query: str,
     activations: dict[str, ActivationResult],
@@ -266,6 +289,7 @@ def rerank_activations(
     max_candidates: int = 30,
     limit: int = 50,
     endpoint: str | None = None,
+    on_degraded: Callable[[str], None] | None = None,
 ) -> dict[str, ActivationResult]:
     """Convenience function: rerank activations and return updated dict.
 
@@ -280,6 +304,8 @@ def rerank_activations(
     resolved_endpoint = (endpoint or "").strip() or _rerank_endpoint()
     if not resolved_endpoint and not _check_cross_encoder():
         logger.debug("Reranker not available, returning activations unchanged")
+        if on_degraded is not None:
+            on_degraded("no reranker configured (no endpoint and no local CrossEncoder)")
         return activations
 
     reranker: Any
@@ -311,11 +337,26 @@ def rerank_activations(
     # Sort by activation level descending (over-fetch from top)
     candidates.sort(key=lambda c: c[2], reverse=True)
 
-    try:
-        reranked = reranker.rerank(query, candidates, limit)
-    except Exception:
-        # Reranking must never break recall — fall back to the SA ordering.
-        logger.warning("Reranking failed; returning activations unchanged", exc_info=True)
+    # Reranking must never break recall, but a *silent* fall-back to the raw SA
+    # ordering is worse than no reranking: the caller cannot tell the results were
+    # never reranked. Retry once (the endpoint is local, so the common failure is a
+    # model that has not finished loading yet), then report the degradation through
+    # ``on_degraded`` so recall can surface it instead of hiding it in a log line.
+    reranked = None
+    last_error: Exception | None = None
+    for attempt in (1, 2):
+        try:
+            reranked = reranker.rerank(query, candidates, limit)
+            break
+        except Exception as exc:  # reported via on_degraded, not swallowed
+            last_error = exc
+            logger.warning(
+                "Reranking attempt %d/2 failed: %s", attempt, exc, exc_info=(attempt == 2)
+            )
+
+    if reranked is None:
+        if on_degraded is not None:
+            on_degraded(_degradation_reason(last_error))
         return activations
 
     # Build new activations dict with blended scores

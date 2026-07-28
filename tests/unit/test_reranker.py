@@ -206,8 +206,15 @@ class TestRerankerAvailable:
 
 
 class TestRerankActivations:
-    @patch("surreal_memory.engine.reranker.reranker_available", return_value=False)
-    def test_graceful_skip_when_unavailable(self, mock_available: MagicMock) -> None:
+    # rerank_activations() gates on _rerank_endpoint()/_check_cross_encoder(), NOT on
+    # reranker_available() — patching the latter left the real availability check in
+    # place, so this test reranked for real (and downloaded the HF model) on any
+    # machine with sentence-transformers installed or a rerank endpoint configured.
+    @patch("surreal_memory.engine.reranker._check_cross_encoder", return_value=False)
+    @patch("surreal_memory.engine.reranker._rerank_endpoint", return_value="")
+    def test_graceful_skip_when_unavailable(
+        self, mock_endpoint: MagicMock, mock_cross_encoder: MagicMock
+    ) -> None:
         """When reranker not installed, return activations unchanged."""
         activations = {
             "n1": FakeActivationResult(neuron_id="n1", activation_level=0.8),
