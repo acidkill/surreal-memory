@@ -257,6 +257,7 @@ class InMemoryStorage(
         type: SynapseType | None = None,
         min_weight: float | None = None,
         limit: int | None = None,
+        offset: int = 0,
     ) -> list[Synapse]:
         brain_id = self._get_brain_id()
         results: list[Synapse] = []
@@ -272,6 +273,9 @@ class InMemoryStorage(
                 continue
             results.append(synapse)
 
+        # Insertion order is already stable here, so slicing pages correctly.
+        if offset:
+            results = results[int(offset) :]
         if limit is not None:
             return results[:limit]
         return results

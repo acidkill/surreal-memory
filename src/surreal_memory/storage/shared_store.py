@@ -318,6 +318,7 @@ class SharedStorage(SharedFiberBrainMixin, NeuralStorage):
         type: SynapseType | None = None,
         min_weight: float | None = None,
         limit: int | None = None,
+        offset: int = 0,
     ) -> list[Synapse]:
         """Find synapses matching criteria."""
         params: dict[str, Any] = {}
@@ -334,6 +335,16 @@ class SharedStorage(SharedFiberBrainMixin, NeuralStorage):
 
         result = await self._request("GET", "/memory/synapses", params=params)
         synapses = [dict_to_synapse(s) for s in result.get("synapses", [])]
+        # ``offset`` is applied here rather than sent on the wire. The remote
+        # ``GET /memory/synapses`` takes no window parameters, so it returns the
+        # whole filtered set and this client has always done the windowing --
+        # which is why ``limit`` is re-applied below even though it is sent.
+        # Sending an offset the server may or may not honour would make paging
+        # depend on the peer's version: an older server would ignore it and this
+        # slice would then skip a second time. Windowing locally is correct
+        # against every server version.
+        if offset:
+            synapses = synapses[int(offset) :]
         if limit is not None:
             return synapses[:limit]
         return synapses

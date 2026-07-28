@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 
 from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.core.synapse import Synapse, SynapseType
+from surreal_memory.engine.edge_identity import deterministic_edge_id
 
 if TYPE_CHECKING:
     from surreal_memory.core.brain import BrainConfig
@@ -34,6 +35,13 @@ MAX_NEURONS_TO_LINK = 10000  # max CONCEPT/ENTITY neurons considered per run
 MAX_PAIRS_HARD_CAP = 5000  # absolute cap on synapses created per run
 SEMANTIC_TOP_K = 5  # link each neuron to its K most-similar peers
 
+# How many synapse rows to pull per page when snapshotting existing pairs.
+# The snapshot has to cover the whole table -- it is what stops a second edge
+# being laid over a pair already joined by any type -- but asking for it in one
+# response is how the LIFECYCLE pass earned "[Errno 104] Connection reset by
+# peer". Matches the neuron scan's page size just above.
+_SYNAPSE_PAGE_SIZE = 5000
+
 
 @dataclass(frozen=True)
 class SemanticDiscoveryResult:
@@ -44,6 +52,13 @@ class SemanticDiscoveryResult:
     synapses_created: int = 0
     skipped_existing: int = 0
     synapses: list[Synapse] = field(default_factory=list)
+    truncated: bool = False
+    """True when the run stopped at ``semantic_discovery_max_pairs``.
+
+    Without this a capped run and a saturated brain print the same number, so a
+    constant "2000" reads as a stuck system when it is actually a backlog
+    draining one capped run at a time.
+    """
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -270,10 +285,23 @@ async def discover_semantic_synapses(
     neurons_embedded = len(vectors)
 
     # Existing pairs (any synapse type) so we never duplicate a connection.
-    all_synapses = await storage.get_synapses()
-    existing_pairs: set[frozenset[str]] = {
-        frozenset({s.source_id, s.target_id}) for s in all_synapses
-    }
+    # Paged: an unbounded read of this table is the "[Errno 104]" failure mode.
+    existing_pairs: set[frozenset[str]] = set()
+    synapse_offset = 0
+    while True:
+        page = await storage.get_synapses(limit=_SYNAPSE_PAGE_SIZE, offset=synapse_offset)
+        if not page:
+            break
+        existing_pairs.update(frozenset({s.source_id, s.target_id}) for s in page)
+        synapse_offset += len(page)
+        if len(page) < _SYNAPSE_PAGE_SIZE:
+            break
+
+    logger.debug(
+        "semantic discovery: %d eligible neurons, %d existing pairs",
+        len(eligible),
+        len(existing_pairs),
+    )
 
     threshold = config.semantic_discovery_similarity_threshold
     max_pairs = min(config.semantic_discovery_max_pairs, MAX_PAIRS_HARD_CAP)
@@ -297,6 +325,13 @@ async def discover_semantic_synapses(
                 type=SynapseType.SIMILAR_TO,
                 weight=sim * 0.6,  # scale down so semantic links don't dominate
                 metadata={"_semantic_discovery": True, "cosine_similarity": round(sim, 4)},
+                # SIMILAR_TO is bidirectional, so the id is derived from the
+                # sorted pair: (A,B) and (B,A) are one edge, and a writer that
+                # slips past the snapshot collides on the primary key instead
+                # of laying down a twin row.
+                synapse_id=deterministic_edge_id(
+                    SynapseType.SIMILAR_TO, eligible[i].id, eligible[j].id
+                ),
             )
         )
         existing_pairs.add(pair)
@@ -350,4 +385,5 @@ async def discover_semantic_synapses(
         synapses_created=len(new_synapses),
         skipped_existing=skipped,
         synapses=new_synapses,
+        truncated=len(new_synapses) >= max_pairs,
     )

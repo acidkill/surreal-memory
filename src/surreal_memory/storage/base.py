@@ -347,6 +347,7 @@ class NeuralStorage(ABC):
         type: SynapseType | None = None,
         min_weight: float | None = None,
         limit: int | None = None,
+        offset: int = 0,
     ) -> list[Synapse]:
         """
         Find synapses matching criteria.
@@ -357,6 +358,10 @@ class NeuralStorage(ABC):
             type: Filter by synapse type
             min_weight: Filter by minimum weight
             limit: Optional cap on number of returned synapses
+            offset: Number of matching synapses to skip. Together with ``limit``
+                this pages a slice that no longer fits in one response. Backends
+                impose a stable order whenever ``limit`` is set, so consecutive
+                pages neither overlap nor skip rows.
 
         Returns:
             List of matching synapses
@@ -1111,6 +1116,19 @@ class NeuralStorage(ABC):
             Number of orphaned records removed.
         """
         return 0
+
+    async def backfill_maturations(self) -> dict[str, int]:
+        """Create maturation rows for fibers that have none.
+
+        Default no-op — only the SurrealDB backend keeps a maturation table, so
+        the consolidation maturation phase must be able to call this on any
+        backend without blowing up on ``AttributeError``.
+
+        Returns:
+            Counts keyed by stage; empty when the backend has no maturation
+            table.
+        """
+        return {}
 
     # ========== Co-Activation Operations ==========
 

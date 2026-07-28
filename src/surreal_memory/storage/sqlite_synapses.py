@@ -101,6 +101,7 @@ class SQLiteSynapseMixin:
         type: SynapseType | None = None,
         min_weight: float | None = None,
         limit: int | None = None,
+        offset: int = 0,
     ) -> list[Synapse]:
         conn = self._ensure_read_conn()
         brain_id = self._get_brain_id()
@@ -124,11 +125,19 @@ class SQLiteSynapseMixin:
             query += " AND weight >= ?"
             params.append(min_weight)
 
+        # Ordering makes the bounded read deterministic, which is what lets
+        # consecutive offsets page a slice without overlapping or skipping rows.
+        query += " ORDER BY id"
+
         if limit is not None:
             query += " LIMIT ?"
             params.append(limit)
         else:
             query += " LIMIT 10000"
+
+        if offset:
+            query += " OFFSET ?"
+            params.append(int(offset))
 
         async with conn.execute(query, params) as cursor:
             rows = await cursor.fetchall()

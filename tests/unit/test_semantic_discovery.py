@@ -11,6 +11,7 @@ from surreal_memory.core.brain import Brain, BrainConfig
 from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.core.synapse import Synapse, SynapseType
 from surreal_memory.engine.consolidation import ConsolidationEngine, ConsolidationStrategy
+from surreal_memory.engine.edge_identity import deterministic_edge_id
 from surreal_memory.engine.semantic_discovery import (
     SemanticDiscoveryResult,
     _cosine_similarity,
@@ -438,3 +439,143 @@ class TestProviderCache:
             mock_st.assert_not_called()
 
         _provider_cache.clear()
+
+
+def _embedded(neuron_id: str, vector: list[float]) -> Neuron:
+    return Neuron.create(
+        type=NeuronType.CONCEPT,
+        content=f"content-{neuron_id}",
+        neuron_id=neuron_id,
+        metadata={"_embedding": vector},
+    )
+
+
+class TestStructuralIdempotency:
+    """The pair, not the row, is the identity of a SIMILAR_TO edge.
+
+    Measured on the live brain before this change: the snapshot guard did hold
+    (two consecutive runs added 2000 then 1077 rows and never re-minted an edge
+    over an existing pair), but idempotency rested entirely on reading the whole
+    synapse table into memory first. These tests move that guarantee into the id.
+    """
+
+    async def test_created_synapses_carry_the_deterministic_id(
+        self, storage: InMemoryStorage, brain_config: BrainConfig
+    ) -> None:
+        await storage.add_neuron(_embedded("n1", [0.9, 0.1, 0.0]))
+        await storage.add_neuron(_embedded("n2", [0.85, 0.15, 0.0]))
+
+        result = await discover_semantic_synapses(storage, brain_config)
+
+        assert result.synapses
+        for syn in result.synapses:
+            assert syn.id == deterministic_edge_id(
+                SynapseType.SIMILAR_TO, syn.source_id, syn.target_id
+            )
+
+    async def test_both_orderings_of_a_pair_share_one_id(
+        self, storage: InMemoryStorage, brain_config: BrainConfig
+    ) -> None:
+        """Whichever endpoint discovery happens to visit first, it is one edge."""
+        await storage.add_neuron(_embedded("n1", [0.9, 0.1, 0.0]))
+        await storage.add_neuron(_embedded("n2", [0.85, 0.15, 0.0]))
+
+        result = await discover_semantic_synapses(storage, brain_config)
+
+        ids = {s.id for s in result.synapses}
+        assert len(ids) == 1, "one pair must not be expressed as two edges"
+
+    async def test_second_run_creates_nothing_over_the_same_pairs(
+        self, storage: InMemoryStorage, brain_config: BrainConfig
+    ) -> None:
+        """The acceptance criterion, stated correctly.
+
+        "Second run == 0 created" only holds once the neighbourhood is
+        saturated -- while a backlog remains a second run legitimately creates
+        new pairs. Here the brain is tiny, so run 1 saturates it and run 2 must
+        create nothing and count the pairs as skipped.
+        """
+        await storage.add_neuron(_embedded("n1", [0.9, 0.1, 0.0]))
+        await storage.add_neuron(_embedded("n2", [0.85, 0.15, 0.0]))
+
+        first = await discover_semantic_synapses(storage, brain_config)
+        for syn in first.synapses:
+            await storage.add_synapse(syn)
+
+        second = await discover_semantic_synapses(storage, brain_config)
+
+        assert first.synapses_created >= 1
+        assert second.synapses_created == 0
+        assert second.skipped_existing >= 1
+
+    async def test_a_pair_joined_by_any_type_is_left_alone(
+        self, storage: InMemoryStorage, brain_config: BrainConfig
+    ) -> None:
+        """The snapshot's job: never lay a second edge over a connected pair."""
+        await storage.add_neuron(_embedded("n1", [0.9, 0.1, 0.0]))
+        await storage.add_neuron(_embedded("n2", [0.85, 0.15, 0.0]))
+        await storage.add_synapse(
+            Synapse.create(
+                source_id="n1",
+                target_id="n2",
+                type=SynapseType.RELATED_TO,
+                weight=0.5,
+            )
+        )
+
+        result = await discover_semantic_synapses(storage, brain_config)
+
+        assert result.synapses_created == 0
+        assert result.skipped_existing >= 1
+
+
+class TestTruncationIsReported:
+    async def test_truncated_is_false_when_under_the_cap(
+        self, storage: InMemoryStorage, brain_config: BrainConfig
+    ) -> None:
+        await storage.add_neuron(_embedded("n1", [0.9, 0.1, 0.0]))
+        await storage.add_neuron(_embedded("n2", [0.85, 0.15, 0.0]))
+
+        result = await discover_semantic_synapses(storage, brain_config)
+
+        assert result.truncated is False
+
+    async def test_truncated_is_true_when_the_cap_bites(
+        self, storage: InMemoryStorage, brain: Brain
+    ) -> None:
+        """A capped run must say so, or it reads as a stuck system."""
+        capped = BrainConfig(
+            embedding_enabled=True,
+            semantic_discovery_similarity_threshold=0.5,
+            semantic_discovery_max_pairs=1,
+        )
+        for i in range(4):
+            await storage.add_neuron(_embedded(f"n{i}", [0.9 - i * 0.01, 0.1, 0.0]))
+
+        result = await discover_semantic_synapses(storage, capped)
+
+        assert result.synapses_created == 1
+        assert result.truncated is True
+
+
+class TestSnapshotIsPaged:
+    async def test_existing_pairs_are_read_page_by_page(
+        self, storage: InMemoryStorage, brain_config: BrainConfig
+    ) -> None:
+        """An unbounded read of this table is the '[Errno 104]' failure mode."""
+        await storage.add_neuron(_embedded("n1", [0.9, 0.1, 0.0]))
+        await storage.add_neuron(_embedded("n2", [0.85, 0.15, 0.0]))
+
+        calls: list[dict[str, Any]] = []
+        real = storage.get_synapses
+
+        async def _spy(**kwargs: Any) -> list[Synapse]:
+            calls.append(kwargs)
+            return await real(**kwargs)
+
+        with patch.object(storage, "get_synapses", side_effect=_spy):
+            await discover_semantic_synapses(storage, brain_config)
+
+        assert calls, "the snapshot must still be taken"
+        assert all(c.get("limit") for c in calls), "every snapshot read must be bounded"
+        assert calls[0].get("offset") == 0
