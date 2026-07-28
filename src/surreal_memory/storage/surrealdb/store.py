@@ -1258,15 +1258,23 @@ class SurrealDBStorage(
 
         where = " AND ".join(conditions)
         query_str = f"SELECT * FROM synapse WHERE {where}"
-        if limit is not None:
-            # A bounded read with no order returns an arbitrary subset, so paging
-            # it could overlap or skip rows. Ordering by the primary key is what
-            # the table is already stored by -- measured cheaper than no ORDER BY
-            # on the live 23k-row brain -- so it costs nothing to be correct.
+        # A windowed read with no order returns an arbitrary subset, so paging it
+        # could overlap or skip rows. Ordering by the primary key is what the
+        # table is already stored by -- EXPLAIN shows the identical IndexScan
+        # plan with and without it on the live brain -- so it costs nothing to be
+        # correct. `offset` is honoured independently of `limit`: the other three
+        # backends apply it unconditionally, and having one backend silently drop
+        # it would make the same call mean different things per backend.
+        if limit is not None or offset:
             query_str += " ORDER BY id"
-            query_str += f" LIMIT {limit}"
-            if offset:
-                query_str += f" START {int(offset)}"
+        # Both window values are cast before interpolation: they are the only
+        # caller-supplied text that reaches the query string.
+        if limit is not None:
+            query_str += f" LIMIT {int(limit)}"
+        if offset:
+            # Verified against SurrealDB 3.2.3: START is accepted with or without
+            # a preceding LIMIT, so an offset-only read needs no artificial cap.
+            query_str += f" START {int(offset)}"
         rows = await self._query(query_str, **params)
         return [_row_to_synapse(r) for r in rows]
 

@@ -15,6 +15,15 @@ logger = logging.getLogger(__name__)
 
 _BRAIN_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
 
+# Reserved device names on Windows. They are plain ASCII, so the charset above
+# lets them through, and `CON.nm` there names the console device rather than a
+# file -- the surface would silently fail to persist.
+_WINDOWS_RESERVED = frozenset(
+    {"con", "prn", "aux", "nul"}
+    | {f"com{i}" for i in range(1, 10)}
+    | {f"lpt{i}" for i in range(1, 10)}
+)
+
 
 def validate_brain_name(brain_name: str) -> str:
     """Return ``brain_name`` if it is safe to put in a file path.
@@ -32,12 +41,18 @@ def validate_brain_name(brain_name: str) -> str:
         The same name, unchanged.
 
     Raises:
-        ValueError: If the name is empty, over 128 chars, or contains anything
-            outside ``[A-Za-z0-9_.-]`` (which excludes ``/``, ``\\`` and ``..``).
+        ValueError: If the name is empty, over 128 chars, contains anything
+            outside ``[A-Za-z0-9_.-]`` (which excludes ``/``, ``\\`` and ``..``),
+            or is a reserved device name.
     """
-    if not _BRAIN_NAME_RE.match(brain_name or "") or brain_name in {".", ".."}:
+    if (
+        not _BRAIN_NAME_RE.match(brain_name or "")
+        or brain_name in {".", ".."}
+        or brain_name.split(".", 1)[0].lower() in _WINDOWS_RESERVED
+    ):
         raise ValueError(
-            f"Invalid brain name {brain_name!r}: expected 1-128 characters from [A-Za-z0-9_.-]"
+            f"Invalid brain name {brain_name!r}: expected 1-128 characters from "
+            "[A-Za-z0-9_.-], and not a reserved device name"
         )
     return brain_name
 

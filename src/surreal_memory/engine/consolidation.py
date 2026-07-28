@@ -91,6 +91,25 @@ class MergeDetail:
     reason: str
 
 
+def _is_duplicate_key_error(exc: BaseException) -> bool:
+    """True when ``exc`` means "a row with this primary key already exists".
+
+    Deterministic edge ids turn a concurrent double-write into a primary-key
+    collision, which is a benign outcome: the edge exists either way. Every
+    other failure is real and must not be reported as a skipped duplicate.
+
+    Matched by class name and message rather than by importing the backends,
+    so this stays true for SurrealDB (``AlreadyExistsError``: "Database record
+    `x` already exists") and SQLite (``IntegrityError``: "UNIQUE constraint
+    failed") without either driver becoming a hard dependency here.
+    """
+    name = type(exc).__name__
+    if name in {"AlreadyExistsError", "IntegrityError"}:
+        return True
+    text = str(exc).lower()
+    return "already exists" in text or "unique constraint" in text or "duplicate key" in text
+
+
 @dataclass
 class ConsolidationReport:
     """Report of consolidation operation results."""
@@ -1134,7 +1153,9 @@ class ConsolidationEngine:
                 maturation_count = len(await self._storage.find_maturations())
                 if fiber_count > maturation_count:
                     backfilled = await self._storage.backfill_maturations()
-                    total = sum(backfilled.values())
+                    # "skipped" counts fibers that already had a row -- adding it
+                    # in would report the whole brain as freshly backfilled.
+                    total = sum(v for k, v in backfilled.items() if k != "skipped")
                     if total:
                         report.extra["maturations_backfilled"] = total
                         _logger.info(
@@ -1142,6 +1163,20 @@ class ConsolidationEngine:
                             total,
                             fiber_count,
                             maturation_count,
+                        )
+                    elif backfilled:
+                        # A deficit that the backfill could not close: its fiber
+                        # scan is windowed, so on a very large brain the oldest
+                        # fibers -- exactly the ones predating maturation -- stay
+                        # out of reach. Surface it instead of silently retrying
+                        # the same no-op on every consolidation run.
+                        deficit = fiber_count - maturation_count
+                        report.extra["maturations_unreachable"] = deficit
+                        _logger.warning(
+                            "Maturation backfill created nothing while %d fibers "
+                            "still lack a row; they are outside the backfill's "
+                            "fiber window",
+                            deficit,
                         )
             except Exception:
                 # A backend without maturation, or a backfill that failed, must
@@ -1782,12 +1817,21 @@ class ConsolidationEngine:
                 # discovery and insert. The pair is not linkable, not linked.
                 report.semantic_synapses_skipped += 1
                 logger.debug("Semantic synapse endpoint missing, skipping")
-            except Exception:
-                # The id is derived from the sorted pair, so a writer that got
-                # there first collides on the primary key. Losing that race is
-                # the correct outcome -- the edge exists either way.
-                report.semantic_synapses_skipped += 1
-                logger.debug("Semantic synapse already exists, skipping", exc_info=True)
+            except Exception as exc:
+                # Only a primary-key collision means "the edge already exists":
+                # the id is derived from the sorted pair, so a writer that got
+                # there first wins and losing that race is correct. Anything
+                # else -- a dropped connection, a malformed row -- is a real
+                # failure, and folding it into "skipped (existing)" would be
+                # exactly the dishonest counter this release exists to remove.
+                if _is_duplicate_key_error(exc):
+                    report.semantic_synapses_skipped += 1
+                    logger.debug("Semantic synapse already exists, skipping")
+                else:
+                    report.extra["semantic_link_failures"] = (
+                        int(report.extra.get("semantic_link_failures", 0)) + 1
+                    )
+                    logger.warning("Semantic synapse write failed (not a duplicate)", exc_info=True)
 
     async def _compress(
         self,
