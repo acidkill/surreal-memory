@@ -210,14 +210,26 @@ class SurrealDBMaturationMixin:
         return [_canonicalised(_row_to_maturation(r)) for r in rows]
 
     async def cleanup_orphaned_maturations(self) -> int:
-        """Delete maturation rows whose fiber no longer exists."""
+        """Delete maturation rows whose fiber -- or whose whole brain -- is gone.
+
+        Two kinds of orphan, and the second used to be unreachable:
+
+        1. The row's brain still exists but its fiber does not (a fiber deleted
+           without a cascade). Found by comparing against that brain's fibers.
+        2. The row's *brain* no longer exists. Deleting a brain leaves its
+           maturation rows behind, and because this scan was scoped
+           ``WHERE brain_id = $brain_id`` it could only ever see rows belonging
+           to the brain being cleaned -- so rows from a deleted brain were
+           structurally unreachable and accumulated across every consolidation.
+
+        Returns:
+            Total rows removed across both kinds.
+        """
         brain_id = self._get_brain_id()
         existing_rows = await self._query(
             "SELECT id, fiber_id FROM maturation WHERE brain_id = $brain_id",
             brain_id=brain_id,
         )
-        if not existing_rows:
-            return 0
         fiber_rows = await self._query(
             "SELECT id FROM fiber WHERE brain_id = $brain_id",
             brain_id=brain_id,
@@ -226,13 +238,52 @@ class SurrealDBMaturationMixin:
 
         conn = self._ensure_conn()
         removed = 0
-        for row in existing_rows:
+        for row in existing_rows or []:
             fid = str(row.get("fiber_id", ""))
             if _to_surreal_id(fid) not in live_fibers and fid not in live_fibers:
                 rid = str(row.get("id", ""))
                 if rid:
                     await conn.delete(rid)
                     removed += 1
+
+        removed += await self._cleanup_brainless_maturations()
+        return removed
+
+    async def _cleanup_brainless_maturations(self) -> int:
+        """Delete maturation rows whose ``brain_id`` matches no surviving brain.
+
+        Scoped deliberately by *absence*: a brain-scoped query can never reach
+        these, which is why they accumulated. Brains are addressed by name, and
+        legacy rows may carry the record UUID, so both spellings count as alive.
+        """
+        brain_rows = await self._query("SELECT id, name FROM brain")
+        if not brain_rows:
+            # No brains readable: refuse to interpret that as "every row is an
+            # orphan" -- that would delete the entire table on a transient read.
+            return 0
+
+        alive: set[str] = set()
+        for r in brain_rows:
+            name = str(r.get("name") or "")
+            if name:
+                alive.add(name)
+            rid = str(r.get("id") or "").rsplit(":", 1)[-1].strip("`")
+            if rid:
+                alive.add(rid)
+                alive.add(rid.replace("_", "-"))
+
+        rows = await self._query("SELECT id, brain_id FROM maturation")
+        conn = self._ensure_conn()
+        removed = 0
+        for row in rows or []:
+            if str(row.get("brain_id", "")) in alive:
+                continue
+            rid = str(row.get("id", ""))
+            if rid:
+                await conn.delete(rid)
+                removed += 1
+        if removed:
+            logger.info("Removed %d maturation rows belonging to deleted brains", removed)
         return removed
 
     async def backfill_maturations(self) -> dict[str, int]:
