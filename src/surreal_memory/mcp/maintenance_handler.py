@@ -57,13 +57,23 @@ class HealthHint:
 
 @dataclass(frozen=True)
 class HealthPulse:
-    """Result of a lightweight health check."""
+    """Result of a lightweight health check.
+
+    ``synapse_count`` is the raw table total, but ``connectivity`` is
+    ``semantic_synapse_count / neuron_count`` — the two must not be divided into
+    each other. Structural edges (alias/audit) are excluded from connectivity so
+    this pulse agrees with smem_health instead of reporting a ratio ~10x higher
+    for the same brain. ``semantic_synapse_count`` carries the numerator so the
+    unit stays auditable; it falls back to the raw total when a backend cannot
+    supply the per-type breakdown.
+    """
 
     fiber_count: int
     neuron_count: int
     synapse_count: int
     connectivity: float
     orphan_ratio: float
+    semantic_synapse_count: int = 0
     expired_memory_count: int = 0
     stale_fiber_ratio: float = 0.0
     consolidation_ratio: float = 0.0
@@ -107,6 +117,9 @@ class MaintenanceHandler:
     async def _health_pulse(self) -> HealthPulse | None:
         """Run a cheap health check using get_stats().
 
+        Connectivity is measured on the semantic graph (structural edges excluded),
+        so the numbers here match what `smem health` reports for the same brain.
+
         Returns None if maintenance is disabled or stats unavailable.
         """
         cfg: MaintenanceConfig = self.config.maintenance  # type: ignore[attr-defined]
@@ -125,7 +138,31 @@ class MaintenanceHandler:
         neuron_count = stats.get("neuron_count", 0)
         synapse_count = stats.get("synapse_count", 0)
 
-        connectivity = synapse_count / neuron_count if neuron_count > 0 else 0.0
+        # Connectivity describes the semantic graph, never write volume. alias rows
+        # are dedup pointers written once per repeated mention and audit edges point
+        # at agents/sources, so on a real brain 89% of the table was plumbing — enough
+        # to keep both the enrich hint and the auto-dream trigger below silent on a
+        # graph that actually held 1.4 semantic edges/neuron. The exclusion set lives
+        # in DiagnosticsEngine so this pulse and smem_health can never disagree.
+        semantic_synapse_count = synapse_count
+        try:
+            from surreal_memory.engine.diagnostics import DiagnosticsEngine
+
+            # Skip the neuron-type GROUP BY: it is the priciest part of enhanced
+            # stats and nothing here reads it. Older backends ignore the flag.
+            try:
+                enhanced = await storage.get_enhanced_stats(brain_id, include_neuron_types=False)
+            except TypeError:
+                enhanced = await storage.get_enhanced_stats(brain_id)
+            semantic_synapse_count = DiagnosticsEngine._count_semantic_synapses(
+                synapse_count, enhanced.get("synapse_stats", {})
+            )
+        except Exception:
+            # Keep the pulse alive on the raw total. That can only over-report
+            # connectivity (fewer hints), never invent a false low-connectivity alarm.
+            logger.debug("Health pulse: synapse type breakdown unavailable", exc_info=True)
+
+        connectivity = semantic_synapse_count / neuron_count if neuron_count > 0 else 0.0
 
         # Estimate orphan ratio: neurons not covered by fibers
         # Heuristic: each fiber typically creates ~5 neurons
@@ -187,6 +224,7 @@ class MaintenanceHandler:
             synapse_count=synapse_count,
             connectivity=round(connectivity, 2),
             orphan_ratio=round(orphan_ratio, 2),
+            semantic_synapse_count=semantic_synapse_count,
             consolidation_ratio=round(consolidation_ratio, 4),
             expired_memory_count=expired_memory_count,
             stale_fiber_ratio=round(stale_fiber_ratio, 2),
@@ -249,7 +287,10 @@ class MaintenanceHandler:
 
         Dream exploration discovers hidden connections via random spreading
         activation. Only fires when:
-        - connectivity < 1.5
+        - connectivity < 1.5 SEMANTIC synapses/neuron (alias and audit edges do
+          not count — a brain whose edges are all dedup plumbing needs dream MORE,
+          not less, so counting them here suppressed the trigger that was meant
+          to rescue exactly that brain)
         - neuron_count >= 50
         - dream cooldown has expired (default 24h)
         """
@@ -418,7 +459,12 @@ def _evaluate_thresholds(
     stale_fiber_ratio: float = 0.0,
     cfg: MaintenanceConfig,
 ) -> list[HealthHint]:
-    """Evaluate health thresholds and return structured hints with severity."""
+    """Evaluate health thresholds and return structured hints with severity.
+
+    ``connectivity`` is expected in SEMANTIC synapses per neuron (structural
+    alias/audit edges already subtracted by the caller), which is the unit the
+    hint text quotes and the same one smem_health reports.
+    """
     hints: list[HealthHint] = []
 
     if neuron_count > cfg.neuron_warn_threshold:
@@ -454,7 +500,8 @@ def _evaluate_thresholds(
     if neuron_count >= 10 and connectivity < 1.5:
         hints.append(
             HealthHint(
-                message=f"Low connectivity ({connectivity:.1f} synapses/neuron). "
+                message=f"Low connectivity ({connectivity:.1f} semantic synapses/neuron, "
+                "healthy: 3-8 per neuron; alias and audit edges excluded). "
                 "Consider running consolidation with enrich strategy.",
                 severity=HintSeverity.LOW,
                 recommended_strategy="enrich",

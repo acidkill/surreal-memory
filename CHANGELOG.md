@@ -5,6 +5,79 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.15.0] — Memories can finally mature, and the health metrics stop flattering the graph
+
+Correctness release, and the most consequential one so far for anyone with a brain more
+than a few weeks old. Two of these defects meant the system reported health it did not
+have while quietly failing to do its central job: consolidating memories.
+
+### ⚠️ Your purity score will drop on upgrade. That is the fix working.
+
+Connectivity previously counted `alias` edges — dedup pointers with weight 0.0 that
+carry no meaning. On a real brain they were **89.4% of all synapses** (137,871 of
+154,252), so the metric measured plumbing, not knowledge. Connectivity now counts
+semantic edges only.
+
+Measured on an 11.4k-neuron brain:
+
+| metric | before | after this release | after optional alias cleanup |
+|---|---|---|---|
+| connectivity | 1.0 (saturated) | **0.085** | 0.085 |
+| diversity | 0.256 | 0.256 | **0.948** |
+| purity | — | **−23 points** | **+14 points** |
+
+Nothing degraded. The old number was a saturated sigmoid reading a graph that was 89%
+bookkeeping. **Stored purity/grade values from before this release are not comparable
+with values after it** — treat the upgrade as a new baseline.
+
+### Fixed
+
+- **Memories never matured (EPISODIC → SEMANTIC promotion was dead).** `Fiber.create`
+  mints a dash-form uuid4, but the storage layer folds ids to underscore form. The
+  `maturation` table stored whichever form the caller happened to pass, so maturation
+  rows and fiber rows never joined. Measured on a live brain: of 1,920 maturation rows,
+  1,277 carried a dash-form id and **not one of them had ever been rehearsed or
+  promoted** — every rehearsed row (77) and every semantic row (9) was underscore-form.
+  `get_maturation` returned `None`, `rehearse()` never ran, and the spacing gate could
+  never be met. Pattern extraction was blind to the same 1,277 fibers. A blanket
+  `except Exception` had been swallowing the resulting write collisions as "Skipping
+  maturation save" for months.
+  Lookups now resolve through the record id — the one identifier that was canonical in
+  both eras — so legacy rows heal on their next write with no migration required.
+  Expect the first consolidation run after upgrading to do noticeably more work: those
+  1,277 fibers become promotable again.
+- **Decay recomputed from creation on every run.** Nothing marked a synapse as already
+  decayed, so each run re-measured from `created_at` and multiplied an already-decayed
+  weight again — quadratic in run count (ten daily runs applied ~55 days of decay, not
+  10). Decay now bills only the interval since the last decay, via the `_last_decayed`
+  bookmark. The exponents telescope, so total decay per day of wall-clock time matches
+  the documented Ebbinghaus curve. **Weights now fade slower than in previous builds** —
+  that is the bug being removed, not a behaviour change.
+  Rows with nothing to bill are skipped entirely, which removes the ~57k pointless
+  rewrites per run.
+- **Dedup re-inserted the same alias edge on every consolidation.** 2,375 distinct pairs
+  had produced 144,565 rows, growing ~40k/day. Alias edges now use a deterministic id
+  per pair, so re-running consolidation is idempotent.
+- **Knowledge surface reported "not generated" depending on your shell's directory.**
+  `$HOME` was being classified as a project root because it contains the global
+  `.surrealmemory/` config dir, so `smem surface generate` and `smem doctor` resolved
+  different paths. Project-level surfaces still work; the home directory no longer
+  masquerades as a project.
+- **Connectivity contradicted itself across the product.** `smem health`,
+  `smem_stats`, the maintenance handler and topology analysis each computed it
+  independently; after excluding structural edges in one place the others would have
+  printed 13.5 where health printed 1.4. All now share one definition.
+- **Warning texts collided units.** "connectivity 1.0 (target 3-8)" pairs a 0-1
+  normalised score with a raw synapses/neuron target, reading as "you are far below
+  target" when the raw ratio was 13.5 — far above. Texts now name their unit and state
+  where the score sits on its own scale.
+
+### Changed
+
+- `LOW_DIVERSITY` no longer fires on brains that use many synapse types. The live brain
+  uses **17** distinct types; the warning claiming "only 1 of 8 used" was reading an
+  empty scope, not the real graph.
+
 ## [2.14.0] — Brain scoping, honest degradation, and consolidation that finishes
 
 Correctness release. The theme is **silent failure**: three of these bugs made the

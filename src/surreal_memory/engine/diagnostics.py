@@ -137,11 +137,17 @@ def _build_dynamic_action(
     types_used = metrics.get("types_used", 0)
 
     if component == "connectivity" and neuron_count > 0:
-        ratio = synapse_count / max(neuron_count, 1)
-        gap = max(0, int(3.0 * neuron_count) - synapse_count)
+        # Quote the SEMANTIC count: connectivity is scored on that graph only, so
+        # citing the total (alias/audit rows included) would advertise a ratio the
+        # score never saw. Naming both units keeps the 0-1 score from being read
+        # as if it were the synapses/neuron target.
+        semantic_count = int(metrics.get("semantic_synapse_count", synapse_count))
+        ratio = semantic_count / max(neuron_count, 1)
+        gap = max(0, int(3.0 * neuron_count) - semantic_count)
         return (
-            f"Store memories with context to build ~{gap} more connections "
-            f"(current: {ratio:.1f} synapses/neuron, target: 3.0+)."
+            f"Store memories with context to add ~{gap} semantic connections "
+            f"(now {ratio:.1f} semantic synapses/neuron; the 0-1 connectivity score "
+            "reaches 0.5 at 3/neuron and saturates near 1.0 at 8/neuron)."
         )
     elif component == "diversity":
         # Diversity is Shannon entropy over synapse types (distribution balance),
@@ -153,13 +159,15 @@ def _build_dynamic_action(
         if types_used < expected:
             return (
                 f"Use varied memory types — only {types_used} of {expected} common "
-                "synapse types used. Try: 'X caused Y', 'after A then B', "
-                "'X is related to Y'."
+                "synapse types used. The 0-1 diversity score measures how evenly "
+                "that mix is spread, not how many types exist. Try: 'X caused Y', "
+                "'after A then B', 'X is related to Y'."
             )
         return (
             f"Balance your synapse types — {types_used} types are in use but "
-            "unevenly distributed, so a few relations dominate. Vary phrasing: "
-            "'X caused Y', 'after A then B', 'X is related to Y'."
+            "unevenly distributed, so a few relations dominate and the 0-1 "
+            "diversity score stays low. Vary phrasing: 'X caused Y', "
+            "'after A then B', 'X is related to Y'."
         )
     elif component == "freshness":
         fresh_count = int(freshness * max(fiber_count, 1))
@@ -276,6 +284,11 @@ class BrainHealthReport:
     contradiction_count: int = 0
     conflict_rate: float = 0.0
 
+    # Synapses left after dropping structural/dedup buckets — this is the count
+    # `connectivity` is actually scored on, whereas `synapse_count` above is the
+    # raw table total. Kept separate so a dashboard can show both without guessing.
+    semantic_synapse_count: int = 0
+
 
 # ── Grade mapping ────────────────────────────────────────────────
 
@@ -305,6 +318,32 @@ class DiagnosticsEngine:
 
     # Number of defined synapse types (for diversity normalization)
     _TOTAL_SYNAPSE_TYPES = len(SynapseType)
+
+    # Synapse types that are graph plumbing rather than remembered meaning. They are
+    # subtracted before scoring connectivity, so the metric describes the semantic
+    # graph a recall actually traverses:
+    #   alias — dedup pointer (weight 0.0, metadata {"_dedup": true}) written once per
+    #     repeated mention, so it scales with write volume, not with what is known. On
+    #     a real brain 137871 of 154252 synapses were alias rows (89%): they pinned the
+    #     sigmoid at its 1.0 ceiling while the semantic graph held 1.4 edges/neuron —
+    #     the metric was hiding the very weakness it exists to expose.
+    #   stored_by / verified_at / approved_by / source_of — audit and provenance edges
+    #     pointing at an agent, user or source record, not at another memory.
+    # similar_to is deliberately NOT structural. It is embedding-derived rather than
+    # authored, but it joins two content neurons, carries a real weight and is walked
+    # during retrieval; dropping it would understate a graph that genuinely recalls.
+    # in_row / in_column stay for the same reason — table structure links content to
+    # content. The test is "does traversing this edge return meaning?", not "did a
+    # human type it?".
+    _STRUCTURAL_SYNAPSE_TYPES: frozenset[str] = frozenset(
+        {
+            SynapseType.ALIAS.value,
+            SynapseType.STORED_BY.value,
+            SynapseType.VERIFIED_AT.value,
+            SynapseType.APPROVED_BY.value,
+            SynapseType.SOURCE_OF.value,
+        }
+    )
 
     def __init__(self, storage: NeuralStorage) -> None:
         self._storage = storage
@@ -363,7 +402,9 @@ class DiagnosticsEngine:
             _connected_or_none(),
         )
 
-        connectivity = self._compute_connectivity(synapse_count, neuron_count)
+        # Score connectivity on the semantic graph only — see _STRUCTURAL_SYNAPSE_TYPES.
+        semantic_synapse_count = self._count_semantic_synapses(synapse_count, synapse_stats)
+        connectivity = self._compute_connectivity(semantic_synapse_count, neuron_count)
         diversity = self._compute_diversity(synapse_stats)
         freshness = self._compute_freshness(fibers)
         orphan_rate = await self._compute_orphan_rate(neuron_count, fibers, connected=connected)
@@ -398,13 +439,16 @@ class DiagnosticsEngine:
 
         grade = _score_to_grade(purity)
 
-        # Generate warnings and recommendations
-        raw_connectivity = synapse_count / max(neuron_count, 1)
+        # Generate warnings and recommendations. The ratio quoted to the user must be
+        # the one the score was computed from, otherwise the text and the bar disagree.
+        raw_connectivity = semantic_synapse_count / max(neuron_count, 1)
         warnings, recommendations = self._generate_diagnostics(
             neuron_count=neuron_count,
             synapse_count=synapse_count,
             fiber_count=fiber_count,
             raw_connectivity=raw_connectivity,
+            semantic_synapse_count=semantic_synapse_count,
+            connectivity_score=connectivity,
             synapse_stats=synapse_stats,
             orphan_rate=orphan_rate,
             consolidation_ratio=consolidation_ratio,
@@ -427,6 +471,7 @@ class DiagnosticsEngine:
         penalty_metrics = {
             "neuron_count": neuron_count,
             "synapse_count": synapse_count,
+            "semantic_synapse_count": semantic_synapse_count,
             "fiber_count": fiber_count,
             "freshness": freshness,
             "orphan_rate": orphan_rate,
@@ -455,20 +500,43 @@ class DiagnosticsEngine:
             top_penalties=top_penalties,
             contradiction_count=contradicts_count,
             conflict_rate=round(conflict_rate, 4),
+            semantic_synapse_count=semantic_synapse_count,
         )
 
     # ── Metric computations ──────────────────────────────────────
 
-    @staticmethod
-    def _compute_connectivity(synapse_count: int, neuron_count: int) -> float:
-        """Compute connectivity score via sigmoid normalization.
+    @classmethod
+    def _count_semantic_synapses(cls, synapse_count: int, synapse_stats: dict[str, Any]) -> int:
+        """Total synapses minus the structural/dedup buckets.
 
-        Target: 3-8 synapses per neuron is ideal.
-        sigmoid(-1.5 * (x - 3)): at x=0 -> ~0.01, x=3 -> 0.5, x=8 -> ~1.0
+        Falls back to the raw total when a backend reports no by_type breakdown —
+        a possibly-inflated number beats silently claiming zero connectivity.
+        """
+        by_type = synapse_stats.get("by_type", {})
+        if not by_type:
+            return synapse_count
+
+        structural = 0
+        for stype, entry in by_type.items():
+            # Backends key by SynapseType value ("alias"); some fixtures use the
+            # member name ("ALIAS"), so match case-insensitively.
+            if str(stype).lower() in cls._STRUCTURAL_SYNAPSE_TYPES:
+                structural += int(entry["count"] if isinstance(entry, dict) else entry)
+        return max(0, synapse_count - structural)
+
+    @staticmethod
+    def _compute_connectivity(semantic_synapse_count: int, neuron_count: int) -> float:
+        """Normalize semantic synapses/neuron to a saturating 0-1 score.
+
+        Takes the SEMANTIC synapse count (see _count_semantic_synapses), not the
+        table total. sigmoid(-1.5 * (x - 3)) over that ratio: x=0 -> ~0.01,
+        x=3 -> 0.5, x=8 -> ~1.0. Note 1.0 is a CEILING, not a ratio — anything
+        from ~8 semantic synapses/neuron upward reports 1.0, so this score must
+        never be presented against the raw "3-8 per neuron" target.
         """
         if neuron_count == 0:
             return 0.0
-        raw = synapse_count / neuron_count
+        raw = semantic_synapse_count / neuron_count
         return 1.0 / (1.0 + math.exp(-1.5 * (raw - 3.0)))
 
     # Synapse types realistically expected in typical usage.
@@ -607,8 +675,15 @@ class DiagnosticsEngine:
         freshness: float,
         fibers: list[Any],
         contradicts_count: int = 0,
+        semantic_synapse_count: int | None = None,
+        connectivity_score: float | None = None,
     ) -> tuple[list[DiagnosticWarning], list[str]]:
-        """Generate warnings and recommendations from metrics."""
+        """Generate warnings and recommendations from metrics.
+
+        `raw_connectivity` is semantic synapses per neuron; `connectivity_score` is
+        the 0-1 sigmoid of it. Both are accepted so the text can name each number's
+        unit instead of mixing them.
+        """
         warnings: list[DiagnosticWarning] = []
         recommendations: list[str] = []
 
@@ -627,23 +702,44 @@ class DiagnosticsEngine:
                 "to reactivate relevant memories."
             )
 
-        # Low connectivity
+        # Low connectivity. Every number here is in synapses/neuron, the same unit as
+        # the 3-8 target; the 0-1 score rides along in details so a renderer showing
+        # both never implies "score 1.0 is below the 3-8 target".
         if raw_connectivity < 2.0 and neuron_count > 0:
-            gap = max(0, int(3.0 * neuron_count) - synapse_count)
+            semantic_count = (
+                synapse_count if semantic_synapse_count is None else semantic_synapse_count
+            )
+            gap = max(0, int(3.0 * neuron_count) - semantic_count)
+            details: dict[str, Any] = {
+                "semantic_synapses_per_neuron": round(raw_connectivity, 2),
+                "semantic_synapse_count": semantic_count,
+                "structural_synapse_count": max(0, synapse_count - semantic_count),
+            }
+            if connectivity_score is not None:
+                details["connectivity_score"] = round(connectivity_score, 4)
             warnings.append(
                 DiagnosticWarning(
                     severity=WarningSeverity.WARNING,
                     code="LOW_CONNECTIVITY",
-                    message=f"Low connectivity: {raw_connectivity:.1f} synapses/neuron (target: 3-8).",
+                    message=(
+                        f"Low connectivity: {raw_connectivity:.1f} semantic synapses/neuron "
+                        "(healthy: 3-8 per neuron; alias and audit edges excluded)."
+                    ),
+                    details=details,
                 )
             )
             recommendations.append(
-                f"Low connectivity ({raw_connectivity:.1f} synapses/neuron, target: 3+). "
-                f"~{gap} more connections needed. Store memories with context like "
+                f"Low connectivity ({raw_connectivity:.1f} semantic synapses/neuron, "
+                f"healthy 3-8 per neuron). ~{gap} more connections needed — alias and "
+                "audit edges do not count. Store memories with context like "
                 "'X because Y' or 'after doing A, I learned B' to build richer links."
             )
 
-        # Low diversity
+        # Low diversity. Fires on type COVERAGE (fewer than 3 distinct types in the
+        # by_type breakdown), which is a different question from the 0-1 diversity
+        # score — that one is entropy over the same breakdown and can sit low while
+        # many types are in use but one dominates. A brain using 17 types is not
+        # under-covered, so this warning stays silent there by design.
         by_type = synapse_stats.get("by_type", {})
         types_used = len(by_type)
         expected = DiagnosticsEngine._EXPECTED_SYNAPSE_TYPES
@@ -658,7 +754,10 @@ class DiagnosticsEngine:
                 DiagnosticWarning(
                     severity=WarningSeverity.WARNING,
                     code="LOW_DIVERSITY",
-                    message=f"Low synapse diversity: {types_used} of {expected} expected types used.",
+                    message=(
+                        f"Low synapse diversity: {types_used} of {expected} common "
+                        "synapse types in use."
+                    ),
                     details={"types_used": types_used, "types_expected": expected},
                 )
             )

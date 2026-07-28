@@ -40,6 +40,7 @@ from surreal_memory.core.fiber import Fiber
 from surreal_memory.core.memory_types import suggest_memory_type
 from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.core.synapse import Synapse, SynapseType
+from surreal_memory.engine.dedup.alias_edges import AliasEdgeLedger, ensure_alias_edge
 from surreal_memory.engine.pipeline import PipelineContext
 from surreal_memory.extraction.entities import EntityExtractor, EntityType
 from surreal_memory.extraction.keywords import extract_keywords, extract_weighted_keywords
@@ -824,18 +825,24 @@ class CreateAnchorStep:
             await storage.add_neuron(alias_neuron)
             ctx.neurons_created.append(alias_neuron)
 
-            alias_synapse = Synapse.create(
-                source_id=alias_neuron.id,
-                target_id=anchor_neuron.id,
-                type=SynapseType.ALIAS,
-                weight=0.9,
-                metadata={"_dedup": True},
+            # Route through the shared helper so both dedup producers agree on
+            # the edge's identity: the id is derived from the pair, which is what
+            # makes a re-run upsert instead of minting a twin row.
+            #
+            # An empty ledger, not the default per-pair probe: ``alias_neuron``
+            # was minted three statements ago with a fresh UUID, so no edge can
+            # already leave it — the probe could only ever miss, and it would
+            # cost a round-trip on every dedup hit in the encode path. Worse, a
+            # probe that *fails* fails closed (skips the write), which here would
+            # strand the alias neuron with no link to its canonical anchor.
+            alias_synapse = await ensure_alias_edge(
+                storage,
+                alias_neuron.id,
+                anchor_neuron.id,
+                ledger=AliasEdgeLedger(),
             )
-            try:
-                await storage.add_synapse(alias_synapse)
+            if alias_synapse is not None:
                 ctx.synapses_created.append(alias_synapse)
-            except ValueError:
-                logger.debug("ALIAS synapse already exists")
 
             ctx.anchor_neuron = alias_neuron
         else:

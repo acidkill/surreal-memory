@@ -1591,7 +1591,7 @@ class ConsolidationEngine:
         """
         import logging
 
-        from surreal_memory.core.synapse import SynapseType
+        from surreal_memory.engine.dedup.alias_edges import AliasEdgeLedger, ensure_alias_edge
         from surreal_memory.utils.simhash import is_near_duplicate
 
         logger = logging.getLogger(__name__)
@@ -1625,6 +1625,20 @@ class ConsolidationEngine:
         if len(anchors) > max_anchors:
             anchors = anchors[:max_anchors]
 
+        # This pass re-derives the *same* duplicate pairs on every run, so without
+        # a memory of what already exists it re-inserts its whole alias edge set
+        # each time. Preload the alias slice once rather than probing per pair —
+        # 2000 anchors would otherwise turn one write storm into a read storm.
+        ledger: AliasEdgeLedger | None = None
+        if not dry_run:
+            try:
+                ledger = await AliasEdgeLedger.load(self._storage)
+            except Exception:
+                # Per-pair checks are slower but still correct. Treating a failed
+                # preload as "nothing exists" is what re-opens the growth bug, so
+                # never substitute an empty ledger here.
+                logger.debug("Alias edge preload failed; falling back to per-pair checks")
+
         # Group duplicates by SimHash proximity
         seen: set[str] = set()
         for i, anchor_a in enumerate(anchors):
@@ -1649,18 +1663,15 @@ class ConsolidationEngine:
                     if dry_run:
                         continue
 
-                    # Create ALIAS synapse from newer to older (canonical)
-                    alias_synapse = Synapse.create(
-                        source_id=anchor_b.id,
-                        target_id=anchor_a.id,
-                        type=SynapseType.ALIAS,
-                        weight=0.9,
-                        metadata={"_dedup": True},
+                    # ALIAS synapse from newer to older (canonical). The edge id
+                    # is derived from the pair, so a second run re-writes the
+                    # same row instead of adding another one for the same fact.
+                    await ensure_alias_edge(
+                        self._storage,
+                        anchor_b.id,
+                        anchor_a.id,
+                        ledger=ledger,
                     )
-                    try:
-                        await self._storage.add_synapse(alias_synapse)
-                    except ValueError:
-                        logger.debug("ALIAS synapse already exists")
 
     async def _semantic_link(
         self,

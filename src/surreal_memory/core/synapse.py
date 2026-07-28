@@ -122,6 +122,11 @@ INVERSE_TYPES: dict[SynapseType, SynapseType] = {
     # SUPERSEDES and DERIVED_FROM are intentionally unidirectional with no inverse.
 }
 
+# Metadata key carrying the decay bookmark written by ``Synapse.decay`` — see that
+# method for why decay gets its own timestamp instead of reusing ``last_activated``,
+# and why the timestamp lives in ``metadata`` rather than in a dataclass field.
+LAST_DECAYED_KEY = "_last_decayed"
+
 
 @dataclass(frozen=True)
 class Synapse:
@@ -140,8 +145,12 @@ class Synapse:
         direction: Whether connection is uni or bidirectional
         metadata: Additional connection-specific data
         reinforced_count: How many times this connection was reinforced
-        last_activated: When this synapse was last used
+        last_activated: When this synapse was last used (fired/reinforced) —
+            never advanced by decay, see :meth:`decay`
         created_at: When this synapse was created
+
+    See also the ``last_decayed`` / ``decay_reference_time`` properties, which
+    expose when a decay pass last touched this synapse.
     """
 
     id: str
@@ -256,17 +265,40 @@ class Synapse:
             created_at=self.created_at,
         )
 
-    def decay(self, factor: float = 0.95) -> Synapse:
+    def decay(self, factor: float = 0.95, now: datetime | None = None) -> Synapse:
         """
-        Create a new Synapse with decayed weight.
+        Create a new Synapse with decayed weight, bookmarked with the decay time.
+
+        ``last_activated`` keeps its meaning — "when this synapse last fired" — and
+        is deliberately NOT advanced here. It is the field ``time_decay`` ages
+        against, the one consolidation reads as ``days_inactive`` for its prune gate,
+        and the one ``brain_evolution`` counts as recent activity; advancing it would
+        make a decay pass look like usage, freeze all further decay and block pruning
+        for good. So decay records its own bookmark, ``last_decayed``, instead.
+
+        Without that bookmark nothing marked a synapse as already processed, so every
+        run re-derived the elapsed time from ``last_activated`` and re-applied the
+        *whole* elapsed-time decay on top of an already-decayed weight — the same
+        tens of thousands of synapses rewritten each run, compounding
+        ``exp(-rate * total_elapsed)`` instead of ``exp(-rate * elapsed)``. Callers
+        should measure elapsed time from :attr:`decay_reference_time`.
+
+        The bookmark lives in ``metadata`` rather than in a new dataclass field
+        because the SurrealDB ``synapse`` table is SCHEMAFULL: an undeclared field is
+        dropped on write, so a real column needs a coordinated schema migration
+        across every backend before it would persist at all. ``metadata`` is a
+        FLEXIBLE object that already round-trips through all stores and already
+        carries internal ``_``-prefixed keys (``_dedup``, ``_intensity``, ``_dream``).
 
         Args:
             factor: Decay multiplier (0.0 - 1.0)
+            now: Decay timestamp to record (default: utcnow)
 
         Returns:
-            New Synapse with decreased weight
+            New Synapse with decreased weight and a refreshed ``last_decayed``
         """
         factor = max(0.0, min(1.0, factor))
+        now = now or utcnow()
         return Synapse(
             id=self.id,
             source_id=self.source_id,
@@ -274,7 +306,9 @@ class Synapse:
             type=self.type,
             weight=self.weight * factor,
             direction=self.direction,
-            metadata=self.metadata,
+            # New dict: the frozen dataclass must not share (and mutate) the caller's
+            # metadata. ISO string so the value survives JSON columns unchanged.
+            metadata={**self.metadata, LAST_DECAYED_KEY: now.isoformat()},
             reinforced_count=self.reinforced_count,
             last_activated=self.last_activated,
             created_at=self.created_at,
@@ -289,6 +323,10 @@ class Synapse:
         Unreinforced (count=0): ~0.98 at 1d, ~0.50 at 60d, floor 0.30
         Reinforced 5x: half-life 210d, floor 0.55
         Reinforced 10x: half-life 360d, floor 0.80
+
+        Unlike :meth:`decay` this writes no ``last_decayed`` bookmark: it is a
+        read-side staleness estimate (consolidation uses the result to decide what to
+        prune and discards it) rather than a decay pass that persists a new weight.
 
         Args:
             reference_time: Reference time for age calculation (default: now)
@@ -336,6 +374,44 @@ class Synapse:
             last_activated=self.last_activated,
             created_at=self.created_at,
         )
+
+    @property
+    def last_decayed(self) -> datetime | None:
+        """When a decay pass last reduced this weight, or None if never decayed.
+
+        Accepts both shapes the stores hand back: a real datetime (SurrealDB decodes
+        object fields into datetimes) and an ISO string (SQLite stores metadata as
+        JSON). A value that is neither reads as "never decayed" so a corrupt bookmark
+        degrades to the pre-bookmark behaviour instead of raising mid-decay.
+        """
+        raw = self.metadata.get(LAST_DECAYED_KEY)
+        if isinstance(raw, datetime):
+            return ensure_naive_utc(raw)
+        if isinstance(raw, str):
+            try:
+                return ensure_naive_utc(datetime.fromisoformat(raw))
+            except ValueError:
+                return None
+        return None
+
+    @property
+    def decay_reference_time(self) -> datetime:
+        """Time this synapse's decay clock was last reset.
+
+        The newest of creation, last firing and last decay — decay passes should
+        measure elapsed time from here. A synapse reinforced since its last decay
+        must not be charged for the interval it spent being used, and one already
+        decayed must not be charged twice for the same interval.
+
+        Falls back to now (i.e. "nothing to decay yet") for a record missing every
+        timestamp, rather than treating it as infinitely old.
+        """
+        stamps = [
+            ensure_naive_utc(stamp)
+            for stamp in (self.created_at, self.last_activated, self.last_decayed)
+            if stamp is not None
+        ]
+        return max(stamps) if stamps else utcnow()
 
     @property
     def is_bidirectional(self) -> bool:

@@ -24,6 +24,11 @@ def get_surface_path(brain_name: str = "default", *, for_write: bool = False) ->
     a project root is detected — this ensures the first save creates
     the file at project level instead of always falling through to global.
 
+    Read and write therefore agree on the same file as long as they resolve the
+    same project root: outside a project both land on the global path, and inside
+    one the reader picks up whatever the writer created. See
+    ``detect_project_root`` for why the home directory is not a project.
+
     Args:
         brain_name: Brain to resolve surface for.
         for_write: If True, prefer project path even when file doesn't exist yet.
@@ -47,11 +52,56 @@ def _global_surface_path(brain_name: str = "default") -> Path:
     return get_surrealmemory_dir() / "surfaces" / f"{brain_name}.nm"
 
 
+_NM_DIR = ".surrealmemory"
+
+_PROJECT_MARKERS: tuple[str, ...] = (
+    _NM_DIR,
+    ".git",
+    "pyproject.toml",
+    "package.json",
+    "Cargo.toml",
+    "go.mod",
+)
+
+
+def _global_config_dir() -> Path | None:
+    """Resolve the global ``.surrealmemory`` directory, or None if unavailable."""
+    from surreal_memory.unified_config import get_surrealmemory_dir
+
+    try:
+        return get_surrealmemory_dir().resolve()
+    except (OSError, RuntimeError):
+        return None
+
+
+def _is_project_root(candidate: Path, global_dir: Path | None) -> bool:
+    """Check whether a directory carries a project marker."""
+    for marker in _PROJECT_MARKERS:
+        marker_path = candidate / marker
+        if not marker_path.exists():
+            continue
+
+        # The global config directory is itself named ``.surrealmemory``, so a bare
+        # existence check would promote whatever contains it (normally $HOME) to a
+        # project root. Only a *project's own* .surrealmemory counts.
+        if marker == _NM_DIR and global_dir is not None:
+            try:
+                if marker_path.resolve() == global_dir:
+                    continue
+            except OSError:
+                pass
+
+        return True
+
+    return False
+
+
 def detect_project_root() -> Path | None:
     """Detect the project root directory.
 
     Walks up from CWD looking for common project markers.
-    Returns None if no project root found (e.g., in home directory).
+    Returns None if no project root found (e.g., in home directory) — callers
+    then fall back to the global surface.
 
     Markers (first match wins):
     - ``.surrealmemory/`` directory (NM project config)
@@ -60,28 +110,32 @@ def detect_project_root() -> Path | None:
     - ``package.json``
     - ``Cargo.toml``
     - ``go.mod``
-    """
-    markers = (
-        ".surrealmemory",
-        ".git",
-        "pyproject.toml",
-        "package.json",
-        "Cargo.toml",
-        "go.mod",
-    )
 
+    The home directory is never a project root, and neither is the parent of the
+    global config directory wherever ``SURREAL_MEMORY_DIR`` points it. Matching
+    ``~/.surrealmemory`` as a project marker made the resolved surface depend on
+    the shell's cwd: ``surface generate`` run from ``~`` wrote
+    ``~/.surrealmemory/surface.nm`` while ``doctor`` run from a repo checkout
+    looked for ``~/.surrealmemory/surfaces/<brain>.nm`` and reported the surface as
+    never generated. Per-project surfaces stay supported — a repo checkout with its
+    own ``.surrealmemory/`` (or any other marker) is still a project root.
+    """
     try:
         current = Path.cwd().resolve()
     except OSError:
         return None
 
-    home = Path.home().resolve()
+    try:
+        home: Path | None = Path.home().resolve()
+    except (OSError, RuntimeError):
+        home = None
+
+    global_dir = _global_config_dir()
 
     # Walk up, but don't go above home or root
     for _ in range(20):  # safety cap
-        for marker in markers:
-            if (current / marker).exists():
-                return current
+        if current != home and _is_project_root(current, global_dir):
+            return current
 
         parent = current.parent
         if parent == current or current == home:

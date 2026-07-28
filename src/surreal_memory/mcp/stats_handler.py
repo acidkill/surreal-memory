@@ -189,12 +189,23 @@ class StatsHandler:
         except Exception:
             logger.debug("Activation check failed (non-critical)", exc_info=True)
 
-        # Low connectivity hint
+        # Low connectivity hint. Counted on the semantic graph only, using the same
+        # exclusion set as smem_health — alias/audit rows scale with write volume,
+        # not with what is known, so including them made this hint quote a ratio
+        # (13.5/neuron on a real brain) that contradicted the health report's 1.4
+        # for the same brain. Falls back to the raw total when a caller passes plain
+        # get_stats() output with no by_type breakdown.
         if neuron_count > 0:
-            connectivity = synapse_count / neuron_count
+            from surreal_memory.engine.diagnostics import DiagnosticsEngine
+
+            semantic_synapse_count = DiagnosticsEngine._count_semantic_synapses(
+                synapse_count, stats.get("synapse_stats", {})
+            )
+            connectivity = semantic_synapse_count / neuron_count
             if connectivity < 2.0 and neuron_count >= 20:
                 hints.append(
-                    f"Low connectivity ({connectivity:.1f} synapses/neuron, target: 3+). "
+                    f"Low connectivity ({connectivity:.1f} semantic synapses/neuron, "
+                    "healthy: 3-8 per neuron; alias and audit edges excluded). "
                     "Store memories with context like 'X because Y' to build richer links."
                 )
 

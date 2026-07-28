@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 from surreal_memory.core.neuron import NeuronState
 from surreal_memory.core.synapse import Synapse, SynapseType
-from surreal_memory.utils.timeutils import utcnow
+from surreal_memory.utils.timeutils import ensure_naive_utc, utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -198,18 +198,65 @@ class DecayManager:
             if synapse.source_id in pinned_neuron_ids or synapse.target_id in pinned_neuron_ids:
                 continue
 
-            # Use last_activated if available, otherwise fall back to created_at
+            # Eligibility gate: how long this synapse has been *idle*. Deliberately
+            # still measured from last_activated/created_at rather than from the decay
+            # bookmark below, because the two answer different questions. This one is
+            # "is the memory unused enough to deserve decay at all", and a decay pass is
+            # not usage. Gating on the bookmark instead would reset the clock every run,
+            # so any schedule firing more often than min_age_days would starve the gate
+            # and freeze decay permanently.
             if synapse.last_activated is None:
-                synapse_reference = (
+                idle_since = (
                     synapse.created_at if hasattr(synapse, "created_at") else reference_time
                 )
             else:
-                synapse_reference = synapse.last_activated
+                idle_since = synapse.last_activated
+            idle_since = ensure_naive_utc(idle_since)
 
-            time_diff = reference_time - synapse_reference
-            days_elapsed = time_diff.total_seconds() / 86400
+            idle_days = (reference_time - idle_since).total_seconds() / 86400
 
-            if days_elapsed < self.min_age_days:
+            if idle_days < self.min_age_days:
+                continue
+
+            # Charge only the stretch no earlier run has billed, starting from the decay
+            # bookmark Synapse.decay writes.
+            #
+            # Incremental decay applies the same total decay as one pass from creation,
+            # because the exponents telescope over any partition t0 < t1 < ... < tn:
+            #   multiplying exp(-r * slice) across consecutive slices gives
+            #   exp(-r * total of those slices), i.e. exp(-r * (tn - t0)).
+            # So N runs each charging their own slice land on exactly the weight a single
+            # run over the whole window produces, and how fast a memory fades per day of
+            # wall-clock time is unchanged. (The emotional exponent below is a constant
+            # per synapse, so raising each factor to it preserves the identity.)
+            #
+            # What this is NOT equal to is the code that shipped before the bookmark was
+            # read: with no record of prior runs every pass re-measured from t0 and
+            # multiplied an already-decayed weight again, giving exp(-r * Σ(ti - t0)) —
+            # quadratic in run count, so ten daily runs over ten days applied ~55 days of
+            # decay and rewrote all 57k rows each time. That over-decay is the defect the
+            # bookmark was added to fix, not a semantic worth preserving; neuron decay
+            # above has always been incremental (it stamps last_activated=reference_time
+            # every run). Synapse weights therefore fade slower than the pre-fix build,
+            # onto the Ebbinghaus curve this class documents — deliberate and stated, not
+            # a silent change.
+            #
+            # Fallback: last_decayed is None on every existing row, leaving charge_from
+            # at the `last_activated or created_at` resolved above — first pass on old
+            # data behaves exactly as before, no migration needed. max() rather than the
+            # bookmark alone because a synapse fired since its last decay must not be
+            # charged for the stretch it spent being used. Deliberately not
+            # Synapse.decay_reference_time, whose max() also folds in created_at: on a
+            # record whose last_activated predates its creation (imports, merges) that
+            # would start charging from the newer created_at and fade the row more slowly
+            # than today. Repairing anomalous timestamps is not this fix's job.
+            last_decayed = synapse.last_decayed
+            charge_from = max(idle_since, last_decayed) if last_decayed else idle_since
+            days_elapsed = (reference_time - charge_from).total_seconds() / 86400
+
+            if days_elapsed <= 0:
+                # Bookmark already at/after this reference time: nothing unbilled left
+                # (re-run of the same window, or a backdated reference_time).
                 continue
 
             # Decay synapse weight
@@ -231,11 +278,15 @@ class DecayManager:
                     report.synapses_pruned += 1
                     if not dry_run:
                         # Zero out weight for pruned synapses
-                        pruned_synapse = synapse.decay(0.0)
+                        pruned_synapse = synapse.decay(0.0, now=reference_time)
                         await storage.update_synapse(pruned_synapse)
 
+                # The bookmark records the reference time this run charged up to, not
+                # wall-clock now: the interval billed and the interval marked as billed
+                # have to be the same one, or a run with an explicit reference_time
+                # (backfill, test, catch-up) would leave a gap or a double-charge.
                 elif not dry_run:
-                    decayed_synapse = synapse.decay(decay_factor)
+                    decayed_synapse = synapse.decay(decay_factor, now=reference_time)
                     await storage.update_synapse(decayed_synapse)
 
         report.duration_ms = (time.perf_counter() - start_time) * 1000

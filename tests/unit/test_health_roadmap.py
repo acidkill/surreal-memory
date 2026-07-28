@@ -17,8 +17,15 @@ class TestBuildDynamicAction:
             "fiber_count": 30,
         }
         action = _build_dynamic_action("connectivity", "fallback", metrics)
-        assert "0.5 synapses/neuron" in action
-        assert "target: 3.0" in action
+        # "semantic synapses/neuron": the ratio now excludes structural/dedup edges, and
+        # the text names its unit so a 0-1 score is never read as sitting below the raw
+        # 3-8 target — the units collision this wording used to invite.
+        assert "0.5 semantic synapses/neuron" in action
+        # The bare word "target" is gone on purpose: pairing a 0-1 score with a raw
+        # "target: 3.0" was the units collision. The text now states where the score
+        # sits on its own scale instead.
+        assert "reaches 0.5 at 3/neuron" in action
+        assert "target: 3.0" not in action
 
     def test_connectivity_action_includes_gap(self) -> None:
         metrics: dict[str, Any] = {

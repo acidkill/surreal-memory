@@ -14,6 +14,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from surreal_memory.engine.diagnostics import DiagnosticsEngine
+
 if TYPE_CHECKING:
     from surreal_memory.storage.base import NeuralStorage
 
@@ -38,8 +40,12 @@ class TopologyMetrics:
             neighbors are (0 = no triangles, 1 = fully meshed).
         largest_component_ratio: Fraction of neurons in the largest
             connected component (1.0 = fully connected graph).
-        density: Edge count / max possible edges (undirected).
-        knowledge_density: Synapses per neuron (NOT 0-1, raw ratio).
+        density: Edge count / max possible edges (undirected). Counts every
+            edge, including structural ones — it answers "how wired is this
+            table", not "how much is known".
+        knowledge_density: SEMANTIC synapses per neuron (NOT 0-1, raw ratio).
+            Structural edges are excluded so this agrees with the connectivity
+            figure smem_health reports for the same brain.
         enriched_synapse_ratio: Fraction of synapses created by
             ENRICH consolidation (have ``_enriched`` metadata).
     """
@@ -91,7 +97,15 @@ async def compute_topology(
     density = synapse_count / max_edges if max_edges > 0 else 0.0
 
     # ── Knowledge density ────────────────────────────────────
-    knowledge_density = synapse_count / max(1, neuron_count)
+    # "Knowledge" is the operative word: alias dedup pointers and audit/provenance
+    # edges grow with how often things were written, not with what the brain knows,
+    # so counting them let this metric (and the evolution `density` signal derived
+    # from it) claim a rich graph while smem_health reported a thin one for the same
+    # brain. Counted off the fetched rows rather than by subtracting from the table
+    # total, so a caller that hands in a partial synapse list under-reports rather
+    # than silently inflating.
+    semantic_synapse_count = sum(1 for s in all_synapses if not _is_structural(s))
+    knowledge_density = semantic_synapse_count / max(1, neuron_count)
 
     # ── Enriched synapse ratio ───────────────────────────────
     enriched_count = sum(
@@ -119,6 +133,20 @@ async def compute_topology(
 # Max nodes/neighbors sampled for performance-bounded computation
 _MAX_SAMPLE_NODES = 200
 _MAX_SAMPLE_NEIGHBORS = 200
+
+
+def _is_structural(synapse: SynapseLike) -> bool:
+    """True for graph plumbing (alias/audit) rather than remembered meaning.
+
+    Membership is read from DiagnosticsEngine so brain health, the MCP hints and
+    this metric can never drift apart; an unknown or missing type counts as
+    semantic, which keeps a fixture or a future type from silently vanishing
+    from the density.
+    """
+    raw = getattr(synapse, "type", None)
+    # StrEnum members carry .value ("alias"); plain strings pass through unchanged.
+    value = getattr(raw, "value", raw)
+    return str(value).lower() in DiagnosticsEngine._STRUCTURAL_SYNAPSE_TYPES
 
 
 def _largest_component_ratio(
