@@ -85,7 +85,7 @@ def brain_use(
         raise typer.Exit(1)
 
     # Warn if env var is set — this CLI switch won't affect env-pinned processes
-    env_brain = os.environ.get("SURREAL_MEMORY_BRAIN") or os.environ.get("SURREAL_MEMORY_BRAIN")
+    env_brain = os.environ.get("SURREAL_MEMORY_BRAIN")
     if env_brain:
         typer.secho(
             f"Note: SURREAL_MEMORY_BRAIN env var is set to '{env_brain}'. "

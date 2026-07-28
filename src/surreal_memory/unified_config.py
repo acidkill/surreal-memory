@@ -2388,7 +2388,7 @@ async def get_shared_storage(brain_name: str | None = None) -> NeuralStorage:
     # env var. Mutating the shared config object would cause cross-brain
     # contamination if the config singleton is ever shared.
     if brain_name is None:
-        env_brain = os.environ.get("SURREAL_MEMORY_BRAIN") or os.environ.get("SURREAL_MEMORY_BRAIN")
+        env_brain = os.environ.get("SURREAL_MEMORY_BRAIN")
         if env_brain:
             name = env_brain
         else:

@@ -280,11 +280,16 @@ blend_weight = 0.7
 
 - **HTTP mode** (`endpoint` set) — runs on a shared inference server (e.g. llama.cpp /
   llamastash on GPU), no `torch` dependency needed locally. Falls back to the
-  `SURREAL_MEMORY_RERANKER_ENDPOINT` env var when `endpoint` is unset.
+  `SURREAL_MEMORY_RERANKER_ENDPOINT` env var when `endpoint` is unset. For endpoints
+  that require auth, set `SURREAL_MEMORY_RERANKER_API_KEY` and requests carry a
+  `Bearer` header (an empty key sends none, so llamastash needs no extra config).
 - **In-process mode** (no endpoint) — loads a local `sentence-transformers` `CrossEncoder`.
   Install with `pip install "surreal-memory[reranker]"`.
-- Reranking never breaks recall — any error falls back to the spreading-activation
-  ordering unchanged.
+- Reranking never breaks recall, but it never fails *quietly* either. A failed rerank
+  is retried once; if it still cannot run, recall returns the spreading-activation
+  ordering **and says so** — `rerank_degraded` in the MCP response,
+  `rerank_degraded_warning` in the CLI. Un-reranked results look exactly like
+  reranked ones, so a silent fallback would hide a real drop in precision.
 
 ---
 

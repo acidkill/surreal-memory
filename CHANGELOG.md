@@ -5,6 +5,114 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.14.0] — Brain scoping, honest degradation, and consolidation that finishes
+
+Correctness release. The theme is **silent failure**: three of these bugs made the
+system look like it was working while it quietly was not — an empty-looking brain
+that held 10k neurons, recall that skipped reranking without saying so, and writes
+that landed but reported a timeout.
+
+### ⚠️ Upgrade note
+
+**If a deployment accumulated rows under a UUID brain scope, they need remapping.**
+Rows are scoped by brain *name* (`brain_id = "default"`), but several call sites
+passed the brain record's UUID primary key. Reasoning mining was one such path, so
+its output landed in a scope recall never reads. Before this release a fetch by
+record id still returned those rows; #63 now brain-scopes every by-id fetch, so
+they become unreadable by *any* path until remapped:
+
+```sql
+UPDATE neuron  SET brain_id = "default" WHERE brain_id = "<uuid>";
+UPDATE fiber   SET brain_id = "default" WHERE brain_id = "<uuid>";
+UPDATE synapse SET brain_id = "default" WHERE brain_id = "<uuid>";
+```
+
+Check first with `SELECT brain_id, count() FROM neuron GROUP BY brain_id` — a
+healthy install shows one scope per brain name and no UUIDs.
+
+### Security
+
+- **Cross-brain read via record id (#63).** Every fetch-by-record-id did a bare
+  `select` with no `WHERE brain_id`, so a caller in brain A could read a record
+  owned by brain B just by knowing its id. All six getters (`get_neuron`,
+  `get_neuron_state`, `get_synapse`, `get_fiber`, `get_neurons_batch`,
+  `find_neurons_by_ids`) now scope to the brain, fail-closed. Fetches stay pinned
+  by id, so this is not a table scan — the dashboard-perf property is preserved.
+- **Id sanitisers consolidated (#63).** `migrations._sanitize_id` and an inline
+  fold in `tool_events` bypassed the single `_to_surreal_id` choke point.
+
+### Fixed
+
+- **Brain-owned rows scoped by UUID instead of name (#97, #98).** Ten call sites
+  passed `brain.id` where rows are keyed by brain name. Reads reported an empty
+  brain (grade F, `EMPTY_BRAIN`) on a brain holding 10k+ neurons; writes were
+  worse — reasoning mining bound its whole job to a UUID scope, so mined neurons
+  and fibers landed where recall never looks. `POST /brain` now also pins
+  `brain_id` to the name, closing the source rather than the symptoms: previously
+  any brain created through the dashboard or API was born with an id that did not
+  match its own row scope.
+- **Rerank degradation was silent (#97).** With the reranker enabled but
+  unreachable, recall fell back to raw spreading-activation order and only logged
+  a warning — results indistinguishable from reranked ones. Recall now retries
+  once and reports the degradation (`rerank_degraded` in the MCP response,
+  `rerank_degraded_warning` in the CLI). The reason string is sanitised, so a
+  remote endpoint cannot leak a token through it.
+- **Consolidation aborted on large brains (#97).** Per-strategy timeout had
+  regressed to 120s, cutting the heavy passes mid-run so consolidation never
+  converged; restored to 600s with the total budget raised to 3600s. `_lifecycle`
+  fetched 10k neurons *with* embeddings in one response, which SurrealDB dropped
+  mid-transfer (`[Errno 104] Connection reset by peer`); it reads only metadata,
+  so it now pages with `include_embedding=False`. `_query` retried its reconnect
+  once, in the same instant, hitting the same reset — now backs off (0s/1s/3s) and
+  still fails fast on auth errors.
+- **Writes reported a timeout after succeeding (#79, #99).** Inline embedding ran
+  unbounded inside the write path, so a slow or rate-limited provider pushed
+  `smem_remember` past the 30s tool-call cap MCP hosts impose — the memory landed
+  but the caller could not tell. Now bounded at 10s (tune with
+  `SURREAL_MEMORY_INLINE_EMBED_TIMEOUT`, `<= 0` restores the old behaviour); on
+  timeout the memory stays keyword-only and `smem reindex` back-fills.
+- **Dangling synapses survived neuron deletion (#89).** The cascade filtered on
+  `brain_id`, but some write paths create synapses with a NULL `brain_id`, so
+  those outlived the neuron they pointed at. A synapse whose endpoint is gone is
+  dangling regardless of which brain it claims.
+- **`SURREAL_MEMORY_BRAIN` ignored when `--brain` omitted (#90, #98).** Extracted
+  into a single `resolve_brain()` helper; the duplicated
+  `os.environ.get(X) or os.environ.get(X)` lookup is gone from both remaining
+  sites.
+- **En-dash was not a clause boundary (#65).** Editors and operating systems emit
+  U+2013 as readily as U+2014, so the same cross-clause junk bigram slipped
+  through. The ASCII hyphen stays a non-boundary, so `write-gate` still yields
+  the bigram `write gate`.
+
+### Added
+
+- **Write-gate shadow/enforce modes (#93).** `mode: off | shadow | enforce`
+  replaces the all-or-nothing boolean, with a per-intent `auto_capture_mode` so
+  the gate can be enforced on passive auto-captures while interactive writes stay
+  in shadow. `shadow` records decisions without rejecting anything, which is what
+  makes the thresholds tunable against a real corpus. Backward compatible:
+  defaults to `off` and falls back to the legacy `enabled` bool, so behaviour is
+  unchanged until opted into. Adds `gate_decision` telemetry.
+- **Machine-noise denylist (#94).** Empirically derived from real false-accepts
+  (180× `Session activity:`, 30× `<summary>`, …) — session notifications and shell
+  output are never knowledge.
+- **BGE-M3 embedding provider (#91).** HTTP provider for a self-hosted BGE-M3
+  service (1024D, L2-normalised), with a zero-vector guard: on failure it raises
+  rather than returning a fabricated `[0.0] * dim`, which would poison top-k KNN
+  silently. Reads `SURREAL_MEMORY_EMBEDDING_ENDPOINT` (with
+  `SURREAL_MEMORY_EMBEDDING_BASE_URL` kept as a fallback — #98).
+- **Reranker Bearer auth (#92).** `HttpReranker` sends `Authorization` when a key
+  is configured and accepts both `relevance_score` and `score` response fields.
+  An empty key sends no header, so llamastash and llama.cpp are unaffected.
+
+### Changed
+
+- **Lint is pinned (#96).** `ruff` was installed unpinned in CI, making Lint a
+  moving target: 0.16.0 started reporting `RUF100`/`RUF036` on untouched files and
+  turned `main` and every open PR red on the same day. Now `ruff==0.16.0` in both
+  jobs.
+- **mypy: ignore missing `sentence_transformers` stubs (#95).**
+
 ## [2.13.0] — Full-corpus reasoning mining: deep discovery, per-model targets, live progress
 
 ### Added

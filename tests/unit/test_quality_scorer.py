@@ -4,7 +4,57 @@ from __future__ import annotations
 
 import pytest
 
-from surreal_memory.engine.quality_scorer import QualityResult, score_memory
+from surreal_memory.engine.quality_scorer import QualityResult, _is_machine_noise, score_memory
+
+
+class TestIsMachineNoise:
+    """Pins the machine-noise denylist added in #94.
+
+    A denylist rots silently: widening ``_NOISE_TAG_RE`` can start swallowing real
+    memories with nothing failing, and narrowing it lets the junk back in. Both
+    directions are pinned, per signal.
+    """
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "Session activity: Zrobione. Zweryfikowane...",  # 180 real false-accepts
+            "session activity: lowercased variant",  # prefix match is case-insensitive
+            "<task-notification>build finished</task-notification>",
+            "ps -o pid,cmd -p 1234",
+            "echo hello",
+            "curl -s http://127.0.0.1:8001/health",
+        ],
+    )
+    def test_rejects_machine_output(self, content: str) -> None:
+        assert _is_machine_noise(content) is True
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "<summary>tool output</summary>",
+            "<status>running</status>",
+            "<system-reminder>ambient context</system-reminder>",
+            'Background command "pytest" completed',
+        ],
+    )
+    def test_rejects_structural_tags(self, content: str) -> None:
+        assert _is_machine_noise(content) is True
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "Chose SurrealDB over Postgres because the graph traversal is native.",
+            "Root cause: the reranker was enabled but unreachable, so recall degraded.",
+            # Mentions a shell command mid-sentence — the prefix rule must not fire.
+            "We debugged it by running curl against the health endpoint.",
+            # Contains the word 'summary' but no structural tag.
+            "The summary of the incident is in the postmortem doc.",
+            "Toni prefers direct answers with no filler.",
+        ],
+    )
+    def test_keeps_real_knowledge(self, content: str) -> None:
+        assert _is_machine_noise(content) is False
 
 
 class TestScoreMemory:

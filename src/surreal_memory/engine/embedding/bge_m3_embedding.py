@@ -51,7 +51,21 @@ class BGEM3Embedding(EmbeddingProvider):
         api_key_env: str = "BGE_M3_API_KEY",
     ) -> None:
         self._model = model
-        self._base_url = (base_url or os.getenv(base_url_env) or _DEFAULT_BASE_URL).rstrip("/")
+        # Endpoint resolution order: explicit arg > SURREAL_MEMORY_EMBEDDING_ENDPOINT
+        # > SURREAL_MEMORY_EMBEDDING_BASE_URL > default.
+        #
+        # ENDPOINT is the name the rest of the codebase already uses (the
+        # OpenAI-compatible provider, the Stop hook, the reasoning distiller), so it
+        # wins here too: two similarly-named variables for "where the embedding
+        # service lives" is a setup where someone sets the wrong one and gets a
+        # silent fallback to the default URL instead of an error. BASE_URL stays
+        # supported so anyone who configured this provider earlier keeps working.
+        self._base_url = (
+            base_url
+            or os.getenv("SURREAL_MEMORY_EMBEDDING_ENDPOINT")
+            or os.getenv(base_url_env)
+            or _DEFAULT_BASE_URL
+        ).rstrip("/")
         self._api_key = (
             api_key or os.getenv(api_key_env) or os.getenv("SURREAL_MEMORY_EMBEDDING_API_KEY")
         )

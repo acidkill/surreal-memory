@@ -49,11 +49,19 @@ async def create_brain(
             max_context_tokens=request.config.max_context_tokens,
         )
 
+    # brain_id == name, deliberately. Rows are scoped by the brain *name*
+    # (`brain_id = "default"`), but `Brain.create()` defaults to a random uuid4 — so
+    # a brain created through this endpoint used to be born with an id that did not
+    # match its own row scope. Every call site reaching for `brain.id` then
+    # addressed an empty scope: stats and health reported an empty brain, and
+    # reasoning mining wrote neurons into a brain that recall never reads (#97).
+    # Fixing those call sites treated the symptom; this closes the source.
     brain = Brain.create(
         name=request.name,
         config=config,
         owner_id=request.owner_id,
         is_public=request.is_public,
+        brain_id=request.name,
     )
 
     await storage.save_brain(brain)
