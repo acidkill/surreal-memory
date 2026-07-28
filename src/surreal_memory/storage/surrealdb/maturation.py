@@ -25,6 +25,11 @@ from surreal_memory.engine.memory_stages import MaturationRecord, MemoryStage
 from surreal_memory.storage.surrealdb._ids import _to_surreal_id
 from surreal_memory.utils.timeutils import utcnow
 
+# Rows per page when listing maturations. Matches the synapse snapshot page size
+# in engine/semantic_discovery.py -- large enough that a healthy brain is one
+# round trip, small enough that no single response can reset the connection.
+_MATURATION_PAGE_SIZE = 5000
+
 logger = logging.getLogger(__name__)
 
 
@@ -180,10 +185,26 @@ class SurrealDBMaturationMixin:
             params["min_rc"] = int(min_rehearsal_count)
 
         where = " AND ".join(conditions)
-        rows = await self._query(
-            f"SELECT * FROM maturation WHERE {where} LIMIT 5000",
-            **params,
-        )
+        # Paged rather than capped. A bare LIMIT 5000 silently returned a prefix
+        # once the brain outgrew it, so every caller that joins maturations
+        # against fibers -- the consolidation maturation_map above all -- quietly
+        # lost the tail and under-reported stage progress. ORDER BY id makes the
+        # window stable so consecutive pages neither overlap nor skip.
+        rows: list[dict[str, Any]] = []
+        offset = 0
+        while True:
+            page = await self._query(
+                f"SELECT * FROM maturation WHERE {where}"
+                f" ORDER BY id LIMIT {_MATURATION_PAGE_SIZE} START {offset}",
+                **params,
+            )
+            if not page:
+                break
+            rows.extend(page)
+            offset += len(page)
+            if len(page) < _MATURATION_PAGE_SIZE:
+                break
+
         # Canonicalise before handing out: callers key these by fiber_id and join
         # them against fiber ids (e.g. consolidation's maturation_map -> extract_patterns).
         return [_canonicalised(_row_to_maturation(r)) for r in rows]

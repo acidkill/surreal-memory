@@ -1237,6 +1237,7 @@ class SurrealDBStorage(
         type: SynapseType | None = None,
         min_weight: float | None = None,
         limit: int | None = None,
+        offset: int = 0,
     ) -> list[Synapse]:
         brain_id = self._get_brain_id()
         conditions = ["brain_id = $brain_id"]
@@ -1258,7 +1259,14 @@ class SurrealDBStorage(
         where = " AND ".join(conditions)
         query_str = f"SELECT * FROM synapse WHERE {where}"
         if limit is not None:
+            # A bounded read with no order returns an arbitrary subset, so paging
+            # it could overlap or skip rows. Ordering by the primary key is what
+            # the table is already stored by -- measured cheaper than no ORDER BY
+            # on the live 23k-row brain -- so it costs nothing to be correct.
+            query_str += " ORDER BY id"
             query_str += f" LIMIT {limit}"
+            if offset:
+                query_str += f" START {int(offset)}"
         rows = await self._query(query_str, **params)
         return [_row_to_synapse(r) for r in rows]
 
@@ -2722,12 +2730,24 @@ class SurrealDBStorage(
         return int(rows[0]["cnt"]) if rows else 0
 
     async def get_fiber_stage_counts(self, brain_id: str) -> dict[str, int]:
+        # Grouped by maturation stage, per the storage/base.py contract and to
+        # match the SQLite and in-memory backends (whose `fibers` table carries a
+        # `stage` column; SurrealDB's `fiber` does not -- the stage lives in
+        # `maturation`).
+        #
+        # This used to GROUP BY compression_tier, which is a different axis
+        # entirely and is NULL for every row on a live brain: the whole table
+        # collapsed into one `{"None": N}` bucket, so the caller's
+        # `.get("semantic", 0)` was always 0 and the health pulse's consolidation
+        # ratio was permanently degenerate -- and its LOW_CONSOLIDATION hint
+        # permanently on. Reading `maturation` also makes this agree with
+        # DiagnosticsEngine._compute_consolidation_ratio, which has always
+        # counted SEMANTIC maturation records.
         rows = await self._query(
-            "SELECT compression_tier, count() AS c FROM fiber"
-            " WHERE brain_id = $brain_id GROUP BY compression_tier",
+            "SELECT stage, count() AS c FROM maturation WHERE brain_id = $brain_id GROUP BY stage",
             brain_id=brain_id,
         )
-        return {str(r.get("compression_tier", 0)): int(r.get("c", 0)) for r in rows}
+        return {str(r.get("stage")): int(r.get("c", 0)) for r in rows if r.get("stage")}
 
     async def _merge_records_batch(
         self,

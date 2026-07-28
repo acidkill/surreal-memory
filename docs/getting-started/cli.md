@@ -188,7 +188,7 @@ smem consolidate [OPTIONS]
 | `enrich` | Enrich neurons with extracted metadata |
 | `dream` | Generate synthetic bridging memories |
 | `learn_habits` | Extract recurring workflow patterns |
-| `dedup` | Merge near-duplicate memories |
+| `dedup` | Link near-duplicates via alias edges (does not merge) |
 | `semantic_link` | Add cross-domain semantic connections |
 | `compress` | Compress old low-activation fibers |
 | `all` | Run all strategies in dependency order (default) |

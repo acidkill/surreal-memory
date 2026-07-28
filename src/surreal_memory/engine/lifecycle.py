@@ -436,6 +436,8 @@ class ReinforcementManager:
         # This is required for EPISODIC → SEMANTIC transition (needs 3+ distinct days).
         if neuron_ids:
             try:
+                from surreal_memory.engine.memory_stages import MaturationRecord, MemoryStage
+
                 fibers = await storage.find_fibers_batch(neuron_ids[:10], limit_per_neuron=3)
                 seen_fiber_ids: set[str] = set()
                 for fiber in fibers[:10]:
@@ -443,9 +445,22 @@ class ReinforcementManager:
                         continue
                     seen_fiber_ids.add(fiber.id)
                     record = await storage.get_maturation(fiber.id)
-                    if record is not None:
-                        updated = record.rehearse(now)
-                        await storage.save_maturation(updated)
+                    if record is None:
+                        # A fiber with no maturation row can never advance a
+                        # stage, and reinforcement was the one moment we knew it
+                        # was alive -- yet the miss was silently ignored, so the
+                        # fiber stayed invisible to maturation forever. Create
+                        # the row at SHORT_TERM and count this recall as its
+                        # first rehearsal.
+                        brain_id = getattr(storage, "current_brain_id", "") or ""
+                        record = MaturationRecord(
+                            fiber_id=fiber.id,
+                            brain_id=brain_id,
+                            stage=MemoryStage.SHORT_TERM,
+                            stage_entered_at=now,
+                        )
+                    updated = record.rehearse(now)
+                    await storage.save_maturation(updated)
             except Exception:
                 logger.debug("Maturation rehearsal skipped during reinforce", exc_info=True)
 

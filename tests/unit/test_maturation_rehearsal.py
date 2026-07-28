@@ -93,8 +93,17 @@ class TestMaturationRehearsalOnReinforce:
         assert len(saved.reinforcement_timestamps) == 3
 
     @pytest.mark.asyncio
-    async def test_no_maturation_record_skips_gracefully(self) -> None:
-        """If no maturation record exists, rehearsal is skipped without error."""
+    async def test_missing_maturation_record_is_created_on_reinforce(self) -> None:
+        """A fiber with no maturation row gets one, seeded at SHORT_TERM.
+
+        This used to be a silent skip. A fiber without a maturation row can
+        never advance a stage, so skipping meant it stayed invisible to
+        maturation forever -- measured at 874 of 2819 fibers on the live brain.
+        Reinforcement is the one moment we know the fiber is alive, so that is
+        where the row gets created.
+        """
+        from surreal_memory.engine.memory_stages import MemoryStage
+
         storage = AsyncMock()
         storage.get_neuron_states_batch.return_value = {
             "n1": _make_neuron_state("n1"),
@@ -106,7 +115,12 @@ class TestMaturationRehearsalOnReinforce:
         result = await mgr.reinforce(storage, ["n1"])
 
         assert result == 1  # neuron reinforced
-        storage.save_maturation.assert_not_called()
+        storage.save_maturation.assert_called_once()
+        saved = storage.save_maturation.call_args.args[0]
+        assert saved.fiber_id == "f1"
+        assert saved.stage == MemoryStage.SHORT_TERM
+        # The recall that created the row also counts as its first rehearsal.
+        assert saved.rehearsal_count == 1
 
     @pytest.mark.asyncio
     async def test_rehearsal_caps_fibers_at_10(self) -> None:

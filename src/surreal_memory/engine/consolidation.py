@@ -114,7 +114,17 @@ class ConsolidationReport:
     action_events_pruned: int = 0
     retrieval_traces_pruned: int = 0
     duplicates_found: int = 0
+    new_alias_links: int = 0
+    """ALIAS edges actually created this run.
+
+    ``duplicates_found`` is a *census* -- it counts anchors that look like
+    duplicates, whether or not anything was done about them. Reporting only the
+    census made a steady-state brain look like it was failing to do work every
+    single run. This counter is the work.
+    """
     semantic_synapses_created: int = 0
+    semantic_synapses_skipped: int = 0
+    """Eligible pairs that already carried a synapse, so no edge was created."""
     memories_promoted: int = 0
     fibers_compressed: int = 0
     tokens_saved: int = 0
@@ -125,6 +135,22 @@ class ConsolidationReport:
     merge_details: list[MergeDetail] = field(default_factory=list)
     dry_run: bool = False
     extra: dict[str, Any] = field(default_factory=dict)
+
+    def _semantic_synapse_line(self) -> str:
+        """Render the semantic-link counters so a capped run cannot be misread.
+
+        Printing a bare number made a truncated run and a saturated brain look
+        identical: the cap produced the same figure every time, which reads as
+        "nothing is progressing" when the truth is "a backlog is draining one
+        capped run at a time".
+        """
+        line = (
+            f"{self.semantic_synapses_created} created, "
+            f"{self.semantic_synapses_skipped} skipped (existing)"
+        )
+        if self.extra.get("semantic_link_truncated"):
+            line += " [truncated at cap]"
+        return line
 
     def summary(self) -> str:
         """Generate human-readable summary."""
@@ -143,9 +169,11 @@ class ConsolidationReport:
             f"  Habits learned: {self.habits_learned}",
             f"  Query patterns learned: {self.query_patterns_learned}",
             f"  Action events pruned: {self.action_events_pruned}",
-            f"  Duplicates found: {self.duplicates_found}",
-            f"  Semantic synapses: {self.semantic_synapses_created}",
-            f"  Memories promoted: {self.memories_promoted}",
+            f"  Duplicate anchors (census): {self.duplicates_found}"
+            f" (new alias links: {self.new_alias_links})",
+            f"  Semantic synapses: {self._semantic_synapse_line()}",
+            f"  Memories promoted (type): {self.memories_promoted}",
+            f"  Stages advanced: {self.stages_advanced}",
             f"  Fibers compressed: {self.fibers_compressed}",
             f"  Tokens saved: {self.tokens_saved}",
             f"  Reasoning traces ingested: {self.reasoning_traces_ingested}",
@@ -1095,6 +1123,31 @@ class ConsolidationEngine:
         if cleaned > 0:
             _logger.info("Cleaned up %d orphaned maturation records", cleaned)
 
+        # Phase 0.5: give fibers that predate the maturation subsystem a row.
+        # Without one a fiber can never advance a stage, so it is invisible to
+        # every consolidation metric forever -- measured at 874 of 2819 fibers
+        # on the live brain. Guarded on the counts so a healthy brain pays only
+        # two cheap counts, and skipped entirely on a dry run.
+        if not dry_run:
+            try:
+                fiber_count = await self._storage.get_total_fiber_count()
+                maturation_count = len(await self._storage.find_maturations())
+                if fiber_count > maturation_count:
+                    backfilled = await self._storage.backfill_maturations()
+                    total = sum(backfilled.values())
+                    if total:
+                        report.extra["maturations_backfilled"] = total
+                        _logger.info(
+                            "Backfilled %d maturation rows (%d fibers, %d rows before)",
+                            total,
+                            fiber_count,
+                            maturation_count,
+                        )
+            except Exception:
+                # A backend without maturation, or a backfill that failed, must
+                # not take the whole maturation phase down with it.
+                _logger.debug("Maturation backfill skipped", exc_info=True)
+
         # Get all maturation records
         all_maturations = await self._storage.find_maturations()
 
@@ -1584,10 +1637,16 @@ class ConsolidationEngine:
         report: ConsolidationReport,
         dry_run: bool,
     ) -> None:
-        """Deduplicate anchor neurons using SimHash comparison.
+        """Link near-duplicate anchor neurons via ALIAS edges.
 
-        Scans all anchor neurons and finds near-duplicates by Hamming distance.
-        Creates ALIAS synapses and redirects fibers to canonical anchors.
+        Scans anchor neurons and finds near-duplicates by SimHash Hamming
+        distance, then records each pair with an ALIAS synapse pointing at the
+        canonical anchor.
+
+        Nothing is merged and no fiber is redirected -- the previous wording
+        claimed both. ``duplicates_found`` is therefore a **census** of pairs
+        that look alike, which is why it stays high on a steady-state brain;
+        ``new_alias_links`` is the work actually performed this run.
         """
         import logging
 
@@ -1666,12 +1725,17 @@ class ConsolidationEngine:
                     # ALIAS synapse from newer to older (canonical). The edge id
                     # is derived from the pair, so a second run re-writes the
                     # same row instead of adding another one for the same fact.
-                    await ensure_alias_edge(
+                    # ensure_alias_edge returns None when the edge already
+                    # existed, which is exactly the signal that separates the
+                    # census from the work actually done this run.
+                    created = await ensure_alias_edge(
                         self._storage,
                         anchor_b.id,
                         anchor_a.id,
                         ledger=ledger,
                     )
+                    if created is not None:
+                        report.new_alias_links += 1
 
     async def _semantic_link(
         self,
@@ -1698,6 +1762,13 @@ class ConsolidationEngine:
 
         result = await discover_semantic_synapses(self._storage, brain.config)
 
+        # Discovery already refused every pair that carried a synapse of any
+        # type; surfacing that number is what turns a flat "2000" into an
+        # honest "N created, K skipped".
+        report.semantic_synapses_skipped += result.skipped_existing
+        if result.truncated:
+            report.extra["semantic_link_truncated"] = True
+
         if dry_run:
             report.semantic_synapses_created = result.synapses_created
             return
@@ -1707,7 +1778,16 @@ class ConsolidationEngine:
                 await self._storage.add_synapse(synapse)
                 report.semantic_synapses_created += 1
             except ValueError:
-                logger.debug("Semantic synapse already exists, skipping")
+                # SQLite raises this when an endpoint vanished between
+                # discovery and insert. The pair is not linkable, not linked.
+                report.semantic_synapses_skipped += 1
+                logger.debug("Semantic synapse endpoint missing, skipping")
+            except Exception:
+                # The id is derived from the sorted pair, so a writer that got
+                # there first collides on the primary key. Losing that race is
+                # the correct outcome -- the edge exists either way.
+                report.semantic_synapses_skipped += 1
+                logger.debug("Semantic synapse already exists, skipping", exc_info=True)
 
     async def _compress(
         self,

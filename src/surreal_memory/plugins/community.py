@@ -61,8 +61,11 @@ async def cone_query(
 async def smart_merge(db: Any, dry_run: bool = False) -> dict[str, Any]:
     """Merge near-duplicate neurons using embedding similarity.
 
-    Finds neurons with cosine similarity > 0.95 and merges them,
-    keeping the more-accessed neuron as the canonical version.
+    Finds neurons with cosine similarity >= 0.95 and deletes one of each pair,
+    keeping whichever has the **longer content**. (The docstring used to claim
+    the more-accessed neuron survived; the code has always compared content
+    length.) Unlike the consolidation ``dedup`` strategy, which only records an
+    ALIAS edge, this really does destroy a neuron.
     """
     merged_count = 0
 

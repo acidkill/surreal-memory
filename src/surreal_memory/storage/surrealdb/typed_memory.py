@@ -451,10 +451,18 @@ class SurrealDBTypedMemoryMixin:
             if not fid:
                 continue
             fiber_rows = await self._query(
+                # `id = $sid` with a "fiber:<raw>" *string* can never match a
+                # record id, so this lookup returned zero rows for every fiber
+                # and promotion was structurally impossible. Verified on the
+                # live brain: the string form yields count 0, type::record
+                # yields count 1 for the same fiber. Both halves are required:
+                # the record id is built from a RAW id, so the bound value must
+                # lose the "fiber:" prefix. Same shape as the typed_memory
+                # lookup earlier in this module.
                 "SELECT frequency, conductivity, pinned FROM fiber"
-                " WHERE brain_id = $brain_id AND id = $sid LIMIT 1",
+                " WHERE brain_id = $brain_id AND id = type::record('fiber', $sid) LIMIT 1",
                 brain_id=brain_id,
-                sid=f"fiber:{_to_surreal_id(fid)}",
+                sid=_to_surreal_id(fid),
             )
             if not fiber_rows:
                 continue
