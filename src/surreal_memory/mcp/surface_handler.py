@@ -23,6 +23,32 @@ def _require_brain_id(storage: Any) -> str:
     return brain_id
 
 
+def _surface_brain_name(config: Any, brain: Any) -> str:
+    """Pick the brain key the surface file is stored under.
+
+    ``config.current_brain`` first, because that is exactly what
+    ``McpServer.load_surface`` reads. Generating under ``brain.name`` while the
+    reader looks under ``current_brain`` writes a file nobody ever loads, and
+    doctor then reports the surface as never generated.
+
+    ``brain.name`` is only a fallback, and only after validation: a live install
+    ended up with a surface whose brain key was a whole
+    ``CLIConfig(data_dir=PosixPath(...), ...)`` repr, because an object was
+    passed where a name was expected. The name reaches a file path, so anything
+    that is not a plain name is rejected rather than written.
+    """
+    from surreal_memory.surface.resolver import validate_brain_name
+
+    for candidate in (getattr(config, "current_brain", None), getattr(brain, "name", None)):
+        if not isinstance(candidate, str):
+            continue
+        try:
+            return validate_brain_name(candidate)
+        except ValueError:
+            logger.warning("Ignoring unusable brain name for surface path: %.60r", candidate)
+    return "default"
+
+
 class SurfaceHandler:
     """Mixin providing the smem_surface tool."""
 
@@ -68,7 +94,7 @@ class SurfaceHandler:
         if not brain:
             return {"error": "No brain configured"}
 
-        brain_name = brain.name or "default"
+        brain_name = _surface_brain_name(self.config, brain)
         token_budget = args.get("token_budget", 1200)
         max_graph_nodes = args.get("max_graph_nodes", 30)
 
@@ -111,6 +137,6 @@ class SurfaceHandler:
             return {"error": "No brain configured"}
 
         brain = await storage.get_brain(brain_id)
-        brain_name = brain.name if brain else "default"
+        brain_name = _surface_brain_name(self.config, brain)
 
         return await show_surface(brain_name)

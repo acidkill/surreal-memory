@@ -26,6 +26,7 @@ async def regenerate_surface(
     token_budget: int = 1200,
     max_graph_nodes: int = 30,
     max_signals: int = 10,
+    global_only: bool = False,
 ) -> KnowledgeSurface:
     """Regenerate the Knowledge Surface from brain.db.
 
@@ -37,6 +38,8 @@ async def regenerate_surface(
         token_budget: Max token budget for the surface.
         max_graph_nodes: Maximum graph nodes to include.
         max_signals: Maximum signals to include.
+        global_only: Write to the global surface path instead of letting the
+            process CWD decide.
 
     Returns:
         The generated KnowledgeSurface object.
@@ -56,17 +59,19 @@ async def regenerate_surface(
 
     # Serialize and write
     text = serialize(trimmed)
-    path = save_surface_text(text, brain_name)
+    path = save_surface_text(text, brain_name, global_only=global_only)
     logger.info("Knowledge surface regenerated: %s (%d chars)", path, len(text))
 
     return trimmed
 
 
-async def show_surface(brain_name: str = "default") -> dict[str, Any]:
+async def show_surface(brain_name: str = "default", *, global_only: bool = False) -> dict[str, Any]:
     """Load and return the current surface as structured data.
 
     Args:
         brain_name: Brain to show surface for.
+        global_only: Read the global surface path instead of letting the process
+            CWD decide.
 
     Returns:
         Dict with surface info or error message.
@@ -74,7 +79,7 @@ async def show_surface(brain_name: str = "default") -> dict[str, Any]:
     from surreal_memory.surface.parser import parse
     from surreal_memory.surface.resolver import load_surface_text
 
-    text = load_surface_text(brain_name)
+    text = load_surface_text(brain_name, global_only=global_only)
     if not text:
         return {
             "exists": False,
