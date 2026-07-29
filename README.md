@@ -267,6 +267,16 @@ smem setup embeddings            # choose "Sentence Transformers"
 Set the provider to `auto` to pick the best available option at runtime
 (order: Ollama → local sentence-transformers → Gemini → OpenAI → OpenRouter).
 
+**The combination is validated.** Every provider assumes a dimension for a model it does
+not recognise, so aiming one at another provider's model name yields vectors of the wrong
+width — which the vector index then rejects on every write. `smem doctor`, `smem_health`
+and MCP startup report two impossible cases instead of passing them: a model outside a
+hosted provider's catalogue (the report lists the models it does serve), and a known model
+whose dimension contradicts the configured one. The check stays quiet where it cannot
+know — a local OpenAI-compatible server serves whatever files it was pointed at, so an
+unfamiliar model name there is normal, and only an exact catalogue match counts as knowing
+a dimension.
+
 > Embeddings use **one** model per brain — switching models changes vector
 > dimensions and invalidates existing vectors. Pick a provider before ingesting at scale.
 
