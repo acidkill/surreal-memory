@@ -467,18 +467,19 @@ Items here are explicitly **not** in the current release. Community PRs welcome 
 
 ### Nice-to-haves (community contributions welcome)
 
+- **Recall-quality regression gate** — `benchmarks/ground_truth.py` and `metrics.py` can already score recall against a labelled set, but nothing runs them. Wire them into CI with a floor on precision/recall so a retrieval change cannot quietly make the product worse. For a memory system this is the single most valuable test that does not yet exist.
+- **One-command trial** — `docker compose up` that brings up SurrealDB, the API, the dashboard and a pre-seeded demo brain. Evaluating the project currently means provisioning a database and choosing an embedding provider first; a newcomer should be able to see a populated graph in one command and judge it from there.
+- **Reasoning-pattern injection on by default** — mining learns per-model strategies, but `injection_enabled` defaults to `false`, so the patterns sit unused unless you find the flag. Turn it on behind a token budget and a quality floor, and surface in the dashboard which pattern fired on which turn.
+- **Per-project brain routing** — resolve the active brain from the project root or git remote instead of a single global `current_brain`, so changing repository changes memory without `smem brain use`. Removes the most common source of "why is this memory here".
 - **PostCompact context restore hook** — analog to `session_start.py` but fired right after a Claude Code compaction. Pipes `smem recap` + `smem context --limit 20` to stdout as a `## Context restored after compaction` block, so the agent doesn't lose the thread when the 80% buffer kicks in.
-- **PostToolUse memory auto-capture** — observer hook that records memorable patterns (errors solved, decisions made, repeated commands) after Bash / Edit / Write tool calls — no explicit `smem remember` required.
 - **JetBrains IDE plugin** — Kotlin / Java plugin using the same REST API as the dashboard. Parity feature for IntelliJ-family IDEs.
-- **Cross-device sync UI** — visualize Merkle delta progress, device roster, conflict resolution flow in the dashboard.
 - **Cloudflare Pages for docs** — alternative to the removed GitHub Pages workflow. Static `mkdocs build` deployed to CF Pages, no GitHub dependency.
 - **LlamaIndex retriever adapter** — same shape as the shipped LangChain adapter (`from surreal_memory.adapters.langchain import SurrealMemoryRetriever`; see the Python API section), for the LlamaIndex side of the RAG ecosystem.
-- **More embedding providers** — Voyage AI, Cohere, Mistral. Current set: Gemini, OpenAI, OpenRouter, local.
+- **More embedding providers** — Voyage AI, Cohere, Mistral. Current set: Gemini, OpenAI, OpenRouter, Ollama, BGE-M3, sentence-transformers.
 - **Upstream sync bot** — scheduled workflow that scans `nhadaututtheky/neural-memory` for new commits, classifies them GREEN / YELLOW / RED against our fork, and opens a draft PR for the green batch.
-- **Two-way Telegram bot** — `notify-telegram.yml` is one-way (release notes). Extend with `smem remember` via bot commands.
-- **Public benchmarks dashboard** — `benchmarks/` already has stress scripts; publish results as a static dashboard.
+- **Two-way Telegram bot** — the Telegram integration is one-way (release notes, backups). Extend with `smem remember` via bot commands.
+- **Public benchmarks dashboard** — `benchmarks/` already has comparison scripts against mem0 and cognee; publish the results as a static dashboard so the claims are checkable.
 - **Brain templates / starter packs** — pre-seeded brains for common workflows (Python dev, K8s admin, research notes).
-- **Auto-upgrade path for `~/.neuralmemory/` → `~/.surrealmemory/`** — one-shot migration command for users coming from upstream NeuralMemory.
 
 ## License
 
