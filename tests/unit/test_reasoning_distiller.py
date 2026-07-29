@@ -448,3 +448,95 @@ async def test_consolidation_learn_reasoning_guard_disabled(tmp_path: Path, monk
     report = await ConsolidationEngine(storage).run([ConsolidationStrategy.LEARN_REASONING])
     assert report.reasoning_patterns_learned == 0
     assert calls["n"] == 0
+
+
+class _SpyNamer:
+    """Stands in for a PatternNamer, counting renames and releases."""
+
+    def __init__(self) -> None:
+        self.renamed = 0
+        self.released = 0
+
+    async def rename(self, pattern: dict, cluster_traces: list[dict]) -> dict:
+        self.renamed += 1
+        return {**pattern, "title": f"llm-named-{self.renamed}"}
+
+    async def release(self) -> None:
+        self.released += 1
+
+
+class TestLLMNamingIsWiredIn:
+    """distill_use_llm has to reach the patterns, and let go of the model after."""
+
+    async def test_patterns_carry_the_llm_title(
+        self, tmp_path: Path, no_embedder: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        spy = _SpyNamer()
+        monkeypatch.setattr(
+            "surreal_memory.engine.reasoning_distiller.build_namer", lambda _rt: spy
+        )
+        storage = InMemoryStorage()
+        storage.set_brain(BRAIN)
+        await _seed(storage, "claude-fable-5", _DEBUG_TRACES)
+
+        result = await distill_reasoning_patterns(storage, BRAIN, _ucfg(tmp_path), drain=True)
+
+        assert result.patterns_learned >= 1
+        assert spy.renamed >= 1
+        fibers = await storage.find_fibers(metadata_key="_reasoning_pattern", limit=100)
+        titles = [str(f.metadata.get("_reasoning_title", "")) for f in fibers]
+        assert any(t.startswith("llm-named") for t in titles)
+
+    async def test_the_model_is_released_when_the_run_finishes(
+        self, tmp_path: Path, no_embedder: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        spy = _SpyNamer()
+        monkeypatch.setattr(
+            "surreal_memory.engine.reasoning_distiller.build_namer", lambda _rt: spy
+        )
+        storage = InMemoryStorage()
+        storage.set_brain(BRAIN)
+        await _seed(storage, "claude-fable-5", _DEBUG_TRACES)
+
+        await distill_reasoning_patterns(storage, BRAIN, _ucfg(tmp_path), drain=True)
+
+        assert spy.released == 1
+
+    async def test_the_model_is_released_even_when_the_run_blows_up(
+        self, tmp_path: Path, no_embedder: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A crash mid-run must not strand a multi-gigabyte model in VRAM."""
+        spy = _SpyNamer()
+        monkeypatch.setattr(
+            "surreal_memory.engine.reasoning_distiller.build_namer", lambda _rt: spy
+        )
+
+        async def _boom(*_a: object, **_k: object) -> tuple[int, list[object]]:
+            raise RuntimeError("storage went away")
+
+        monkeypatch.setattr("surreal_memory.engine.reasoning_distiller._process_model_batch", _boom)
+        storage = InMemoryStorage()
+        storage.set_brain(BRAIN)
+        await _seed(storage, "claude-fable-5", _DEBUG_TRACES)
+
+        with pytest.raises(RuntimeError):
+            await distill_reasoning_patterns(storage, BRAIN, _ucfg(tmp_path), drain=True)
+
+        assert spy.released == 1
+
+    async def test_no_namer_means_the_heuristic_title_survives(
+        self, tmp_path: Path, no_embedder: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "surreal_memory.engine.reasoning_distiller.build_namer", lambda _rt: None
+        )
+        storage = InMemoryStorage()
+        storage.set_brain(BRAIN)
+        await _seed(storage, "claude-fable-5", _DEBUG_TRACES)
+
+        await distill_reasoning_patterns(storage, BRAIN, _ucfg(tmp_path), drain=True)
+
+        fibers = await storage.find_fibers(metadata_key="_reasoning_pattern", limit=100)
+        assert fibers
+        titles = [str(f.metadata.get("_reasoning_title", "")) for f in fibers]
+        assert not any("llm-named" in t for t in titles)

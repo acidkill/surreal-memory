@@ -33,10 +33,12 @@ from surreal_memory.core.fiber import Fiber
 from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.core.synapse import Direction, Synapse, SynapseType
 from surreal_memory.engine.clustering import UnionFind
+from surreal_memory.engine.reasoning_naming import build_namer
 from surreal_memory.engine.reasoning_progress import PHASE_DISTILLING, MiningProgress
 
 if TYPE_CHECKING:
     from surreal_memory.engine.embedding.provider import EmbeddingProvider
+    from surreal_memory.engine.reasoning_naming import PatternNamer
     from surreal_memory.engine.reasoning_progress import ProgressCallback
     from surreal_memory.storage.base import NeuralStorage
     from surreal_memory.unified_config import ReasoningTrainingConfig, UnifiedConfig
@@ -478,6 +480,7 @@ async def _process_model_batch(
     seeds: dict[str, list[float]] | None,
     existing_sigs: set[str],
     budget: int,
+    namer: PatternNamer | None = None,
 ) -> tuple[int, list[Any]]:
     """Distill one model's trace batch. Returns (patterns_created, consumed_ids).
 
@@ -532,6 +535,10 @@ async def _process_model_batch(
             pattern = _build_pattern(
                 cluster_traces, cluster_vecs, cluster_moves, model, category, len(idxs)
             )
+            if namer is not None:
+                # Prose only: the signature is already fixed by the cluster's
+                # trace hashes, so naming cannot fork a pattern into a duplicate.
+                pattern = await namer.rename(pattern, cluster_traces)
             if await _materialize_pattern(storage, pattern, existing_sigs):
                 existing_sigs.add(pattern["signature"])
                 created += 1
@@ -570,6 +577,10 @@ async def distill_reasoning_patterns(
     rt = config.reasoning_training
     embedder = embedder or _get_embedder()
     seeds = await _seed_centroids(embedder, rt.categories) if embedder is not None else None
+    # None unless distill_use_llm is on AND a local endpoint and model are set.
+    # The chat model is pulled in by the first rename and released in the finally
+    # below, so it is resident for this run only.
+    namer = build_namer(rt)
 
     existing = await storage.find_fibers(
         metadata_key="_reasoning_pattern", limit=_PATTERN_FETCH_LIMIT
@@ -608,37 +619,52 @@ async def distill_reasoning_patterns(
                 )
             )
 
-    for idx, model in enumerate(models):
-        budget = max(0, rt.pattern_targets.get(model, 0) - existing_by_model.get(model, 0))
-        if budget <= 0:
-            # Target unset/0 or already met → leave this model's traces unprocessed.
+    try:
+        for idx, model in enumerate(models):
+            budget = max(0, rt.pattern_targets.get(model, 0) - existing_by_model.get(model, 0))
+            if budget <= 0:
+                # Target unset/0 or already met → leave this model's traces unprocessed.
+                _emit(model, idx + 1)
+                continue
+            while budget > 0:
+                traces = await storage.get_unprocessed_reasoning_traces(
+                    brain_id, limit=_BATCH_PER_MODEL, model=model
+                )
+                traces = traces[:_BATCH_PER_MODEL]
+                if not traces:
+                    break  # backlog for this model exhausted
+                created, consumed = await _process_model_batch(
+                    storage,
+                    brain_id,
+                    rt,
+                    model,
+                    traces,
+                    embedder,
+                    seeds,
+                    existing_sigs,
+                    budget,
+                    namer,
+                )
+                patterns_created += created
+                budget -= created
+                if consumed:
+                    processed_ids.extend(consumed)
+                    # Mark consumed processed NOW so the next fetch returns fresh
+                    # traces — otherwise a drain loop re-fetches the same batch forever.
+                    await storage.mark_reasoning_traces_processed(brain_id, consumed)
+                _emit(model, idx)
+                # Termination guard: a batch that consumes nothing makes no forward
+                # progress (budget hit 0 mid-category), so stop draining this model.
+                if not consumed:
+                    break
+                if not drain:
+                    break  # background consolidation: one batch per model per run
             _emit(model, idx + 1)
-            continue
-        while budget > 0:
-            traces = await storage.get_unprocessed_reasoning_traces(
-                brain_id, limit=_BATCH_PER_MODEL, model=model
-            )
-            traces = traces[:_BATCH_PER_MODEL]
-            if not traces:
-                break  # backlog for this model exhausted
-            created, consumed = await _process_model_batch(
-                storage, brain_id, rt, model, traces, embedder, seeds, existing_sigs, budget
-            )
-            patterns_created += created
-            budget -= created
-            if consumed:
-                processed_ids.extend(consumed)
-                # Mark consumed processed NOW so the next fetch returns fresh
-                # traces — otherwise a drain loop re-fetches the same batch forever.
-                await storage.mark_reasoning_traces_processed(brain_id, consumed)
-            _emit(model, idx)
-            # Termination guard: a batch that consumes nothing makes no forward
-            # progress (budget hit 0 mid-category), so stop draining this model.
-            if not consumed:
-                break
-            if not drain:
-                break  # background consolidation: one batch per model per run
-        _emit(model, idx + 1)
+    finally:
+        # Unconditional: an aborted or failed run must not leave the chat model
+        # parked in VRAM either.
+        if namer is not None:
+            await namer.release()
 
     if processed_ids:
         await storage.prune_reasoning_traces(brain_id, rt.retention_days)

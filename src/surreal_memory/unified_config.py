@@ -1099,6 +1099,13 @@ class ToolMemoryConfig:
 # while still blocking quotes/backslashes/control chars (TOML-injection safe).
 _TOML_SAFE_GLOB = re.compile(r"^[a-zA-Z0-9_\-\./ *?\[\]]*$")
 
+# One argv part of reasoning_training.distill_llm_unload_cmd. Deliberately
+# narrower than a glob: no quotes, no shell metacharacters, no newlines. Braces
+# are allowed solely for the "{model}" placeholder. The command is executed
+# without a shell, so this is defence in depth rather than the only guard.
+_TOML_SAFE_ARGV = re.compile(r"^[a-zA-Z0-9_\-\./:={}]+$")
+_UNLOAD_CMD_MAX_PARTS = 16
+
 
 def _sanitize_toml_glob(value: str) -> str:
     """Sanitize a model-name / glob string for safe TOML serialization."""
@@ -1153,7 +1160,18 @@ class ReasoningTrainingConfig:
     min_patterns_per_category: int = 3
     injection_max_patterns: int = 5
     injection_max_chars: int = 4000
+    # Rewrite distilled pattern prose with a LOCAL chat model. Needs
+    # distill_llm_model plus a loopback SURREAL_MEMORY_LLM_ENDPOINT; without
+    # both, distillation keeps its heuristic naming (see engine.reasoning_naming).
     distill_use_llm: bool = False
+    distill_llm_model: str = ""
+    # Loopback OpenAI-compatible base URL, e.g. "http://127.0.0.1:PORT/v1".
+    # SURREAL_MEMORY_LLM_ENDPOINT overrides it; a non-loopback value is refused.
+    distill_llm_endpoint: str = ""
+    # argv (NOT a shell string) run once after distillation to unload the chat
+    # model again, so it does not stay resident between runs. "{model}" is
+    # replaced with distill_llm_model. Empty = leave the model loaded.
+    distill_llm_unload_cmd: tuple[str, ...] = ()
     redact_secrets: bool = True
     # Per-model distillation targets: model name -> desired pattern count (0-100).
     # An unlisted model defaults to 0 → distillation is skipped for it (the
@@ -1179,6 +1197,9 @@ class ReasoningTrainingConfig:
             "injection_max_patterns": self.injection_max_patterns,
             "injection_max_chars": self.injection_max_chars,
             "distill_use_llm": self.distill_use_llm,
+            "distill_llm_model": self.distill_llm_model,
+            "distill_llm_endpoint": self.distill_llm_endpoint,
+            "distill_llm_unload_cmd": list(self.distill_llm_unload_cmd),
             "redact_secrets": self.redact_secrets,
             "pattern_targets": dict(self.pattern_targets),
         }
@@ -1238,6 +1259,16 @@ class ReasoningTrainingConfig:
                 except (ValueError, TypeError):
                     continue
 
+        # Unload command: argv, never a shell string. A part that is not plain
+        # command syntax voids the whole command rather than being silently
+        # dropped — a half-parsed teardown command is worse than none.
+        unload_raw = data.get("distill_llm_unload_cmd", [])
+        unload_cmd: tuple[str, ...] = ()
+        if isinstance(unload_raw, (list, tuple)) and unload_raw:
+            parts = [str(p).strip() for p in unload_raw[:_UNLOAD_CMD_MAX_PARTS]]
+            if all(p and _TOML_SAFE_ARGV.match(p) for p in parts):
+                unload_cmd = tuple(p[:_TOML_STR_MAX_LEN] for p in parts)
+
         return cls(
             mining_enabled=bool(data.get("mining_enabled", False)),
             injection_enabled=bool(data.get("injection_enabled", False)),
@@ -1255,6 +1286,11 @@ class ReasoningTrainingConfig:
             injection_max_patterns=_int("injection_max_patterns", 5, 1, 1000),
             injection_max_chars=_int("injection_max_chars", 4000, 1, 1_000_000),
             distill_use_llm=bool(data.get("distill_use_llm", False)),
+            distill_llm_model=_sanitize_toml_glob(str(data.get("distill_llm_model", "") or "")),
+            distill_llm_endpoint=_sanitize_toml_url(
+                str(data.get("distill_llm_endpoint", "") or "")
+            ),
+            distill_llm_unload_cmd=unload_cmd,
             redact_secrets=bool(data.get("redact_secrets", True)),
             pattern_targets=pattern_targets,
         )
@@ -1834,6 +1870,11 @@ class UnifiedConfig:
             f"injection_max_patterns = {rt.injection_max_patterns}",
             f"injection_max_chars = {rt.injection_max_chars}",
             f"distill_use_llm = {'true' if rt.distill_use_llm else 'false'}",
+            f'distill_llm_model = "{_sanitize_toml_glob(rt.distill_llm_model)}"',
+            f'distill_llm_endpoint = "{_sanitize_toml_url(rt.distill_llm_endpoint)}"',
+            "distill_llm_unload_cmd = ["
+            + ", ".join(f'"{p}"' for p in rt.distill_llm_unload_cmd if _TOML_SAFE_ARGV.match(p))
+            + "]",
             f"redact_secrets = {'true' if rt.redact_secrets else 'false'}",
             "[reasoning_training.injection_map]",
         ]

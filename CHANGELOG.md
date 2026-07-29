@@ -5,6 +5,94 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.17.0] — Patterns that read like advice
+
+`reasoning_training.distill_use_llm` has existed as a configuration field since reasoning
+training shipped. Nothing read it. Setting it changed the config file and nothing else —
+searching for the name found the dataclass attribute, `to_dict`, `from_dict` and the TOML
+writer, and no consumer anywhere. This release gives it an implementation.
+
+### What the flag now does
+
+A distilled pattern used to be named after its own mechanics. The title was the cluster's
+three most frequent reasoning moves (`debugging: restate-goal, gather-evidence, verify`)
+and the description was the first 200 characters of the medoid trace — a raw thinking
+fragment, usually cut mid-sentence. Serviceable as an identifier, useless as an
+explanation, and it is what `smem reasoning` displays and what injection ships to other
+models.
+
+With the flag on, a local model rewrites the prose:
+
+```
+title       Diagnose, Investigate, and Confirm Fix
+description Debug by restating the objective, gathering diagnostic evidence, then
+            confirming the resolution.
+strategy    1. Restate the problem to be solved.
+            2. Gather evidence — error messages, tracebacks, surrounding code.
+            3. Verify the problem no longer occurs.
+```
+
+It rewrites **only** prose. `model`, `category`, `confidence`, `frequency` and `signature`
+are untouched, and `signature` is derived from the cluster's trace hashes — so toggling
+the flag cannot fork a known pattern into a duplicate. Existing patterns keep their names;
+naming applies to patterns distilled from then on.
+
+### Traces do not leave the machine
+
+Trace content is raw model reasoning, so the endpoint is **loopback-only**. A remote
+address yields no namer and therefore no request at all — an invariant, not a default, and
+no setting relaxes it. Ingest-time redaction is upstream and can be switched off, so the
+transport guarantee has to stand on its own.
+
+Resolution order is `SURREAL_MEMORY_LLM_ENDPOINT`, then the new `distill_llm_endpoint`
+config key, then `SURREAL_MEMORY_EMBEDDING_ENDPOINT` — one local OpenAI-compatible server
+commonly serves both roles.
+
+### The model is borrowed, not kept
+
+Local model servers load a chat model on its first request and typically keep it resident
+with no idle timeout, so naming a handful of patterns would leave several gigabytes parked
+in VRAM indefinitely. Loading stays implicit — the first request pulls the model in — and
+`distill_llm_unload_cmd` releases it when the run ends, including when the run fails.
+
+The command is an **argv list executed without a shell**, so a model name can never become
+shell syntax; `{model}` is substituted, a part that is not plain command syntax voids the
+whole command, and it is read from the config file only, never from an API request. It
+fires only if the run actually issued a request, so a model something else loaded is left
+alone.
+
+### Failure is invisible
+
+Missing endpoint, missing `httpx`, refused connection, timeout, HTTP error, or a model that
+answers in prose instead of JSON — every one falls back to the mechanical naming.
+Distillation never fails because naming failed. Three consecutive failures trip a circuit
+breaker, so a dead endpoint costs three attempts rather than one timeout per cluster.
+
+Three failure modes that only a live model exposes are handled explicitly, because against
+a stubbed transport all of them look like success:
+
+- **A reasoning model spends its budget thinking first.** Too small a token allowance
+  returns an empty `content` with `finish_reason: "length"` rather than a short answer. The
+  budget now accommodates thinking, truncation is reported as its own diagnosis instead of
+  a generic parse failure, and servers that support it are asked to skip the thinking phase
+  (a server that rejects that request has it dropped after one attempt).
+- **A model asked for "numbered steps" answers with a JSON array**, not a string. Refusing
+  a good answer over its container type was wrong; a list of scalars is now joined into
+  lines.
+- **Markdown fences and surrounding chatter** are located rather than assumed away.
+
+### Added
+
+- `reasoning_training.distill_llm_model` — the chat model to name with.
+- `reasoning_training.distill_llm_endpoint` — loopback OpenAI-compatible base URL, for
+  deployments that cannot easily add environment variables.
+- `reasoning_training.distill_llm_unload_cmd` — argv run once after distillation.
+
+### Fixed
+
+- The npm and VS Code package lockfiles had drifted several releases behind their
+  `package.json` files; every package is back in version parity.
+
 ## [2.16.0] — Consolidation honesty
 
 Every counter in the consolidation report now measures what its name says, and three

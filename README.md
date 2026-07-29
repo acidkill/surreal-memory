@@ -210,6 +210,15 @@ Sync uses **Merkle delta** — only diffs travel, not the full brain.
 - **Fast bulk training** — `smem train` batches DB writes (one round-trip per N synapses via `add_synapses_batch`) and the `find_neurons` brain_id index is now used, so large docs stay cheap per chunk even on big brains (previously 7–15 s/chunk on a 68k-neuron brain; ~10× fewer DB ops/chunk). Shows live `tqdm` progress.
 - **Import adapters** — migrate from ChromaDB, Mem0, Cognee, Graphiti, LlamaIndex
 - **Reasoning training** (opt-in) — mine a model's own `thinking` from `~/.claude` transcripts, distill it into reusable reasoning-pattern fibers, and inject the learned strategies into other models' sessions (dashboard + `smem reasoning` CLI + `smem_reasoning` MCP tool). Off by default; traces are redacted before storage.
+- **LLM pattern naming** (opt-in, local-only) — by default a distilled pattern is named after its own mechanics (`debugging: restate-goal, gather-evidence, verify`) and described by a raw slice of the medoid trace. Point `distill_use_llm` at a **loopback** OpenAI-compatible endpoint and a local model rewrites the title, description and strategy into something readable, leaving identity and statistics untouched. A non-loopback endpoint is refused outright — reasoning traces never leave the machine — and any failure falls back to the mechanical naming. `distill_llm_unload_cmd` unloads the model once the run ends, so it does not sit in VRAM between runs:
+
+  ```toml
+  [reasoning_training]
+  distill_use_llm = true
+  distill_llm_model = "<a chat model your server serves>"
+  distill_llm_endpoint = "http://127.0.0.1:PORT/v1"   # loopback only
+  distill_llm_unload_cmd = ["<your-launcher>", "stop", "{model}"]
+  ```
 
 #### Lifecycle & Storage
 - **Memory consolidation** — episodic memories mature into semantic knowledge
