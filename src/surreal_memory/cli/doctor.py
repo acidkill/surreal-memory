@@ -420,6 +420,26 @@ def _check_embedding_provider() -> dict[str, Any]:
     if module_name:
         try:
             importlib.import_module(module_name)
+            # An importable package says nothing about the configuration it is
+            # handed. A provider aimed at another provider's model silently
+            # assumes a dimension, and the vector index then rejects every
+            # write — so an incoherent triple is a failure, not an OK.
+            from surreal_memory.engine.embedding.capability import check_embedding_coherence
+
+            try:
+                configured_dim = int(getattr(config.embedding, "dimension", 0) or 0)
+            except (TypeError, ValueError):
+                configured_dim = 0
+            mismatch = check_embedding_coherence(
+                provider, str(config.embedding.model or ""), configured_dim
+            )
+            if mismatch is not None:
+                return {
+                    "name": "Embedding provider",
+                    "status": FAIL,
+                    "detail": mismatch.summary,
+                    "fix": mismatch.fix,
+                }
             return {
                 "name": "Embedding provider",
                 "status": OK,

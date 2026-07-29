@@ -88,8 +88,35 @@ a stubbed transport all of them look like success:
   deployments that cannot easily add environment variables.
 - `reasoning_training.distill_llm_unload_cmd` — argv run once after distillation.
 
+### An impossible embedding configuration is now reported
+
+Every embedding provider guesses a dimension for a model it does not recognise — Gemini
+assumes 3072, the OpenAI-compatible providers 1536, Ollama 1024. Each guess is reasonable
+alone and dangerous in combination: aim a provider at another provider's model name and it
+confidently produces vectors of the wrong width, which the HNSW index then rejects on every
+write. `smem doctor` reported that configuration as **ok** as long as the provider's package
+was importable, and `smem_health` reported it as available.
+
+Two rules now run in `smem doctor`, in `smem_health` and at MCP startup:
+
+- **A hosted provider's catalogue is closed.** A model outside it is not "unlisted", it is a
+  request the API will refuse — reported together with the models that provider does serve.
+- **A catalogued model's dimension must match `embedding.dimension`**, since that is what the
+  vector index is built from.
+
+Deliberately silent where it cannot know: a local OpenAI-compatible server serves whatever
+files it was pointed at, so an unrecognised model name there is ordinary rather than
+suspect. Only an exact catalogue hit counts as knowing a dimension — a provider's fallback
+is a guess, and calling a configuration broken on the strength of a guess would flag every
+local model name and train everyone to ignore the check.
+
 ### Fixed
 
+- `probe_embedding_capability` promised in its docstring never to raise, and raised.
+  `importlib.util.find_spec("google.genai")` imports the parent package first, so on a
+  machine without `google` installed the probe died with `ModuleNotFoundError` instead of
+  answering "not installed" — in the one function whose job is to report that calmly, and
+  which `smem_health` and MCP startup both call.
 - The npm and VS Code package lockfiles had drifted several releases behind their
   `package.json` files; every package is back in version parity.
 
