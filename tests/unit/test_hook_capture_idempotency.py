@@ -75,9 +75,7 @@ async def _cleanup_test_brain(brain_name: str) -> None:
 
 
 @pytest.fixture
-async def isolated_brain(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> AsyncIterator[str]:
+async def isolated_brain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[str]:
     """Point unified_config at a throwaway HOME with a unique brain+session."""
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("TMPDIR", "/tmp")
