@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import tempfile
 from datetime import timedelta
 from pathlib import Path
@@ -376,6 +377,54 @@ class TestSQLiteTypedMemories:
 
         expired = await storage.get_expired_memories()
         assert len(expired) == 1
+
+    @pytest.mark.asyncio
+    async def test_get_expired_memories_excludes_pinned_fiber(
+        self, storage_with_fiber: tuple[SQLiteStorage, Fiber]
+    ) -> None:
+        """Regression (#112): an expired memory whose fiber is pinned must be
+        excluded from both get_expired_memories() and get_expired_memory_count()
+        — pinning is the documented "never remove this" mechanism and the
+        expiry-cleanup background task deletes whatever these two methods
+        return, with no other guard.
+        """
+        storage, fiber = storage_with_fiber
+        pinned_fiber = dataclasses.replace(fiber, pinned=True)
+        await storage.update_fiber(pinned_fiber)
+
+        typed_mem = TypedMemory(
+            fiber_id=fiber.id,
+            memory_type=MemoryType.TODO,
+            expires_at=utcnow() - timedelta(days=1),
+        )
+        await storage.add_typed_memory(typed_mem)
+
+        expired = await storage.get_expired_memories()
+        assert expired == []
+        assert await storage.get_expired_memory_count() == 0
+
+    @pytest.mark.asyncio
+    async def test_get_expired_memories_includes_unpinned_fiber(
+        self, storage_with_fiber: tuple[SQLiteStorage, Fiber]
+    ) -> None:
+        """No regression: an expired memory whose fiber is NOT pinned is still
+        returned/counted — this is the existing, correct behavior for
+        non-pinned expired memories.
+        """
+        storage, fiber = storage_with_fiber
+        assert fiber.pinned is False  # sanity: fixture fiber starts unpinned
+
+        typed_mem = TypedMemory(
+            fiber_id=fiber.id,
+            memory_type=MemoryType.TODO,
+            expires_at=utcnow() - timedelta(days=1),
+        )
+        await storage.add_typed_memory(typed_mem)
+
+        expired = await storage.get_expired_memories()
+        assert len(expired) == 1
+        assert expired[0].fiber_id == fiber.id
+        assert await storage.get_expired_memory_count() == 1
 
 
 class TestSQLiteProjects:

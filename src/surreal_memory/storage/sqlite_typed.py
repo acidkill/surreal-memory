@@ -220,9 +220,17 @@ class SQLiteTypedMemoryMixin:
         brain_id = self._get_brain_id()
         limit = min(limit, 1000)
 
+        # LEFT JOIN (not JOIN): a typed_memory whose fiber was already deleted
+        # (orphan) must still be returned so the cleanup handler can reap the
+        # dangling row — only an *existing* fiber with pinned=1 protects its
+        # memory from expiry cleanup. pinned is the documented "never remove
+        # this" mechanism (already honored by consolidation/orphan-pruning);
+        # this path used to ignore it entirely (#112).
         async with conn.execute(
-            """SELECT * FROM typed_memories
-               WHERE brain_id = ? AND expires_at IS NOT NULL AND expires_at <= ?
+            """SELECT tm.* FROM typed_memories tm
+               LEFT JOIN fibers f ON f.id = tm.fiber_id AND f.brain_id = tm.brain_id
+               WHERE tm.brain_id = ? AND tm.expires_at IS NOT NULL AND tm.expires_at <= ?
+                 AND (f.pinned IS NULL OR f.pinned = 0)
                LIMIT ?""",
             (brain_id, utcnow().isoformat(), limit),
         ) as cursor:
@@ -233,9 +241,13 @@ class SQLiteTypedMemoryMixin:
         conn = self._ensure_conn()
         brain_id = self._get_brain_id()
 
+        # Mirrors get_expired_memories' pinned-fiber exclusion (#112) — see
+        # comment there for why this is a LEFT JOIN, not a JOIN.
         async with conn.execute(
-            """SELECT COUNT(*) FROM typed_memories
-               WHERE brain_id = ? AND expires_at IS NOT NULL AND expires_at <= ?""",
+            """SELECT COUNT(*) FROM typed_memories tm
+               LEFT JOIN fibers f ON f.id = tm.fiber_id AND f.brain_id = tm.brain_id
+               WHERE tm.brain_id = ? AND tm.expires_at IS NOT NULL AND tm.expires_at <= ?
+                 AND (f.pinned IS NULL OR f.pinned = 0)""",
             (brain_id, utcnow().isoformat()),
         ) as cursor:
             row = await cursor.fetchone()

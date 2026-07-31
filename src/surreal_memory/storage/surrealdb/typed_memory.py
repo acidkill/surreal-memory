@@ -373,9 +373,25 @@ class SurrealDBTypedMemoryMixin:
     async def get_expired_memories(self, limit: int = 100) -> list[TypedMemory]:
         brain_id = self._get_brain_id()
         limit = min(limit, 1000)
+        # Exclude rows whose linked fiber is pinned=true — pinned is the
+        # documented "never remove this" mechanism (already honored by
+        # consolidation/orphan-pruning), but this path ignored it entirely
+        # (#112). typed_memory.fiber_id is the raw dash-form uuid while
+        # fiber:<id> uses the underscore form (see _to_surreal_id), so the
+        # correlated subquery re-derives it with string::replace. A typed_memory
+        # whose fiber no longer exists (orphan) has no row to correlate against,
+        # so the subquery evaluates to NONE — `NONE != true` is true, meaning
+        # orphans are still returned (and can still be reaped by the caller),
+        # matching the existing orphan-cleanup behavior this method had before.
+        # $parent is required: an unqualified `fiber_id` inside the subquery
+        # resolves against `fiber`'s own fields (which has no such field) and
+        # SurrealDB 3.2.3 raises "Incorrect arguments for function
+        # string::replace()" — verified live against a v3.2.3 instance.
         rows = await self._query(
             "SELECT * FROM typed_memory WHERE brain_id = $brain_id"
             " AND expires_at IS NOT NONE AND expires_at <= time::now()"
+            " AND (SELECT VALUE pinned FROM ONLY type::record('fiber',"
+            " string::replace($parent.fiber_id, '-', '_'))) != true"
             " LIMIT $limit",
             brain_id=brain_id,
             limit=limit,
@@ -384,9 +400,15 @@ class SurrealDBTypedMemoryMixin:
 
     async def get_expired_memory_count(self) -> int:
         brain_id = self._get_brain_id()
+        # Mirrors get_expired_memories' pinned-fiber exclusion (#112) — see
+        # comment there for the $parent.fiber_id / orphan-row rationale. Stays
+        # a single aggregate query (no N+1) to preserve the "cheap COUNT query
+        # for health pulse" contract documented on the base interface.
         rows = await self._query(
             "SELECT count() AS cnt FROM typed_memory"
             " WHERE brain_id = $brain_id AND expires_at IS NOT NONE AND expires_at <= time::now()"
+            " AND (SELECT VALUE pinned FROM ONLY type::record('fiber',"
+            " string::replace($parent.fiber_id, '-', '_'))) != true"
             " GROUP ALL",
             brain_id=brain_id,
         )
