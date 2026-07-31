@@ -721,6 +721,7 @@ Reasoning training: status, mine, patterns, or config.
 | `limit` | integer | No | — | Max patterns to return, 1-100 (patterns action, default 50) |
 | `models` | array[string] | No | — | Restrict mining to these source models (mine action) |
 | `backfill` | boolean | No | — | Scan the full history for mining (mine action) |
+| `reprocess` | boolean | No | — | Re-open already-processed traces so patterns can be rebuilt from the existing backlog (mine action) |
 | `dry_run` | boolean | No | — | Mine as a no-op without writing (mine action) |
 | `compact` | boolean | No | — | Return compact response (strip metadata hints, truncate lists). Saves 60-80% tokens. |
 | `token_budget` | integer | No | — | Max tokens for response. Progressively strips content to fit budget. |

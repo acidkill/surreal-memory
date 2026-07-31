@@ -1039,6 +1039,7 @@ smem reasoning mine [OPTIONS]
 | `--backfill` | boolean | No | `False` | Scan the full history (scan_lookback_days=0) |
 | `--dry-run / -n` | boolean | No | `False` | Don't write — report a no-op |
 | `--models` | text | No | — | Comma-separated source models to restrict to |
+| `--reprocess` | boolean | No | `False` | Re-open already-processed traces so patterns can be rebuilt from the backlog |
 | `--force / -f` | boolean | No | `False` | Run even if mining is disabled in config |
 | `--json / -j` | boolean | No | `False` | Output as JSON |
 

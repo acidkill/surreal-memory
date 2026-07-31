@@ -4,7 +4,7 @@
 > Every item passes the VISION.md 4-question test + brain test.
 > ZERO LLM dependency — pure algorithmic, regex, graph-based.
 
-**Current state**: v2.0.0 — 58 MCP tools, 6900+ tests, schema v40, SurrealDB backend (SQLite/InMemory retained only as test fixtures), neuroscience engine (10 brain-inspired algorithms), tiered memory loading (HOT/WARM/COLD).
+**Current state**: v2.0.0 — 58 MCP tools, 7200+ tests, schema v40, SurrealDB backend (SQLite/InMemory retained only as test fixtures), neuroscience engine (10 brain-inspired algorithms), tiered memory loading (HOT/WARM/COLD).
 **Architecture**: Spreading activation reflex engine, biological memory model, MCP standard.
 
 ---
