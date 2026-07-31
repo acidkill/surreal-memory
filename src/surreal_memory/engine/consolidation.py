@@ -875,11 +875,25 @@ class ConsolidationEngine:
             if fi_verbatim != fj_verbatim:
                 continue
 
-            # Never merge a learned-habit fiber away: the merged fiber drops the
-            # `_habit_pattern` marker and step metadata, so `smem habits list` would
-            # silently lose the habit and habits could never accumulate over time.
-            if fiber_list[i].metadata.get("_habit_pattern") or fiber_list[j].metadata.get(
-                "_habit_pattern"
+            # Never merge a learned artifact away. The merged fiber REPLACES its
+            # members' metadata wholesale, so every marker and every field the
+            # feature reads is dropped, and the members are then deleted.
+            #
+            # `_habit_pattern`: `smem habits list` would silently lose the habit
+            # and habits could never accumulate over time.
+            #
+            # `_reasoning_pattern`: category coverage is computed from
+            # `_source_model` / `_reasoning_category` / `_reasoning_confidence`.
+            # Learned patterns are the most exposed of all fibers here, because
+            # every pattern in a category shares that category's concept neuron
+            # -- exactly what the overlap check keys on -- so a whole mining
+            # run collapses into one metadata-less fiber. Coverage then reads
+            # zero with the traces already marked processed, which before the
+            # reprocess path existed was unrecoverable.
+            if any(
+                f.metadata.get(marker)
+                for f in (fiber_list[i], fiber_list[j])
+                for marker in ("_habit_pattern", "_reasoning_pattern")
             ):
                 continue
 

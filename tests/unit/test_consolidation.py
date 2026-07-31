@@ -720,3 +720,67 @@ async def test_merge_rehearsal_count_matches_the_deduplicated_timestamp_union() 
     assert merged.rehearsal_count == len(merged.reinforcement_timestamps) == 1, (
         "rehearsal_count must track the deduplicated union (1), not a naive sum (2)"
     )
+
+
+@pytest.mark.asyncio
+async def test_merge_never_removes_reasoning_pattern_fiber() -> None:
+    """A `_reasoning_pattern` fiber must survive _merge even at 100% neuron overlap.
+
+    Same failure as the habit guard above, one marker along: merging deletes the
+    member fibers and the merged fiber replaces their metadata wholesale, so the
+    `_source_model` / `_reasoning_category` / `_reasoning_confidence` keys that
+    category coverage is computed from disappear. Learned patterns are especially
+    exposed because every pattern in a category shares that category's concept
+    neuron, which is exactly what the overlap check keys on — so a mining run's
+    whole output can be merged into one metadata-less fiber and coverage falls
+    back to zero with the traces already marked processed.
+    """
+    store = InMemoryStorage()
+    brain = Brain.create(name="merge_reasoning_test", brain_id="mr-brain")
+    await store.save_brain(brain)
+    store.set_brain(brain.id)
+
+    for nid in ("n-a", "n-b", "n-c"):
+        await store.add_neuron(Neuron.create(type=NeuronType.ENTITY, content=nid, neuron_id=nid))
+
+    shared = {"n-a", "n-b", "n-c"}  # 100% overlap → Jaccard 1.0
+    plain = Fiber(
+        id="plain-1",
+        neuron_ids=shared,
+        synapse_ids=set(),
+        anchor_neuron_id="n-a",
+        pathway=["n-a"],
+        frequency=5,
+    )
+    patterns = [
+        Fiber(
+            id=f"pattern-{i}",
+            neuron_ids=shared,
+            synapse_ids=set(),
+            anchor_neuron_id="n-a",
+            pathway=["n-a"],
+            frequency=5,
+            metadata={
+                "_reasoning_pattern": True,
+                "_source_model": "claude-fable-5",
+                "_reasoning_category": "debugging",
+                "_reasoning_confidence": 0.6,
+            },
+        )
+        for i in (1, 2)
+    ]
+    for f in (plain, *patterns):
+        await store.add_fiber(f)
+
+    engine = ConsolidationEngine(store, ConsolidationConfig())
+    await engine._merge(ConsolidationReport(), dry_run=False)
+
+    survivors = await store.get_fibers(limit=100)
+    remaining = {f.id for f in survivors}
+    assert {"pattern-1", "pattern-2"} <= remaining, (
+        "merge must never delete a _reasoning_pattern fiber"
+    )
+    for f in survivors:
+        if f.id in {"pattern-1", "pattern-2"}:
+            assert f.metadata.get("_source_model") == "claude-fable-5"
+            assert f.metadata.get("_reasoning_category") == "debugging"
