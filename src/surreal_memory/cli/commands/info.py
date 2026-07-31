@@ -361,31 +361,16 @@ def health(
                 "error": "No brain configured. Run: smem brain create default && smem brain use default"
             }
 
-        from surreal_memory.engine.diagnostics import DiagnosticsEngine
+        from surreal_memory.engine.diagnostics import DiagnosticsEngine, build_health_payload
 
         engine = DiagnosticsEngine(storage)
         report = await engine.analyze(storage.brain_id or brain.name)
 
-        return {
-            "brain": brain.name,
-            "grade": report.grade,
-            "purity_score": report.purity_score,
-            "connectivity": report.connectivity,
-            "diversity": report.diversity,
-            "freshness": report.freshness,
-            "consolidation_ratio": report.consolidation_ratio,
-            "orphan_rate": report.orphan_rate,
-            "activation_efficiency": report.activation_efficiency,
-            "recall_confidence": report.recall_confidence,
-            "neuron_count": report.neuron_count,
-            "synapse_count": report.synapse_count,
-            "fiber_count": report.fiber_count,
-            "warnings": [
-                {"severity": w.severity.value, "code": w.code, "message": w.message}
-                for w in report.warnings
-            ],
-            "recommendations": list(report.recommendations),
-        }
+        # The same payload smem_health returns, minus its roadmap and embedding
+        # probe — see build_health_payload. Built there rather than here so this
+        # command cannot fall behind the MCP tool again; `top_penalties` (whose
+        # `action` is the remedy text a CLI user never saw) is part of that.
+        return build_health_payload(report, brain=brain.name)
 
     result = run_async(_health())
 
@@ -430,6 +415,21 @@ def health(
         f"Fibers: {result['fiber_count']}"
     )
 
+    # Maturation: where fibers sit, and what holds the episodic ones back.
+    _render_maturation(result.get("stage_distribution"), result.get("semantic_gate_blockers"))
+
+    # Biggest score penalties, with the action that actually moves each one.
+    penalties = result.get("top_penalties", [])
+    if penalties:
+        typer.echo("\nBiggest penalties:")
+        for p in penalties:
+            typer.secho(
+                f"  {p['component']} ({p['current_score']:.2f}, "
+                f"+{p['estimated_gain']:.1f} available)",
+                fg=typer.colors.YELLOW,
+            )
+            typer.echo(f"    {p['action']}")
+
     # Warnings
     warnings = result.get("warnings", [])
     if warnings:
@@ -450,6 +450,73 @@ def health(
         typer.echo("\nRecommendations:")
         for rec in recommendations:
             typer.echo(f"  > {rec}")
+
+
+# Maturation stages in promotion order. The report carries the raw MemoryStage
+# values; "stm" is not a word, so it gets spelled out on the way to a terminal.
+_STAGE_LABELS: dict[str, str] = {
+    "stm": "short-term",
+    "working": "working",
+    "episodic": "episodic",
+    "semantic": "semantic",
+}
+
+
+def _render_maturation(
+    stage_distribution: dict[str, int] | None,
+    gate_blockers: dict[str, int] | None,
+) -> None:
+    """Render the maturation breakdown behind the consolidation bar above it.
+
+    ``consolidation_ratio`` is a single number that cannot explain itself: it
+    says what fraction of fibers reached SEMANTIC, never which stage the rest
+    sit at or what is holding them there. Both fields are absent when the
+    backend cannot report them — then this prints nothing.
+
+    The gate counts are spelled out rather than tabulated (``time: 18``) because
+    the reader who needs them is the one who does not already know what the
+    semantic gate is.
+    """
+    if not stage_distribution and not gate_blockers:
+        return
+
+    typer.echo("\nMaturation:")
+
+    if stage_distribution:
+        cells = [
+            f"{label}: {stage_distribution[stage]}"
+            for stage, label in _STAGE_LABELS.items()
+            if stage in stage_distribution
+        ]
+        # A backend may report a stage this CLI has not heard of — show it
+        # rather than silently dropping those fibers from the breakdown.
+        cells += [
+            f"{stage}: {count}"
+            for stage, count in sorted(stage_distribution.items())
+            if stage not in _STAGE_LABELS
+        ]
+        typer.echo(f"  {'Stages':<14} " + "  ".join(cells))
+
+    if gate_blockers:
+        time_gate = gate_blockers.get("time_gate", 0)
+        spacing_gate = gate_blockers.get("spacing_gate", 0)
+        ready = gate_blockers.get("ready", 0)
+        typer.echo(
+            f"  {'Semantic gate':<14} {time_gate} waiting on dwell time, "
+            f"{spacing_gate} waiting on recall spacing, {ready} ready"
+        )
+        if spacing_gate:
+            typer.secho(
+                f"    {spacing_gate} episodic fibers need recall spread across 3+ distinct days "
+                "(or 15+ rehearsals across 5+ time windows); consolidate will not move them.",
+                fg=typer.colors.YELLOW,
+            )
+        if ready:
+            # The one bucket a command moves — the other two need spaced recall.
+            typer.secho(
+                f"    {ready} already qualify — the next `smem consolidate` pass advances them.",
+                fg=typer.colors.GREEN,
+            )
 
 
 def _render_bar(label: str, value: float, *, invert: bool = False) -> None:

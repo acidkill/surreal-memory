@@ -305,3 +305,100 @@ class TestStagesAdvancedPerHop:
             "episodic_to_semantic": 1,
         }
         assert sum(breakdown.values()) == report.stages_advanced
+
+
+class TestHealthPayloadExposesMaturationFields:
+    """The two maturation fields must survive `smem_health`'s serialization.
+
+    Regression: `stage_distribution` and `semantic_gate_blockers` were added to
+    the `BrainHealthReport` dataclass and populated by `analyze()`, but neither
+    the MCP handler nor the CLI copied them into the response they actually
+    return -- both build an explicit dict and simply omitted the new keys. The
+    fields existed, were computed on every call, and reached no user. Verifying
+    through `analyze()` alone cannot catch this: it passes on the object the
+    serialization boundary then drops.
+    """
+
+    def _handler_with_report(self, monkeypatch, report):
+        import asyncio
+
+        from surreal_memory.engine import diagnostics as diagnostics_mod
+        from surreal_memory.mcp.stats_handler import StatsHandler
+
+        class _FakeEngine:
+            def __init__(self, _storage): ...
+
+            async def analyze(self, _brain_id):
+                return report
+
+        monkeypatch.setattr(diagnostics_mod, "DiagnosticsEngine", _FakeEngine)
+
+        storage = AsyncMock()
+        storage.brain_id = "default"
+        storage.get_brain.return_value = SimpleNamespace(id="b1", name="default")
+
+        handler = StatsHandler.__new__(StatsHandler)
+
+        async def fake_get_storage():
+            return storage
+
+        handler.get_storage = fake_get_storage  # type: ignore[method-assign]
+        return asyncio.run(handler._health({}))
+
+    @staticmethod
+    def _report(**overrides):
+        base = {
+            "grade": "D",
+            "purity_score": 47.7,
+            "neuron_count": 10,
+            "synapse_count": 10,
+            "fiber_count": 10,
+            "contradiction_count": 0,
+            "warnings": [],
+            "recommendations": [],
+            "top_penalties": [],
+            "stage_distribution": {"stm": 1, "working": 2, "episodic": 6, "semantic": 1},
+            "semantic_gate_blockers": {"time_gate": 1, "spacing_gate": 5, "ready": 0},
+        }
+        base.update(overrides)
+
+        class _Report(SimpleNamespace):
+            def __getattr__(self, _name):  # numeric metrics the handler reads
+                return 0.0
+
+        return _Report(**base)
+
+    def test_stage_distribution_reaches_the_health_response(self, monkeypatch) -> None:
+        result = self._handler_with_report(monkeypatch, self._report())
+
+        assert result["stage_distribution"] == {
+            "stm": 1,
+            "working": 2,
+            "episodic": 6,
+            "semantic": 1,
+        }
+
+    def test_semantic_gate_blockers_reach_the_health_response(self, monkeypatch) -> None:
+        result = self._handler_with_report(monkeypatch, self._report())
+
+        assert result["semantic_gate_blockers"] == {
+            "time_gate": 1,
+            "spacing_gate": 5,
+            "ready": 0,
+        }
+
+    def test_a_backend_without_maturation_support_omits_them_rather_than_nulling(
+        self, monkeypatch
+    ) -> None:
+        """None means "this backend can't answer", which is not the same as an
+
+        empty distribution -- so the keys are left out entirely rather than
+        serialized as null, matching how `smem_evolution` already treats them.
+        """
+        result = self._handler_with_report(
+            monkeypatch,
+            self._report(stage_distribution=None, semantic_gate_blockers=None),
+        )
+
+        assert "stage_distribution" not in result
+        assert "semantic_gate_blockers" not in result
