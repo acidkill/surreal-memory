@@ -94,6 +94,9 @@ _NO_THINKING_KWARGS = {"enable_thinking": False}
 _FAILURE_LIMIT = 3
 # Unloading is a local process teardown; it should be near-instant.
 _UNLOAD_TIMEOUT_SECONDS = 30.0
+# Loading spawns a server process and waits for a multi-GB model to reach disk
+# or mmap and bind its port -- much slower than teardown, so a longer budget.
+_LOAD_TIMEOUT_SECONDS = 120.0
 # Substituted into distill_llm_unload_cmd so one command template can name the
 # model it is releasing.
 _MODEL_PLACEHOLDER = "{model}"
@@ -324,12 +327,14 @@ class PatternNamer:
         post_json: PostJson,
         *,
         unload_cmd: tuple[str, ...] = (),
+        load_cmd: tuple[str, ...] = (),
         run_command: RunCommand | None = None,
     ) -> None:
         self._url = f"{endpoint}/chat/completions"
         self._model = model
         self._post = post_json
         self._unload_cmd = unload_cmd
+        self._load_cmd = load_cmd
         self._run = run_command or _run_command_subprocess
         self._consecutive_failures = 0
         self._given_up = False
@@ -340,6 +345,9 @@ class PatternNamer:
         # the model to be loaded. Reset by release() so a namer reused after a
         # release acquires and releases again rather than releasing twice.
         self._model_in_use = False
+        # acquire() runs once per run (idempotency guard, mirroring release()'s
+        # own safe-to-call-more-than-once contract).
+        self._load_attempted = False
 
     def _record_failure(self, reason: str, exc: BaseException | None = None) -> None:
         self._consecutive_failures += 1
@@ -394,6 +402,50 @@ class PatternNamer:
 
         self._consecutive_failures = 0
         return {**pattern, **fields}
+
+    async def acquire(self) -> None:
+        """Explicitly load the chat model before the first request, once per run.
+
+        A no-op when no load command is configured -- distillation must work
+        without one, falling back to the endpoint's implicit
+        load-on-first-request behavior (rename() already flags
+        _model_in_use once an actual request goes out). Any failure here is
+        silent and non-fatal: this is an optimization (get the model on GPU
+        with the right parameters before the first request), never a
+        precondition for distillation to proceed. Safe to call more than once.
+        """
+        if not self._load_cmd or self._load_attempted:
+            return
+        self._load_attempted = True
+
+        argv = [
+            part.replace(_MODEL_PLACEHOLDER, self._model) if _MODEL_PLACEHOLDER in part else part
+            for part in self._load_cmd
+        ]
+        try:
+            code = await self._run(argv, _LOAD_TIMEOUT_SECONDS)
+        except Exception as exc:  # a load command must never block distillation
+            logger.debug(
+                "reasoning naming: load command for %s failed (%s: %s); falling back"
+                " to implicit load-on-first-request",
+                self._model,
+                type(exc).__name__,
+                exc,
+            )
+            return
+        # Even a nonzero exit may have started pulling the model into memory,
+        # so release() must still attempt cleanup rather than leaving it
+        # stranded -- its own unload failure is already a harmless warning.
+        self._model_in_use = True
+        if code == 0:
+            logger.info("reasoning naming: explicitly loaded %s before distillation", self._model)
+        else:
+            logger.warning(
+                "reasoning naming: load command for %s exited %s; continuing anyway"
+                " (implicit load-on-first-request still applies)",
+                self._model,
+                code,
+            )
 
     async def release(self) -> None:
         """Unload the chat model this run pulled in. Safe to call more than once.
@@ -469,5 +521,6 @@ def build_namer(
         model,
         post_json or _post_json_httpx,
         unload_cmd=tuple(rt.distill_llm_unload_cmd),
+        load_cmd=tuple(rt.distill_llm_load_cmd),
         run_command=run_command,
     )

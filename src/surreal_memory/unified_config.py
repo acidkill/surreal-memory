@@ -1106,12 +1106,13 @@ class ToolMemoryConfig:
 # while still blocking quotes/backslashes/control chars (TOML-injection safe).
 _TOML_SAFE_GLOB = re.compile(r"^[a-zA-Z0-9_\-\./ *?\[\]]*$")
 
-# One argv part of reasoning_training.distill_llm_unload_cmd. Deliberately
-# narrower than a glob: no quotes, no shell metacharacters, no newlines. Braces
-# are allowed solely for the "{model}" placeholder. The command is executed
-# without a shell, so this is defence in depth rather than the only guard.
+# One argv part of reasoning_training.distill_llm_unload_cmd /
+# distill_llm_load_cmd. Deliberately narrower than a glob: no quotes, no shell
+# metacharacters, no newlines. Braces are allowed solely for the "{model}"
+# placeholder. The command is executed without a shell, so this is defence in
+# depth rather than the only guard.
 _TOML_SAFE_ARGV = re.compile(r"^[a-zA-Z0-9_\-\./:={}]+$")
-_UNLOAD_CMD_MAX_PARTS = 16
+_CMD_MAX_PARTS = 16
 
 
 def _sanitize_toml_glob(value: str) -> str:
@@ -1179,6 +1180,13 @@ class ReasoningTrainingConfig:
     # model again, so it does not stay resident between runs. "{model}" is
     # replaced with distill_llm_model. Empty = leave the model loaded.
     distill_llm_unload_cmd: tuple[str, ...] = ()
+    # argv (NOT a shell string) run once before the first distillation request,
+    # so a model needing specific launch parameters (e.g. GPU-only, no
+    # multimodal projector) does not depend on whatever an external
+    # auto-starter happens to remember. Same "{model}" substitution as
+    # distill_llm_unload_cmd. Empty = keep relying on implicit
+    # load-on-first-request.
+    distill_llm_load_cmd: tuple[str, ...] = ()
     redact_secrets: bool = True
     # Per-model distillation targets: model name -> desired pattern count (0-100).
     # An unlisted model defaults to 0 → distillation is skipped for it (the
@@ -1207,6 +1215,7 @@ class ReasoningTrainingConfig:
             "distill_llm_model": self.distill_llm_model,
             "distill_llm_endpoint": self.distill_llm_endpoint,
             "distill_llm_unload_cmd": list(self.distill_llm_unload_cmd),
+            "distill_llm_load_cmd": list(self.distill_llm_load_cmd),
             "redact_secrets": self.redact_secrets,
             "pattern_targets": dict(self.pattern_targets),
         }
@@ -1272,9 +1281,17 @@ class ReasoningTrainingConfig:
         unload_raw = data.get("distill_llm_unload_cmd", [])
         unload_cmd: tuple[str, ...] = ()
         if isinstance(unload_raw, (list, tuple)) and unload_raw:
-            parts = [str(p).strip() for p in unload_raw[:_UNLOAD_CMD_MAX_PARTS]]
+            parts = [str(p).strip() for p in unload_raw[:_CMD_MAX_PARTS]]
             if all(p and _TOML_SAFE_ARGV.match(p) for p in parts):
                 unload_cmd = tuple(p[:_TOML_STR_MAX_LEN] for p in parts)
+
+        # Load command: same argv-only rule as the unload command above.
+        load_raw = data.get("distill_llm_load_cmd", [])
+        load_cmd: tuple[str, ...] = ()
+        if isinstance(load_raw, (list, tuple)) and load_raw:
+            parts = [str(p).strip() for p in load_raw[:_CMD_MAX_PARTS]]
+            if all(p and _TOML_SAFE_ARGV.match(p) for p in parts):
+                load_cmd = tuple(p[:_TOML_STR_MAX_LEN] for p in parts)
 
         return cls(
             mining_enabled=bool(data.get("mining_enabled", False)),
@@ -1298,6 +1315,7 @@ class ReasoningTrainingConfig:
                 str(data.get("distill_llm_endpoint", "") or "")
             ),
             distill_llm_unload_cmd=unload_cmd,
+            distill_llm_load_cmd=load_cmd,
             redact_secrets=bool(data.get("redact_secrets", True)),
             pattern_targets=pattern_targets,
         )
@@ -1881,6 +1899,9 @@ class UnifiedConfig:
             f'distill_llm_endpoint = "{_sanitize_toml_url(rt.distill_llm_endpoint)}"',
             "distill_llm_unload_cmd = ["
             + ", ".join(f'"{p}"' for p in rt.distill_llm_unload_cmd if _TOML_SAFE_ARGV.match(p))
+            + "]",
+            "distill_llm_load_cmd = ["
+            + ", ".join(f'"{p}"' for p in rt.distill_llm_load_cmd if _TOML_SAFE_ARGV.match(p))
             + "]",
             f"redact_secrets = {'true' if rt.redact_secrets else 'false'}",
             "[reasoning_training.injection_map]",

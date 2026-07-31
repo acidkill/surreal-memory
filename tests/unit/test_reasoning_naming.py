@@ -225,6 +225,28 @@ def releasing_namer_factory(monkeypatch: pytest.MonkeyPatch):
     return _make
 
 
+@pytest.fixture
+def acquiring_namer_factory(monkeypatch: pytest.MonkeyPatch):
+    """A namer configured with a load command plus a recording runner."""
+    monkeypatch.setenv(LLM_ENDPOINT_ENV, LOOPBACK)
+
+    def _make(*responses: Any, runner: _Runner | None = None) -> tuple[Any, _Transport, _Runner]:
+        transport = _Transport(*responses)
+        run = runner or _Runner()
+        namer = build_namer(
+            _config(
+                distill_llm_model="gemma-4-12b",
+                distill_llm_load_cmd=("llamastash-load.py", "{model}", "--ngl", "99"),
+            ),
+            post_json=transport,
+            run_command=run,
+        )
+        assert namer is not None
+        return namer, transport, run
+
+    return _make
+
+
 class TestSuccessfulRename:
     async def test_prose_is_replaced_by_the_model_output(self, namer_factory) -> None:
         namer, _ = namer_factory(_completion(_good_json()))
@@ -641,3 +663,117 @@ class TestRelease:
         await namer.release()
 
         assert runner.calls == []
+
+
+class TestAcquire:
+    """Explicit model loading before the first request (run 010 / section E, U6).
+
+    Symmetric with TestRelease: acquire() is the other half of the same
+    load/unload lifecycle, so a run that explicitly loads must still clean up
+    even if it never actually renamed anything.
+    """
+
+    async def test_no_load_command_configured_is_a_no_op(self, releasing_namer_factory) -> None:
+        """releasing_namer_factory has no load_cmd -- acquire() must touch nothing."""
+        namer, _transport, runner = releasing_namer_factory()
+
+        await namer.acquire()
+
+        assert runner.calls == [], "nothing configured, so nothing may run"
+
+    async def test_a_successful_load_runs_the_command_with_model_substituted(
+        self, acquiring_namer_factory
+    ) -> None:
+        namer, _transport, runner = acquiring_namer_factory()
+
+        await namer.acquire()
+
+        assert runner.calls == [["llamastash-load.py", "gemma-4-12b", "--ngl", "99"]]
+
+    async def test_a_successful_load_is_cleaned_up_even_with_no_rename_call(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The exact leak U6 exists to close: acquire() loads a model that
+        rename() is never called for (e.g. zero patterns to name this run) --
+        release() must still unload it, not skip cleanup because
+        _model_in_use looks like nothing happened.
+        """
+        monkeypatch.setenv(LLM_ENDPOINT_ENV, LOOPBACK)
+        run = _Runner()
+        namer = build_namer(
+            _config(
+                distill_llm_model="gemma-4-12b",
+                distill_llm_load_cmd=("llamastash-load.py", "{model}"),
+                distill_llm_unload_cmd=("llamastash-stop.py", "{model}"),
+            ),
+            post_json=_Transport(),
+            run_command=run,
+        )
+        assert namer is not None
+
+        await namer.acquire()
+        await namer.release()
+
+        assert run.calls == [
+            ["llamastash-load.py", "gemma-4-12b"],
+            ["llamastash-stop.py", "gemma-4-12b"],
+        ]
+
+    async def test_acquire_is_idempotent(self, acquiring_namer_factory) -> None:
+        namer, _transport, runner = acquiring_namer_factory()
+
+        await namer.acquire()
+        await namer.acquire()
+        await namer.acquire()
+
+        assert len(runner.calls) == 1
+
+    @pytest.mark.parametrize(
+        "runner",
+        [_Runner(exit_code=1), _Runner(raises=FileNotFoundError("no such command"))],
+        ids=["non-zero-exit", "command-missing"],
+    )
+    async def test_a_failing_load_never_raises_and_naming_still_works(
+        self, monkeypatch: pytest.MonkeyPatch, runner: _Runner
+    ) -> None:
+        """A load command is an optimization; its failure must fall back to
+        the endpoint's implicit load-on-first-request, not break distillation.
+        """
+        monkeypatch.setenv(LLM_ENDPOINT_ENV, LOOPBACK)
+        namer = build_namer(
+            _config(
+                distill_llm_model="gemma-4-12b",
+                distill_llm_load_cmd=("llamastash-load.py", "{model}"),
+            ),
+            post_json=_Transport(_completion(_good_json())),
+            run_command=runner,
+        )
+        assert namer is not None
+
+        await namer.acquire()  # must not raise
+        renamed = await namer.rename(_pattern(), _traces())
+
+        assert renamed["title"] == "Read before editing"
+
+    async def test_the_load_command_is_argv_not_a_shell_string(
+        self, acquiring_namer_factory
+    ) -> None:
+        """No shell means no quoting bugs and no injection via a model name."""
+        namer, _transport, runner = acquiring_namer_factory()
+
+        await namer.acquire()
+
+        argv = runner.calls[0]
+        assert isinstance(argv, list)
+        assert all(isinstance(part, str) for part in argv)
+        assert not any(";" in part or "|" in part or "&&" in part for part in argv)
+
+    async def test_acquire_does_not_itself_call_the_chat_endpoint(
+        self, acquiring_namer_factory
+    ) -> None:
+        """acquire() only runs the load command; it must not send a chat request."""
+        namer, transport, _runner = acquiring_namer_factory()
+
+        await namer.acquire()
+
+        assert transport.calls == []

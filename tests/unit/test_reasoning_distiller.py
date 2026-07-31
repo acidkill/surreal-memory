@@ -456,6 +456,10 @@ class _SpyNamer:
     def __init__(self) -> None:
         self.renamed = 0
         self.released = 0
+        self.acquired = 0
+
+    async def acquire(self) -> None:
+        self.acquired += 1
 
     async def rename(self, pattern: dict, cluster_traces: list[dict]) -> dict:
         self.renamed += 1
@@ -500,6 +504,7 @@ class TestLLMNamingIsWiredIn:
 
         await distill_reasoning_patterns(storage, BRAIN, _ucfg(tmp_path), drain=True)
 
+        assert spy.acquired == 1
         assert spy.released == 1
 
     async def test_the_model_is_released_even_when_the_run_blows_up(
@@ -522,6 +527,7 @@ class TestLLMNamingIsWiredIn:
         with pytest.raises(RuntimeError):
             await distill_reasoning_patterns(storage, BRAIN, _ucfg(tmp_path), drain=True)
 
+        assert spy.acquired == 1
         assert spy.released == 1
 
     async def test_no_namer_means_the_heuristic_title_survives(

