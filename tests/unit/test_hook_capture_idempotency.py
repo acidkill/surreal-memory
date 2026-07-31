@@ -10,12 +10,14 @@ HOME) -- never the shared prod brain. Each test uses a unique brain name and
 session id to avoid cross-test collisions in unified_config's process-wide
 _config / _storage_cache singletons.
 
-Caveat: only HOME/SURREAL_MEMORY_BRAIN are overridden, not
-SURREAL_MEMORY_STORAGE. If a developer's shell already has
-SURREAL_MEMORY_STORAGE=surrealdb exported (for day-to-day dashboard use),
-these tests resolve to the live SurrealDB backend instead of SQLite;
-_cleanup_test_brain() below deletes that throwaway "idem*" brain by id in
-that case so the shared DB never accumulates leftovers.
+The fixtures pin SURREAL_MEMORY_STORAGE=sqlite rather than inheriting it.
+Without that pin a developer shell exporting SURREAL_MEMORY_STORAGE=surrealdb
+(the normal setup for day-to-day dashboard use) resolved these tests onto the
+live shared backend, where they both failed -- 11 of 12, while CI stayed green
+because its runner has no such variable -- and minted a throwaway "idem*" brain
+on the shared DB on every run. Isolation is the fixture's job, not the
+developer's; _cleanup_test_brain() below is kept only as a belt-and-braces
+no-op for anything that still manages to land on SurrealDB.
 """
 
 from __future__ import annotations
@@ -48,18 +50,16 @@ _TEXT_TRIVIAL = "abcd efgh ijk\nlmno pqrs tuv\nwxyz abcd efg\nhijk lmno pqr"
 
 
 async def _cleanup_test_brain(brain_name: str) -> None:
-    """Best-effort: drop this test's throwaway brain if it landed on live
-    SurrealDB instead of the isolated tmp_path SQLite fixture.
+    """Belt-and-braces: drop this test's throwaway brain if it somehow landed
+    on live SurrealDB instead of the isolated tmp_path SQLite fixture.
 
-    The isolated_brain* fixtures only override HOME/SURREAL_MEMORY_BRAIN, not
-    SURREAL_MEMORY_STORAGE. When a developer's shell already exports
-    SURREAL_MEMORY_STORAGE=surrealdb (+ SURREALDB_URL/SURREALDB_PASS) for
-    day-to-day dashboard use, storage_backend resolves to "surrealdb" here
-    too, and every test would otherwise leave an orphaned "idem*" row behind
-    on the shared DB -- the same brain-leakage failure mode already fixed for
-    the other live-SurrealDB tests via cleanup_live_brains() in
-    _surrealdb_live.py. SQLite brains need no cleanup: they live under the
-    fixture's own tmp_path HOME, which pytest discards on its own.
+    Since the fixtures pin SURREAL_MEMORY_STORAGE=sqlite this should now
+    always return early -- it is kept because the cost is one config read and
+    the failure it guards against (an orphaned "idem*" brain on the shared DB,
+    the same leakage already fixed elsewhere via cleanup_live_brains() in
+    _surrealdb_live.py) is one this suite actually caused before the pin
+    existed. SQLite brains need no cleanup: they live under the fixture's own
+    tmp_path HOME, which pytest discards on its own.
     """
     from surreal_memory.unified_config import get_config, get_shared_storage
 
@@ -79,6 +79,9 @@ async def isolated_brain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Asy
     """Point unified_config at a throwaway HOME with a unique brain+session."""
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("TMPDIR", "/tmp")
+    # Pinned, not inherited: an exported SURREAL_MEMORY_STORAGE=surrealdb would
+    # otherwise drag these tests onto the live shared backend (see module docstring).
+    monkeypatch.setenv("SURREAL_MEMORY_STORAGE", "sqlite")
     brain_name = "idem" + uuid.uuid4().hex[:12]
     monkeypatch.setenv("SURREAL_MEMORY_BRAIN", brain_name)
     monkeypatch.setenv("CLAUDE_SESSION_ID", "sess-" + uuid.uuid4().hex[:12])
@@ -98,6 +101,9 @@ async def isolated_brain_gate_enforce(
     and an impossible min_length, so every capture is rejected deterministically."""
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("TMPDIR", "/tmp")
+    # Pinned, not inherited: an exported SURREAL_MEMORY_STORAGE=surrealdb would
+    # otherwise drag these tests onto the live shared backend (see module docstring).
+    monkeypatch.setenv("SURREAL_MEMORY_STORAGE", "sqlite")
     brain_name = "idem" + uuid.uuid4().hex[:12]
     monkeypatch.setenv("SURREAL_MEMORY_BRAIN", brain_name)
     monkeypatch.setenv("CLAUDE_SESSION_ID", "sess-" + uuid.uuid4().hex[:12])
@@ -211,6 +217,9 @@ class TestIdempotencyNegativePaths:
         the hook must still function (capture once, suppress the repeat)."""
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("TMPDIR", "/tmp")
+        # Same pin as the fixtures -- this test builds its own env instead of
+        # using them, so it needs the storage pin in its own right.
+        monkeypatch.setenv("SURREAL_MEMORY_STORAGE", "sqlite")
         brain_name = "idem" + uuid.uuid4().hex[:12]
         monkeypatch.setenv("SURREAL_MEMORY_BRAIN", brain_name)
         monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
