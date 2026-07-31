@@ -377,7 +377,7 @@ class ReinforcementManager:
         reinforcement_delta: float = 0.05,
         max_activation: float = 1.0,
         max_weight: float = 1.0,
-        rehearsal_neuron_limit: int = 25,
+        rehearsal_neuron_limit: int = 15,
     ):
         """Initialize reinforcement manager.
 

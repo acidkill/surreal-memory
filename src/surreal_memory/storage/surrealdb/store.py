@@ -1990,6 +1990,12 @@ class SurrealDBStorage(
         await self._query("DELETE neuron_state WHERE brain_id = $bid", bid=brain_id)
         await self._query("DELETE synapse WHERE brain_id = $bid", bid=brain_id)
         await self._query("DELETE fiber WHERE brain_id = $bid", bid=brain_id)
+        # Maturation rows outlive their fiber (delete_fiber has no cascade, by
+        # design -- see engine/consolidation.py's merge path), so a brain wipe
+        # must clear them explicitly or they orphan permanently once the
+        # brain record itself is gone (found live: run 010's own benchmark
+        # left rows behind before this line existed).
+        await self._query("DELETE maturation WHERE brain_id = $bid", bid=brain_id)
         await self._query("DELETE change_log WHERE brain_id = $bid", bid=brain_id)
         await self._query("DELETE device WHERE brain_id = $bid", bid=brain_id)
         await self._query("DELETE merkle_hash WHERE brain_id = $bid", bid=brain_id)
