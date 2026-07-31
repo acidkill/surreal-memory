@@ -755,6 +755,40 @@ class TestAcquire:
 
         assert renamed["title"] == "Read before editing"
 
+    async def test_a_load_that_times_out_still_counts_as_a_load(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Mirrors rename()'s own rule: a command that times out may still
+
+        have started pulling the model into memory, so release() must still
+        attempt cleanup. Regression: _model_in_use used to be set only after
+        self._run() returned successfully, so a load command hitting
+        _LOAD_TIMEOUT_SECONDS (raising TimeoutError, exactly what
+        _run_command_subprocess does when it kills a stuck process) left the
+        flag False and release() silently skipped the unload -- stranding the
+        model in VRAM, the exact leak this feature exists to prevent.
+        """
+        monkeypatch.setenv(LLM_ENDPOINT_ENV, LOOPBACK)
+        run = _Runner(raises=TimeoutError("load timed out"))
+        namer = build_namer(
+            _config(
+                distill_llm_model="gemma-4-12b",
+                distill_llm_load_cmd=("llamastash-load.py", "{model}"),
+                distill_llm_unload_cmd=("llamastash-stop.py", "{model}"),
+            ),
+            post_json=_Transport(),
+            run_command=run,
+        )
+        assert namer is not None
+
+        await namer.acquire()  # must not raise
+        await namer.release()
+
+        assert run.calls == [
+            ["llamastash-load.py", "gemma-4-12b"],
+            ["llamastash-stop.py", "gemma-4-12b"],
+        ], "release() must still fire even though the load command raised"
+
     async def test_the_load_command_is_argv_not_a_shell_string(
         self, acquiring_namer_factory
     ) -> None:

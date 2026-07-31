@@ -960,11 +960,29 @@ class ConsolidationEngine:
                 # Read source maturation BEFORE delete_fiber. delete_fiber has no
                 # cascade to the maturation table (confirmed: it only deletes the
                 # fiber row), so this ordering is defensive, not load-bearing --
-                # but reading after would still be wrong to *rely* on that.
+                # but reading after would still be wrong to *rely* on that. A
+                # concurrent reinforce() landing between this read and the
+                # delete below is a narrow, self-healing loss (the row becomes
+                # an orphan cleaned up by cleanup_orphaned_maturations, and the
+                # fiber gets rehearsed again on its next recall) -- consistent
+                # with this codebase's non-transactional storage model
+                # elsewhere (e.g. save_maturation's own delete-race comment).
                 _stage_order = list(MemoryStage)
                 source_maturations = []
                 for fiber in member_fibers:
-                    record = await self._storage.get_maturation(fiber.id)
+                    try:
+                        record = await self._storage.get_maturation(fiber.id)
+                    except Exception:
+                        # A persistent storage fault here must not abort the
+                        # whole merge pass -- this group simply starts the
+                        # merged fiber without inherited maturation, same as
+                        # if none of its sources had a maturation row at all.
+                        logger.debug(
+                            "Could not read maturation for fiber %s during merge",
+                            fiber.id,
+                            exc_info=True,
+                        )
+                        continue
                     if record is not None:
                         source_maturations.append(record)
 
@@ -975,15 +993,16 @@ class ConsolidationEngine:
 
                 if source_maturations:
                     # Merging must never cost a fiber the maturation progress it
-                    # already earned: highest stage of any source, summed
-                    # rehearsal_count (each is an independent count of real
-                    # rehearsal events, so summing -- not maxing -- keeps
-                    # rehearsal_count consistent with the union of timestamps
-                    # below), the union of reinforcement timestamps (those, not
-                    # the count, decide distinct_reinforcement_days), and the
-                    # oldest stage_entered_at so the merged fiber keeps whatever
-                    # dwell time a source already accrued instead of resetting
-                    # the clock.
+                    # already earned: highest stage of any source, the union of
+                    # reinforcement timestamps (those, not a count, decide
+                    # distinct_reinforcement_days), rehearsal_count derived
+                    # from that same union (not summed independently -- every
+                    # organically-created record keeps rehearsal_count ==
+                    # len(reinforcement_timestamps), and summing counts while
+                    # deduplicating timestamps could violate that invariant on
+                    # a timestamp collision), and the oldest stage_entered_at
+                    # so the merged fiber keeps whatever dwell time a source
+                    # already accrued instead of resetting the clock.
                     inherited_stage = max(
                         source_maturations, key=lambda r: _stage_order.index(r.stage)
                     ).stage
@@ -1002,7 +1021,7 @@ class ConsolidationEngine:
                             brain_id=source_maturations[0].brain_id,
                             stage=inherited_stage,
                             stage_entered_at=min(r.stage_entered_at for r in source_maturations),
-                            rehearsal_count=sum(r.rehearsal_count for r in source_maturations),
+                            rehearsal_count=len(merged_timestamps),
                             reinforcement_timestamps=merged_timestamps,
                         )
                     )

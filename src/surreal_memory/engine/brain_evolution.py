@@ -324,7 +324,22 @@ class EvolutionEngine:
             reinf_days = m.distinct_reinforcement_days
 
             time_pct = min(1.0, days_in / days_required)
-            reinf_pct = min(1.0, reinf_days / reinf_required)
+            # Two independent paths satisfy the spacing gate (see
+            # classify_episodic_blocker); progress toward EITHER counts, so
+            # this is the max of the two, not just the classic distinct-days
+            # one. Without this, a fiber the verdict above correctly called
+            # "ready" via the rehearsal-count/windows path could still score
+            # near 0% here and lose a "closest to semantic" ranking slot to a
+            # fiber that is genuinely further from being ready.
+            classic_reinf_pct = min(1.0, reinf_days / reinf_required)
+            rehearsal_reinf_pct = min(
+                1.0,
+                min(
+                    m.rehearsal_count / _MIN_REHEARSAL_COUNT,
+                    m.distinct_reinforcement_windows / _MIN_DISTINCT_WINDOWS,
+                ),
+            )
+            reinf_pct = max(classic_reinf_pct, rehearsal_reinf_pct)
             overall_pct = min(time_pct, reinf_pct)
 
             if verdict == "ready":

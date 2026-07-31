@@ -422,6 +422,14 @@ class PatternNamer:
             part.replace(_MODEL_PLACEHOLDER, self._model) if _MODEL_PLACEHOLDER in part else part
             for part in self._load_cmd
         ]
+        # Flagged before the attempt, mirroring rename(): a command that times
+        # out or otherwise raises (e.g. _run_command_subprocess killing a slow
+        # process at _LOAD_TIMEOUT_SECONDS) may still have started pulling the
+        # model into memory, so release() must still attempt cleanup rather
+        # than leaving it stranded -- its own unload failure is already a
+        # harmless warning. Setting this only on the success path would leave
+        # exactly the VRAM-leak scenario this method exists to close.
+        self._model_in_use = True
         try:
             code = await self._run(argv, _LOAD_TIMEOUT_SECONDS)
         except Exception as exc:  # a load command must never block distillation
@@ -433,10 +441,6 @@ class PatternNamer:
                 exc,
             )
             return
-        # Even a nonzero exit may have started pulling the model into memory,
-        # so release() must still attempt cleanup rather than leaving it
-        # stranded -- its own unload failure is already a harmless warning.
-        self._model_in_use = True
         if code == 0:
             logger.info("reasoning naming: explicitly loaded %s before distillation", self._model)
         else:

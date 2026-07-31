@@ -652,3 +652,71 @@ async def test_merge_maturation_combination_semantics() -> None:
     assert set(merged.reinforcement_timestamps) == {ts_a1, ts_a2, ts_b1}, (
         "reinforcement_timestamps is the union of every source's timestamps"
     )
+
+
+@pytest.mark.asyncio
+async def test_merge_rehearsal_count_matches_the_deduplicated_timestamp_union() -> None:
+    """rehearsal_count must stay derived from the timestamp union, not an
+    independent sum, or a timestamp collision across sources could break the
+    rehearsal_count == len(reinforcement_timestamps) invariant every
+    organically-created MaturationRecord maintains (each rehearse() call
+    increments both together). Two sources sharing one identical timestamp
+    prove it: summing counts would give 2, but only 1 distinct rehearsal
+    event is actually evidenced by the timestamps.
+    """
+    store = _MaturationCapableStorage()
+    brain = Brain.create(name="merge_rehearsal_count_test", brain_id="mrc-brain")
+    await store.save_brain(brain)
+    store.set_brain(brain.id)
+
+    for nid in ("n-a", "n-b"):
+        await store.add_neuron(Neuron.create(type=NeuronType.ENTITY, content=nid, neuron_id=nid))
+
+    shared = {"n-a", "n-b"}
+    entered = utcnow() - timedelta(days=10)
+    shared_ts = (utcnow() - timedelta(days=1)).isoformat()
+
+    source_a = Fiber(
+        id="src-a",
+        neuron_ids=shared,
+        synapse_ids=set(),
+        anchor_neuron_id="n-a",
+        pathway=["n-a"],
+        frequency=1,
+        created_at=entered,
+    )
+    source_b = Fiber(
+        id="src-b",
+        neuron_ids=shared,
+        synapse_ids=set(),
+        anchor_neuron_id="n-b",
+        pathway=["n-b"],
+        frequency=1,
+        created_at=entered,
+    )
+    for f in (source_a, source_b):
+        await store.add_fiber(f)
+
+    for fid in ("src-a", "src-b"):
+        await store.save_maturation(
+            MaturationRecord(
+                fiber_id=fid,
+                brain_id="mrc-brain",
+                stage=MemoryStage.EPISODIC,
+                stage_entered_at=entered,
+                rehearsal_count=1,
+                reinforcement_timestamps=(shared_ts,),  # identical on both sources
+            )
+        )
+
+    engine = ConsolidationEngine(store, ConsolidationConfig())
+    await engine._merge(ConsolidationReport(), dry_run=False)
+
+    remaining = await store.get_fibers(limit=100)
+    merged = await store.get_maturation(remaining[0].id)
+    assert merged is not None
+
+    assert merged.reinforcement_timestamps == (shared_ts,), "the timestamp collapses to one"
+    assert merged.rehearsal_count == len(merged.reinforcement_timestamps) == 1, (
+        "rehearsal_count must track the deduplicated union (1), not a naive sum (2)"
+    )
