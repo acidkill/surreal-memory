@@ -69,6 +69,28 @@ def _reset_mining_state() -> Any:
     rt_module._mining_states = {}
 
 
+@pytest.fixture(autouse=True)
+def _no_real_isolated_storage(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail loudly if a test opens a real storage instead of using a mock.
+
+    Two handlers here open their own storage: the mining job always does, and
+    the read paths do whenever the request's brain differs from the one the
+    injected storage is bound to. With SURREALDB_URL set, an un-patched call
+    connects to the developer's live database and operates on real rows —
+    ``DELETE /patterns?model=`` then deletes them for real. Tests that need
+    that call patch it themselves; this makes forgetting an error rather than
+    a silent write.
+    """
+
+    async def _refuse(brain_name: str | None = None) -> None:
+        raise AssertionError(
+            f"create_isolated_storage({brain_name!r}) reached the real backend; "
+            "patch it in the test or set mock_storage.brain_id to the request scope"
+        )
+
+    monkeypatch.setattr("surreal_memory.unified_config.create_isolated_storage", _refuse)
+
+
 @pytest.fixture
 def mock_storage() -> AsyncMock:
     storage = AsyncMock()
