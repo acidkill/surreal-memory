@@ -191,8 +191,13 @@ class TestRunFullSetup:
         mock_detect: MagicMock,
         mock_defaults: MagicMock,
         mock_maintenance: MagicMock,
+        tmp_path: Path,
     ) -> None:
-        result = run_full_setup()
+        # run_full_setup() calls setup_mcp_claude_desktop() (unmocked, real
+        # function) for real — it must not be allowed to touch the actual
+        # developer $HOME/.config/Claude/claude_desktop_config.json (#110).
+        with patch("surreal_memory.cli.setup.Path.home", return_value=tmp_path):
+            result = run_full_setup()
         assert "results" in result
         assert result["results"]["Brain"] == "default (ready)"
         assert result["results"]["Claude Code"] == "MCP server configured"
@@ -301,9 +306,16 @@ class TestRunFullSetupSkipEmbeddings:
         mock_detect: MagicMock,
         mock_defaults: MagicMock,
         mock_maintenance: MagicMock,
+        tmp_path: Path,
     ) -> None:
         """With skip_embeddings=True, _prompt_install_embeddings is never called."""
-        with patch("surreal_memory.cli.full_setup._prompt_install_embeddings") as mock_prompt:
+        # run_full_setup() calls setup_mcp_claude_desktop() (unmocked, real
+        # function) for real — it must not be allowed to touch the actual
+        # developer $HOME/.config/Claude/claude_desktop_config.json (#110).
+        with (
+            patch("surreal_memory.cli.full_setup._prompt_install_embeddings") as mock_prompt,
+            patch("surreal_memory.cli.setup.Path.home", return_value=tmp_path),
+        ):
             result = run_full_setup(skip_embeddings=True)
             mock_prompt.assert_not_called()
             assert "skipped" in result["results"]["Embeddings"]

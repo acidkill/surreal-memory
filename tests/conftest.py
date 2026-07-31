@@ -203,3 +203,54 @@ def _close_leaked_aiosqlite_connections(
         with contextlib.suppress(Exception):
             conn.stop()
         thread.join(timeout=2.0)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _isolated_home_dir(tmp_path_factory: pytest.TempPathFactory) -> Generator[None, None, None]:
+    """Never let a forgotten ``Path.home()`` patch touch a real dev machine.
+
+    Defense in depth for #110: two tests ran ``run_full_setup()`` (which calls
+    ``setup_mcp_claude_desktop()``) without patching ``Path.home``, so on any
+    machine with a real ``~/.config/Claude`` directory the test suite silently
+    rewrote the developer's actual ``claude_desktop_config.json`` with a dead
+    ``SURREALDB_URL``/placeholder password leaked from an unrelated test (see
+    ``_surrealdb_test_env`` in ``test_bulk_batch_paths.py`` /
+    ``test_batch_writers.py``). Tests that legitimately need a fake home dir
+    already patch ``Path.home`` explicitly (``test_setup_mcp.py``,
+    ``test_doctor_enhanced.py``, ``test_setup_skills.py``, ``test_surface_mcp.py``,
+    ``test_surface_path_and_decay.py``, ``test_unified_config.py``) — those
+    local patches simply nest on top of this one and are restored on exit, so
+    this fixture is a pure safety net, not a replacement for them.
+
+    Redirects via the ``HOME`` env var rather than patching the ``Path.home``
+    classmethod directly. ``pathlib.Path.home()`` on POSIX already resolves
+    through ``$HOME``, and some tests (``test_reasoning_injection.py``'s
+    ``clean_env`` fixture) rely on exactly that by doing their own
+    ``monkeypatch.setenv("HOME", ...)`` — patching the classmethod instead
+    would shadow ``$HOME`` entirely and break that idiom. Setting the env var
+    lets both patterns coexist: per-test ``monkeypatch.setenv("HOME", ...)``
+    correctly overrides this session default, and per-test
+    ``patch("...Path.home", return_value=tmp_path)`` still wins outright since
+    it replaces the callable itself.
+
+    Session-scoped because it's a safety net, not per-test isolation — the
+    built-in ``monkeypatch`` fixture only supports function scope, so the
+    session-scoped patch is applied and undone via a manually managed
+    ``pytest.MonkeyPatch()`` instance instead.
+
+    Pre-seeds ``~/.surrealmemory/config.toml`` (empty file, only ``.exists()``
+    is checked) so this looks like an already-initialized machine, same as a
+    real developer's home. Without this, ``surreal_memory.cli.main._app_callback``
+    prints "Tip: Surreal-Memory not set up yet..." to stderr on every CLI
+    invocation via a blank home dir — and since Typer's ``CliRunner`` mixes
+    stderr into ``result.output`` by default, that banner broke unrelated CLI
+    tests (``test_cli_reasoning.py``) that parse ``result.output`` as JSON.
+    """
+    fake_home = tmp_path_factory.mktemp("fake-home")
+    surrealmemory_dir = fake_home / ".surrealmemory"
+    surrealmemory_dir.mkdir(parents=True, exist_ok=True)
+    (surrealmemory_dir / "config.toml").touch()
+    mp = pytest.MonkeyPatch()
+    mp.setenv("HOME", str(fake_home))
+    yield
+    mp.undo()

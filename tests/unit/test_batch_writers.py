@@ -12,9 +12,10 @@ Mock/fake based — no live SurrealDB required.
 from __future__ import annotations
 
 import asyncio
-import os
 from typing import Any
 from unittest.mock import AsyncMock
+
+import pytest
 
 from surreal_memory.core.neuron import NeuronState
 from surreal_memory.core.synapse import Direction, Synapse, SynapseType
@@ -26,16 +27,29 @@ from surreal_memory.storage.surrealdb.store import (
 from surreal_memory.utils.timeutils import utcnow
 
 
+@pytest.fixture(autouse=True)
+def _surrealdb_test_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Isolate the fake SurrealDB connection env used by ``_make_storage_spy``.
+
+    Was ``os.environ.setdefault(...)``, which — unlike ``monkeypatch.setenv``
+    — mutates the real process environment and never reverts. That leaked a
+    dead ``SURREALDB_URL``/placeholder password for the rest of the pytest
+    session, which a later unpatched ``setup_mcp_claude_desktop()`` call could
+    read via ``SurrealSettings.from_env()`` and write into a real MCP config
+    file (#110).
+    """
+    monkeypatch.setenv("SURREALDB_URL", "http://127.0.0.1:65535")
+    monkeypatch.setenv("SURREALDB_USER", "root")
+    monkeypatch.setenv("SURREALDB_PASS", "x")
+    monkeypatch.setenv("SURREALDB_NS", "ns")
+    monkeypatch.setenv("SURREALDB_DB", "db")
+
+
 def _make_storage_spy() -> Any:
     """A storage instance with the transport replaced by recording spies.
 
     Constructed without connecting: only the query-building code runs.
     """
-    os.environ.setdefault("SURREALDB_URL", "http://127.0.0.1:65535")
-    os.environ.setdefault("SURREALDB_USER", "root")
-    os.environ.setdefault("SURREALDB_PASS", "x")
-    os.environ.setdefault("SURREALDB_NS", "ns")
-    os.environ.setdefault("SURREALDB_DB", "db")
     s = SurrealDBStorage()
     s._current_brain_id = "default"
     s._skip_change_log = False
