@@ -88,11 +88,11 @@ Store a memory. Auto-detects type if not specified. Error resolution: when a new
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `content` | string | Yes | — | The content to remember |
-| `type` | string (`fact`, `decision`, `preference`, `todo`, `insight`, `context`, `instruction`, `error`, `workflow`, `reference`, `boundary`) | No | — | Memory type (auto-detected if not specified) |
+| `type` | string (`fact`, `decision`, `preference`, `todo`, `insight`, `context`, `instruction`, `error`, `workflow`, `reference`, `boundary`) | No | — | Memory type (auto-detected if not specified). Some types default to a non-null expiry when expires_days is omitted: d... |
 | `tier` | string (`hot`, `warm`, `cold`) | No | — | Memory tier: hot (always in context, slow decay), warm (default, semantic match), cold (explicit recall only, fast de... |
 | `priority` | integer | No | — | Priority 0-10 (5=normal, 10=critical) |
 | `tags` | array[string] | No | — | Tags for categorization |
-| `expires_days` | integer | No | — | Days until memory expires |
+| `expires_days` | integer | No | — | Days until memory expires. If omitted, falls back to the type's default (decision=90d, todo=30d, insight=180d, workfl... |
 | `encrypted` | boolean | No | default: false | Force encrypt this memory's neuron content (default: false). When true, content is encrypted with the brain's Fernet ... |
 | `event_at` | string | No | — | ISO datetime of when the event originally occurred (e.g. '2026-03-02T08:00:00'). Defaults to current time if not prov... |
 | `trust_score` | number | No | — | Trust level 0.0-1.0. Capped by source ceiling (user_input max 0.9, ai_inference max 0.7). NULL = unscored. |
