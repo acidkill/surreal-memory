@@ -177,19 +177,23 @@ smem_recall("topic related to orphaned entities")
 
 ## Understanding Your Health Report
 
-When you run `smem_health()`, you get:
+When you run `smem_health()` — or `smem health --json`, which returns the same payload — you
+get:
 
 ```json
 {
   "purity_score": 44.9,
   "grade": "D",
+  "consolidation_ratio": 0.0,
+  "stage_distribution": {"stm": 40, "working": 12, "episodic": 30, "semantic": 0},
+  "semantic_gate_blockers": {"time_gate": 18, "spacing_gate": 9, "ready": 3},
   "top_penalties": [
     {
       "component": "consolidation_ratio",
       "current_score": 0.0,
       "penalty_points": 15.0,
       "estimated_gain": 12.0,
-      "action": "Run `smem consolidate` — 100% of fibers still episodic..."
+      "action": "100% of fibers are still episodic (target: 50%+ semantic). They advance to semantic only through spaced recall..."
     },
     {
       "component": "activation_efficiency",
@@ -209,6 +213,20 @@ When you run `smem_health()`, you get:
 3. **`action`** — Exactly what to do
 
 **Always fix the highest penalty first** — it gives you the most score improvement per effort.
+
+**How to read the maturation fields:** `consolidation_ratio` is one number and cannot explain
+itself. `stage_distribution` says which stage the fibers that have *not* reached semantic sit
+at. `semantic_gate_blockers` splits the EPISODIC ones by what is actually holding them back:
+
+| Bucket | Meaning | What moves it |
+|--------|---------|---------------|
+| `time_gate` | Has not dwelt in EPISODIC long enough | Time |
+| `spacing_gate` | Reinforcement not yet spread across 3+ distinct days (or 15+ rehearsals across 5+ time windows) | Recalling those memories on more separate days |
+| `ready` | Both gates satisfied | The next `smem consolidate` pass |
+
+Only the `ready` bucket moves by running a command. Both fields are omitted entirely on a
+backend that cannot report maturation — that is not the same as an empty distribution.
+`smem health` renders all of this as a **Maturation** section.
 
 ---
 

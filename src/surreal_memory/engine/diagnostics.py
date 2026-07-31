@@ -302,6 +302,72 @@ class BrainHealthReport:
     semantic_gate_blockers: dict[str, int] | None = None
 
 
+# ── Report serialization ─────────────────────────────────────────
+
+
+def build_health_payload(report: BrainHealthReport, *, brain: str) -> dict[str, Any]:
+    """Serialize a report into the payload every user-facing health surface returns.
+
+    `smem_health` (MCP) and `smem health --json` (CLI) show the same report to the
+    same operator, and each used to build its dict by hand, field by field. That is
+    the mechanism behind this whole fix: two hand-maintained lists of keys drift the
+    moment the report grows one. They had drifted in both directions at once —
+    `top_penalties` reached only the MCP payload, and the maturation fields reached
+    neither. One builder, one shape; a field added to the report and to this function
+    is on both surfaces or on neither. Callers add their own surface-specific keys
+    (roadmap, embedding probe, deep analysis) on top of what this returns.
+
+    `stage_distribution` and `semantic_gate_blockers` are omitted, not nulled, when
+    the report carries `None` — that means "this backend cannot answer", which is
+    not an empty distribution, and it matches how `smem_evolution` already
+    serializes the same two fields.
+    """
+    payload: dict[str, Any] = {
+        "brain": brain,
+        "grade": report.grade,
+        "purity_score": report.purity_score,
+        "connectivity": report.connectivity,
+        "diversity": report.diversity,
+        "freshness": report.freshness,
+        "consolidation_ratio": report.consolidation_ratio,
+        "orphan_rate": report.orphan_rate,
+        "activation_efficiency": report.activation_efficiency,
+        "recall_confidence": report.recall_confidence,
+        "neuron_count": report.neuron_count,
+        "synapse_count": report.synapse_count,
+        "fiber_count": report.fiber_count,
+        "contradiction_count": report.contradiction_count,
+        "conflict_rate": report.conflict_rate,
+        "warnings": [
+            {"severity": w.severity.value, "code": w.code, "message": w.message}
+            for w in report.warnings
+        ],
+        "recommendations": list(report.recommendations),
+        # The remedy text lives in `action` — without it a caller sees which
+        # component is costing points and nothing about how to move it.
+        "top_penalties": [
+            {
+                "component": p.component,
+                "current_score": p.current_score,
+                "weight": p.weight,
+                "penalty_points": p.penalty_points,
+                "estimated_gain": p.estimated_gain,
+                "action": p.action,
+            }
+            for p in report.top_penalties
+        ],
+    }
+
+    # Maturation view: which stages fibers sit at, and what blocks the episodic
+    # ones from SEMANTIC. These two exist to explain the consolidation_ratio above.
+    if report.stage_distribution is not None:
+        payload["stage_distribution"] = dict(report.stage_distribution)
+    if report.semantic_gate_blockers is not None:
+        payload["semantic_gate_blockers"] = dict(report.semantic_gate_blockers)
+
+    return payload
+
+
 # ── Grade mapping ────────────────────────────────────────────────
 
 

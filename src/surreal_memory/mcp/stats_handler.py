@@ -236,55 +236,17 @@ class StatsHandler:
         if err:
             return err
 
-        from surreal_memory.engine.diagnostics import DiagnosticsEngine
+        from surreal_memory.engine.diagnostics import DiagnosticsEngine, build_health_payload
 
         engine = DiagnosticsEngine(storage)
         # Rows are scoped by the brain *name* (storage.brain_id), not by the brain
         # record's UUID primary key — brain.id would analyse an empty scope.
         report = await engine.analyze(storage.brain_id or brain.name)
 
-        result: dict[str, Any] = {
-            "brain": brain.name,
-            "grade": report.grade,
-            "purity_score": report.purity_score,
-            "connectivity": report.connectivity,
-            "diversity": report.diversity,
-            "freshness": report.freshness,
-            "consolidation_ratio": report.consolidation_ratio,
-            "orphan_rate": report.orphan_rate,
-            "activation_efficiency": report.activation_efficiency,
-            "recall_confidence": report.recall_confidence,
-            "neuron_count": report.neuron_count,
-            "synapse_count": report.synapse_count,
-            "fiber_count": report.fiber_count,
-            "contradiction_count": report.contradiction_count,
-            "conflict_rate": report.conflict_rate,
-            "warnings": [
-                {"severity": w.severity.value, "code": w.code, "message": w.message}
-                for w in report.warnings
-            ],
-            "recommendations": list(report.recommendations),
-            "top_penalties": [
-                {
-                    "component": p.component,
-                    "current_score": p.current_score,
-                    "weight": p.weight,
-                    "penalty_points": p.penalty_points,
-                    "estimated_gain": p.estimated_gain,
-                    "action": p.action,
-                }
-                for p in report.top_penalties
-            ],
-            "roadmap": self._build_health_roadmap(report),
-        }
-
-        # Maturation view: which stages fibers sit at, and what blocks the
-        # episodic ones from SEMANTIC. Omitted (not nulled) when the backend
-        # cannot answer, matching smem_evolution's treatment of the same fields.
-        if report.stage_distribution is not None:
-            result["stage_distribution"] = dict(report.stage_distribution)
-        if report.semantic_gate_blockers is not None:
-            result["semantic_gate_blockers"] = dict(report.semantic_gate_blockers)
+        # Shared with `smem health --json` — see build_health_payload. A new report
+        # field belongs there, not here, or the two surfaces drift apart again.
+        result: dict[str, Any] = build_health_payload(report, brain=brain.name)
+        result["roadmap"] = self._build_health_roadmap(report)
 
         # Embedding capability: surface whether the configured provider is usable
         # (missing package, disabled, or ready) so problems are visible, not silent.

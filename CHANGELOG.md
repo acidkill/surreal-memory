@@ -22,7 +22,21 @@ matching how `smem_evolution` already treats the same two fields.
 the one that names spaced recall and says `smem consolidate` will not raise the ratio on its
 own — was reachable only over MCP and the dashboard. A CLI user saw a low consolidation bar
 and no explanation for it. The CLI now prints the biggest penalties with their remedy, plus
-the stage distribution and the semantic-gate breakdown.
+the stage distribution and the semantic-gate breakdown. The semantic-gate line says what its
+numbers mean (`18 waiting on dwell time, 9 waiting on recall spacing, 3 ready`), and calls
+out the `ready` bucket as the only one a `smem consolidate` run moves.
+
+Both payloads are now produced by one serializer rather than two hand-maintained dicts.
+That duplication is the actual defect here: two lists of keys, written out by hand, drift
+apart the moment the report grows a field — which is how these two ended up missing from
+both surfaces while `top_penalties` was missing from only one. A field added to the report
+and to the serializer is now on both surfaces or on neither. `smem health --json`
+consequently also gained `contradiction_count`, `conflict_rate`, and the `weight` /
+`penalty_points` the MCP payload had always carried on each penalty.
+
+`docs/guides/brain-health.md` documents the maturation fields, and its example
+`top_penalties[].action` no longer quotes the pre-2.18.0 remedy that told the reader to run
+`smem consolidate`.
 
 ## [2.18.0] — Maturation reachability
 
@@ -73,10 +87,13 @@ merge partner does not have that dwell time reset to "now."
   hop advanced (`stm→working`, `working→episodic`, `episodic→semantic`); the three hop
   counts sum to the same total, so nothing about the existing field changes for anything
   already parsing it.
-- `smem_health` now includes a `stage_distribution` (how many fibers sit at each maturation
-  stage) and a `semantic_gate_blockers` breakdown of every EPISODIC fiber by what is actually
-  blocking it from SEMANTIC: waiting on dwell time, waiting on reinforcement spacing, or
-  already eligible and waiting for the next consolidation pass. Found and fixed along the
+- The health report now includes a `stage_distribution` (how many fibers sit at each
+  maturation stage) and a `semantic_gate_blockers` breakdown of every EPISODIC fiber by what
+  is actually blocking it from SEMANTIC: waiting on dwell time, waiting on reinforcement
+  spacing, or already eligible and waiting for the next consolidation pass. (Correction: this
+  entry originally said "`smem_health` now includes". It did not — both fields were dropped
+  at that tool's serialization boundary and reached a caller only through `smem_evolution`
+  and the dashboard. Fixed in 2.18.1.) Found and fixed along the
   way: `smem evolution`'s own "closest to semantic" classifier duplicated this threshold
   logic locally and checked only the distinct-days path, so a fiber that qualified through
   the rehearsal-count-and-windows alternative was misreported as still blocked. Both
