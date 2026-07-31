@@ -34,6 +34,35 @@ One limit is inherent: a distill run prunes processed traces past `retention_day
 `reprocess` can only rebuild from what is still staged. Anything older needs `backfill` to
 re-ingest it from the transcripts, and rotated transcripts are gone for good.
 
+### Consolidation merged learned patterns away as fast as mining produced them
+
+`_merge` builds one fiber from a group of overlapping ones, and the merged fiber
+REPLACES its members' metadata wholesale before the members are deleted. Learned
+reasoning patterns are the most exposed fibers in the graph to that: every
+pattern in a category is attached to that category's concept neuron, and shared
+neurons are exactly what the overlap check keys on. A mining run's whole output
+therefore collapsed into a single metadata-less "Merged from N fibers" row, its
+`_source_model` / `_reasoning_category` / `_reasoning_confidence` gone, and
+category coverage fell straight back to zero — with the source traces already
+marked processed, which before the reprocess path above meant it stayed there.
+
+This is why coverage could look frozen while mining reported patterns learned
+run after run: they were being produced and consumed in the same cycle.
+
+The same defect had already been found and fixed for `_habit_pattern`, whose
+guard carries a comment describing this exact failure. It simply never covered
+`_reasoning_pattern`. Both markers now share one guard.
+
+### A per-model pattern target above 100 was silently reduced
+
+`pattern_targets` was clamped to 100 by the config loader and rejected above 100
+by the config endpoint, with nothing announcing either: a higher target written
+into `config.toml` came back as 100 on the next read, and distillation stopped
+there while thousands of staged traces still had patterns to give. The ceiling
+guards against a runaway configuration, and a model's own backlog bounds it long
+before 100 does. Both sites now share `MAX_PATTERN_TARGET` (1000), so the
+endpoint can no longer accept a value the loader would quietly reduce.
+
 ### Status and pattern endpoints could mix two brains in one response
 
 Reasoning traces are read with an explicit `brain_id` taken from the request's brain, but the
