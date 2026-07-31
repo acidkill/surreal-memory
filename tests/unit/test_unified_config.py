@@ -724,11 +724,18 @@ class TestDistillCmdValidation:
     @pytest.mark.parametrize(
         "field", ["distill_llm_unload_cmd", "distill_llm_load_cmd"], ids=["unload", "load"]
     )
-    def test_more_than_16_parts_is_truncated_not_rejected(self, field: str) -> None:
-        """Parts beyond the cap are dropped; the first 16 safe parts still load."""
+    def test_more_than_16_parts_voids_the_whole_command(self, field: str) -> None:
+        """A too-long command is voided outright, not silently truncated.
+
+        Matches the same "invalid = void the whole command, never a
+        half-parsed substitute" contract as an unsafe part (see
+        test_a_dangerous_part_voids_the_whole_command above) -- truncating to
+        the first 16 parts would run a shorter, functionally different
+        command with no signal that anything was dropped.
+        """
         parts = [f"part{i}" for i in range(20)]
         rt = ReasoningTrainingConfig.from_dict({field: parts})
-        assert getattr(rt, field) == tuple(parts[:16])
+        assert getattr(rt, field) == ()
 
     @pytest.mark.parametrize(
         "field", ["distill_llm_unload_cmd", "distill_llm_load_cmd"], ids=["unload", "load"]

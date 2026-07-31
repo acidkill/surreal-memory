@@ -1278,21 +1278,41 @@ class ReasoningTrainingConfig:
 
         # Unload command: argv, never a shell string. A part that is not plain
         # command syntax voids the whole command rather than being silently
-        # dropped — a half-parsed teardown command is worse than none.
+        # dropped — a half-parsed teardown command is worse than none. Same
+        # rule for length: a command longer than _CMD_MAX_PARTS is voided
+        # outright rather than silently truncated to its first N parts, which
+        # would otherwise run a shorter, functionally different command with
+        # no signal that anything was dropped.
         unload_raw = data.get("distill_llm_unload_cmd", [])
         unload_cmd: tuple[str, ...] = ()
         if isinstance(unload_raw, (list, tuple)) and unload_raw:
-            parts = [str(p).strip() for p in unload_raw[:_CMD_MAX_PARTS]]
-            if all(p and _TOML_SAFE_ARGV.match(p) for p in parts):
-                unload_cmd = tuple(p[:_TOML_STR_MAX_LEN] for p in parts)
+            if len(unload_raw) > _CMD_MAX_PARTS:
+                logger.warning(
+                    "distill_llm_unload_cmd has %d parts, exceeding the %d-part limit;"
+                    " ignoring it entirely rather than running a truncated command",
+                    len(unload_raw),
+                    _CMD_MAX_PARTS,
+                )
+            else:
+                parts = [str(p).strip() for p in unload_raw]
+                if all(p and _TOML_SAFE_ARGV.match(p) for p in parts):
+                    unload_cmd = tuple(p[:_TOML_STR_MAX_LEN] for p in parts)
 
-        # Load command: same argv-only rule as the unload command above.
+        # Load command: same argv-only and length rules as unload_cmd above.
         load_raw = data.get("distill_llm_load_cmd", [])
         load_cmd: tuple[str, ...] = ()
         if isinstance(load_raw, (list, tuple)) and load_raw:
-            parts = [str(p).strip() for p in load_raw[:_CMD_MAX_PARTS]]
-            if all(p and _TOML_SAFE_ARGV.match(p) for p in parts):
-                load_cmd = tuple(p[:_TOML_STR_MAX_LEN] for p in parts)
+            if len(load_raw) > _CMD_MAX_PARTS:
+                logger.warning(
+                    "distill_llm_load_cmd has %d parts, exceeding the %d-part limit;"
+                    " ignoring it entirely rather than running a truncated command",
+                    len(load_raw),
+                    _CMD_MAX_PARTS,
+                )
+            else:
+                parts = [str(p).strip() for p in load_raw]
+                if all(p and _TOML_SAFE_ARGV.match(p) for p in parts):
+                    load_cmd = tuple(p[:_TOML_STR_MAX_LEN] for p in parts)
 
         return cls(
             mining_enabled=bool(data.get("mining_enabled", False)),

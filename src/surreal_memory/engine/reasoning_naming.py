@@ -60,6 +60,8 @@ import re
 from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import urlsplit
 
+from surreal_memory.unified_config import _TOML_SAFE_ARGV
+
 if TYPE_CHECKING:
     from surreal_memory.unified_config import ReasoningTrainingConfig
 
@@ -102,6 +104,29 @@ _LOAD_TIMEOUT_SECONDS = 120.0
 _MODEL_PLACEHOLDER = "{model}"
 
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
+
+
+def _substitute_model_and_validate(cmd: tuple[str, ...], model: str) -> list[str] | None:
+    """Fill in ``{model}`` and re-check the result against ``_TOML_SAFE_ARGV``.
+
+    Each part of ``cmd`` already passed that same allowlist at config-load
+    time (inline in ``ReasoningTrainingConfig.from_dict``), but ``model``
+    comes from ``distill_llm_model``, which is sanitized with
+    ``_sanitize_toml_glob`` -- a looser charset (spaces, ``*?[]``) since it is
+    not itself an argv element, only the template it gets substituted into
+    is. Re-validating post-substitution closes that gap: a model name
+    containing a character the argv allowlist would reject must void the
+    command, the same as an invalid literal part does, rather than silently
+    reaching ``create_subprocess_exec``.
+    """
+    argv = [
+        part.replace(_MODEL_PLACEHOLDER, model) if _MODEL_PLACEHOLDER in part else part
+        for part in cmd
+    ]
+    if not all(_TOML_SAFE_ARGV.match(part) for part in argv):
+        return None
+    return argv
+
 
 _SYSTEM_PROMPT = (
     "You name reusable reasoning strategies. You are given several excerpts of a"
@@ -300,7 +325,7 @@ async def _post_json_httpx(url: str, payload: dict[str, Any], timeout: float) ->
 
 
 async def _run_command_subprocess(argv: list[str], timeout: float) -> int:
-    """Default unload runner: exec the argv directly, with no shell involved."""
+    """Shared load/unload runner: exec the argv directly, with no shell involved."""
     process = await asyncio.create_subprocess_exec(
         *argv,
         stdout=asyncio.subprocess.PIPE,
@@ -313,7 +338,12 @@ async def _run_command_subprocess(argv: list[str], timeout: float) -> int:
         await process.wait()
         raise
     if stdout:
-        logger.debug("reasoning naming: unload output: %s", stdout.decode(errors="replace").strip())
+        # Shared by acquire() and release() -- "command", not "unload", since
+        # this same runner now services both and the output isn't otherwise
+        # tagged with which one triggered it.
+        logger.debug(
+            "reasoning naming: command output: %s", stdout.decode(errors="replace").strip()
+        )
     return process.returncode if process.returncode is not None else -1
 
 
@@ -418,10 +448,14 @@ class PatternNamer:
             return
         self._load_attempted = True
 
-        argv = [
-            part.replace(_MODEL_PLACEHOLDER, self._model) if _MODEL_PLACEHOLDER in part else part
-            for part in self._load_cmd
-        ]
+        argv = _substitute_model_and_validate(self._load_cmd, self._model)
+        if argv is None:
+            logger.warning(
+                "reasoning naming: distill_llm_model %r contains a character the load"
+                " command's argv allowlist rejects; skipping the explicit load",
+                self._model,
+            )
+            return
         # Flagged before the attempt, mirroring rename(): a command that times
         # out or otherwise raises (e.g. _run_command_subprocess killing a slow
         # process at _LOAD_TIMEOUT_SECONDS) may still have started pulling the
@@ -462,10 +496,14 @@ class PatternNamer:
             return
         self._model_in_use = False
 
-        argv = [
-            part.replace(_MODEL_PLACEHOLDER, self._model) if _MODEL_PLACEHOLDER in part else part
-            for part in self._unload_cmd
-        ]
+        argv = _substitute_model_and_validate(self._unload_cmd, self._model)
+        if argv is None:
+            logger.warning(
+                "reasoning naming: distill_llm_model %r contains a character the unload"
+                " command's argv allowlist rejects; skipping the explicit unload",
+                self._model,
+            )
+            return
         try:
             code = await self._run(argv, _UNLOAD_TIMEOUT_SECONDS)
         except Exception as exc:  # a stuck model must not fail a run

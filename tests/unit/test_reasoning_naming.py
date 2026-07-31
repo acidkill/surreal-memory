@@ -24,6 +24,7 @@ import pytest
 
 from surreal_memory.engine.reasoning_naming import (
     LLM_ENDPOINT_ENV,
+    _run_command_subprocess,
     build_namer,
     resolve_llm_endpoint,
 )
@@ -664,6 +665,36 @@ class TestRelease:
 
         assert runner.calls == []
 
+    async def test_a_model_name_the_argv_allowlist_rejects_voids_the_unload(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """distill_llm_model is sanitized against a looser charset (spaces,
+
+        globs) than the argv template it gets substituted into, since it is
+        constructed directly here (bypassing ReasoningTrainingConfig.from_dict's
+        own sanitization) to simulate a value that already cleared that looser
+        check. Substitution must be re-validated afterward: a model name
+        containing a space voids the whole command rather than reaching
+        create_subprocess_exec with an argv element the allowlist would have
+        rejected on its own.
+        """
+        monkeypatch.setenv(LLM_ENDPOINT_ENV, LOOPBACK)
+        runner = _Runner()
+        namer = build_namer(
+            _config(
+                distill_llm_model="gemma 4 12b",
+                distill_llm_unload_cmd=("llamastash", "stop", "{model}"),
+            ),
+            post_json=_Transport(_completion(_good_json())),
+            run_command=runner,
+        )
+        assert namer is not None
+
+        await namer.rename(_pattern(), _traces())
+        await namer.release()
+
+        assert runner.calls == []
+
 
 class TestAcquire:
     """Explicit model loading before the first request (run 010 / section E, U6).
@@ -811,3 +842,51 @@ class TestAcquire:
         await namer.acquire()
 
         assert transport.calls == []
+
+    async def test_a_model_name_the_argv_allowlist_rejects_voids_the_load(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Symmetric with the same check in TestRelease -- see that test's
+
+        docstring for why a directly-constructed config can carry a model
+        name the argv allowlist would reject.
+        """
+        monkeypatch.setenv(LLM_ENDPOINT_ENV, LOOPBACK)
+        runner = _Runner()
+        namer = build_namer(
+            _config(
+                distill_llm_model="gemma*12b",
+                distill_llm_load_cmd=("llamastash-load.py", "{model}"),
+            ),
+            post_json=_Transport(),
+            run_command=runner,
+        )
+        assert namer is not None
+
+        await namer.acquire()
+
+        assert runner.calls == []
+
+
+class TestRealSubprocessRunner:
+    """Every load/acquire/release test above injects a fake run_command, so
+
+    none of them exercise the actual production code path:
+    _run_command_subprocess's real asyncio.create_subprocess_exec + wait_for
+    + kill/wait cleanup. Locks that path in directly, since it is the
+    resource-cleanup-sensitive part a fake can't verify.
+    """
+
+    async def test_a_hung_command_is_killed_and_reaped_on_timeout(self) -> None:
+        with pytest.raises(TimeoutError):
+            await _run_command_subprocess(["sleep", "5"], timeout=0.2)
+
+    async def test_a_quick_command_returns_its_real_exit_code(self) -> None:
+        code = await _run_command_subprocess(["true"], timeout=5.0)
+
+        assert code == 0
+
+    async def test_a_failing_command_returns_its_real_nonzero_exit_code(self) -> None:
+        code = await _run_command_subprocess(["false"], timeout=5.0)
+
+        assert code == 1
