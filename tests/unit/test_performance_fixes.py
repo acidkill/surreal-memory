@@ -350,6 +350,10 @@ class TestInvertedIndexMerge:
         storage = AsyncMock()
         storage._get_brain_id = MagicMock(return_value="brain1")
         storage._current_brain_id = "brain1"
+        # None = "no maturation record for this fiber" (base.py's own default),
+        # not the bare AsyncMock() a plain attribute access would otherwise
+        # return -- _merge now reads this per source fiber (run 010 / C).
+        storage.get_maturation = AsyncMock(return_value=None)
         return storage
 
     @pytest.mark.asyncio
