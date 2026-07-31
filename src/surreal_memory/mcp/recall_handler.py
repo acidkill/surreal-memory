@@ -1085,13 +1085,18 @@ class RecallHandler:
             for f in result.fibers
         ]
 
-        return {
+        response: dict[str, Any] = {
             "answer": result.merged_context,
             "brains_queried": result.brains_queried,
             "total_neurons_activated": result.total_neurons_activated,
             "fibers": fibers_out,
             "cross_brain": True,
         }
+        # Only include errors when a brain query actually failed — an empty
+        # dict here would be indistinguishable noise on every response.
+        if result.errors:
+            response["errors"] = result.errors
+        return response
 
     async def _context(self, args: dict[str, Any]) -> dict[str, Any]:
         """Get recent context.
