@@ -1148,11 +1148,22 @@ class ConsolidationEngine:
 
         from surreal_memory.core.memory_types import MemoryType
         from surreal_memory.engine.memory_stages import (
+            MemoryStage,
             compute_stage_transition,
         )
         from surreal_memory.engine.pattern_extraction import extract_patterns
 
         _logger = logging.getLogger(__name__)
+
+        # stages_advanced sums all three hops into one counter, so "15 advanced"
+        # and "zero new semantic" were indistinguishable without reading raw
+        # maturation rows. compute_stage_transition only ever moves one hop per
+        # call, so every transition it produces is one of exactly these three.
+        _hop_keys = {
+            (MemoryStage.SHORT_TERM, MemoryStage.WORKING): "stm_to_working",
+            (MemoryStage.WORKING, MemoryStage.EPISODIC): "working_to_episodic",
+            (MemoryStage.EPISODIC, MemoryStage.SEMANTIC): "episodic_to_semantic",
+        }
 
         # Phase 0: Auto-promote context→fact for frequently-recalled memories
         # Must run before prune to prevent promotion candidates from expiring.
@@ -1238,6 +1249,10 @@ class ConsolidationEngine:
             advanced = compute_stage_transition(record, now=reference_time)
             if advanced.stage != record.stage:
                 report.stages_advanced += 1
+                hop_key = _hop_keys.get((record.stage, advanced.stage))
+                if hop_key:
+                    transitions = report.extra.setdefault("stage_transitions", {})
+                    transitions[hop_key] = transitions.get(hop_key, 0) + 1
                 if not dry_run:
                     try:
                         await self._storage.save_maturation(advanced)
