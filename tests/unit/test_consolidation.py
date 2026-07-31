@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 import pytest_asyncio
 
@@ -16,7 +18,13 @@ from surreal_memory.engine.consolidation import (
     ConsolidationStrategy,
 )
 from surreal_memory.engine.lifecycle import DecayManager
+from surreal_memory.engine.memory_stages import (
+    MaturationRecord,
+    MemoryStage,
+    compute_stage_transition,
+)
 from surreal_memory.storage.memory_store import InMemoryStorage
+from surreal_memory.utils.timeutils import utcnow
 
 
 @pytest_asyncio.fixture
@@ -431,3 +439,127 @@ async def test_merge_never_removes_habit_fiber() -> None:
 
     remaining = {f.id for f in await store.get_fibers(limit=100)}
     assert "habit-1" in remaining, "merge must never delete a _habit_pattern fiber"
+
+
+class _MaturationCapableStorage(InMemoryStorage):
+    """InMemoryStorage plus a real maturation table, for merge-inheritance tests.
+
+    InMemoryStorage inherits NeuralStorage's no-op maturation defaults (save is
+    a no-op, get/find always return empty), so a test built on it can exercise
+    the real Union-Find/Jaccard merge path but can never observe whether
+    maturation was read or written. This adds a trivial dict-backed table so
+    run 010 section C (merge losing maturation) can be reproduced end-to-end
+    against real reads/writes instead of mocked ones.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._maturations: dict[str, MaturationRecord] = {}
+
+    async def get_maturation(self, fiber_id: str) -> MaturationRecord | None:
+        return self._maturations.get(fiber_id)
+
+    async def save_maturation(self, record: MaturationRecord) -> None:
+        self._maturations[record.fiber_id] = record
+
+    async def find_maturations(
+        self,
+        stage: MemoryStage | None = None,
+        min_rehearsal_count: int = 0,
+    ) -> list[MaturationRecord]:
+        return [
+            m
+            for m in self._maturations.values()
+            if (stage is None or m.stage == stage) and m.rehearsal_count >= min_rehearsal_count
+        ]
+
+
+@pytest.mark.asyncio
+async def test_merge_inherits_maturation_from_sources() -> None:
+    """A fiber created by _merge must inherit source maturation, not restart at STM.
+
+    RUN-010 VALIDATE-FIRST (section C). `_merge` deletes the source fibers and
+    adds a brand-new one; on origin/main it never reads or writes the
+    maturation table for that new fiber, so consolidation destroys the exact
+    progress (stage, rehearsal_count, reinforcement_timestamps) it exists to
+    measure. Two sources reinforced on two distinct calendar days must combine
+    into a record that, after one more reinforcement on a third day, clears
+    the EPISODIC -> SEMANTIC spacing gate -- exactly as an unmerged fiber
+    would. This must FAIL on origin/main.
+    """
+    store = _MaturationCapableStorage()
+    brain = Brain.create(name="merge_maturation_test", brain_id="mm-brain")
+    await store.save_brain(brain)
+    store.set_brain(brain.id)
+
+    for nid in ("n-a", "n-b"):
+        await store.add_neuron(Neuron.create(type=NeuronType.ENTITY, content=nid, neuron_id=nid))
+
+    shared = {"n-a", "n-b"}
+    day1 = utcnow() - timedelta(days=2)
+    day2 = utcnow() - timedelta(days=1)
+
+    source_a = Fiber(
+        id="src-a",
+        neuron_ids=shared,
+        synapse_ids=set(),
+        anchor_neuron_id="n-a",
+        pathway=["n-a"],
+        frequency=3,
+        created_at=day1,
+    )
+    source_b = Fiber(
+        id="src-b",
+        neuron_ids=shared,
+        synapse_ids=set(),
+        anchor_neuron_id="n-b",
+        pathway=["n-b"],
+        frequency=1,
+        created_at=day1,
+    )
+    for f in (source_a, source_b):
+        await store.add_fiber(f)
+
+    await store.save_maturation(
+        MaturationRecord(
+            fiber_id="src-a",
+            brain_id="mm-brain",
+            stage=MemoryStage.EPISODIC,
+            stage_entered_at=day1 - timedelta(days=8),
+            rehearsal_count=1,
+            reinforcement_timestamps=(day1.isoformat(),),
+        )
+    )
+    await store.save_maturation(
+        MaturationRecord(
+            fiber_id="src-b",
+            brain_id="mm-brain",
+            stage=MemoryStage.EPISODIC,
+            stage_entered_at=day1 - timedelta(days=8),
+            rehearsal_count=1,
+            reinforcement_timestamps=(day2.isoformat(),),
+        )
+    )
+
+    engine = ConsolidationEngine(store, ConsolidationConfig())
+    await engine._merge(ConsolidationReport(), dry_run=False)
+
+    remaining = await store.get_fibers(limit=100)
+    assert len(remaining) == 1, "the two sources should have merged into one fiber"
+    merged = remaining[0]
+    assert merged.id not in ("src-a", "src-b")
+
+    inherited = await store.get_maturation(merged.id)
+    assert inherited is not None, (
+        "merge must carry the sources' MaturationRecord forward, not silently drop it"
+    )
+    assert inherited.stage == MemoryStage.EPISODIC
+    assert inherited.distinct_reinforcement_days == 2
+
+    third_day = day2 + timedelta(days=1)
+    rehearsed = inherited.rehearse(third_day)
+    promoted = compute_stage_transition(rehearsed, now=third_day)
+    assert promoted.stage == MemoryStage.SEMANTIC, (
+        "with reinforcements spread across 3 distinct days the merged fiber must "
+        "clear the spacing gate exactly like an unmerged fiber would"
+    )
