@@ -5,6 +5,91 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.18.0] — Maturation reachability
+
+2.16.0 made the consolidation report honest about what it counts. It did not make
+`consolidation_ratio` reachable. This release closes the gap between the metric and the
+mechanism that is supposed to move it: five separate defects that each, independently,
+kept fibers from ever reaching SEMANTIC or kept the report from saying why.
+
+### The remedy stopped recommending the wrong command
+
+`smem_health`'s low-`consolidation_ratio` penalty, `smem_stats`' low-consolidation hint, and
+the `NO_CONSOLIDATION` warning all told the operator to run `smem consolidate` to raise the
+ratio. Nothing about `consolidate` moves a fiber toward SEMANTIC — only spaced recall does
+(reinforcement spread across 3+ distinct days, or 15+ rehearsals across 5+ time windows).
+All three surfaces now name the actual mechanism and say explicitly that `consolidate` will
+not move it on its own.
+
+### Recall's rehearsal step was capped at a hardcoded 10, twice over
+
+Every recall reinforces the fibers connected to its top-activated neurons — the mechanism
+spaced recall depends on. Two independent, redundant caps limited this to the first 10
+neurons regardless of how many a recall actually activated: one in the retrieval pipeline's
+neuron ranking, a second, wholly redundant one inside the reinforcement step itself on the
+fibers that made it through the first cap. A recall that activated 50 neurons still only
+rehearsed fibers connected to 10 of them, silently discarding the rest of that recall's
+contribution to the spacing requirement.
+
+Both caps are fixed: the redundant fiber-side cap is removed, and the neuron-side cap is now
+a configurable `brain.reinforcement_neuron_limit` (default 15, up from the old
+unconfigurable 10) in `config.toml`. The default was set from a live measurement against the
+production storage backend rather than assumed — raising this value is not free on every
+backend, and an installation whose storage can absorb more latency can raise it.
+
+### Merging fibers used to erase their progress toward SEMANTIC
+
+Consolidation's `merge` strategy deletes the source fibers and writes one new fiber in their
+place. It never carried the sources' maturation records forward, so a fiber one reinforcement
+away from SEMANTIC that got merged came back at the beginning: no maturation row at all,
+stage STM. The merged fiber now inherits the higher of the sources' stages, the union of
+their reinforcement timestamps (not a plain concatenation — a fiber reinforced on the same
+calendar day by both sources counts as one distinct day, not two), and the oldest of their
+stage-entry timestamps, so a source that had already dwelt in a stage far longer than its
+merge partner does not have that dwell time reset to "now."
+
+### The consolidation report and health diagnostics explain themselves now
+
+- The report's flat `Stages advanced: N` is now followed by a breakdown of exactly which
+  hop advanced (`stm→working`, `working→episodic`, `episodic→semantic`); the three hop
+  counts sum to the same total, so nothing about the existing field changes for anything
+  already parsing it.
+- `smem_health` now includes a `stage_distribution` (how many fibers sit at each maturation
+  stage) and a `semantic_gate_blockers` breakdown of every EPISODIC fiber by what is actually
+  blocking it from SEMANTIC: waiting on dwell time, waiting on reinforcement spacing, or
+  already eligible and waiting for the next consolidation pass. Found and fixed along the
+  way: `smem evolution`'s own "closest to semantic" classifier duplicated this threshold
+  logic locally and checked only the distinct-days path, so a fiber that qualified through
+  the rehearsal-count-and-windows alternative was misreported as still blocked. Both
+  diagnostics now share one classifier.
+- A consolidation run's own backfill of maturation rows for fibers that predate the
+  maturation subsystem is now a visible line in the report summary, not a number that only
+  existed in a field nothing printed.
+
+### Distillation can now explicitly load its model before the first request
+
+`reasoning_training.distill_llm_unload_cmd` (2.17.0) explicitly releases a distillation run's
+chat model when the run ends. Loading was still implicit — whatever happens on that
+endpoint's first request — so a run had no way to control how the model got loaded: with
+what context size, how many GPU layers, or with a projector it did not need. A new,
+symmetric `distill_llm_load_cmd` runs once, before the first naming request, with the same
+argv-only execution (no shell, `{model}` substitution, empty or failing command degrades
+silently to the old implicit behavior). The unload command still fires even if a run that
+explicitly loaded ends up naming nothing, closing the leak that would otherwise leave the
+model resident.
+
+### Fixed
+
+- A configured `distill_llm_model` is sanitized against a looser character set than the
+  `distill_llm_load_cmd`/`distill_llm_unload_cmd` argv template it gets substituted into; the
+  substituted result is now re-validated against the stricter argv allowlist before
+  execution, closing a defense-in-depth gap an independent security review found.
+- A `distill_llm_load_cmd`/`distill_llm_unload_cmd` longer than the configured part limit is
+  now voided outright, consistent with every other invalid-command case, rather than
+  silently truncated to a shorter, different command.
+- `SurrealDBStorage.clear()` never deleted maturation rows, leaving them orphaned after a
+  brain's fibers and neurons were otherwise fully cleared.
+
 ## [2.17.0] — Patterns that read like advice
 
 `reasoning_training.distill_use_llm` has existed as a configuration field since reasoning
