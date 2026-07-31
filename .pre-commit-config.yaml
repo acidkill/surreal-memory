@@ -35,3 +35,17 @@ repos:
       - id: bandit
         args: [-c, pyproject.toml, -r, src/]
         additional_dependencies: ["bandit[toml]"]
+
+  # AGENTS.md Hard Rule #2. Documented-only enforcement has failed twice: agent
+  # trailers reached main's permanent history because the tooling adds them by
+  # default and a reviewer has to notice a footer to catch it. This does not.
+  - repo: local
+    hooks:
+      - id: no-ai-attribution
+        name: no AI attribution in commit messages
+        entry: >-
+          bash -c 'if grep -qiE "co-authored-by:.*(claude|anthropic|copilot|gpt)|generated with \[?(claude|chatgpt)|built with:.*(claude|codex|copilot)" "$1"; then
+          echo "AGENTS.md Hard Rule #2: remove the AI attribution trailer from the commit message.";
+          exit 1; fi' --
+        language: system
+        stages: [commit-msg]

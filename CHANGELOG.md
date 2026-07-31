@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.18.2] — Docs catch up with the maturation model, and the attribution rule stops contradicting itself
+
+No behavior change. Documentation and contributor-process only.
+
+### The README described consolidation as something a command does
+
+`Memory consolidation — episodic memories mature into semantic knowledge` was the entire
+description, which reads as though `smem consolidate` performs the maturation. It does not,
+and 2.18.0 removed that claim from the code's own remedy text without updating the README
+that still implied it. The entry now states the actual mechanism: maturation happens through
+spaced recall (7 days dwell plus reinforcement across 3+ distinct days, or 15+ rehearsals
+across 5+ windows), names the two `smem health` fields that show where each memory sits and
+what it is waiting on, and points at `brain.reinforcement_neuron_limit` for widening how many
+of a recall's memories get rehearsed.
+
+`distill_llm_load_cmd` (2.18.0) was missing from the reasoning-training example entirely, so
+the documented config could only unload a model it never controlled the loading of.
+
+### AGENTS.md required the attribution that CLAUDE.md forbids
+
+`AGENTS.md` Hard Rule #2 was "Tool Transparency": it instructed contributors to add a
+`Built with: …` line and to *keep* `Co-Authored-By: Claude <noreply@anthropic.com>` trailers.
+`CONTRIBUTING.md`'s quality gate listed the same trailer as a requirement. Both are now the
+opposite rule, because the repo's release process forbids AI attribution and the two
+documents were pulling contributors in opposite directions — with the versioned, visible one
+winning by default for anyone who could not see the ignored one.
+
+Because a documented rule had already failed to prevent this twice, it is now also enforced
+mechanically: a `commit-msg` pre-commit hook rejects any commit message carrying an agent
+attribution trailer.
+
 ## [2.18.1] — The maturation view actually reaches `smem_health`
 
 2.18.0 added `stage_distribution` and `semantic_gate_blockers` to the health report and

@@ -24,15 +24,26 @@ This rule overrides every other heuristic in this file.
 
 ---
 
-## Hard Rule #2 — Tool Transparency
+## Hard Rule #2 — No AI Attribution
 
-State which agent / tool produced the PR. In the PR description add a line such as:
+**Do not put AI attribution in commits, PR descriptions, or the CHANGELOG.** No
+`Co-Authored-By: Claude <noreply@anthropic.com>` (or any other agent) trailer, no
+`Built with: …` footer, no "Generated with …" line.
 
+If your tooling adds such a trailer by default, strip it before pushing:
+
+```bash
+git commit --amend  # delete the trailer line, save
 ```
-Built with: Claude Code (Sonnet 4.6) — verified by @your-github-handle
-```
 
-Commit trailers from your agent (`Co-Authored-By: Claude <noreply@anthropic.com>`, etc.) are welcome — keep them.
+A commit or PR describes **the change**, not the process that produced it. The GitHub
+account on the commit is the responsible human either way — that is the accountability
+record, and it is already there without a trailer. See Hard Rule #1: you own what you
+ship, regardless of what typed it.
+
+> Earlier revisions of this file asked for the opposite. That guidance is withdrawn: it
+> conflicted with the project's own release rules and repeatedly leaked agent trailers
+> into `main`'s permanent history.
 
 ---
 

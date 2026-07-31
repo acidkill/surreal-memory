@@ -168,7 +168,7 @@ For the operating rules (gitflow, pre-commit gate, PR template, forbidden action
 
 - Green CI: `ruff check`, `ruff format --check`, `mypy --ignore-missing-imports`, `pytest -m "not stress"`.
 - PR body has a `## Test plan` checklist describing how you (or your agent) verified the change end-to-end.
-- Commits from an agent carry a trailer naming the tool (e.g. `Co-Authored-By: Claude <noreply@anthropic.com>`).
+- Commits and PR descriptions carry **no AI attribution** — no `Co-Authored-By: Claude <noreply@anthropic.com>` trailer, no "Built with" or "Generated with" footer. Strip them if your tooling adds them (see [AGENTS.md](AGENTS.md) Hard Rule #2). Your account on the commit is the accountability record.
 - At least one human reviewer approves the merge.
 
 ### AI-Slop Policy (3-Strike Rule)
