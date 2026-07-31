@@ -708,31 +708,43 @@ class ConsolidationEngine:
                 is_orphan = (
                     neuron.id not in connected_neuron_ids and neuron.id not in fiber_neuron_ids
                 )
-                if is_orphan:
-                    report.neurons_pruned += 1
-                    orphan_ids.append(neuron.id)
-                    continue
 
-                # Dead neuron: has connections but never accessed, old enough.
-                # Never applies to fiber members: reinforce() (retrieval.py) only
-                # bumps access_frequency for the top-10 highest-activation neurons
-                # per recall, so most neurons that are genuinely part of an
-                # actively-recalled fiber still read access_frequency == 0 forever.
-                # Without this guard, "dead" pruning deletes real memory content
-                # (measured live: 57150/63380 neuron_states were fiber members with
+                # Fiber members are never "dead neuron" candidates: reinforce()
+                # (retrieval.py) only bumps access_frequency for the top-10
+                # highest-activation neurons per recall, so most neurons that are
+                # genuinely part of an actively-recalled fiber still read
+                # access_frequency == 0 forever. Without this guard, "dead"
+                # pruning deletes real memory content (measured live:
+                # 57150/63380 neuron_states were fiber members with
                 # access_frequency == 0 — nearly the whole brain was wrongly
-                # eligible). Only a neuron with NO fiber membership at all (already
-                # excluded from is_orphan above only because it still has a direct
-                # synapse connection) is a genuine dead-neuron candidate.
+                # eligible). A fiber member can never be an orphan either (that
+                # requires NOT being in fiber_neuron_ids), so this skip is safe
+                # for both branches.
                 if neuron.id in fiber_neuron_ids:
                     continue
+
+                # Same never-accessed + old-enough predicate now gates BOTH the
+                # orphan branch and the dead-neuron branch (#113). Previously the
+                # orphan branch short-circuited straight to pruning — a neuron
+                # written moments ago, before consolidation had any chance to
+                # link it, was immediately deleted just for being momentarily
+                # unconnected. Hoisting this guard above the orphan short-circuit
+                # mirrors how the pinned guard was hoisted above both branches in
+                # #17: a merely-young or recently-accessed orphan is left alone
+                # and re-evaluated on the next consolidation pass instead of
+                # being deleted outright.
                 state = states.get(neuron.id)
                 freq = state.access_frequency if state else 0
                 if freq > 0:
                     continue
                 age_days = (reference_time - neuron.created_at).total_seconds() / 86400
-                if age_days >= dead_neuron_days:
-                    report.neurons_pruned += 1
+                if age_days < dead_neuron_days:
+                    continue
+
+                report.neurons_pruned += 1
+                if is_orphan:
+                    orphan_ids.append(neuron.id)
+                else:
                     dead_ids.append(neuron.id)
 
             offset += len(batch)

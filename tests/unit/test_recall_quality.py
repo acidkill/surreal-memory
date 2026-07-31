@@ -187,7 +187,16 @@ class TestDeadNeuronPruning:
 
     @pytest.mark.asyncio
     async def test_young_neurons_not_pruned(self) -> None:
-        """Neurons younger than 14 days should NOT be pruned even with 0 access."""
+        """Neurons younger than 14 days should NOT be pruned even with 0 access.
+
+        Regression (#113): the orphan branch used to short-circuit straight to
+        deletion without checking age/access at all, so a young orphan (no
+        synapses, no fibers) was pruned immediately — before consolidation had
+        any chance to link it into the graph. The same never-accessed +
+        old-enough guard used for dead-neuron pruning now applies to the
+        orphan branch too, so a young orphan survives and is re-evaluated on
+        the next consolidation pass instead.
+        """
         from surreal_memory.engine.consolidation import ConsolidationConfig, ConsolidationEngine
 
         young_neuron = self._make_neuron("young", 5)
@@ -207,9 +216,10 @@ class TestDeadNeuronPruning:
         engine = ConsolidationEngine(storage, config)
         report = await engine.run(strategies=["prune"])
 
-        # Young neuron IS an orphan (no synapses, no fibers) so it gets pruned as orphan
-        # But it would NOT be pruned as "dead" — the orphan check catches it first
-        assert report.neurons_pruned >= 1
+        # Young neuron IS an orphan (no synapses, no fibers) but it is neither
+        # old enough nor previously accessed, so it must survive this pass.
+        assert report.neurons_pruned == 0
+        storage.delete_neurons_batch.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_accessed_neurons_not_pruned(self) -> None:
@@ -282,6 +292,132 @@ class TestDeadNeuronPruning:
         report = await engine.run(strategies=["prune"])
 
         assert report.neurons_pruned == 0
+
+
+# ---------------------------------------------------------------------------
+# Orphan neuron pruning respects the same age/access guard as dead-neuron
+# pruning (#113)
+# ---------------------------------------------------------------------------
+
+
+class TestOrphanPruneAgeGuard:
+    """Regression tests for #113.
+
+    The orphan branch in ``ConsolidationEngine._prune`` used to short-circuit
+    straight to deletion for ANY unconnected neuron, without ever checking
+    age or access — unlike the dead-neuron branch just below it, which always
+    required never-accessed + old-enough. That meant a neuron written moments
+    ago, before consolidation had any chance to link it into the graph, was
+    pruned on the very next consolidation pass. The fix hoists the same
+    never-accessed + old-enough predicate above the orphan short-circuit,
+    mirroring how the pinned guard was hoisted above both branches in #17.
+    """
+
+    def _make_neuron(self, neuron_id: str, days_old: float) -> Neuron:
+        return Neuron(
+            id=neuron_id,
+            type=NeuronType.CONCEPT,
+            content=f"test content {neuron_id}",
+            created_at=utcnow() - timedelta(days=days_old),
+        )
+
+    def _make_state(self, neuron_id: str, freq: int = 0) -> NeuronState:
+        return NeuronState(neuron_id=neuron_id, access_frequency=freq)
+
+    def _make_storage(
+        self,
+        neuron: Neuron,
+        *,
+        freq: int = 0,
+        pinned_ids: set[str] | None = None,
+    ) -> AsyncMock:
+        """Storage double for a single orphan candidate: no synapses, no
+        fibers — i.e. unconditionally an orphan per the ``is_orphan`` check.
+        """
+        state = self._make_state(neuron.id, freq=freq)
+        storage = AsyncMock()
+        storage.current_brain_id = "test"
+        storage.get_synapses = AsyncMock(return_value=[])
+        storage.get_fibers = AsyncMock(return_value=[])
+        storage.get_pinned_neuron_ids = AsyncMock(return_value=pinned_ids or set())
+        storage.find_neurons = AsyncMock(side_effect=[[neuron], []])
+        storage.get_neuron_states_batch = AsyncMock(return_value={neuron.id: state})
+        storage.get_all_neuron_states = AsyncMock(return_value=[state])
+        storage.delete_neurons_batch = AsyncMock()
+        return storage
+
+    @pytest.mark.asyncio
+    async def test_freshly_created_orphan_survives(self) -> None:
+        """A neuron created just now, with no synapses/fiber and freq=0, must
+        NOT be pruned this pass — it hasn't had a chance to be linked into
+        the graph yet.
+        """
+        from surreal_memory.engine.consolidation import ConsolidationConfig, ConsolidationEngine
+
+        neuron = self._make_neuron("fresh-orphan", days_old=0.0)
+        storage = self._make_storage(neuron, freq=0)
+
+        config = ConsolidationConfig()
+        engine = ConsolidationEngine(storage, config)
+        report = await engine.run(strategies=["prune"])
+
+        assert report.neurons_pruned == 0
+        storage.delete_neurons_batch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_stale_orphan_still_pruned(self) -> None:
+        """A genuinely stale orphan (old enough, never accessed) must still be
+        pruned — this preserves today's correct behavior and must not
+        regress.
+        """
+        from surreal_memory.engine.consolidation import ConsolidationConfig, ConsolidationEngine
+
+        neuron = self._make_neuron("stale-orphan", days_old=30.0)
+        storage = self._make_storage(neuron, freq=0)
+
+        config = ConsolidationConfig()
+        engine = ConsolidationEngine(storage, config)
+        report = await engine.run(strategies=["prune"])
+
+        assert report.neurons_pruned == 1
+        storage.delete_neurons_batch.assert_called_once()
+        deleted_ids = storage.delete_neurons_batch.call_args[0][0]
+        assert "stale-orphan" in deleted_ids
+
+    @pytest.mark.asyncio
+    async def test_accessed_orphan_survives_even_if_old(self) -> None:
+        """An old orphan that has been accessed (access_frequency > 0) must
+        NOT be pruned — parity with the dead-neuron branch's
+        never-prune-if-accessed rule.
+        """
+        from surreal_memory.engine.consolidation import ConsolidationConfig, ConsolidationEngine
+
+        neuron = self._make_neuron("accessed-orphan", days_old=30.0)
+        storage = self._make_storage(neuron, freq=3)
+
+        config = ConsolidationConfig()
+        engine = ConsolidationEngine(storage, config)
+        report = await engine.run(strategies=["prune"])
+
+        assert report.neurons_pruned == 0
+        storage.delete_neurons_batch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_pinned_orphan_survives_regardless_of_age(self) -> None:
+        """A pinned orphan must survive regardless of age — don't regress the
+        #17 fix, which hoisted the pinned guard above both prune branches.
+        """
+        from surreal_memory.engine.consolidation import ConsolidationConfig, ConsolidationEngine
+
+        neuron = self._make_neuron("pinned-orphan", days_old=30.0)
+        storage = self._make_storage(neuron, freq=0, pinned_ids={"pinned-orphan"})
+
+        config = ConsolidationConfig()
+        engine = ConsolidationEngine(storage, config)
+        report = await engine.run(strategies=["prune"])
+
+        assert report.neurons_pruned == 0
+        storage.delete_neurons_batch.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

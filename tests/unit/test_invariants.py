@@ -12,6 +12,9 @@ Three categories:
 
 from __future__ import annotations
 
+from dataclasses import replace as dc_replace
+from datetime import timedelta
+
 import pytest
 import pytest_asyncio
 
@@ -26,6 +29,7 @@ from surreal_memory.engine.consolidation import (
 )
 from surreal_memory.engine.diagnostics import DiagnosticsEngine
 from surreal_memory.storage.memory_store import InMemoryStorage
+from surreal_memory.utils.timeutils import utcnow
 
 # ── Shared fixtures ──────────────────────────────────────────────
 
@@ -40,12 +44,20 @@ async def mixed_storage() -> InMemoryStorage:
     - n-both: in both synapse and fiber
     - n-anchor: fiber anchor, has synapse
     - n-orphan-1, n-orphan-2: truly orphaned (no synapse, no fiber)
+
+    The two orphans are backdated well past the default #113 age guard
+    (``BrainConfig.prune_dead_neuron_days`` = 14 days) so they remain
+    genuinely stale, eligible orphans for the tests below — a freshly
+    created (age ~0) orphan would no longer be immediately prune-eligible
+    after #113, which is the exact behavior this fixture's tests intend to
+    exercise (connectivity-based orphan detection, not the age gate itself).
     """
     store = InMemoryStorage()
     brain = Brain.create(name="mixed", config=BrainConfig(), owner_id="test")
     await store.save_brain(brain)
     store.set_brain(brain.id)
 
+    old_enough = utcnow() - timedelta(days=30)
     neurons = [
         Neuron.create(type=NeuronType.ENTITY, content="syn-a", neuron_id="n-syn-a"),
         Neuron.create(type=NeuronType.ENTITY, content="syn-b", neuron_id="n-syn-b"),
@@ -54,8 +66,14 @@ async def mixed_storage() -> InMemoryStorage:
         Neuron.create(type=NeuronType.SPATIAL, content="fib-c", neuron_id="n-fib-c"),
         Neuron.create(type=NeuronType.CONCEPT, content="both", neuron_id="n-both"),
         Neuron.create(type=NeuronType.ACTION, content="anchor", neuron_id="n-anchor"),
-        Neuron.create(type=NeuronType.ENTITY, content="orphan-1", neuron_id="n-orphan-1"),
-        Neuron.create(type=NeuronType.ENTITY, content="orphan-2", neuron_id="n-orphan-2"),
+        dc_replace(
+            Neuron.create(type=NeuronType.ENTITY, content="orphan-1", neuron_id="n-orphan-1"),
+            created_at=old_enough,
+        ),
+        dc_replace(
+            Neuron.create(type=NeuronType.ENTITY, content="orphan-2", neuron_id="n-orphan-2"),
+            created_at=old_enough,
+        ),
     ]
     for n in neurons:
         await store.add_neuron(n)
