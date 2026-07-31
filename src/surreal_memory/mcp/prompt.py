@@ -274,7 +274,8 @@ pip install surreal-memory[extract]   # PDF, DOCX, PPTX, HTML, XLSX support
 Consolidation 15%, Orphan Rate 10%, Activation 10%, Recall Confidence 5%.
 
 **Common fixes:**
-- Consolidation 0% → Run `smem consolidate --strategy mature` (normal for new brains)
+- Consolidation 0% → normal for new brains; it rises only via spaced recall — reinforcement
+  spread across 3+ distinct days (or 15+ rehearsals across 5+ time windows), not `smem consolidate`
 - Orphan rate > 20% → Run `smem consolidate --strategy prune`
 - Activation < 10% → Recall stored topics: `smem_recall('topic')` for 5+ topics
 - Low connectivity → Store memories with context: "X because Y", "after A then B"

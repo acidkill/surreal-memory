@@ -24,6 +24,7 @@ import pytest
 
 from surreal_memory.engine.reasoning_naming import (
     LLM_ENDPOINT_ENV,
+    _run_command_subprocess,
     build_namer,
     resolve_llm_endpoint,
 )
@@ -215,6 +216,28 @@ def releasing_namer_factory(monkeypatch: pytest.MonkeyPatch):
             _config(
                 distill_llm_model="gemma-4-12b",
                 distill_llm_unload_cmd=("llamastash", "stop", "{model}", "-y"),
+            ),
+            post_json=transport,
+            run_command=run,
+        )
+        assert namer is not None
+        return namer, transport, run
+
+    return _make
+
+
+@pytest.fixture
+def acquiring_namer_factory(monkeypatch: pytest.MonkeyPatch):
+    """A namer configured with a load command plus a recording runner."""
+    monkeypatch.setenv(LLM_ENDPOINT_ENV, LOOPBACK)
+
+    def _make(*responses: Any, runner: _Runner | None = None) -> tuple[Any, _Transport, _Runner]:
+        transport = _Transport(*responses)
+        run = runner or _Runner()
+        namer = build_namer(
+            _config(
+                distill_llm_model="gemma-4-12b",
+                distill_llm_load_cmd=("llamastash-load.py", "{model}", "--ngl", "99"),
             ),
             post_json=transport,
             run_command=run,
@@ -641,3 +664,229 @@ class TestRelease:
         await namer.release()
 
         assert runner.calls == []
+
+    async def test_a_model_name_the_argv_allowlist_rejects_voids_the_unload(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """distill_llm_model is sanitized against a looser charset (spaces,
+
+        globs) than the argv template it gets substituted into, since it is
+        constructed directly here (bypassing ReasoningTrainingConfig.from_dict's
+        own sanitization) to simulate a value that already cleared that looser
+        check. Substitution must be re-validated afterward: a model name
+        containing a space voids the whole command rather than reaching
+        create_subprocess_exec with an argv element the allowlist would have
+        rejected on its own.
+        """
+        monkeypatch.setenv(LLM_ENDPOINT_ENV, LOOPBACK)
+        runner = _Runner()
+        namer = build_namer(
+            _config(
+                distill_llm_model="gemma 4 12b",
+                distill_llm_unload_cmd=("llamastash", "stop", "{model}"),
+            ),
+            post_json=_Transport(_completion(_good_json())),
+            run_command=runner,
+        )
+        assert namer is not None
+
+        await namer.rename(_pattern(), _traces())
+        await namer.release()
+
+        assert runner.calls == []
+
+
+class TestAcquire:
+    """Explicit model loading before the first request (run 010 / section E, U6).
+
+    Symmetric with TestRelease: acquire() is the other half of the same
+    load/unload lifecycle, so a run that explicitly loads must still clean up
+    even if it never actually renamed anything.
+    """
+
+    async def test_no_load_command_configured_is_a_no_op(self, releasing_namer_factory) -> None:
+        """releasing_namer_factory has no load_cmd -- acquire() must touch nothing."""
+        namer, _transport, runner = releasing_namer_factory()
+
+        await namer.acquire()
+
+        assert runner.calls == [], "nothing configured, so nothing may run"
+
+    async def test_a_successful_load_runs_the_command_with_model_substituted(
+        self, acquiring_namer_factory
+    ) -> None:
+        namer, _transport, runner = acquiring_namer_factory()
+
+        await namer.acquire()
+
+        assert runner.calls == [["llamastash-load.py", "gemma-4-12b", "--ngl", "99"]]
+
+    async def test_a_successful_load_is_cleaned_up_even_with_no_rename_call(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The exact leak U6 exists to close: acquire() loads a model that
+        rename() is never called for (e.g. zero patterns to name this run) --
+        release() must still unload it, not skip cleanup because
+        _model_in_use looks like nothing happened.
+        """
+        monkeypatch.setenv(LLM_ENDPOINT_ENV, LOOPBACK)
+        run = _Runner()
+        namer = build_namer(
+            _config(
+                distill_llm_model="gemma-4-12b",
+                distill_llm_load_cmd=("llamastash-load.py", "{model}"),
+                distill_llm_unload_cmd=("llamastash-stop.py", "{model}"),
+            ),
+            post_json=_Transport(),
+            run_command=run,
+        )
+        assert namer is not None
+
+        await namer.acquire()
+        await namer.release()
+
+        assert run.calls == [
+            ["llamastash-load.py", "gemma-4-12b"],
+            ["llamastash-stop.py", "gemma-4-12b"],
+        ]
+
+    async def test_acquire_is_idempotent(self, acquiring_namer_factory) -> None:
+        namer, _transport, runner = acquiring_namer_factory()
+
+        await namer.acquire()
+        await namer.acquire()
+        await namer.acquire()
+
+        assert len(runner.calls) == 1
+
+    @pytest.mark.parametrize(
+        "runner",
+        [_Runner(exit_code=1), _Runner(raises=FileNotFoundError("no such command"))],
+        ids=["non-zero-exit", "command-missing"],
+    )
+    async def test_a_failing_load_never_raises_and_naming_still_works(
+        self, monkeypatch: pytest.MonkeyPatch, runner: _Runner
+    ) -> None:
+        """A load command is an optimization; its failure must fall back to
+        the endpoint's implicit load-on-first-request, not break distillation.
+        """
+        monkeypatch.setenv(LLM_ENDPOINT_ENV, LOOPBACK)
+        namer = build_namer(
+            _config(
+                distill_llm_model="gemma-4-12b",
+                distill_llm_load_cmd=("llamastash-load.py", "{model}"),
+            ),
+            post_json=_Transport(_completion(_good_json())),
+            run_command=runner,
+        )
+        assert namer is not None
+
+        await namer.acquire()  # must not raise
+        renamed = await namer.rename(_pattern(), _traces())
+
+        assert renamed["title"] == "Read before editing"
+
+    async def test_a_load_that_times_out_still_counts_as_a_load(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Mirrors rename()'s own rule: a command that times out may still
+
+        have started pulling the model into memory, so release() must still
+        attempt cleanup. Regression: _model_in_use used to be set only after
+        self._run() returned successfully, so a load command hitting
+        _LOAD_TIMEOUT_SECONDS (raising TimeoutError, exactly what
+        _run_command_subprocess does when it kills a stuck process) left the
+        flag False and release() silently skipped the unload -- stranding the
+        model in VRAM, the exact leak this feature exists to prevent.
+        """
+        monkeypatch.setenv(LLM_ENDPOINT_ENV, LOOPBACK)
+        run = _Runner(raises=TimeoutError("load timed out"))
+        namer = build_namer(
+            _config(
+                distill_llm_model="gemma-4-12b",
+                distill_llm_load_cmd=("llamastash-load.py", "{model}"),
+                distill_llm_unload_cmd=("llamastash-stop.py", "{model}"),
+            ),
+            post_json=_Transport(),
+            run_command=run,
+        )
+        assert namer is not None
+
+        await namer.acquire()  # must not raise
+        await namer.release()
+
+        assert run.calls == [
+            ["llamastash-load.py", "gemma-4-12b"],
+            ["llamastash-stop.py", "gemma-4-12b"],
+        ], "release() must still fire even though the load command raised"
+
+    async def test_the_load_command_is_argv_not_a_shell_string(
+        self, acquiring_namer_factory
+    ) -> None:
+        """No shell means no quoting bugs and no injection via a model name."""
+        namer, _transport, runner = acquiring_namer_factory()
+
+        await namer.acquire()
+
+        argv = runner.calls[0]
+        assert isinstance(argv, list)
+        assert all(isinstance(part, str) for part in argv)
+        assert not any(";" in part or "|" in part or "&&" in part for part in argv)
+
+    async def test_acquire_does_not_itself_call_the_chat_endpoint(
+        self, acquiring_namer_factory
+    ) -> None:
+        """acquire() only runs the load command; it must not send a chat request."""
+        namer, transport, _runner = acquiring_namer_factory()
+
+        await namer.acquire()
+
+        assert transport.calls == []
+
+    async def test_a_model_name_the_argv_allowlist_rejects_voids_the_load(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Symmetric with the same check in TestRelease -- see that test's
+
+        docstring for why a directly-constructed config can carry a model
+        name the argv allowlist would reject.
+        """
+        monkeypatch.setenv(LLM_ENDPOINT_ENV, LOOPBACK)
+        runner = _Runner()
+        namer = build_namer(
+            _config(
+                distill_llm_model="gemma*12b",
+                distill_llm_load_cmd=("llamastash-load.py", "{model}"),
+            ),
+            post_json=_Transport(),
+            run_command=runner,
+        )
+        assert namer is not None
+
+        await namer.acquire()
+
+        assert runner.calls == []
+
+
+class TestRealSubprocessRunner:
+    """Every load/acquire/release test above injects a fake run_command, so
+
+    none of them exercise the actual production code path:
+    _run_command_subprocess's real asyncio.create_subprocess_exec + wait_for
+    + kill/wait cleanup. Locks that path in directly, since it is the
+    resource-cleanup-sensitive part a fake can't verify.
+    """
+
+    async def test_a_hung_command_is_killed_and_reaped_on_timeout(self) -> None:
+        with pytest.raises(TimeoutError):
+            await _run_command_subprocess(["sleep", "5"], timeout=0.2)
+
+    async def test_a_quick_command_returns_its_real_exit_code(self) -> None:
+        code = await _run_command_subprocess(["true"], timeout=5.0)
+
+        assert code == 0
+
+    async def test_a_failing_command_returns_its_real_nonzero_exit_code(self) -> None:
+        code = await _run_command_subprocess(["false"], timeout=5.0)
+
+        assert code == 1

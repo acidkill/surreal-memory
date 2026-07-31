@@ -174,6 +174,7 @@ class ReflexPipeline:
 
         self._reinforcer = ReinforcementManager(
             reinforcement_delta=config.reinforcement_delta,
+            rehearsal_neuron_limit=config.reinforcement_neuron_limit,
         )
         self._write_queue = DeferredWriteQueue()
         self._query_router = QueryRouter()
@@ -654,7 +655,7 @@ class ReflexPipeline:
                 top_neuron_ids = [
                     nid
                     for nid, _ in heapq.nlargest(
-                        10,
+                        self._config.reinforcement_neuron_limit,
                         activations.items(),
                         key=lambda x: x[1].activation_level,
                     )

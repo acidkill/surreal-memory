@@ -171,6 +171,19 @@ class ConsolidationReport:
             line += " [truncated at cap]"
         return line
 
+    def _stage_transitions_suffix(self) -> str:
+        """Render the per-hop breakdown so a flat total cannot hide "zero new semantic".
+
+        stages_advanced sums stm->working, working->episodic, and
+        episodic->semantic into one count; without this, "15 advanced" and
+        "zero new semantic" print identically.
+        """
+        transitions = self.extra.get("stage_transitions")
+        if not transitions:
+            return ""
+        parts = ", ".join(f"{key}: {count}" for key, count in transitions.items() if count)
+        return f" ({parts})" if parts else ""
+
     def summary(self) -> str:
         """Generate human-readable summary."""
         mode = " (dry run)" if self.dry_run else ""
@@ -192,7 +205,7 @@ class ConsolidationReport:
             f" (new alias links: {self.new_alias_links})",
             f"  Semantic synapses: {self._semantic_synapse_line()}",
             f"  Memories promoted (type): {self.memories_promoted}",
-            f"  Stages advanced: {self.stages_advanced}",
+            f"  Stages advanced: {self.stages_advanced}{self._stage_transitions_suffix()}",
             f"  Fibers compressed: {self.fibers_compressed}",
             f"  Tokens saved: {self.tokens_saved}",
             f"  Reasoning traces ingested: {self.reasoning_traces_ingested}",
@@ -206,6 +219,18 @@ class ConsolidationReport:
                     f"    {len(detail.original_fiber_ids)} fibers -> {detail.merged_fiber_id[:8]}... "
                     f"({detail.neuron_count} neurons, {detail.reason})"
                 )
+
+        backfilled = self.extra.get("maturations_backfilled")
+        if backfilled:
+            lines.append(
+                f"  Maturations backfilled from fiber age: {backfilled} "
+                "(these reached their stage without earning it through recall)"
+            )
+        unreachable = self.extra.get("maturations_unreachable")
+        if unreachable:
+            lines.append(
+                f"  Maturations still missing (outside backfill's fiber window): {unreachable}"
+            )
 
         # Add eligibility hints when nothing happened
         hints = self._eligibility_hints()
@@ -942,10 +967,76 @@ class ConsolidationEngine:
             )
 
             if not dry_run:
+                from surreal_memory.engine.memory_stages import MaturationRecord, MemoryStage
+
+                # Read source maturation BEFORE delete_fiber. delete_fiber has no
+                # cascade to the maturation table (confirmed: it only deletes the
+                # fiber row), so this ordering is defensive, not load-bearing --
+                # but reading after would still be wrong to *rely* on that. A
+                # concurrent reinforce() landing between this read and the
+                # delete below is a narrow, self-healing loss (the row becomes
+                # an orphan cleaned up by cleanup_orphaned_maturations, and the
+                # fiber gets rehearsed again on its next recall) -- consistent
+                # with this codebase's non-transactional storage model
+                # elsewhere (e.g. save_maturation's own delete-race comment).
+                _stage_order = list(MemoryStage)
+                source_maturations = []
+                for fiber in member_fibers:
+                    try:
+                        record = await self._storage.get_maturation(fiber.id)
+                    except Exception:
+                        # A persistent storage fault here must not abort the
+                        # whole merge pass -- this group simply starts the
+                        # merged fiber without inherited maturation, same as
+                        # if none of its sources had a maturation row at all.
+                        logger.debug(
+                            "Could not read maturation for fiber %s during merge",
+                            fiber.id,
+                            exc_info=True,
+                        )
+                        continue
+                    if record is not None:
+                        source_maturations.append(record)
+
                 for fiber in member_fibers:
                     await self._storage.delete_fiber(fiber.id)
                     report.fibers_removed += 1
                 await self._storage.add_fiber(merged_fiber)
+
+                if source_maturations:
+                    # Merging must never cost a fiber the maturation progress it
+                    # already earned: highest stage of any source, the union of
+                    # reinforcement timestamps (those, not a count, decide
+                    # distinct_reinforcement_days), rehearsal_count derived
+                    # from that same union (not summed independently -- every
+                    # organically-created record keeps rehearsal_count ==
+                    # len(reinforcement_timestamps), and summing counts while
+                    # deduplicating timestamps could violate that invariant on
+                    # a timestamp collision), and the oldest stage_entered_at
+                    # so the merged fiber keeps whatever dwell time a source
+                    # already accrued instead of resetting the clock.
+                    inherited_stage = max(
+                        source_maturations, key=lambda r: _stage_order.index(r.stage)
+                    ).stage
+                    merged_timestamps = tuple(
+                        sorted(
+                            {
+                                ts
+                                for record in source_maturations
+                                for ts in record.reinforcement_timestamps
+                            }
+                        )
+                    )
+                    await self._storage.save_maturation(
+                        MaturationRecord(
+                            fiber_id=merged_fiber_id,
+                            brain_id=source_maturations[0].brain_id,
+                            stage=inherited_stage,
+                            stage_entered_at=min(r.stage_entered_at for r in source_maturations),
+                            rehearsal_count=len(merged_timestamps),
+                            reinforcement_timestamps=merged_timestamps,
+                        )
+                    )
 
     async def _summarize(
         self,
@@ -1113,11 +1204,22 @@ class ConsolidationEngine:
 
         from surreal_memory.core.memory_types import MemoryType
         from surreal_memory.engine.memory_stages import (
+            MemoryStage,
             compute_stage_transition,
         )
         from surreal_memory.engine.pattern_extraction import extract_patterns
 
         _logger = logging.getLogger(__name__)
+
+        # stages_advanced sums all three hops into one counter, so "15 advanced"
+        # and "zero new semantic" were indistinguishable without reading raw
+        # maturation rows. compute_stage_transition only ever moves one hop per
+        # call, so every transition it produces is one of exactly these three.
+        _hop_keys = {
+            (MemoryStage.SHORT_TERM, MemoryStage.WORKING): "stm_to_working",
+            (MemoryStage.WORKING, MemoryStage.EPISODIC): "working_to_episodic",
+            (MemoryStage.EPISODIC, MemoryStage.SEMANTIC): "episodic_to_semantic",
+        }
 
         # Phase 0: Auto-promote context→fact for frequently-recalled memories
         # Must run before prune to prevent promotion candidates from expiring.
@@ -1203,6 +1305,10 @@ class ConsolidationEngine:
             advanced = compute_stage_transition(record, now=reference_time)
             if advanced.stage != record.stage:
                 report.stages_advanced += 1
+                hop_key = _hop_keys.get((record.stage, advanced.stage))
+                if hop_key:
+                    transitions = report.extra.setdefault("stage_transitions", {})
+                    transitions[hop_key] = transitions.get(hop_key, 0) + 1
                 if not dry_run:
                     try:
                         await self._storage.save_maturation(advanced)

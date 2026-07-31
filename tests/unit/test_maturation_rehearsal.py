@@ -123,12 +123,40 @@ class TestMaturationRehearsalOnReinforce:
         assert saved.rehearsal_count == 1
 
     @pytest.mark.asyncio
-    async def test_rehearsal_caps_fibers_at_10(self) -> None:
-        """At most 10 fibers should be rehearsed per reinforce call."""
+    async def test_rehearsal_neuron_limit_still_caps_the_lookup(self) -> None:
+        """The neuron fan-out into find_fibers_batch is still capped, just raised and configurable.
+
+        Uncapping fiber rehearsal entirely could scale unbounded with brain
+        size, so the guard now lives on the neuron side
+        (``rehearsal_neuron_limit``, default 15 -- see
+        ``BrainConfig.reinforcement_neuron_limit`` for why 15 and not a larger
+        jump) instead of a second, redundant fixed-10 fiber cap.
+        """
+        storage = AsyncMock()
+        states = {f"n{i}": _make_neuron_state(f"n{i}") for i in range(30)}
+        storage.get_neuron_states_batch.return_value = states
+        storage.find_fibers_batch.return_value = [_make_fiber_stub("f0")]
+        storage.get_maturation.return_value = _make_maturation("f0")
+
+        mgr = ReinforcementManager()  # default rehearsal_neuron_limit=15
+        await mgr.reinforce(storage, [f"n{i}" for i in range(30)])
+
+        called_neuron_ids = storage.find_fibers_batch.call_args.args[0]
+        assert len(called_neuron_ids) == 15
+
+    @pytest.mark.asyncio
+    async def test_rehearsal_reaches_all_fibers_actually_hit_by_recall(self) -> None:
+        """Every fiber recall actually surfaced should be rehearsed, not an arbitrary first 10.
+
+        RUN-010 VALIDATE-FIRST (section B). `for fiber in fibers[:10]` truncates
+        the dedup'd result of `find_fibers_batch` to a fixed first 10 regardless
+        of how many distinct fibers recall actually surfaced, capping the
+        EPISODIC -> SEMANTIC spacing gate's only rehearsal source at a size that
+        does not scale with the brain or the recall. Must FAIL on origin/main.
+        """
         storage = AsyncMock()
         states = {f"n{i}": _make_neuron_state(f"n{i}") for i in range(15)}
         storage.get_neuron_states_batch.return_value = states
-        # Return 15 fibers
         fibers = [_make_fiber_stub(f"f{i}") for i in range(15)]
         storage.find_fibers_batch.return_value = fibers
         storage.get_maturation.return_value = _make_maturation("any")
@@ -136,9 +164,9 @@ class TestMaturationRehearsalOnReinforce:
         mgr = ReinforcementManager()
         await mgr.reinforce(storage, [f"n{i}" for i in range(15)])
 
-        # Should cap at 10 fibers
-        assert storage.get_maturation.call_count == 10
-        assert storage.save_maturation.call_count == 10
+        assert storage.save_maturation.call_count == 15, (
+            "all 15 fibers recall surfaced should be rehearsed, not an arbitrary first 10"
+        )
 
     @pytest.mark.asyncio
     async def test_rehearsal_error_does_not_break_reinforce(self) -> None:
@@ -212,3 +240,68 @@ class TestMatureOrphanedRecords:
         await engine._mature(report, utcnow(), dry_run=False)
 
         storage.cleanup_orphaned_maturations.assert_called_once()
+
+
+class TestStagesAdvancedPerHop:
+    """RUN-010 VALIDATE-FIRST (section D1): stages_advanced flattens 3 hops."""
+
+    @pytest.mark.asyncio
+    async def test_stage_advances_broken_out_by_hop(self) -> None:
+        """The report must say which hop advanced, not just how many advanced in total.
+
+        `report.stages_advanced` sums stm->working, working->episodic, and
+        episodic->semantic into one counter, so "15 advanced" and "zero new
+        semantic" are indistinguishable without reading raw maturation rows.
+        Must FAIL on origin/main (no per-hop breakdown exists yet).
+        """
+        from surreal_memory.engine.consolidation import ConsolidationEngine, ConsolidationReport
+
+        now = utcnow()
+        stm_record = MaturationRecord(
+            fiber_id="f-stm",
+            brain_id="test-brain",
+            stage=MemoryStage.SHORT_TERM,
+            stage_entered_at=now - timedelta(minutes=40),
+        )
+        working_record = MaturationRecord(
+            fiber_id="f-working",
+            brain_id="test-brain",
+            stage=MemoryStage.WORKING,
+            stage_entered_at=now - timedelta(hours=5),
+        )
+        episodic_record = MaturationRecord(
+            fiber_id="f-episodic",
+            brain_id="test-brain",
+            stage=MemoryStage.EPISODIC,
+            stage_entered_at=now - timedelta(days=8),
+            rehearsal_count=3,
+            reinforcement_timestamps=(
+                (now - timedelta(days=3)).isoformat(),
+                (now - timedelta(days=2)).isoformat(),
+                (now - timedelta(days=1)).isoformat(),
+            ),
+        )
+
+        storage = AsyncMock()
+        storage.current_brain_id = "test-brain"
+        storage.cleanup_orphaned_maturations.return_value = 0
+        storage.find_maturations.return_value = [stm_record, working_record, episodic_record]
+        storage.get_fibers.return_value = []
+
+        config = AsyncMock()
+        config.summarize_min_cluster_size = 5
+        config.summarize_tag_overlap_threshold = 0.5
+
+        engine = ConsolidationEngine(storage, config)
+        report = ConsolidationReport(started_at=now)
+
+        await engine._mature(report, now, dry_run=False)
+
+        assert report.stages_advanced == 3
+        breakdown = report.extra["stage_transitions"]
+        assert breakdown == {
+            "stm_to_working": 1,
+            "working_to_episodic": 1,
+            "episodic_to_semantic": 1,
+        }
+        assert sum(breakdown.values()) == report.stages_advanced

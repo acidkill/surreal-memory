@@ -463,6 +463,137 @@ class TestEvolutionEngine:
         assert evo.reinforcement_days == 3.0  # 3 distinct days
 
     @pytest.mark.asyncio
+    async def test_semantic_gate_blockers_classify_correctly(self, mock_storage: AsyncMock) -> None:
+        """Aggregate gate-blocker counts must use the real promotion rule.
+
+        Regression for run 010 / D2: the previous inline classification here
+        only checked distinct_reinforcement_days, so a fiber that already
+        qualified via the rehearsal-count/windows path was wrongly counted as
+        still blocked on spacing. Now delegates to classify_episodic_blocker
+        (memory_stages.py), the single source of truth also used by health
+        diagnostics.
+        """
+        now = utcnow()
+        old_entered = now - timedelta(days=10)  # clears the 7-day time gate
+        recent_entered = now - timedelta(days=1)  # does NOT clear it
+
+        ready_via_days = MaturationRecord(
+            fiber_id="ready-days",
+            brain_id="brain-1",
+            stage=MemoryStage.EPISODIC,
+            stage_entered_at=old_entered,
+            reinforcement_timestamps=(
+                (now - timedelta(days=3)).isoformat(),
+                (now - timedelta(days=2)).isoformat(),
+                (now - timedelta(days=1)).isoformat(),
+            ),
+        )
+        still_spacing_blocked = MaturationRecord(
+            fiber_id="spacing-blocked",
+            brain_id="brain-1",
+            stage=MemoryStage.EPISODIC,
+            stage_entered_at=old_entered,
+            rehearsal_count=1,
+            reinforcement_timestamps=((now - timedelta(days=1)).isoformat(),),
+        )
+        still_time_blocked = MaturationRecord(
+            fiber_id="time-blocked",
+            brain_id="brain-1",
+            stage=MemoryStage.EPISODIC,
+            stage_entered_at=recent_entered,
+            reinforcement_timestamps=(
+                (now - timedelta(days=3)).isoformat(),
+                (now - timedelta(days=2)).isoformat(),
+                (now - timedelta(days=1)).isoformat(),
+            ),
+        )
+        # Same calendar day, 5 distinct 2h windows -- qualifies via the
+        # rehearsal-count/windows path even with only 1 distinct day.
+        window_timestamps = tuple(
+            now.replace(hour=h, minute=0, second=0, microsecond=0).isoformat()
+            for h in (0, 2, 4, 6, 8)
+        )
+        ready_via_rehearsal_path = MaturationRecord(
+            fiber_id="ready-rehearsal",
+            brain_id="brain-1",
+            stage=MemoryStage.EPISODIC,
+            stage_entered_at=old_entered,
+            rehearsal_count=15,
+            reinforcement_timestamps=window_timestamps,
+        )
+
+        mock_storage.find_maturations = AsyncMock(
+            return_value=[
+                ready_via_days,
+                still_spacing_blocked,
+                still_time_blocked,
+                ready_via_rehearsal_path,
+            ]
+        )
+
+        engine = EvolutionEngine(mock_storage)
+        evo = await engine.analyze("brain-1")
+
+        assert evo.semantic_gate_blockers == {
+            "time_gate": 1,
+            "spacing_gate": 1,
+            "ready": 2,
+        }
+
+    @pytest.mark.asyncio
+    async def test_progress_pct_credits_the_rehearsal_count_path_too(
+        self, mock_storage: AsyncMock
+    ) -> None:
+        """A fiber ready via rehearsals must not score near-0% progress.
+
+        Regression: progress_pct/closest_to_semantic ranking used to consider
+        only distinct_reinforcement_days, even after classify_episodic_blocker
+        (used for next_step text) already accounted for the rehearsal-count/
+        windows path. A fiber genuinely "ready" via that path scored near 0%
+        and could be excluded from the top-3 "closest" list in favor of a
+        fiber that was not actually ready.
+        """
+        now = utcnow()
+        old_entered = now - timedelta(days=10)  # clears the 7-day time gate
+
+        # Ready via rehearsal-count/windows path: only 1 distinct day, but
+        # 15+ rehearsals across 5+ 2h windows.
+        window_timestamps = tuple(
+            now.replace(hour=h, minute=0, second=0, microsecond=0).isoformat()
+            for h in (0, 2, 4, 6, 8)
+        )
+        ready_via_rehearsal = MaturationRecord(
+            fiber_id="ready-rehearsal",
+            brain_id="brain-1",
+            stage=MemoryStage.EPISODIC,
+            stage_entered_at=old_entered,
+            rehearsal_count=15,
+            reinforcement_timestamps=window_timestamps,
+        )
+        # Not actually ready: only 1 distinct day, low rehearsal count. Would
+        # previously outrank the truly-ready fiber above on progress_pct.
+        not_ready = MaturationRecord(
+            fiber_id="not-ready",
+            brain_id="brain-1",
+            stage=MemoryStage.EPISODIC,
+            stage_entered_at=old_entered,
+            rehearsal_count=2,
+            reinforcement_timestamps=((now - timedelta(hours=1)).isoformat(),),
+        )
+        mock_storage.find_maturations = AsyncMock(return_value=[ready_via_rehearsal, not_ready])
+
+        engine = EvolutionEngine(mock_storage)
+        evo = await engine.analyze("brain-1")
+
+        by_id = {p.fiber_id: p for p in evo.closest_to_semantic}
+        assert by_id["ready-rehearsal"].progress_pct == 1.0
+        assert by_id["ready-rehearsal"].progress_pct > by_id["not-ready"].progress_pct
+        assert evo.closest_to_semantic[0].fiber_id == "ready-rehearsal", (
+            "the genuinely ready fiber must rank first, not be out-ranked by one "
+            "that only looks closer under the distinct-days metric alone"
+        )
+
+    @pytest.mark.asyncio
     async def test_plasticity_recent_synapses(self, mock_storage: AsyncMock) -> None:
         """Recently created/reinforced synapses → plasticity > 0."""
         now = utcnow()

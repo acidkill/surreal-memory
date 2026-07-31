@@ -60,6 +60,8 @@ import re
 from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import urlsplit
 
+from surreal_memory.unified_config import _TOML_SAFE_ARGV
+
 if TYPE_CHECKING:
     from surreal_memory.unified_config import ReasoningTrainingConfig
 
@@ -94,11 +96,37 @@ _NO_THINKING_KWARGS = {"enable_thinking": False}
 _FAILURE_LIMIT = 3
 # Unloading is a local process teardown; it should be near-instant.
 _UNLOAD_TIMEOUT_SECONDS = 30.0
+# Loading spawns a server process and waits for a multi-GB model to reach disk
+# or mmap and bind its port -- much slower than teardown, so a longer budget.
+_LOAD_TIMEOUT_SECONDS = 120.0
 # Substituted into distill_llm_unload_cmd so one command template can name the
 # model it is releasing.
 _MODEL_PLACEHOLDER = "{model}"
 
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
+
+
+def _substitute_model_and_validate(cmd: tuple[str, ...], model: str) -> list[str] | None:
+    """Fill in ``{model}`` and re-check the result against ``_TOML_SAFE_ARGV``.
+
+    Each part of ``cmd`` already passed that same allowlist at config-load
+    time (inline in ``ReasoningTrainingConfig.from_dict``), but ``model``
+    comes from ``distill_llm_model``, which is sanitized with
+    ``_sanitize_toml_glob`` -- a looser charset (spaces, ``*?[]``) since it is
+    not itself an argv element, only the template it gets substituted into
+    is. Re-validating post-substitution closes that gap: a model name
+    containing a character the argv allowlist would reject must void the
+    command, the same as an invalid literal part does, rather than silently
+    reaching ``create_subprocess_exec``.
+    """
+    argv = [
+        part.replace(_MODEL_PLACEHOLDER, model) if _MODEL_PLACEHOLDER in part else part
+        for part in cmd
+    ]
+    if not all(_TOML_SAFE_ARGV.match(part) for part in argv):
+        return None
+    return argv
+
 
 _SYSTEM_PROMPT = (
     "You name reusable reasoning strategies. You are given several excerpts of a"
@@ -297,7 +325,7 @@ async def _post_json_httpx(url: str, payload: dict[str, Any], timeout: float) ->
 
 
 async def _run_command_subprocess(argv: list[str], timeout: float) -> int:
-    """Default unload runner: exec the argv directly, with no shell involved."""
+    """Shared load/unload runner: exec the argv directly, with no shell involved."""
     process = await asyncio.create_subprocess_exec(
         *argv,
         stdout=asyncio.subprocess.PIPE,
@@ -310,7 +338,12 @@ async def _run_command_subprocess(argv: list[str], timeout: float) -> int:
         await process.wait()
         raise
     if stdout:
-        logger.debug("reasoning naming: unload output: %s", stdout.decode(errors="replace").strip())
+        # Shared by acquire() and release() -- "command", not "unload", since
+        # this same runner now services both and the output isn't otherwise
+        # tagged with which one triggered it.
+        logger.debug(
+            "reasoning naming: command output: %s", stdout.decode(errors="replace").strip()
+        )
     return process.returncode if process.returncode is not None else -1
 
 
@@ -324,12 +357,14 @@ class PatternNamer:
         post_json: PostJson,
         *,
         unload_cmd: tuple[str, ...] = (),
+        load_cmd: tuple[str, ...] = (),
         run_command: RunCommand | None = None,
     ) -> None:
         self._url = f"{endpoint}/chat/completions"
         self._model = model
         self._post = post_json
         self._unload_cmd = unload_cmd
+        self._load_cmd = load_cmd
         self._run = run_command or _run_command_subprocess
         self._consecutive_failures = 0
         self._given_up = False
@@ -340,6 +375,9 @@ class PatternNamer:
         # the model to be loaded. Reset by release() so a namer reused after a
         # release acquires and releases again rather than releasing twice.
         self._model_in_use = False
+        # acquire() runs once per run (idempotency guard, mirroring release()'s
+        # own safe-to-call-more-than-once contract).
+        self._load_attempted = False
 
     def _record_failure(self, reason: str, exc: BaseException | None = None) -> None:
         self._consecutive_failures += 1
@@ -395,6 +433,58 @@ class PatternNamer:
         self._consecutive_failures = 0
         return {**pattern, **fields}
 
+    async def acquire(self) -> None:
+        """Explicitly load the chat model before the first request, once per run.
+
+        A no-op when no load command is configured -- distillation must work
+        without one, falling back to the endpoint's implicit
+        load-on-first-request behavior (rename() already flags
+        _model_in_use once an actual request goes out). Any failure here is
+        silent and non-fatal: this is an optimization (get the model on GPU
+        with the right parameters before the first request), never a
+        precondition for distillation to proceed. Safe to call more than once.
+        """
+        if not self._load_cmd or self._load_attempted:
+            return
+        self._load_attempted = True
+
+        argv = _substitute_model_and_validate(self._load_cmd, self._model)
+        if argv is None:
+            logger.warning(
+                "reasoning naming: distill_llm_model %r contains a character the load"
+                " command's argv allowlist rejects; skipping the explicit load",
+                self._model,
+            )
+            return
+        # Flagged before the attempt, mirroring rename(): a command that times
+        # out or otherwise raises (e.g. _run_command_subprocess killing a slow
+        # process at _LOAD_TIMEOUT_SECONDS) may still have started pulling the
+        # model into memory, so release() must still attempt cleanup rather
+        # than leaving it stranded -- its own unload failure is already a
+        # harmless warning. Setting this only on the success path would leave
+        # exactly the VRAM-leak scenario this method exists to close.
+        self._model_in_use = True
+        try:
+            code = await self._run(argv, _LOAD_TIMEOUT_SECONDS)
+        except Exception as exc:  # a load command must never block distillation
+            logger.debug(
+                "reasoning naming: load command for %s failed (%s: %s); falling back"
+                " to implicit load-on-first-request",
+                self._model,
+                type(exc).__name__,
+                exc,
+            )
+            return
+        if code == 0:
+            logger.info("reasoning naming: explicitly loaded %s before distillation", self._model)
+        else:
+            logger.warning(
+                "reasoning naming: load command for %s exited %s; continuing anyway"
+                " (implicit load-on-first-request still applies)",
+                self._model,
+                code,
+            )
+
     async def release(self) -> None:
         """Unload the chat model this run pulled in. Safe to call more than once.
 
@@ -406,10 +496,14 @@ class PatternNamer:
             return
         self._model_in_use = False
 
-        argv = [
-            part.replace(_MODEL_PLACEHOLDER, self._model) if _MODEL_PLACEHOLDER in part else part
-            for part in self._unload_cmd
-        ]
+        argv = _substitute_model_and_validate(self._unload_cmd, self._model)
+        if argv is None:
+            logger.warning(
+                "reasoning naming: distill_llm_model %r contains a character the unload"
+                " command's argv allowlist rejects; skipping the explicit unload",
+                self._model,
+            )
+            return
         try:
             code = await self._run(argv, _UNLOAD_TIMEOUT_SECONDS)
         except Exception as exc:  # a stuck model must not fail a run
@@ -469,5 +563,6 @@ def build_namer(
         model,
         post_json or _post_json_httpx,
         unload_cmd=tuple(rt.distill_llm_unload_cmd),
+        load_cmd=tuple(rt.distill_llm_load_cmd),
         run_command=run_command,
     )

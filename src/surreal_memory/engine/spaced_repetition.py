@@ -30,6 +30,7 @@ class SpacedRepetitionEngine:
         self._config = config
         self._reinforcer = ReinforcementManager(
             reinforcement_delta=config.reinforcement_delta,
+            rehearsal_neuron_limit=config.reinforcement_neuron_limit,
         )
 
     async def get_review_queue(self, limit: int = 20) -> list[dict[str, Any]]:

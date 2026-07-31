@@ -73,6 +73,9 @@ class EvolutionHandler:
                 "total": evo.stage_distribution.total,
             }
 
+        if evo.semantic_gate_blockers is not None:
+            result["semantic_gate_blockers"] = dict(evo.semantic_gate_blockers)
+
         if evo.closest_to_semantic:
             result["closest_to_semantic"] = [
                 {

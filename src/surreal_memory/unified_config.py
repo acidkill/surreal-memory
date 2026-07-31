@@ -306,6 +306,10 @@ class BrainSettings:
 
     decay_rate: float = 0.1
     reinforcement_delta: float = 0.05
+    # See core.brain.BrainConfig.reinforcement_neuron_limit for why this exists
+    # and why 15, not a larger jump (raised from a hardcoded, unconfigurable
+    # 10; measured against a live SurrealDB, not just SQLite).
+    reinforcement_neuron_limit: int = 15
     activation_threshold: float = 0.2
     max_spread_hops: int = 4
     max_context_tokens: int = 1500
@@ -316,6 +320,7 @@ class BrainSettings:
         {
             "decay_rate",
             "reinforcement_delta",
+            "reinforcement_neuron_limit",
             "activation_threshold",
             "max_spread_hops",
             "max_context_tokens",
@@ -327,6 +332,7 @@ class BrainSettings:
         return {
             "decay_rate": self.decay_rate,
             "reinforcement_delta": self.reinforcement_delta,
+            "reinforcement_neuron_limit": self.reinforcement_neuron_limit,
             "activation_threshold": self.activation_threshold,
             "max_spread_hops": self.max_spread_hops,
             "max_context_tokens": self.max_context_tokens,
@@ -340,6 +346,7 @@ class BrainSettings:
         return cls(
             decay_rate=data.get("decay_rate", 0.1),
             reinforcement_delta=data.get("reinforcement_delta", 0.05),
+            reinforcement_neuron_limit=data.get("reinforcement_neuron_limit", 15),
             activation_threshold=data.get("activation_threshold", 0.2),
             max_spread_hops=data.get("max_spread_hops", 4),
             max_context_tokens=data.get("max_context_tokens", 1500),
@@ -365,6 +372,7 @@ class BrainSettings:
         kwargs: dict[str, Any] = {
             "decay_rate": self.decay_rate,
             "reinforcement_delta": self.reinforcement_delta,
+            "reinforcement_neuron_limit": self.reinforcement_neuron_limit,
             "activation_threshold": self.activation_threshold,
             "max_spread_hops": self.max_spread_hops,
             "max_context_tokens": self.max_context_tokens,
@@ -1099,12 +1107,13 @@ class ToolMemoryConfig:
 # while still blocking quotes/backslashes/control chars (TOML-injection safe).
 _TOML_SAFE_GLOB = re.compile(r"^[a-zA-Z0-9_\-\./ *?\[\]]*$")
 
-# One argv part of reasoning_training.distill_llm_unload_cmd. Deliberately
-# narrower than a glob: no quotes, no shell metacharacters, no newlines. Braces
-# are allowed solely for the "{model}" placeholder. The command is executed
-# without a shell, so this is defence in depth rather than the only guard.
+# One argv part of reasoning_training.distill_llm_unload_cmd /
+# distill_llm_load_cmd. Deliberately narrower than a glob: no quotes, no shell
+# metacharacters, no newlines. Braces are allowed solely for the "{model}"
+# placeholder. The command is executed without a shell, so this is defence in
+# depth rather than the only guard.
 _TOML_SAFE_ARGV = re.compile(r"^[a-zA-Z0-9_\-\./:={}]+$")
-_UNLOAD_CMD_MAX_PARTS = 16
+_CMD_MAX_PARTS = 16
 
 
 def _sanitize_toml_glob(value: str) -> str:
@@ -1172,6 +1181,13 @@ class ReasoningTrainingConfig:
     # model again, so it does not stay resident between runs. "{model}" is
     # replaced with distill_llm_model. Empty = leave the model loaded.
     distill_llm_unload_cmd: tuple[str, ...] = ()
+    # argv (NOT a shell string) run once before the first distillation request,
+    # so a model needing specific launch parameters (e.g. GPU-only, no
+    # multimodal projector) does not depend on whatever an external
+    # auto-starter happens to remember. Same "{model}" substitution as
+    # distill_llm_unload_cmd. Empty = keep relying on implicit
+    # load-on-first-request.
+    distill_llm_load_cmd: tuple[str, ...] = ()
     redact_secrets: bool = True
     # Per-model distillation targets: model name -> desired pattern count (0-100).
     # An unlisted model defaults to 0 → distillation is skipped for it (the
@@ -1200,6 +1216,7 @@ class ReasoningTrainingConfig:
             "distill_llm_model": self.distill_llm_model,
             "distill_llm_endpoint": self.distill_llm_endpoint,
             "distill_llm_unload_cmd": list(self.distill_llm_unload_cmd),
+            "distill_llm_load_cmd": list(self.distill_llm_load_cmd),
             "redact_secrets": self.redact_secrets,
             "pattern_targets": dict(self.pattern_targets),
         }
@@ -1261,13 +1278,41 @@ class ReasoningTrainingConfig:
 
         # Unload command: argv, never a shell string. A part that is not plain
         # command syntax voids the whole command rather than being silently
-        # dropped — a half-parsed teardown command is worse than none.
+        # dropped — a half-parsed teardown command is worse than none. Same
+        # rule for length: a command longer than _CMD_MAX_PARTS is voided
+        # outright rather than silently truncated to its first N parts, which
+        # would otherwise run a shorter, functionally different command with
+        # no signal that anything was dropped.
         unload_raw = data.get("distill_llm_unload_cmd", [])
         unload_cmd: tuple[str, ...] = ()
         if isinstance(unload_raw, (list, tuple)) and unload_raw:
-            parts = [str(p).strip() for p in unload_raw[:_UNLOAD_CMD_MAX_PARTS]]
-            if all(p and _TOML_SAFE_ARGV.match(p) for p in parts):
-                unload_cmd = tuple(p[:_TOML_STR_MAX_LEN] for p in parts)
+            if len(unload_raw) > _CMD_MAX_PARTS:
+                logger.warning(
+                    "distill_llm_unload_cmd has %d parts, exceeding the %d-part limit;"
+                    " ignoring it entirely rather than running a truncated command",
+                    len(unload_raw),
+                    _CMD_MAX_PARTS,
+                )
+            else:
+                parts = [str(p).strip() for p in unload_raw]
+                if all(p and _TOML_SAFE_ARGV.match(p) for p in parts):
+                    unload_cmd = tuple(p[:_TOML_STR_MAX_LEN] for p in parts)
+
+        # Load command: same argv-only and length rules as unload_cmd above.
+        load_raw = data.get("distill_llm_load_cmd", [])
+        load_cmd: tuple[str, ...] = ()
+        if isinstance(load_raw, (list, tuple)) and load_raw:
+            if len(load_raw) > _CMD_MAX_PARTS:
+                logger.warning(
+                    "distill_llm_load_cmd has %d parts, exceeding the %d-part limit;"
+                    " ignoring it entirely rather than running a truncated command",
+                    len(load_raw),
+                    _CMD_MAX_PARTS,
+                )
+            else:
+                parts = [str(p).strip() for p in load_raw]
+                if all(p and _TOML_SAFE_ARGV.match(p) for p in parts):
+                    load_cmd = tuple(p[:_TOML_STR_MAX_LEN] for p in parts)
 
         return cls(
             mining_enabled=bool(data.get("mining_enabled", False)),
@@ -1291,6 +1336,7 @@ class ReasoningTrainingConfig:
                 str(data.get("distill_llm_endpoint", "") or "")
             ),
             distill_llm_unload_cmd=unload_cmd,
+            distill_llm_load_cmd=load_cmd,
             redact_secrets=bool(data.get("redact_secrets", True)),
             pattern_targets=pattern_targets,
         )
@@ -1875,6 +1921,9 @@ class UnifiedConfig:
             "distill_llm_unload_cmd = ["
             + ", ".join(f'"{p}"' for p in rt.distill_llm_unload_cmd if _TOML_SAFE_ARGV.match(p))
             + "]",
+            "distill_llm_load_cmd = ["
+            + ", ".join(f'"{p}"' for p in rt.distill_llm_load_cmd if _TOML_SAFE_ARGV.match(p))
+            + "]",
             f"redact_secrets = {'true' if rt.redact_secrets else 'false'}",
             "[reasoning_training.injection_map]",
         ]
@@ -1915,6 +1964,7 @@ class UnifiedConfig:
             "[brain]",
             f"decay_rate = {self.brain.decay_rate}",
             f"reinforcement_delta = {self.brain.reinforcement_delta}",
+            f"reinforcement_neuron_limit = {self.brain.reinforcement_neuron_limit}",
             f"activation_threshold = {self.brain.activation_threshold}",
             f"max_spread_hops = {self.brain.max_spread_hops}",
             f"max_context_tokens = {self.brain.max_context_tokens}",
