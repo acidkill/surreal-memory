@@ -930,10 +930,57 @@ class ConsolidationEngine:
             )
 
             if not dry_run:
+                from surreal_memory.engine.memory_stages import MaturationRecord, MemoryStage
+
+                # Read source maturation BEFORE delete_fiber. delete_fiber has no
+                # cascade to the maturation table (confirmed: it only deletes the
+                # fiber row), so this ordering is defensive, not load-bearing --
+                # but reading after would still be wrong to *rely* on that.
+                _stage_order = list(MemoryStage)
+                source_maturations = []
+                for fiber in member_fibers:
+                    record = await self._storage.get_maturation(fiber.id)
+                    if record is not None:
+                        source_maturations.append(record)
+
                 for fiber in member_fibers:
                     await self._storage.delete_fiber(fiber.id)
                     report.fibers_removed += 1
                 await self._storage.add_fiber(merged_fiber)
+
+                if source_maturations:
+                    # Merging must never cost a fiber the maturation progress it
+                    # already earned: highest stage of any source, summed
+                    # rehearsal_count (each is an independent count of real
+                    # rehearsal events, so summing -- not maxing -- keeps
+                    # rehearsal_count consistent with the union of timestamps
+                    # below), the union of reinforcement timestamps (those, not
+                    # the count, decide distinct_reinforcement_days), and the
+                    # oldest stage_entered_at so the merged fiber keeps whatever
+                    # dwell time a source already accrued instead of resetting
+                    # the clock.
+                    inherited_stage = max(
+                        source_maturations, key=lambda r: _stage_order.index(r.stage)
+                    ).stage
+                    merged_timestamps = tuple(
+                        sorted(
+                            {
+                                ts
+                                for record in source_maturations
+                                for ts in record.reinforcement_timestamps
+                            }
+                        )
+                    )
+                    await self._storage.save_maturation(
+                        MaturationRecord(
+                            fiber_id=merged_fiber_id,
+                            brain_id=source_maturations[0].brain_id,
+                            stage=inherited_stage,
+                            stage_entered_at=min(r.stage_entered_at for r in source_maturations),
+                            rehearsal_count=sum(r.rehearsal_count for r in source_maturations),
+                            reinforcement_timestamps=merged_timestamps,
+                        )
+                    )
 
     async def _summarize(
         self,

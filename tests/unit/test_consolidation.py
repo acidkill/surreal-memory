@@ -563,3 +563,92 @@ async def test_merge_inherits_maturation_from_sources() -> None:
         "with reinforcements spread across 3 distinct days the merged fiber must "
         "clear the spacing gate exactly like an unmerged fiber would"
     )
+
+
+@pytest.mark.asyncio
+async def test_merge_maturation_combination_semantics() -> None:
+    """Locks in the exact inheritance rule, not just the SEMANTIC end-to-end outcome.
+
+    Two sources at different stages: the WORKING source has been in its stage
+    far longer than the EPISODIC source. The merged record must take the
+    *highest* stage (EPISODIC) but the *oldest* stage_entered_at across ALL
+    sources regardless of which source that came from -- otherwise a fiber
+    that already had a 20-day head start in a lower stage would have that
+    dwell time silently discarded just because another source outranked it.
+    rehearsal_count is summed (each source's count is real, independent
+    rehearsal history), and reinforcement_timestamps is the union of both.
+    """
+    store = _MaturationCapableStorage()
+    brain = Brain.create(name="merge_semantics_test", brain_id="ms-brain")
+    await store.save_brain(brain)
+    store.set_brain(brain.id)
+
+    for nid in ("n-a", "n-b"):
+        await store.add_neuron(Neuron.create(type=NeuronType.ENTITY, content=nid, neuron_id=nid))
+
+    shared = {"n-a", "n-b"}
+    old_entered = utcnow() - timedelta(days=20)
+    recent_entered = utcnow() - timedelta(hours=1)
+    ts_a1 = (utcnow() - timedelta(days=5)).isoformat()
+    ts_a2 = (utcnow() - timedelta(days=3)).isoformat()
+    ts_b1 = (utcnow() - timedelta(hours=1)).isoformat()
+
+    source_a = Fiber(
+        id="src-a",
+        neuron_ids=shared,
+        synapse_ids=set(),
+        anchor_neuron_id="n-a",
+        pathway=["n-a"],
+        frequency=1,
+        created_at=old_entered,
+    )
+    source_b = Fiber(
+        id="src-b",
+        neuron_ids=shared,
+        synapse_ids=set(),
+        anchor_neuron_id="n-b",
+        pathway=["n-b"],
+        frequency=1,
+        created_at=old_entered,
+    )
+    for f in (source_a, source_b):
+        await store.add_fiber(f)
+
+    await store.save_maturation(
+        MaturationRecord(
+            fiber_id="src-a",
+            brain_id="ms-brain",
+            stage=MemoryStage.WORKING,
+            stage_entered_at=old_entered,
+            rehearsal_count=2,
+            reinforcement_timestamps=(ts_a1, ts_a2),
+        )
+    )
+    await store.save_maturation(
+        MaturationRecord(
+            fiber_id="src-b",
+            brain_id="ms-brain",
+            stage=MemoryStage.EPISODIC,
+            stage_entered_at=recent_entered,
+            rehearsal_count=1,
+            reinforcement_timestamps=(ts_b1,),
+        )
+    )
+
+    engine = ConsolidationEngine(store, ConsolidationConfig())
+    await engine._merge(ConsolidationReport(), dry_run=False)
+
+    remaining = await store.get_fibers(limit=100)
+    assert len(remaining) == 1
+    merged = await store.get_maturation(remaining[0].id)
+    assert merged is not None
+
+    assert merged.stage == MemoryStage.EPISODIC, "must take the highest stage of any source"
+    assert merged.stage_entered_at == old_entered, (
+        "must keep the oldest stage_entered_at across ALL sources, not just the "
+        "winning-stage source, or a source's dwell time is silently discarded"
+    )
+    assert merged.rehearsal_count == 3, "rehearsal_count is summed across sources"
+    assert set(merged.reinforcement_timestamps) == {ts_a1, ts_a2, ts_b1}, (
+        "reinforcement_timestamps is the union of every source's timestamps"
+    )
