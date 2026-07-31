@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.18.1] — The maturation view actually reaches `smem_health`
+
+2.18.0 added `stage_distribution` and `semantic_gate_blockers` to the health report and
+computed both on every call. Neither reached anyone. The `smem_health` MCP handler and the
+`smem health` CLI command each build an explicit response dict, and both simply omitted the
+new keys — the fields existed on the report object, were populated correctly, and were
+dropped at the serialization boundary. Verifying through `DiagnosticsEngine.analyze()`
+passes on the object that boundary then discards, which is exactly why this survived the
+original release.
+
+Both surfaces now carry them, omitted rather than nulled when a backend cannot answer,
+matching how `smem_evolution` already treats the same two fields.
+
+`smem health` also never showed `top_penalties` at all, so 2.18.0's corrected remedy text —
+the one that names spaced recall and says `smem consolidate` will not raise the ratio on its
+own — was reachable only over MCP and the dashboard. A CLI user saw a low consolidation bar
+and no explanation for it. The CLI now prints the biggest penalties with their remedy, plus
+the stage distribution and the semantic-gate breakdown.
+
 ## [2.18.0] — Maturation reachability
 
 2.16.0 made the consolidation report honest about what it counts. It did not make

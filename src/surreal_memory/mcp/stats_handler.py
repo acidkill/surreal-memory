@@ -278,6 +278,14 @@ class StatsHandler:
             "roadmap": self._build_health_roadmap(report),
         }
 
+        # Maturation view: which stages fibers sit at, and what blocks the
+        # episodic ones from SEMANTIC. Omitted (not nulled) when the backend
+        # cannot answer, matching smem_evolution's treatment of the same fields.
+        if report.stage_distribution is not None:
+            result["stage_distribution"] = dict(report.stage_distribution)
+        if report.semantic_gate_blockers is not None:
+            result["semantic_gate_blockers"] = dict(report.semantic_gate_blockers)
+
         # Embedding capability: surface whether the configured provider is usable
         # (missing package, disabled, or ready) so problems are visible, not silent.
         try:

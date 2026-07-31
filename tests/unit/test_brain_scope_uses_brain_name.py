@@ -119,6 +119,12 @@ def test_mcp_health_analyzes_the_brain_name_scope(monkeypatch: Any) -> None:
         warnings: list[Any] = []
         recommendations: list[Any] = []
         top_penalties: list[Any] = []
+        # Not covered by the 0.0 catch-all below: these are `dict | None` on the
+        # real report, and None is the "backend can't answer" case the handler
+        # checks for. Letting __getattr__ answer 0.0 would make the handler try
+        # to copy a float as a mapping.
+        stage_distribution: dict[str, int] | None = None
+        semantic_gate_blockers: dict[str, int] | None = None
 
         def __getattr__(self, _name: str) -> Any:
             return 0.0

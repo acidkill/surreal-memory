@@ -366,7 +366,7 @@ def health(
         engine = DiagnosticsEngine(storage)
         report = await engine.analyze(storage.brain_id or brain.name)
 
-        return {
+        payload: dict[str, Any] = {
             "brain": brain.name,
             "grade": report.grade,
             "purity_score": report.purity_score,
@@ -385,7 +385,24 @@ def health(
                 for w in report.warnings
             ],
             "recommendations": list(report.recommendations),
+            # Without this the remedy text (what actually raises a component's
+            # score) existed only in the MCP payload -- a CLI user saw the low
+            # bar and never the explanation for it.
+            "top_penalties": [
+                {
+                    "component": p.component,
+                    "current_score": p.current_score,
+                    "estimated_gain": p.estimated_gain,
+                    "action": p.action,
+                }
+                for p in report.top_penalties
+            ],
         }
+        if report.stage_distribution is not None:
+            payload["stage_distribution"] = dict(report.stage_distribution)
+        if report.semantic_gate_blockers is not None:
+            payload["semantic_gate_blockers"] = dict(report.semantic_gate_blockers)
+        return payload
 
     result = run_async(_health())
 
@@ -429,6 +446,35 @@ def health(
         f"Synapses: {result['synapse_count']}  "
         f"Fibers: {result['fiber_count']}"
     )
+
+    # Maturation: where fibers sit, and what holds the episodic ones back.
+    stages = result.get("stage_distribution")
+    if stages:
+        ordered = " ".join(
+            f"{name}: {stages[name]}"
+            for name in ("stm", "working", "episodic", "semantic")
+            if name in stages
+        )
+        typer.echo(f"\n  Stages    {ordered}")
+    blockers = result.get("semantic_gate_blockers")
+    if blockers:
+        typer.echo(
+            f"  Semantic gate  time: {blockers.get('time_gate', 0)}  "
+            f"spacing: {blockers.get('spacing_gate', 0)}  "
+            f"ready: {blockers.get('ready', 0)}"
+        )
+
+    # Biggest score penalties, with the action that actually moves each one.
+    penalties = result.get("top_penalties", [])
+    if penalties:
+        typer.echo("\nBiggest penalties:")
+        for p in penalties:
+            typer.secho(
+                f"  {p['component']} ({p['current_score']:.2f}, "
+                f"+{p['estimated_gain']:.1f} available)",
+                fg=typer.colors.YELLOW,
+            )
+            typer.echo(f"    {p['action']}")
 
     # Warnings
     warnings = result.get("warnings", [])
