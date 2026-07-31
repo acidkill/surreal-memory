@@ -1141,6 +1141,13 @@ _DEFAULT_REASONING_CATEGORIES: tuple[str, ...] = (
 # _validate_model_name so config-level and API-level validation agree.
 _REASONING_MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9._*?-]{1,128}$")
 
+# Ceiling for a per-model distillation target. A guard against a runaway
+# configuration, not a recommendation: how many patterns a model can actually
+# yield is bounded by its trace backlog long before this. Exported because the
+# dashboard's config endpoint must reject on the same number the loader clamps
+# to, or the UI accepts a value that is then silently reduced on the next read.
+MAX_PATTERN_TARGET = 1000
+
 
 @dataclass(frozen=True)
 class ReasoningTrainingConfig:
@@ -1272,7 +1279,7 @@ class ReasoningTrainingConfig:
                 if not name or not _REASONING_MODEL_NAME_RE.match(name):
                     continue
                 try:
-                    pattern_targets[name[:128]] = max(0, min(int(count), 100))
+                    pattern_targets[name[:128]] = max(0, min(int(count), MAX_PATTERN_TARGET))
                 except (ValueError, TypeError):
                     continue
 

@@ -21,7 +21,11 @@ import surreal_memory.server.routes.reasoning_training as rt_module
 from surreal_memory.core.brain import Brain
 from surreal_memory.server.dependencies import get_brain, get_storage
 from surreal_memory.server.routes.reasoning_training import router
-from surreal_memory.unified_config import ReasoningTrainingConfig, UnifiedConfig
+from surreal_memory.unified_config import (
+    MAX_PATTERN_TARGET,
+    ReasoningTrainingConfig,
+    UnifiedConfig,
+)
 
 BRAIN_ID = "default"
 
@@ -373,15 +377,33 @@ def test_config_rejects_bad_model_name(client: TestClient, config_capture: dict[
 def test_config_pattern_targets_roundtrip(
     client: TestClient, config_capture: dict[str, Any]
 ) -> None:
-    # Valid targets round-trip; an out-of-range value clamps to 0..100.
+    # Valid targets round-trip; an out-of-range value clamps to the ceiling the
+    # loader uses, so the endpoint can't accept what the next read would reduce.
     resp = client.put(
         "/api/dashboard/reasoning/config",
-        json={"pattern_targets": {"claude-fable-5": 30, "claude-sonnet-5": 150}},
+        json={
+            "pattern_targets": {
+                "claude-fable-5": 30,
+                "claude-sonnet-5": MAX_PATTERN_TARGET + 50,
+            }
+        },
     )
     assert resp.status_code == 200
     saved = config_capture["cfg"].reasoning_training.pattern_targets
-    assert saved == {"claude-fable-5": 30, "claude-sonnet-5": 100}
+    assert saved == {"claude-fable-5": 30, "claude-sonnet-5": MAX_PATTERN_TARGET}
     assert resp.json()["config"]["pattern_targets"]["claude-fable-5"] == 30
+
+
+def test_config_accepts_a_target_above_the_old_hundred_cap(
+    client: TestClient, config_capture: dict[str, Any]
+) -> None:
+    # 100 used to be the hard cap on both sides; a real backlog outgrows it.
+    resp = client.put(
+        "/api/dashboard/reasoning/config",
+        json={"pattern_targets": {"claude-fable-5": 200}},
+    )
+    assert resp.status_code == 200
+    assert config_capture["cfg"].reasoning_training.pattern_targets["claude-fable-5"] == 200
 
 
 def test_config_rejects_bad_pattern_target_name(

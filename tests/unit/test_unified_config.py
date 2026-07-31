@@ -9,6 +9,7 @@ import pytest
 from surreal_memory.cli.config import _sync_brain_to_toml
 from surreal_memory.unified_config import (
     _MIN_LEGACY_DB_BYTES,
+    MAX_PATTERN_TARGET,
     ReasoningTrainingConfig,
     UnifiedConfig,
     _migrate_legacy_db,
@@ -760,3 +761,34 @@ class TestDistillCmdValidation:
         assert reloaded.distill_llm_unload_cmd == rt.distill_llm_unload_cmd
         assert reloaded.distill_llm_load_cmd == rt.distill_llm_load_cmd
         assert reloaded == rt
+
+
+class TestPatternTargetCeiling:
+    """A per-model distillation target is clamped, not rejected, on load.
+
+    The ceiling exists to stop a runaway config, so it has to be high enough
+    that a real backlog hits its own limit first — a model with thousands of
+    staged traces was previously capped at 100 patterns with no warning, and
+    the clamp is silent, so the operator sees the configured number in the file
+    and a different one in effect.
+    """
+
+    def test_target_below_the_ceiling_is_kept(self) -> None:
+        cfg = ReasoningTrainingConfig.from_dict({"pattern_targets": {"claude-fable-5": 200}})
+        assert cfg.pattern_targets["claude-fable-5"] == 200
+
+    def test_target_above_the_ceiling_is_clamped(self) -> None:
+        cfg = ReasoningTrainingConfig.from_dict(
+            {"pattern_targets": {"claude-fable-5": MAX_PATTERN_TARGET + 5000}}
+        )
+        assert cfg.pattern_targets["claude-fable-5"] == MAX_PATTERN_TARGET
+
+    def test_negative_target_floors_at_zero(self) -> None:
+        cfg = ReasoningTrainingConfig.from_dict({"pattern_targets": {"claude-fable-5": -3}})
+        assert cfg.pattern_targets["claude-fable-5"] == 0
+
+    def test_ceiling_leaves_room_for_a_real_backlog(self) -> None:
+        # Guards the reason the ceiling was raised: 100 was below what a model
+        # with a few thousand staged traces can yield, so it silently capped
+        # coverage instead of guarding against misconfiguration.
+        assert MAX_PATTERN_TARGET >= 1000

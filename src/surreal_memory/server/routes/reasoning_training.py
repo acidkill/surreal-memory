@@ -40,6 +40,7 @@ from surreal_memory.engine.reasoning_progress import (
 from surreal_memory.server.dependencies import get_brain, get_storage, require_local_request
 from surreal_memory.server.models import ErrorResponse
 from surreal_memory.storage.base import NeuralStorage
+from surreal_memory.unified_config import MAX_PATTERN_TARGET
 from surreal_memory.utils.timeutils import utcnow
 
 logger = logging.getLogger(__name__)
@@ -182,7 +183,8 @@ class ReasoningConfigUpdate(BaseModel):
     min_patterns_per_category: int | None = Field(None, ge=1, le=100_000)
     injection_max_patterns: int | None = Field(None, ge=1, le=1000)
     injection_max_chars: int | None = Field(None, ge=1, le=1_000_000)
-    # Per-model distillation targets (model -> 0..100). Validated in update_config.
+    # Per-model distillation targets (model -> 0..MAX_PATTERN_TARGET).
+    # Validated in update_config.
     pattern_targets: dict[str, int] | None = None
 
 
@@ -484,11 +486,11 @@ async def update_config(body: ReasoningConfigUpdate) -> dict[str, Any]:
                     detail=f"Model {name!r} has no thinking text and cannot be a pattern target",
                 )
             try:
-                targets[name] = max(0, min(int(count), 100))
+                targets[name] = max(0, min(int(count), MAX_PATTERN_TARGET))
             except (ValueError, TypeError):
                 raise HTTPException(
                     status_code=422,
-                    detail=f"pattern_targets[{name!r}] must be an integer 0-100",
+                    detail=(f"pattern_targets[{name!r}] must be an integer 0-{MAX_PATTERN_TARGET}"),
                 ) from None
         changes["pattern_targets"] = targets
 
