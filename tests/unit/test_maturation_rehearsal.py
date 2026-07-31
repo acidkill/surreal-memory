@@ -123,22 +123,26 @@ class TestMaturationRehearsalOnReinforce:
         assert saved.rehearsal_count == 1
 
     @pytest.mark.asyncio
-    async def test_rehearsal_caps_fibers_at_10(self) -> None:
-        """At most 10 fibers should be rehearsed per reinforce call."""
+    async def test_rehearsal_neuron_limit_still_caps_the_lookup(self) -> None:
+        """The neuron fan-out into find_fibers_batch is still capped, just raised and configurable.
+
+        Uncapping fiber rehearsal entirely could scale unbounded with brain
+        size, so the guard now lives on the neuron side
+        (``rehearsal_neuron_limit``, default 25 -- see
+        ``BrainConfig.reinforcement_neuron_limit``) instead of a second,
+        redundant fixed-10 fiber cap.
+        """
         storage = AsyncMock()
-        states = {f"n{i}": _make_neuron_state(f"n{i}") for i in range(15)}
+        states = {f"n{i}": _make_neuron_state(f"n{i}") for i in range(30)}
         storage.get_neuron_states_batch.return_value = states
-        # Return 15 fibers
-        fibers = [_make_fiber_stub(f"f{i}") for i in range(15)]
-        storage.find_fibers_batch.return_value = fibers
-        storage.get_maturation.return_value = _make_maturation("any")
+        storage.find_fibers_batch.return_value = [_make_fiber_stub("f0")]
+        storage.get_maturation.return_value = _make_maturation("f0")
 
-        mgr = ReinforcementManager()
-        await mgr.reinforce(storage, [f"n{i}" for i in range(15)])
+        mgr = ReinforcementManager()  # default rehearsal_neuron_limit=25
+        await mgr.reinforce(storage, [f"n{i}" for i in range(30)])
 
-        # Should cap at 10 fibers
-        assert storage.get_maturation.call_count == 10
-        assert storage.save_maturation.call_count == 10
+        called_neuron_ids = storage.find_fibers_batch.call_args.args[0]
+        assert len(called_neuron_ids) == 25
 
     @pytest.mark.asyncio
     async def test_rehearsal_reaches_all_fibers_actually_hit_by_recall(self) -> None:

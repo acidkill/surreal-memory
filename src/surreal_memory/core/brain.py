@@ -27,6 +27,13 @@ class BrainConfig:
 
     decay_rate: float = 0.1
     reinforcement_delta: float = 0.05
+    # How many of a recall's top-activated neurons get reinforced and fed into
+    # maturation rehearsal. Was hardcoded to 10 in two independent places
+    # (retrieval's top-K selection and the rehearsal fan-out), so a recall on
+    # any brain rehearsed at most 10 fibers regardless of how many it actually
+    # activated -- capping the EPISODIC->SEMANTIC spacing gate's only
+    # rehearsal source at a size that did not scale with the brain.
+    reinforcement_neuron_limit: int = 25
     activation_threshold: float = 0.2
     max_spread_hops: int = 4
     max_context_tokens: int = 1500

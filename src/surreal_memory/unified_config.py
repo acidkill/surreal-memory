@@ -306,6 +306,9 @@ class BrainSettings:
 
     decay_rate: float = 0.1
     reinforcement_delta: float = 0.05
+    # See core.brain.BrainConfig.reinforcement_neuron_limit for why this exists
+    # and why 25 (raised from a hardcoded, unconfigurable 10).
+    reinforcement_neuron_limit: int = 25
     activation_threshold: float = 0.2
     max_spread_hops: int = 4
     max_context_tokens: int = 1500
@@ -316,6 +319,7 @@ class BrainSettings:
         {
             "decay_rate",
             "reinforcement_delta",
+            "reinforcement_neuron_limit",
             "activation_threshold",
             "max_spread_hops",
             "max_context_tokens",
@@ -327,6 +331,7 @@ class BrainSettings:
         return {
             "decay_rate": self.decay_rate,
             "reinforcement_delta": self.reinforcement_delta,
+            "reinforcement_neuron_limit": self.reinforcement_neuron_limit,
             "activation_threshold": self.activation_threshold,
             "max_spread_hops": self.max_spread_hops,
             "max_context_tokens": self.max_context_tokens,
@@ -340,6 +345,7 @@ class BrainSettings:
         return cls(
             decay_rate=data.get("decay_rate", 0.1),
             reinforcement_delta=data.get("reinforcement_delta", 0.05),
+            reinforcement_neuron_limit=data.get("reinforcement_neuron_limit", 25),
             activation_threshold=data.get("activation_threshold", 0.2),
             max_spread_hops=data.get("max_spread_hops", 4),
             max_context_tokens=data.get("max_context_tokens", 1500),
@@ -365,6 +371,7 @@ class BrainSettings:
         kwargs: dict[str, Any] = {
             "decay_rate": self.decay_rate,
             "reinforcement_delta": self.reinforcement_delta,
+            "reinforcement_neuron_limit": self.reinforcement_neuron_limit,
             "activation_threshold": self.activation_threshold,
             "max_spread_hops": self.max_spread_hops,
             "max_context_tokens": self.max_context_tokens,
@@ -1915,6 +1922,7 @@ class UnifiedConfig:
             "[brain]",
             f"decay_rate = {self.brain.decay_rate}",
             f"reinforcement_delta = {self.brain.reinforcement_delta}",
+            f"reinforcement_neuron_limit = {self.brain.reinforcement_neuron_limit}",
             f"activation_threshold = {self.brain.activation_threshold}",
             f"max_spread_hops = {self.brain.max_spread_hops}",
             f"max_context_tokens = {self.brain.max_context_tokens}",

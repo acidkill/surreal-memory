@@ -377,6 +377,7 @@ class ReinforcementManager:
         reinforcement_delta: float = 0.05,
         max_activation: float = 1.0,
         max_weight: float = 1.0,
+        rehearsal_neuron_limit: int = 25,
     ):
         """Initialize reinforcement manager.
 
@@ -384,10 +385,13 @@ class ReinforcementManager:
             reinforcement_delta: Amount to increase on each access
             max_activation: Maximum activation level
             max_weight: Maximum synapse weight
+            rehearsal_neuron_limit: How many of the given neuron_ids feed
+                maturation rehearsal (see BrainConfig.reinforcement_neuron_limit)
         """
         self.reinforcement_delta = reinforcement_delta
         self.max_activation = max_activation
         self.max_weight = max_weight
+        self.rehearsal_neuron_limit = rehearsal_neuron_limit
 
     async def reinforce(
         self,
@@ -434,13 +438,18 @@ class ReinforcementManager:
 
         # Rehearse maturation records for fibers connected to reinforced neurons.
         # This is required for EPISODIC → SEMANTIC transition (needs 3+ distinct days).
+        # Every fiber find_fibers_batch surfaces gets rehearsed -- the only cap is
+        # how many neurons feed the lookup (rehearsal_neuron_limit), so coverage
+        # scales with what recall actually activated instead of a fixed count.
         if neuron_ids:
             try:
                 from surreal_memory.engine.memory_stages import MaturationRecord, MemoryStage
 
-                fibers = await storage.find_fibers_batch(neuron_ids[:10], limit_per_neuron=3)
+                fibers = await storage.find_fibers_batch(
+                    neuron_ids[: self.rehearsal_neuron_limit], limit_per_neuron=3
+                )
                 seen_fiber_ids: set[str] = set()
-                for fiber in fibers[:10]:
+                for fiber in fibers:
                     if fiber.id in seen_fiber_ids:
                         continue
                     seen_fiber_ids.add(fiber.id)
