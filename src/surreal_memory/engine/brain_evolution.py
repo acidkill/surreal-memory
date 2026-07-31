@@ -126,6 +126,10 @@ class BrainEvolution:
 
         stage_distribution: Breakdown of fibers by maturation stage.
         closest_to_semantic: Top fibers closest to SEMANTIC promotion.
+        semantic_gate_blockers: Counts of ALL episodic fibers by which gate is
+            blocking them ("time_gate", "spacing_gate") or "ready" if both are
+            already satisfied -- unlike closest_to_semantic this covers every
+            episodic fiber, not just the top 3.
     """
 
     brain_id: str
@@ -159,6 +163,7 @@ class BrainEvolution:
     # Maturation progress
     stage_distribution: StageDistribution | None = None
     closest_to_semantic: tuple[SemanticProgress, ...] = ()
+    semantic_gate_blockers: dict[str, int] | None = None
 
 
 class EvolutionEngine:
@@ -231,7 +236,7 @@ class EvolutionEngine:
         )
 
         # Stage distribution and semantic progress
-        stage_dist, closest = await self._compute_stage_progress(now)
+        stage_dist, closest, gate_blockers = await self._compute_stage_progress(now)
 
         return BrainEvolution(
             brain_id=brain_id,
@@ -255,6 +260,7 @@ class EvolutionEngine:
             fibers_at_episodic=fibers_episodic,
             stage_distribution=stage_dist,
             closest_to_semantic=closest,
+            semantic_gate_blockers=gate_blockers,
         )
 
     # ── Internal computations ────────────────────────────────
@@ -262,12 +268,23 @@ class EvolutionEngine:
     async def _compute_stage_progress(
         self,
         now: datetime,
-    ) -> tuple[StageDistribution, tuple[SemanticProgress, ...]]:
-        """Compute stage distribution and progress toward SEMANTIC.
+    ) -> tuple[StageDistribution, tuple[SemanticProgress, ...], dict[str, int]]:
+        """Compute stage distribution, closest-to-semantic fibers, and gate blockers.
 
         Returns:
-            (StageDistribution, top 3 fibers closest to SEMANTIC promotion)
+            (StageDistribution, top 3 fibers closest to SEMANTIC promotion,
+            {"time_gate": N, "spacing_gate": M, "ready": K} across ALL episodic
+            fibers -- not just the top 3 -- via classify_episodic_blocker, the
+            single source of truth for this shared with health diagnostics)
         """
+        from surreal_memory.engine.memory_stages import (
+            _EPISODIC_TO_SEMANTIC,
+            _MIN_DISTINCT_DAYS,
+            _MIN_DISTINCT_WINDOWS,
+            _MIN_REHEARSAL_COUNT,
+            classify_episodic_blocker,
+        )
+
         all_maturations = await self._storage.find_maturations()
 
         counts = {
@@ -288,14 +305,20 @@ class EvolutionEngine:
             total=len(all_maturations),
         )
 
-        # Compute progress for EPISODIC fibers (closest to SEMANTIC)
-        days_required = 7.0
-        reinf_required = 3
+        # Compute progress for EPISODIC fibers (closest to SEMANTIC). Thresholds
+        # come from memory_stages.py (not re-hardcoded here) so this can never
+        # silently drift from the actual promotion rule in compute_stage_transition.
+        days_required = _EPISODIC_TO_SEMANTIC.total_seconds() / 86400
+        reinf_required = _MIN_DISTINCT_DAYS
         progress_items: list[SemanticProgress] = []
+        gate_blockers: dict[str, int] = {"time_gate": 0, "spacing_gate": 0, "ready": 0}
 
         for m in all_maturations:
             if m.stage != MemoryStage.EPISODIC:
                 continue
+
+            verdict = classify_episodic_blocker(m, now=now)
+            gate_blockers[verdict] += 1
 
             days_in = (now - m.stage_entered_at).total_seconds() / 86400
             reinf_days = m.distinct_reinforcement_days
@@ -304,16 +327,22 @@ class EvolutionEngine:
             reinf_pct = min(1.0, reinf_days / reinf_required)
             overall_pct = min(time_pct, reinf_pct)
 
-            if reinf_days < reinf_required:
-                next_step = (
-                    f"Recall this memory on {reinf_required - reinf_days} more "
-                    f"distinct day(s) to reach SEMANTIC."
-                )
-            elif days_in < days_required:
-                remaining = days_required - days_in
-                next_step = f"Wait ~{remaining:.1f} more day(s) in EPISODIC stage."
-            else:
+            if verdict == "ready":
                 next_step = "Ready for promotion — run consolidation with mature strategy."
+            elif verdict == "spacing_gate":
+                # Two independent paths clear this gate (see
+                # classify_episodic_blocker) -- name both, not just the
+                # distinct-days one, or an agent using the rehearsal-count
+                # path gets told to do something it doesn't need.
+                remaining_days = max(0, reinf_required - reinf_days)
+                next_step = (
+                    f"Recall this memory on {remaining_days} more distinct day(s) "
+                    f"(or reach {_MIN_REHEARSAL_COUNT}+ rehearsals across "
+                    f"{_MIN_DISTINCT_WINDOWS}+ time windows) to reach SEMANTIC."
+                )
+            else:  # time_gate
+                remaining = max(0.0, days_required - days_in)
+                next_step = f"Wait ~{remaining:.1f} more day(s) in EPISODIC stage."
 
             progress_items.append(
                 SemanticProgress(
@@ -330,7 +359,7 @@ class EvolutionEngine:
 
         # Sort by progress descending, take top 3
         progress_items.sort(key=lambda p: p.progress_pct, reverse=True)
-        return stage_dist, tuple(progress_items[:3])
+        return stage_dist, tuple(progress_items[:3]), gate_blockers
 
     async def _compute_maturation(
         self,

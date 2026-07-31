@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from surreal_memory.engine.memory_stages import (
     MaturationRecord,
     MemoryStage,
+    classify_episodic_blocker,
     compute_stage_transition,
     get_decay_multiplier,
 )
@@ -226,3 +227,101 @@ class TestStageTransitions:
         t1 = t0 + timedelta(days=100)
         result = compute_stage_transition(record, now=t1)
         assert result.stage == MemoryStage.SEMANTIC
+
+
+class TestClassifyEpisodicBlocker:
+    """Tests for classify_episodic_blocker — the single source of truth for
+
+    "what's blocking this fiber's EPISODIC -> SEMANTIC promotion" (run 010 / D2).
+    Must stay consistent with compute_stage_transition's EPISODIC branch,
+    including the less obvious rehearsal-count/windows alternative path.
+    """
+
+    def test_ready_when_both_gates_met(self) -> None:
+        """Time and classic 3-distinct-day spacing both satisfied -> ready."""
+        t0 = datetime(2026, 1, 1, 12, 0, 0)
+        record = MaturationRecord(
+            fiber_id="f1",
+            brain_id="b1",
+            stage=MemoryStage.EPISODIC,
+            stage_entered_at=t0,
+            rehearsal_count=5,
+            reinforcement_timestamps=(
+                "2026-01-02T10:00:00",
+                "2026-01-04T10:00:00",
+                "2026-01-06T10:00:00",
+            ),
+        )
+        now = t0 + timedelta(days=8)
+        assert classify_episodic_blocker(record, now=now) == "ready"
+
+    def test_spacing_gate_when_days_not_distinct(self) -> None:
+        """Time satisfied, but reinforcements land on the same calendar day."""
+        t0 = datetime(2026, 1, 1, 12, 0, 0)
+        record = MaturationRecord(
+            fiber_id="f1",
+            brain_id="b1",
+            stage=MemoryStage.EPISODIC,
+            stage_entered_at=t0,
+            rehearsal_count=5,
+            reinforcement_timestamps=(
+                "2026-01-02T10:00:00",
+                "2026-01-02T14:00:00",  # same day
+            ),
+        )
+        now = t0 + timedelta(days=8)
+        assert classify_episodic_blocker(record, now=now) == "spacing_gate"
+
+    def test_time_gate_when_too_recent(self) -> None:
+        """Spacing already satisfied, but the 7-day dwell time is not."""
+        t0 = datetime(2026, 1, 1, 12, 0, 0)
+        record = MaturationRecord(
+            fiber_id="f1",
+            brain_id="b1",
+            stage=MemoryStage.EPISODIC,
+            stage_entered_at=t0,
+            rehearsal_count=5,
+            reinforcement_timestamps=(
+                "2026-01-02T10:00:00",
+                "2026-01-04T10:00:00",
+                "2026-01-06T10:00:00",
+            ),
+        )
+        now = t0 + timedelta(days=5)  # only 5 days
+        assert classify_episodic_blocker(record, now=now) == "time_gate"
+
+    def test_ready_via_rehearsal_count_path(self) -> None:
+        """Only 1 distinct day, but 15+ rehearsals across 5+ 2h windows -> ready.
+
+        Regression guard: an earlier ad-hoc classification (brain_evolution.py,
+        before it reused this function) only checked distinct_reinforcement_days
+        and would have wrongly called this "spacing_gate".
+        """
+        t0 = datetime(2026, 1, 1, 12, 0, 0)
+        same_day = "2026-01-02T"
+        record = MaturationRecord(
+            fiber_id="f1",
+            brain_id="b1",
+            stage=MemoryStage.EPISODIC,
+            stage_entered_at=t0,
+            rehearsal_count=15,
+            reinforcement_timestamps=tuple(
+                f"{same_day}{hour:02d}:00:00" for hour in (0, 2, 4, 6, 8)
+            ),
+        )
+        now = t0 + timedelta(days=8)
+        assert classify_episodic_blocker(record, now=now) == "ready"
+
+    def test_spacing_gate_when_rehearsal_path_incomplete(self) -> None:
+        """15+ rehearsals but fewer than 5 distinct windows -> still spacing_gate."""
+        t0 = datetime(2026, 1, 1, 12, 0, 0)
+        record = MaturationRecord(
+            fiber_id="f1",
+            brain_id="b1",
+            stage=MemoryStage.EPISODIC,
+            stage_entered_at=t0,
+            rehearsal_count=15,
+            reinforcement_timestamps=("2026-01-02T00:00:00", "2026-01-02T02:00:00"),
+        )
+        now = t0 + timedelta(days=8)
+        assert classify_episodic_blocker(record, now=now) == "spacing_gate"

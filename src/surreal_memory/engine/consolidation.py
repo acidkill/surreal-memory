@@ -171,6 +171,19 @@ class ConsolidationReport:
             line += " [truncated at cap]"
         return line
 
+    def _stage_transitions_suffix(self) -> str:
+        """Render the per-hop breakdown so a flat total cannot hide "zero new semantic".
+
+        stages_advanced sums stm->working, working->episodic, and
+        episodic->semantic into one count; without this, "15 advanced" and
+        "zero new semantic" print identically.
+        """
+        transitions = self.extra.get("stage_transitions")
+        if not transitions:
+            return ""
+        parts = ", ".join(f"{key}: {count}" for key, count in transitions.items() if count)
+        return f" ({parts})" if parts else ""
+
     def summary(self) -> str:
         """Generate human-readable summary."""
         mode = " (dry run)" if self.dry_run else ""
@@ -192,7 +205,7 @@ class ConsolidationReport:
             f" (new alias links: {self.new_alias_links})",
             f"  Semantic synapses: {self._semantic_synapse_line()}",
             f"  Memories promoted (type): {self.memories_promoted}",
-            f"  Stages advanced: {self.stages_advanced}",
+            f"  Stages advanced: {self.stages_advanced}{self._stage_transitions_suffix()}",
             f"  Fibers compressed: {self.fibers_compressed}",
             f"  Tokens saved: {self.tokens_saved}",
             f"  Reasoning traces ingested: {self.reasoning_traces_ingested}",
@@ -206,6 +219,18 @@ class ConsolidationReport:
                     f"    {len(detail.original_fiber_ids)} fibers -> {detail.merged_fiber_id[:8]}... "
                     f"({detail.neuron_count} neurons, {detail.reason})"
                 )
+
+        backfilled = self.extra.get("maturations_backfilled")
+        if backfilled:
+            lines.append(
+                f"  Maturations backfilled from fiber age: {backfilled} "
+                "(these reached their stage without earning it through recall)"
+            )
+        unreachable = self.extra.get("maturations_unreachable")
+        if unreachable:
+            lines.append(
+                f"  Maturations still missing (outside backfill's fiber window): {unreachable}"
+            )
 
         # Add eligibility hints when nothing happened
         hints = self._eligibility_hints()

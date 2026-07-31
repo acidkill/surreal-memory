@@ -15,7 +15,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 from surreal_memory.core.synapse import SynapseType
-from surreal_memory.engine.memory_stages import MemoryStage
+from surreal_memory.engine.memory_stages import MemoryStage, classify_episodic_blocker
 from surreal_memory.utils.tag_normalizer import TagNormalizer
 from surreal_memory.utils.timeutils import utcnow
 
@@ -293,6 +293,14 @@ class BrainHealthReport:
     # raw table total. Kept separate so a dashboard can show both without guessing.
     semantic_synapse_count: int = 0
 
+    # Maturation visibility (run 010 / D2): consolidation_ratio alone cannot
+    # explain itself -- these two answer "what does the stage breakdown look
+    # like" and "of the fibers not yet semantic, which gate is blocking them".
+    # None on backends without maturation support rather than an empty dict,
+    # so a caller can distinguish "no episodic fibers" from "not supported".
+    stage_distribution: dict[str, int] | None = None
+    semantic_gate_blockers: dict[str, int] | None = None
+
 
 # ── Grade mapping ────────────────────────────────────────────────
 
@@ -399,11 +407,39 @@ class DiagnosticsEngine:
         async def _connected_or_none() -> set[str] | None:
             return await get_connected() if get_connected is not None else None
 
-        fibers, consolidation_ratio, activation_efficiency, connected = await asyncio.gather(
+        async def _stage_distribution_or_none() -> dict[str, int] | None:
+            try:
+                return await self._storage.get_fiber_stage_counts(brain_id)
+            except Exception:
+                return None
+
+        async def _semantic_gate_blockers_or_none() -> dict[str, int] | None:
+            try:
+                episodic_records = await self._storage.find_maturations(stage=MemoryStage.EPISODIC)
+            except Exception:
+                return None
+            if not episodic_records:
+                return None
+            now = utcnow()
+            counts = {"time_gate": 0, "spacing_gate": 0, "ready": 0}
+            for record in episodic_records:
+                counts[classify_episodic_blocker(record, now=now)] += 1
+            return counts
+
+        (
+            fibers,
+            consolidation_ratio,
+            activation_efficiency,
+            connected,
+            stage_distribution,
+            semantic_gate_blockers,
+        ) = await asyncio.gather(
             self._storage.get_fibers(limit=10000),
             self._compute_consolidation_ratio(fiber_count),
             self._compute_activation_efficiency(neuron_count),
             _connected_or_none(),
+            _stage_distribution_or_none(),
+            _semantic_gate_blockers_or_none(),
         )
 
         # Score connectivity on the semantic graph only — see _STRUCTURAL_SYNAPSE_TYPES.
@@ -505,6 +541,8 @@ class DiagnosticsEngine:
             contradiction_count=contradicts_count,
             conflict_rate=round(conflict_rate, 4),
             semantic_synapse_count=semantic_synapse_count,
+            stage_distribution=stage_distribution,
+            semantic_gate_blockers=semantic_gate_blockers,
         )
 
     # ── Metric computations ──────────────────────────────────────

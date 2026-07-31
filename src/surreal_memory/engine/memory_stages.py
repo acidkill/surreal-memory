@@ -245,3 +245,36 @@ def get_decay_multiplier(stage: MemoryStage) -> float:
         Decay multiplier (higher = faster decay)
     """
     return STAGE_DECAY_MULTIPLIERS.get(stage, 1.0)
+
+
+def classify_episodic_blocker(record: MaturationRecord, now: datetime | None = None) -> str:
+    """Classify why an EPISODIC record hasn't reached SEMANTIC yet.
+
+    Single source of truth for "what's blocking the semantic gate" so callers
+    (health diagnostics, brain evolution) never duplicate -- and drift out of
+    sync with -- the actual promotion rule in compute_stage_transition,
+    including the less obvious rehearsal-count/windows alternative path.
+
+    Args:
+        record: A maturation record. Caller must ensure ``record.stage ==
+            MemoryStage.EPISODIC``; this function only makes sense for that
+            stage and does not check it.
+        now: Reference time (default: utcnow)
+
+    Returns:
+        "ready" if both gates are already satisfied (will advance on the next
+        stage-transition pass), "spacing_gate" if reinforcement is not spread
+        widely enough yet, or "time_gate" if it simply hasn't dwelt in
+        EPISODIC long enough (spacing already satisfied).
+    """
+    now = now or utcnow()
+    time_met = (now - record.stage_entered_at) >= _EPISODIC_TO_SEMANTIC
+    spacing_met = record.distinct_reinforcement_days >= _MIN_DISTINCT_DAYS or (
+        record.rehearsal_count >= _MIN_REHEARSAL_COUNT
+        and record.distinct_reinforcement_windows >= _MIN_DISTINCT_WINDOWS
+    )
+    if time_met and spacing_met:
+        return "ready"
+    if not spacing_met:
+        return "spacing_gate"
+    return "time_gate"
