@@ -97,7 +97,9 @@ _COMPONENT_WEIGHTS: dict[str, tuple[float, str]] = {
     ),
     "consolidation_ratio": (
         0.15,
-        "Run: smem consolidate --strategy mature — memories advance through repeated use.",
+        "Recall or store these memories again spread across 3+ different days "
+        "(or reach 15+ rehearsals across 5+ time windows) — memories advance to "
+        "semantic via spaced repetition, not by running consolidate.",
     ),
     "orphan_rate": (
         0.10,
@@ -179,8 +181,10 @@ def _build_dynamic_action(
     elif component == "consolidation_ratio":
         episodic_pct = int((1.0 - consolidation_ratio) * 100)
         return (
-            f"Run `smem consolidate` — {episodic_pct}% of fibers still episodic "
-            "(target: 50%+ semantic). Memories mature through repeated recalls."
+            f"{episodic_pct}% of fibers are still episodic (target: 50%+ semantic). "
+            "They advance to semantic only through spaced recall — reinforcement "
+            "spread across 3+ distinct days (or 15+ rehearsals across 5+ time "
+            "windows). Running `smem consolidate` will not move this on its own."
         )
     elif component == "orphan_rate" and neuron_count > 0:
         orphan_count = int(orphan_rate * neuron_count)
@@ -793,8 +797,9 @@ class DiagnosticsEngine:
             )
             recommendations.append(
                 f"All {fiber_count} memories are still episodic (not consolidated). "
-                "Run: smem consolidate --strategy mature to advance them. "
-                "Memories need repeated recalls over days to mature naturally."
+                "They advance to semantic only through spaced recall — reinforcement "
+                "spread across 3+ distinct days (or 15+ rehearsals across 5+ time "
+                "windows). Running `smem consolidate` will not move this on its own."
             )
 
         # Tag drift detection

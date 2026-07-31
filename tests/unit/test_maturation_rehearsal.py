@@ -140,7 +140,6 @@ class TestMaturationRehearsalOnReinforce:
         assert storage.get_maturation.call_count == 10
         assert storage.save_maturation.call_count == 10
 
-
     @pytest.mark.asyncio
     async def test_rehearsal_reaches_all_fibers_actually_hit_by_recall(self) -> None:
         """Every fiber recall actually surfaced should be rehearsed, not an arbitrary first 10.

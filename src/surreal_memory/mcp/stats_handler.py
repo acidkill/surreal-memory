@@ -160,15 +160,16 @@ class StatsHandler:
 
             if fiber_count >= 50 and consolidation_pct == 0:
                 hints.append(
-                    f"You have {fiber_count} memories but 0% consolidated. "
-                    "Run: smem_auto action='process' or smem consolidate --strategy mature "
-                    "to advance memories from episodic to semantic stage."
+                    f"You have {fiber_count} memories but 0% consolidated. Memories advance "
+                    "to semantic only through spaced recall — reinforcement spread across "
+                    "3+ distinct days (or 15+ rehearsals across 5+ time windows). Running "
+                    "consolidate will not move this on its own."
                 )
             elif fiber_count >= 100 and consolidation_pct < 10:
                 hints.append(
                     f"{fiber_count} memories, only {consolidation_pct:.0f}% consolidated. "
-                    "Recall topics you've stored to help memories mature, "
-                    "then run consolidation."
+                    "Recall topics you've stored on 3+ different days to help memories "
+                    "mature — consolidation alone will not advance them."
                 )
         except Exception:
             logger.debug("Maturation check failed (non-critical)", exc_info=True)
