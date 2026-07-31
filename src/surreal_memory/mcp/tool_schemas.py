@@ -129,7 +129,9 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
                         "reference",
                         "boundary",
                     ],
-                    "description": "Memory type (auto-detected if not specified)",
+                    "description": "Memory type (auto-detected if not specified). Some types "
+                    "default to a non-null expiry when expires_days is omitted: decision=90d, "
+                    "todo=30d, insight=180d, workflow=365d, error=30d; others persist until superseded.",
                 },
                 "tier": {
                     "type": "string",
@@ -154,7 +156,10 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
                 },
                 "expires_days": {
                     "type": "integer",
-                    "description": "Days until memory expires",
+                    "description": "Days until memory expires. If omitted, falls back to the "
+                    "type's default (decision=90d, todo=30d, insight=180d, workflow=365d, "
+                    "error=30d; most other types persist until superseded) — use ephemeral=true "
+                    "for short-lived scratch data instead.",
                 },
                 "encrypted": {
                     "type": "boolean",
@@ -245,7 +250,10 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
                                     "workflow",
                                     "reference",
                                 ],
-                                "description": "Memory type (auto-detected if not specified)",
+                                "description": "Memory type (auto-detected if not specified). "
+                                "Some types default to a non-null expiry when expires_days is "
+                                "omitted: decision=90d, todo=30d, insight=180d, workflow=365d, "
+                                "error=30d; others persist until superseded.",
                             },
                             "priority": {
                                 "type": "integer",
@@ -260,7 +268,11 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
                             },
                             "expires_days": {
                                 "type": "integer",
-                                "description": "Days until memory expires",
+                                "description": "Days until memory expires. If omitted, falls "
+                                "back to the type's default (decision=90d, todo=30d, "
+                                "insight=180d, workflow=365d, error=30d; most other types "
+                                "persist until superseded) — use ephemeral=true for short-lived "
+                                "scratch data instead.",
                             },
                             "encrypted": {
                                 "type": "boolean",

@@ -432,7 +432,7 @@ DEFAULT_EXPIRY_DAYS: dict[MemoryType, int | None] = {
     MemoryType.PREFERENCE: None,  # Preferences persist
     MemoryType.TODO: 30,  # TODOs should be acted on
     MemoryType.INSIGHT: 180,  # Insights may become outdated
-    MemoryType.CONTEXT: 7,  # Context is usually short-term
+    MemoryType.CONTEXT: None,  # Context persists until superseded; use ephemeral=True for scratch/short-lived context
     MemoryType.INSTRUCTION: None,  # Instructions persist
     MemoryType.ERROR: 30,  # Error patterns may get fixed
     MemoryType.WORKFLOW: 365,  # Workflows change slowly

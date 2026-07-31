@@ -255,13 +255,43 @@ class TestDefaultExpiry:
         """Test TODOs expire in 30 days."""
         assert DEFAULT_EXPIRY_DAYS[MemoryType.TODO] == 30
 
-    def test_context_expires_in_7_days(self) -> None:
-        """Test context expires in 7 days."""
-        assert DEFAULT_EXPIRY_DAYS[MemoryType.CONTEXT] == 7
+    def test_context_does_not_expire_by_default(self) -> None:
+        """Test context has no default expiry (persists until superseded).
+
+        Context previously defaulted to a 7-day expiry, which silently
+        deleted memories an agent would reasonably expect to persist
+        (issue #114). Short-lived context should use ephemeral=True
+        instead of relying on an implicit type-based expiry.
+        """
+        assert DEFAULT_EXPIRY_DAYS[MemoryType.CONTEXT] is None
 
     def test_decisions_expire_in_90_days(self) -> None:
         """Test decisions expire in 90 days."""
         assert DEFAULT_EXPIRY_DAYS[MemoryType.DECISION] == 90
+
+    def test_context_remember_path_resolves_to_no_expiry(self) -> None:
+        """Storing a context memory with no explicit expiry must not expire it.
+
+        Mirrors the default-expiry resolution used by both the CLI
+        remember command (cli/commands/memory.py) and the MCP
+        smem_remember handler:
+
+            expiry_days = expires if expires is not None else DEFAULT_EXPIRY_DAYS.get(mem_type)
+
+        Regression test for issue #114: this used to resolve to 7 days
+        and silently expire context memories.
+        """
+        expires: int | None = None
+        mem_type = MemoryType.CONTEXT
+        expiry_days = expires if expires is not None else DEFAULT_EXPIRY_DAYS.get(mem_type)
+
+        mem = TypedMemory.create(
+            fiber_id="fiber-context-114",
+            memory_type=mem_type,
+            expires_in_days=expiry_days,
+        )
+        assert mem.expires_at is None
+        assert mem.is_expired is False
 
 
 class TestSuggestMemoryType:
