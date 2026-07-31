@@ -9,11 +9,19 @@ Every test here runs against a real, isolated SQLite brain (a fresh tmp_path
 HOME) -- never the shared prod brain. Each test uses a unique brain name and
 session id to avoid cross-test collisions in unified_config's process-wide
 _config / _storage_cache singletons.
+
+Caveat: only HOME/SURREAL_MEMORY_BRAIN are overridden, not
+SURREAL_MEMORY_STORAGE. If a developer's shell already has
+SURREAL_MEMORY_STORAGE=surrealdb exported (for day-to-day dashboard use),
+these tests resolve to the live SurrealDB backend instead of SQLite;
+_cleanup_test_brain() below deletes that throwaway "idem*" brain by id in
+that case so the shared DB never accumulates leftovers.
 """
 
 from __future__ import annotations
 
 import uuid
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
@@ -39,8 +47,37 @@ _TEXT_B = (
 _TEXT_TRIVIAL = "abcd efgh ijk\nlmno pqrs tuv\nwxyz abcd efg\nhijk lmno pqr"
 
 
+async def _cleanup_test_brain(brain_name: str) -> None:
+    """Best-effort: drop this test's throwaway brain if it landed on live
+    SurrealDB instead of the isolated tmp_path SQLite fixture.
+
+    The isolated_brain* fixtures only override HOME/SURREAL_MEMORY_BRAIN, not
+    SURREAL_MEMORY_STORAGE. When a developer's shell already exports
+    SURREAL_MEMORY_STORAGE=surrealdb (+ SURREALDB_URL/SURREALDB_PASS) for
+    day-to-day dashboard use, storage_backend resolves to "surrealdb" here
+    too, and every test would otherwise leave an orphaned "idem*" row behind
+    on the shared DB -- the same brain-leakage failure mode already fixed for
+    the other live-SurrealDB tests via cleanup_live_brains() in
+    _surrealdb_live.py. SQLite brains need no cleanup: they live under the
+    fixture's own tmp_path HOME, which pytest discards on its own.
+    """
+    from surreal_memory.unified_config import get_config, get_shared_storage
+
+    if get_config().storage_backend != "surrealdb":
+        return
+    try:
+        storage = await get_shared_storage()
+        from tests.unit._surrealdb_live import cleanup_live_brains
+
+        await cleanup_live_brains(storage, own_brain_id=brain_name)
+    except Exception:
+        pass
+
+
 @pytest.fixture
-def isolated_brain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+async def isolated_brain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> AsyncIterator[str]:
     """Point unified_config at a throwaway HOME with a unique brain+session."""
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("TMPDIR", "/tmp")
@@ -51,11 +88,14 @@ def isolated_brain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     from surreal_memory.unified_config import get_config
 
     get_config(reload=True)
-    return brain_name
+    yield brain_name
+    await _cleanup_test_brain(brain_name)
 
 
 @pytest.fixture
-def isolated_brain_gate_enforce(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+async def isolated_brain_gate_enforce(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> AsyncIterator[str]:
     """Same as isolated_brain, but with the write gate forced to enforce mode
     and an impossible min_length, so every capture is rejected deterministically."""
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -74,7 +114,8 @@ def isolated_brain_gate_enforce(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     from surreal_memory.unified_config import get_config
 
     get_config(reload=True)
-    return brain_name
+    yield brain_name
+    await _cleanup_test_brain(brain_name)
 
 
 class TestStopHookIdempotency:
@@ -172,17 +213,21 @@ class TestIdempotencyNegativePaths:
         the hook must still function (capture once, suppress the repeat)."""
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("TMPDIR", "/tmp")
-        monkeypatch.setenv("SURREAL_MEMORY_BRAIN", "idem" + uuid.uuid4().hex[:12])
+        brain_name = "idem" + uuid.uuid4().hex[:12]
+        monkeypatch.setenv("SURREAL_MEMORY_BRAIN", brain_name)
         monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
 
         from surreal_memory.unified_config import get_config
 
         get_config(reload=True)
 
-        result1 = await stop_hook.capture_text(_TEXT_A, project_name=None)
-        assert result1["saved"] == 1
-        result2 = await stop_hook.capture_text(_TEXT_A, project_name=None)
-        assert result2["saved"] == 0
+        try:
+            result1 = await stop_hook.capture_text(_TEXT_A, project_name=None)
+            assert result1["saved"] == 1
+            result2 = await stop_hook.capture_text(_TEXT_A, project_name=None)
+            assert result2["saved"] == 0
+        finally:
+            await _cleanup_test_brain(brain_name)
 
     async def test_corrupt_idempotency_state_fails_open_not_crash(
         self, isolated_brain: str, tmp_path: Path
