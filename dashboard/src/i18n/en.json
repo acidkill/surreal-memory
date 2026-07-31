@@ -54,6 +54,7 @@
     "noThinkingText": "This model produces no thinking text and cannot be mined.",
     "noThinkingShort": "no thinking",
     "backfill": "Backfill (full history)",
+    "reprocess": "Reprocess (rebuild patterns from staged traces)",
     "runMining": "Run mining",
     "miningRunning": "Mining…",
     "miningStarted": "Mining started.",

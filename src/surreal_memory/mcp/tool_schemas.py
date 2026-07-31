@@ -877,6 +877,11 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "type": "boolean",
                     "description": "Scan the full history for mining (mine action)",
                 },
+                "reprocess": {
+                    "type": "boolean",
+                    "description": "Re-open already-processed traces so patterns can be rebuilt "
+                    "from the existing backlog (mine action)",
+                },
                 "dry_run": {
                     "type": "boolean",
                     "description": "Mine as a no-op without writing (mine action)",

@@ -579,6 +579,7 @@ export interface MineRequest {
   backfill?: boolean
   dry_run?: boolean
   models?: string[]
+  reprocess?: boolean
 }
 
 export interface MineResponse {

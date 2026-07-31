@@ -158,6 +158,33 @@ class SurrealDBReasoningTracesMixin:
             ids=[str(t) for t in trace_ids],
         )
 
+    async def reset_reasoning_traces_processed(
+        self,
+        brain_id: str,
+        models: list[str] | None = None,
+    ) -> int:
+        """Re-mark processed traces unprocessed; return rows flipped.
+
+        ``models=None`` resets every model; an empty list is a no-op.
+        """
+        if models is not None and not models:
+            return 0
+        where = "brain_id = $bid AND processed = true"
+        params: dict[str, Any] = {"bid": brain_id}
+        if models:
+            where += " AND model IN $models"
+            params["models"] = [str(m) for m in models]
+        rows = await self._query(
+            f"SELECT count() AS c FROM reasoning_traces WHERE {where} GROUP ALL",
+            **params,
+        )
+        reset = int(rows[0]["c"]) if rows else 0
+        await self._query(
+            f"UPDATE reasoning_traces SET processed = false WHERE {where}",
+            **params,
+        )
+        return reset
+
     async def set_trace_categories(
         self,
         brain_id: str,

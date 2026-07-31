@@ -497,6 +497,31 @@ def _build_trace(
     }
 
 
+async def reset_processed_traces(
+    storage: NeuralStorage,
+    brain_id: str,
+    config: UnifiedConfig,
+) -> int:
+    """Re-mark processed traces unprocessed for the configured mining models.
+
+    The distiller marks EVERY consumed trace processed, including the ones it
+    discarded, so a brain whose pattern fibers were lost has no way back: the
+    transcripts re-scan clean but ingest dedups on trace_hash and distillation
+    only ever reads unprocessed rows. Resetting the flag re-opens that backlog;
+    pattern signatures keep the re-run idempotent.
+
+    ``mining_models`` are fnmatch globs, so they are resolved against the models
+    actually present before being handed to storage, which matches exactly.
+    Empty ``mining_models`` means "all models" (the ingest-side convention).
+    """
+    patterns = config.reasoning_training.mining_models
+    if not patterns:
+        return await storage.reset_reasoning_traces_processed(brain_id, None)
+    present = await storage.get_reasoning_trace_models(brain_id)
+    matched = [m for m in present if _model_matches(m, patterns)]
+    return await storage.reset_reasoning_traces_processed(brain_id, matched)
+
+
 async def ingest_reasoning_traces(
     storage: NeuralStorage,
     brain_id: str,

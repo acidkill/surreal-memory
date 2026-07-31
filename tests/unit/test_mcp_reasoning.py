@@ -195,3 +195,71 @@ async def test_reasoning_unknown_action(tmp_path: Path) -> None:
 
     assert "error" in result
     assert "Unknown action" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_reasoning_mine_reprocess_reopens_the_backlog(tmp_path: Path) -> None:
+    # reprocess re-opens already-processed traces so patterns can be rebuilt.
+    server = _make_server(tmp_path, mining_enabled=True)
+    storage = _storage()
+    reset_mock = AsyncMock(return_value=9)
+    with (
+        patch.object(server, "get_storage", return_value=storage),
+        patch(
+            "surreal_memory.unified_config.create_isolated_storage",
+            new=AsyncMock(return_value=storage),
+        ),
+        patch("surreal_memory.engine.reasoning_miner.reset_processed_traces", new=reset_mock),
+        patch(
+            "surreal_memory.engine.reasoning_miner.ingest_reasoning_traces",
+            new=AsyncMock(
+                return_value=SimpleNamespace(
+                    traces_ingested=1, traces_scanned=1, files_scanned=1, files_total=1
+                )
+            ),
+        ),
+        patch(
+            "surreal_memory.engine.reasoning_distiller.distill_reasoning_patterns",
+            new=AsyncMock(
+                return_value=SimpleNamespace(patterns_learned=3, traces_processed=9, models_seen=1)
+            ),
+        ),
+    ):
+        result = await server.call_tool("smem_reasoning", {"action": "mine", "reprocess": True})
+
+    assert reset_mock.await_count == 1
+    assert result["traces_reset"] == 9
+    assert result["patterns_learned"] == 3
+
+
+@pytest.mark.asyncio
+async def test_reasoning_mine_without_reprocess_does_not_reset(tmp_path: Path) -> None:
+    server = _make_server(tmp_path, mining_enabled=True)
+    storage = _storage()
+    reset_mock = AsyncMock(return_value=0)
+    with (
+        patch.object(server, "get_storage", return_value=storage),
+        patch(
+            "surreal_memory.unified_config.create_isolated_storage",
+            new=AsyncMock(return_value=storage),
+        ),
+        patch("surreal_memory.engine.reasoning_miner.reset_processed_traces", new=reset_mock),
+        patch(
+            "surreal_memory.engine.reasoning_miner.ingest_reasoning_traces",
+            new=AsyncMock(
+                return_value=SimpleNamespace(
+                    traces_ingested=1, traces_scanned=1, files_scanned=1, files_total=1
+                )
+            ),
+        ),
+        patch(
+            "surreal_memory.engine.reasoning_distiller.distill_reasoning_patterns",
+            new=AsyncMock(
+                return_value=SimpleNamespace(patterns_learned=0, traces_processed=1, models_seen=1)
+            ),
+        ),
+    ):
+        result = await server.call_tool("smem_reasoning", {"action": "mine"})
+
+    reset_mock.assert_not_awaited()
+    assert result["traces_reset"] == 0

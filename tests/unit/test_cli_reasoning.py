@@ -244,3 +244,69 @@ def test_mine_applies_overrides(tmp_path: Path) -> None:
     # --backfill must also flow as the real backfill kwarg (full-rescan bypass),
     # not just the scan_lookback_days=0 override.
     assert ingest_mock.await_args.kwargs["backfill"] is True
+
+
+def test_mine_reprocess_reopens_the_backlog(tmp_path: Path) -> None:
+    storage = _storage()
+    reset_mock = AsyncMock(return_value=7)
+    with (
+        patch(f"{CLI}.get_config", MagicMock()),
+        patch(f"{CLI}.get_storage", new=AsyncMock(return_value=storage)),
+        patch(
+            "surreal_memory.unified_config.get_config",
+            return_value=_ucfg(tmp_path, mining_enabled=True),
+        ),
+        patch("surreal_memory.engine.reasoning_miner.reset_processed_traces", new=reset_mock),
+        patch(
+            "surreal_memory.engine.reasoning_miner.ingest_reasoning_traces",
+            new=AsyncMock(
+                return_value=SimpleNamespace(
+                    traces_ingested=0, traces_scanned=0, files_scanned=1, files_total=1
+                )
+            ),
+        ),
+        patch(
+            "surreal_memory.engine.reasoning_distiller.distill_reasoning_patterns",
+            new=AsyncMock(
+                return_value=SimpleNamespace(patterns_learned=2, traces_processed=7, models_seen=1)
+            ),
+        ),
+    ):
+        result = runner.invoke(app, ["reasoning", "mine", "--reprocess", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert reset_mock.await_count == 1
+    assert json.loads(result.output)["traces_reset"] == 7
+
+
+def test_mine_without_reprocess_does_not_reset(tmp_path: Path) -> None:
+    storage = _storage()
+    reset_mock = AsyncMock(return_value=0)
+    with (
+        patch(f"{CLI}.get_config", MagicMock()),
+        patch(f"{CLI}.get_storage", new=AsyncMock(return_value=storage)),
+        patch(
+            "surreal_memory.unified_config.get_config",
+            return_value=_ucfg(tmp_path, mining_enabled=True),
+        ),
+        patch("surreal_memory.engine.reasoning_miner.reset_processed_traces", new=reset_mock),
+        patch(
+            "surreal_memory.engine.reasoning_miner.ingest_reasoning_traces",
+            new=AsyncMock(
+                return_value=SimpleNamespace(
+                    traces_ingested=1, traces_scanned=1, files_scanned=1, files_total=1
+                )
+            ),
+        ),
+        patch(
+            "surreal_memory.engine.reasoning_distiller.distill_reasoning_patterns",
+            new=AsyncMock(
+                return_value=SimpleNamespace(patterns_learned=0, traces_processed=1, models_seen=1)
+            ),
+        ),
+    ):
+        result = runner.invoke(app, ["reasoning", "mine", "--json"])
+
+    assert result.exit_code == 0, result.output
+    reset_mock.assert_not_awaited()
+    assert json.loads(result.output)["traces_reset"] == 0

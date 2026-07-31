@@ -157,6 +157,29 @@ class SQLiteReasoningTracesMixin:
         )
         await conn.commit()
 
+    async def reset_reasoning_traces_processed(
+        self,
+        brain_id: str,
+        models: list[str] | None = None,
+    ) -> int:
+        """Re-mark processed traces unprocessed; return rows flipped.
+
+        ``models=None`` resets every model; an empty list is a no-op.
+        """
+        if models is not None and not models:
+            return 0
+        conn = self._ensure_conn()
+        query = "UPDATE reasoning_traces SET processed = 0 WHERE brain_id = ? AND processed = 1"
+        params: list[Any] = [brain_id]
+        if models:
+            placeholders = ",".join("?" for _ in models)
+            # Table/column names are hardcoded — only placeholders are interpolated.
+            query += f" AND model IN ({placeholders})"
+            params.extend(str(m) for m in models)
+        cursor = await conn.execute(query, params)
+        await conn.commit()
+        return int(cursor.rowcount or 0)
+
     async def set_trace_categories(
         self,
         brain_id: str,

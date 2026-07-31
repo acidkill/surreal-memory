@@ -1280,6 +1280,21 @@ class NeuralStorage(ABC):
         """Mark reasoning traces as processed by id. Default: no-op."""
         return None
 
+    async def reset_reasoning_traces_processed(
+        self,
+        brain_id: str,
+        models: list[str] | None = None,
+    ) -> int:
+        """Re-mark processed traces unprocessed so distillation can revisit them.
+
+        ``models=None`` resets every model; an empty list resets nothing — a
+        resolved model filter that matched nothing must never widen into a
+        blanket reset. Returns the number of rows actually flipped (rows that
+        were already unprocessed are excluded, so the count means the same on
+        every backend). Default: 0.
+        """
+        return 0
+
     async def set_trace_categories(
         self,
         brain_id: str,

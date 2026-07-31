@@ -82,6 +82,7 @@ export function MiningConfigCard({ status }: Props) {
   const running = status.mining.running
 
   const [backfill, setBackfill] = useState(false)
+  const [reprocess, setReprocess] = useState(false)
   const [wipeModel, setWipeModel] = useState<string | null>(null)
 
   const confirmWipe = () => {
@@ -119,7 +120,7 @@ export function MiningConfigCard({ status }: Props) {
 
   const runMining = () => {
     triggerMining.mutate(
-      { backfill },
+      { backfill, reprocess },
       {
         onSuccess: () => toast.success(t("reasoning.miningStarted")),
         onError: (err) => {
@@ -214,6 +215,15 @@ export function MiningConfigCard({ status }: Props) {
               className="size-4 cursor-pointer"
             />
             <span>{t("reasoning.backfill")}</span>
+          </label>
+          <label className="flex cursor-pointer items-center gap-2 text-xs">
+            <input
+              type="checkbox"
+              checked={reprocess}
+              onChange={(e) => setReprocess(e.target.checked)}
+              className="size-4 cursor-pointer"
+            />
+            <span>{t("reasoning.reprocess")}</span>
           </label>
           <Button
             size="sm"

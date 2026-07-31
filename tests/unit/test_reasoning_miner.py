@@ -20,6 +20,7 @@ import pytest
 from surreal_memory.engine.reasoning_miner import (
     ingest_reasoning_traces,
     normalize_model,
+    reset_processed_traces,
     scan_transcripts,
 )
 from surreal_memory.engine.reasoning_progress import MiningProgress
@@ -673,3 +674,71 @@ async def test_ingest_state_survives_a_crash_mid_run(tmp_path: Path) -> None:
     only_key = next(iter(saved))
     assert "proj-a" in only_key
     assert not any("proj-b" in k for k in saved)
+
+
+# ── reset_processed_traces ────────────────────────────────────────────────────
+
+
+def _trace_row(trace_hash: str, model: str) -> dict[str, Any]:
+    return {
+        "trace_hash": trace_hash,
+        "model": model,
+        "session_id": "s1",
+        "project": "proj",
+        "task_context": "ctx",
+        "content": "restate the goal, then verify the result",
+        "content_chars": 40,
+        "category": "",
+        "created_at": "2026-03-01T10:00:00",
+    }
+
+
+async def _staged_and_processed(models: list[str]) -> InMemoryStorage:
+    storage = InMemoryStorage()
+    storage.set_brain("b1")
+    await storage.insert_reasoning_traces(
+        "b1", [_trace_row(f"h{i}", m) for i, m in enumerate(models)]
+    )
+    rows = await storage.get_unprocessed_reasoning_traces("b1")
+    await storage.mark_reasoning_traces_processed("b1", [r["id"] for r in rows])
+    return storage
+
+
+async def test_reset_processed_resolves_mining_globs(tmp_path: Path) -> None:
+    # mining_models are fnmatch globs; storage matches models exactly, so the
+    # globs must be resolved against the models actually present first.
+    storage = await _staged_and_processed(["claude-fable-5", "claude-opus-5", "claude-sonnet-5"])
+    cfg = UnifiedConfig(
+        data_dir=tmp_path / ".surrealmemory",
+        current_brain="default",
+        reasoning_training=_cfg(mining_models=("claude-fable-*", "claude-opus-5")),
+    )
+
+    assert await reset_processed_traces(storage, "b1", cfg) == 2
+    reopened = {r["model"] for r in await storage.get_unprocessed_reasoning_traces("b1")}
+    assert reopened == {"claude-fable-5", "claude-opus-5"}
+
+
+async def test_reset_processed_without_mining_models_resets_all(tmp_path: Path) -> None:
+    storage = await _staged_and_processed(["claude-fable-5", "claude-opus-5"])
+    cfg = UnifiedConfig(
+        data_dir=tmp_path / ".surrealmemory",
+        current_brain="default",
+        reasoning_training=_cfg(mining_models=()),
+    )
+
+    assert await reset_processed_traces(storage, "b1", cfg) == 2
+    assert len(await storage.get_unprocessed_reasoning_traces("b1")) == 2
+
+
+async def test_reset_processed_matching_no_present_model_is_a_noop(tmp_path: Path) -> None:
+    # Globs that match nothing present must not widen into a blanket reset.
+    storage = await _staged_and_processed(["claude-fable-5"])
+    cfg = UnifiedConfig(
+        data_dir=tmp_path / ".surrealmemory",
+        current_brain="default",
+        reasoning_training=_cfg(mining_models=("gpt-*",)),
+    )
+
+    assert await reset_processed_traces(storage, "b1", cfg) == 0
+    assert await storage.get_unprocessed_reasoning_traces("b1") == []

@@ -267,3 +267,95 @@ async def test_empty_trace_hash_is_skipped(storage: SQLiteStorage) -> None:
     assert n == 1
     rows = await storage.get_unprocessed_reasoning_traces(BRAIN)
     assert [r["trace_hash"] for r in rows] == ["h1"]
+
+
+# ── reset_reasoning_traces_processed ──────────────────────────────────────────
+
+
+async def _process_all(storage: SQLiteStorage, brain: str = BRAIN) -> list:
+    rows = await storage.get_unprocessed_reasoning_traces(brain)
+    await storage.mark_reasoning_traces_processed(brain, [r["id"] for r in rows])
+    return rows
+
+
+async def test_reset_processed_reopens_every_model(storage: SQLiteStorage) -> None:
+    await storage.insert_reasoning_traces(
+        BRAIN,
+        [
+            _trace("h1", model="claude-fable-5"),
+            _trace("h2", model="claude-opus-5"),
+            _trace("h3", model="claude-opus-5"),
+        ],
+    )
+    await _process_all(storage)
+    assert await storage.get_unprocessed_reasoning_traces(BRAIN) == []
+
+    assert await storage.reset_reasoning_traces_processed(BRAIN) == 3
+    assert len(await storage.get_unprocessed_reasoning_traces(BRAIN)) == 3
+
+
+async def test_reset_processed_honors_model_filter(storage: SQLiteStorage) -> None:
+    await storage.insert_reasoning_traces(
+        BRAIN,
+        [_trace("h1", model="claude-fable-5"), _trace("h2", model="claude-opus-5")],
+    )
+    await _process_all(storage)
+
+    assert await storage.reset_reasoning_traces_processed(BRAIN, ["claude-opus-5"]) == 1
+    remaining = await storage.get_unprocessed_reasoning_traces(BRAIN)
+    assert [r["model"] for r in remaining] == ["claude-opus-5"]
+
+
+async def test_reset_processed_counts_only_flipped_rows(storage: SQLiteStorage) -> None:
+    await storage.insert_reasoning_traces(BRAIN, [_trace("h1"), _trace("h2")])
+    rows = await storage.get_unprocessed_reasoning_traces(BRAIN)
+    await storage.mark_reasoning_traces_processed(BRAIN, [rows[0]["id"]])
+    # Only the one processed row is a reset; the already-unprocessed one is not.
+    assert await storage.reset_reasoning_traces_processed(BRAIN) == 1
+
+
+async def test_reset_processed_empty_model_list_is_a_noop(storage: SQLiteStorage) -> None:
+    # A resolved model filter that matched nothing must never widen into a
+    # blanket reset — that would re-open every other model's backlog.
+    await storage.insert_reasoning_traces(BRAIN, [_trace("h1")])
+    await _process_all(storage)
+    assert await storage.reset_reasoning_traces_processed(BRAIN, []) == 0
+    assert await storage.get_unprocessed_reasoning_traces(BRAIN) == []
+
+
+async def test_reset_processed_is_brain_scoped(storage: SQLiteStorage) -> None:
+    await storage._ensure_conn().execute(
+        "INSERT OR IGNORE INTO brains (id, name, config, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        ("other", "other", "{}", "2026-01-01T00:00:00", "2026-01-01T00:00:00"),
+    )
+    await storage._ensure_conn().commit()
+    await storage.insert_reasoning_traces(BRAIN, [_trace("h1")])
+    await storage.insert_reasoning_traces("other", [_trace("h1")])
+    await _process_all(storage)
+    await _process_all(storage, "other")
+
+    assert await storage.reset_reasoning_traces_processed(BRAIN) == 1
+    assert await storage.get_unprocessed_reasoning_traces("other") == []
+
+
+async def test_reset_processed_in_memory() -> None:
+    # The in-memory backend is a real, selectable production backend — cover it too.
+    from surreal_memory.storage.memory_store import InMemoryStorage
+
+    store = InMemoryStorage()
+    store.set_brain(BRAIN)
+    await store.insert_reasoning_traces(
+        BRAIN,
+        [_trace("h1", model="claude-fable-5"), _trace("h2", model="claude-opus-5")],
+    )
+    rows = await store.get_unprocessed_reasoning_traces(BRAIN)
+    await store.mark_reasoning_traces_processed(BRAIN, [r["id"] for r in rows])
+
+    assert await store.reset_reasoning_traces_processed(BRAIN, []) == 0
+    assert await store.reset_reasoning_traces_processed(BRAIN, ["claude-fable-5"]) == 1
+    assert [r["model"] for r in await store.get_unprocessed_reasoning_traces(BRAIN)] == [
+        "claude-fable-5"
+    ]
+    assert await store.reset_reasoning_traces_processed(BRAIN) == 1
+    assert len(await store.get_unprocessed_reasoning_traces(BRAIN)) == 2

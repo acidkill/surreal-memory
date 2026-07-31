@@ -38,6 +38,14 @@ class _RTStore(SurrealDBReasoningTracesMixin):
         c = self.cfg
         if sql.startswith("UPDATE reasoning_traces SET processed = true"):
             return []
+        if sql.startswith("UPDATE reasoning_traces SET processed = false"):
+            return []
+        if sql.startswith("SELECT count() AS c") and sql.endswith(
+            # Reset's count-select, both shapes. Checked before prune's, which
+            # shares the prefix but carries a created_at cutoff.
+            ("AND processed = true GROUP ALL", "AND model IN $models GROUP ALL")
+        ):
+            return [{"c": c.get("reset_count", 0)}]
         if sql.startswith("UPDATE reasoning_traces SET category"):
             return []
         if sql.startswith("DELETE reasoning_traces"):
@@ -246,3 +254,34 @@ async def test_insert_skips_empty_trace_hash() -> None:
     n = await store.insert_reasoning_traces("default", [_tr(""), _tr("h1")])
     assert n == 1
     assert {data["trace_hash"] for _, data in store.inserts} == {"h1"}
+
+
+# ── reset_reasoning_traces_processed ──────────────────────────────────────────
+
+
+async def test_reset_processed_counts_then_updates() -> None:
+    store = _RTStore(reset_count=7)
+    assert await store.reset_reasoning_traces_processed("default") == 7
+
+    counted, updated = store.queries
+    assert counted[0].startswith("SELECT count() AS c FROM reasoning_traces")
+    assert updated[0] == (
+        "UPDATE reasoning_traces SET processed = false WHERE brain_id = $bid AND processed = true"
+    )
+    assert counted[1] == updated[1] == {"bid": "default"}
+
+
+async def test_reset_processed_scopes_to_models() -> None:
+    store = _RTStore(reset_count=2)
+    assert await store.reset_reasoning_traces_processed("default", ["claude-opus-5"]) == 2
+
+    sql, params = store.queries[-1]
+    assert "AND model IN $models" in sql
+    assert params == {"bid": "default", "models": ["claude-opus-5"]}
+
+
+async def test_reset_processed_empty_model_list_never_queries() -> None:
+    # An empty resolved filter must not fall through to a blanket reset.
+    store = _RTStore()
+    assert await store.reset_reasoning_traces_processed("default", []) == 0
+    assert store.queries == []

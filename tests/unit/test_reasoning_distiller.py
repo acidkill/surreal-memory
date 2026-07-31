@@ -546,3 +546,72 @@ class TestLLMNamingIsWiredIn:
         assert fibers
         titles = [str(f.metadata.get("_reasoning_title", "")) for f in fibers]
         assert not any("llm-named" in t for t in titles)
+
+
+# ── reprocess: rebuilding patterns from an already-processed backlog ───────────
+
+
+async def test_reset_lets_distillation_revisit_a_drained_backlog(
+    tmp_path: Path, no_embedder: None
+) -> None:
+    # The distiller marks EVERY consumed trace processed, so a brain that lost
+    # its pattern fibers has no way back — re-mining finds nothing unprocessed.
+    storage = InMemoryStorage()
+    storage.set_brain(BRAIN)
+    await _seed(storage, "claude-fable-5", _DEBUG_TRACES)
+    # Long retention: this test is about the reset, not the post-run prune
+    # (pinned separately below).
+    cfg = _ucfg(tmp_path, retention_days=100_000)
+    first = await distill_reasoning_patterns(storage, BRAIN, cfg)
+    assert first.patterns_learned == 1
+    assert await storage.get_unprocessed_reasoning_traces(BRAIN) == []
+
+    # Simulate the loss: patterns gone, traces still staged but all processed.
+    for fiber in await storage.find_fibers(metadata_key="_reasoning_pattern", limit=100):
+        await storage.delete_fiber(str(fiber.id))
+    stuck = await distill_reasoning_patterns(storage, BRAIN, cfg)
+    assert (stuck.patterns_learned, stuck.traces_processed) == (0, 0)
+
+    await storage.reset_reasoning_traces_processed(BRAIN)
+    rebuilt = await distill_reasoning_patterns(storage, BRAIN, cfg)
+
+    assert rebuilt.patterns_learned == 1
+    cov = await reasoning_coverage(storage, "claude-fable-5", cfg)
+    assert cov["covered"]["debugging"] is True
+
+
+async def test_reset_then_redistill_does_not_duplicate_patterns(
+    tmp_path: Path, no_embedder: None
+) -> None:
+    # Re-opening the backlog must be safe to repeat: pattern signatures make the
+    # second pass a no-op rather than a duplicate-maker.
+    storage = InMemoryStorage()
+    storage.set_brain(BRAIN)
+    await _seed(storage, "claude-fable-5", _DEBUG_TRACES)
+    cfg = _ucfg(tmp_path, retention_days=100_000)
+    await distill_reasoning_patterns(storage, BRAIN, cfg)
+    before = len(await storage.find_fibers(metadata_key="_reasoning_pattern", limit=100))
+
+    await storage.reset_reasoning_traces_processed(BRAIN)
+    second = await distill_reasoning_patterns(storage, BRAIN, cfg)
+
+    after = len(await storage.find_fibers(metadata_key="_reasoning_pattern", limit=100))
+    assert after == before
+    assert second.patterns_learned == 0
+
+
+async def test_reset_cannot_recover_traces_the_retention_prune_removed(
+    tmp_path: Path, no_embedder: None
+) -> None:
+    # A distill run prunes processed traces past retention, so reprocess can only
+    # rebuild from what is still staged; anything older needs a backfill re-ingest
+    # from the transcripts. Seeded traces are older than the 1-day retention here.
+    storage = InMemoryStorage()
+    storage.set_brain(BRAIN)
+    await _seed(storage, "claude-fable-5", _DEBUG_TRACES)
+    cfg = _ucfg(tmp_path, retention_days=1)
+
+    await distill_reasoning_patterns(storage, BRAIN, cfg)
+
+    assert await storage.get_reasoning_trace_models(BRAIN) == []
+    assert await storage.reset_reasoning_traces_processed(BRAIN) == 0

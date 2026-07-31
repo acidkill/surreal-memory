@@ -900,6 +900,23 @@ class InMemoryStorage(
             if r["id"] in ids:
                 r["processed"] = True
 
+    async def reset_reasoning_traces_processed(
+        self, brain_id: str, models: list[str] | None = None
+    ) -> int:
+        """Re-mark processed traces unprocessed; return rows flipped.
+
+        ``models=None`` resets every model; an empty list is a no-op.
+        """
+        if models is not None and not models:
+            return 0
+        wanted = set(models) if models else None
+        reset = 0
+        for r in self._reasoning_traces[brain_id]:
+            if r["processed"] and (wanted is None or r["model"] in wanted):
+                r["processed"] = False
+                reset += 1
+        return reset
+
     async def set_trace_categories(self, brain_id: str, categories: dict[Any, str]) -> None:
         """Set category labels on reasoning traces (id -> category)."""
         for r in self._reasoning_traces[brain_id]:

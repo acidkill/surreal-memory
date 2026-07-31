@@ -120,6 +120,13 @@ def reasoning_mine(
     models: Annotated[
         str | None, typer.Option("--models", help="Comma-separated source models to restrict to")
     ] = None,
+    reprocess: Annotated[
+        bool,
+        typer.Option(
+            "--reprocess",
+            help="Re-open already-processed traces so patterns can be rebuilt from the backlog",
+        ),
+    ] = False,
     force: Annotated[
         bool, typer.Option("--force", "-f", help="Run even if mining is disabled in config")
     ] = False,
@@ -130,13 +137,17 @@ def reasoning_mine(
     Examples:
         smem reasoning mine
         smem reasoning mine --backfill --models claude-fable-5,claude-sonnet-5
+        smem reasoning mine --reprocess   # rebuild patterns from traces already staged
     """
 
     async def _mine() -> None:
         from dataclasses import replace as dc_replace
 
         from surreal_memory.engine.reasoning_distiller import distill_reasoning_patterns
-        from surreal_memory.engine.reasoning_miner import ingest_reasoning_traces
+        from surreal_memory.engine.reasoning_miner import (
+            ingest_reasoning_traces,
+            reset_processed_traces,
+        )
         from surreal_memory.engine.reasoning_progress import (
             PHASE_DISTILLING,
             PHASE_INGESTING,
@@ -204,6 +215,12 @@ def reasoning_mine(
                     _prog["model"] = p.current_model
                     typer.echo(f"  distilling {p.current_model} ({p.models_done}/{p.models_total})")
 
+            traces_reset = 0
+            if reprocess:
+                traces_reset = await reset_processed_traces(storage, brain_id, run_cfg)
+                if not json_output:
+                    typer.echo(f"Re-opened {traces_reset} processed trace(s) for distillation.")
+
             ingest = await ingest_reasoning_traces(
                 storage, brain_id, run_cfg, backfill=backfill, progress=_progress
             )
@@ -212,6 +229,7 @@ def reasoning_mine(
             )
             result = {
                 "traces_ingested": ingest.traces_ingested,
+                "traces_reset": traces_reset,
                 "patterns_learned": distill.patterns_learned,
                 "files_scanned": ingest.files_scanned,
             }

@@ -127,7 +127,10 @@ class ReasoningHandler:
         from dataclasses import replace as dc_replace
 
         from surreal_memory.engine.reasoning_distiller import distill_reasoning_patterns
-        from surreal_memory.engine.reasoning_miner import ingest_reasoning_traces
+        from surreal_memory.engine.reasoning_miner import (
+            ingest_reasoning_traces,
+            reset_processed_traces,
+        )
         from surreal_memory.unified_config import create_isolated_storage
 
         rt = self.config.reasoning_training
@@ -154,10 +157,14 @@ class ReasoningHandler:
         storage = await create_isolated_storage(brain_id)
         owns_storage = self.config.storage_backend == "surrealdb"
         try:
+            traces_reset = 0
+            if args.get("reprocess"):
+                traces_reset = await reset_processed_traces(storage, brain_id, run_cfg)
             ingest = await ingest_reasoning_traces(storage, brain_id, run_cfg, backfill=backfill)
             distill = await distill_reasoning_patterns(storage, brain_id, run_cfg, drain=True)
             return {
                 "traces_ingested": ingest.traces_ingested,
+                "traces_reset": traces_reset,
                 "patterns_learned": distill.patterns_learned,
                 "files_scanned": ingest.files_scanned,
                 "files_total": ingest.files_total,

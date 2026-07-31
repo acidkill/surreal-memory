@@ -19,6 +19,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import replace as dc_replace
 from typing import Annotated, Any
 
@@ -70,11 +72,9 @@ def _brain_scope(brain: Brain) -> str:
     key, while every reasoning row -- traces, pattern fibers, their neurons and
     synapses -- is written under the brain *name*. Passing the UUID into
     ``create_isolated_storage()`` binds the whole mining job to a scope nothing
-    else reads, so the patterns are mined into a brain recall never sees.
-
-    Measured on the live brain before this was fixed: 196 pattern fibers,
-    92 neurons, 84 synapses and 6070 reasoning traces stranded under the UUID
-    while 10905 traces sat under the name.
+    else reads, so the patterns are mined into a brain recall never sees — and
+    the rows stranded there are invisible to every later read, including the
+    cleanup that eventually removes them.
 
     Deliberately does NOT consult ``storage.brain_id``: that reports whatever the
     shared singleton is currently bound to, which is the same class of ambient
@@ -194,6 +194,13 @@ class MineRequest(BaseModel):
         False, description="Don't write — report as a no-op (parity with consolidation)"
     )
     models: list[str] | None = Field(None, description="Restrict mining to these source models")
+    reprocess: bool = Field(
+        False,
+        description=(
+            "Re-open already-processed traces so patterns can be rebuilt from the"
+            " existing backlog (ignored when dry_run is set)"
+        ),
+    )
 
 
 class MineResponse(BaseModel):
@@ -277,6 +284,37 @@ async def _fetch_pattern_fibers(storage: NeuralStorage) -> list[Any]:
     return await storage.find_fibers(metadata_key="_reasoning_pattern", limit=_PATTERN_FETCH_LIMIT)
 
 
+@asynccontextmanager
+async def _storage_for_scope(storage: NeuralStorage, scope: str) -> AsyncIterator[NeuralStorage]:
+    """Yield a storage whose implicitly-bound brain IS the request's scope.
+
+    Trace reads take an explicit ``brain_id``, but the fiber API does not:
+    ``find_fibers`` / ``get_fiber`` / ``delete_fiber`` filter on whatever brain
+    the storage instance is bound to, and the app's ``get_storage`` hands out
+    the process-wide instance bound at startup without rebinding it. A request
+    carrying an ``X-Brain-ID`` other than that one would therefore read traces
+    from one brain and patterns from another in a single response.
+
+    The common case (no header, or a header naming the bound brain) costs
+    nothing and reuses the shared instance. Otherwise an isolated storage is
+    opened on the scope and closed on the same terms as the mining job: only
+    SurrealDB hands out a private instance to close; the other backends return
+    the shared one, which must not be closed out from under concurrent requests.
+    """
+    if storage.brain_id == scope:
+        yield storage
+        return
+
+    from surreal_memory.unified_config import create_isolated_storage, get_config
+
+    scoped = await create_isolated_storage(scope)
+    try:
+        yield scoped
+    finally:
+        if get_config().storage_backend == "surrealdb":
+            await scoped.close()
+
+
 # ── GET /status ───────────────────────────────────────────────────────────────
 
 
@@ -294,7 +332,8 @@ async def get_status(
 
     stats = await storage.get_reasoning_stats(brain_id)
     by_model_traces: dict[str, Any] = stats.get("by_model", {})
-    fibers = await _fetch_pattern_fibers(storage)
+    async with _storage_for_scope(storage, brain_id) as scoped:
+        fibers = await _fetch_pattern_fibers(scoped)
 
     # Per-model pattern counts and per-category coverage from one fiber fetch.
     pattern_counts: dict[str, int] = {}
@@ -480,7 +519,11 @@ async def update_config(body: ReasoningConfigUpdate) -> dict[str, Any]:
 
 
 async def _run_mining(
-    brain_id: str, backfill: bool, dry_run: bool, models: list[str] | None
+    brain_id: str,
+    backfill: bool,
+    dry_run: bool,
+    models: list[str] | None,
+    reprocess: bool = False,
 ) -> None:
     """Background mining job: ingest reasoning traces then distill patterns.
 
@@ -490,9 +533,18 @@ async def _run_mining(
     (create_isolated_storage) so a concurrently-served request's set_brain() on
     the shared SurrealDB singleton can't redirect this job's graph writes into
     the wrong brain.
+
+    ``reprocess`` re-opens the already-processed backlog first, so a brain that
+    lost its pattern fibers can rebuild them from traces it already holds. It
+    runs BEFORE ingest: the reset is cheap and idempotent, so a failure aborts
+    ahead of the expensive transcript scan, and ingest only ever inserts
+    unprocessed rows — leaving one consistent backlog for distillation.
     """
     from surreal_memory.engine.reasoning_distiller import distill_reasoning_patterns
-    from surreal_memory.engine.reasoning_miner import ingest_reasoning_traces
+    from surreal_memory.engine.reasoning_miner import (
+        ingest_reasoning_traces,
+        reset_processed_traces,
+    )
     from surreal_memory.unified_config import create_isolated_storage, get_config
 
     state = _mining_states.setdefault(brain_id, _idle_mining_state())
@@ -538,6 +590,11 @@ async def _run_mining(
         owns_storage = config.storage_backend == "surrealdb"
         try:
             logger.info("reasoning mining started for brain %s (backfill=%s)", brain_id, backfill)
+            if reprocess:
+                n_reset = await reset_processed_traces(storage, brain_id, run_config)
+                logger.info(
+                    "reasoning reprocess for brain %s: %d traces re-opened", brain_id, n_reset
+                )
             state["phase"] = PHASE_SCANNING
             ingest = await ingest_reasoning_traces(
                 storage, brain_id, run_config, backfill=backfill, progress=_on_progress
@@ -624,7 +681,7 @@ async def trigger_mining(
     state.update(running=True, started_at=utcnow().isoformat(), dry_run=body.dry_run)
     _mining_states[scope] = state
     _mining_tasks[scope] = asyncio.create_task(
-        _run_mining(scope, body.backfill, body.dry_run, models)
+        _run_mining(scope, body.backfill, body.dry_run, models, reprocess=body.reprocess)
     )
     return MineResponse(status="started", mining=MiningJobState(**state))
 
@@ -642,7 +699,8 @@ async def list_patterns(
     offset: int = Query(0, ge=0),
 ) -> PatternsListResponse:
     """List learned reasoning patterns (filter by source model / category)."""
-    fibers = await _fetch_pattern_fibers(storage)
+    async with _storage_for_scope(storage, _brain_scope(brain)) as scoped:
+        fibers = await _fetch_pattern_fibers(scoped)
     summaries = [_to_summary(f) for f in fibers]
     if model:
         summaries = [s for s in summaries if s.source_model == model]
@@ -666,7 +724,8 @@ async def get_pattern(
     brain: Annotated[Brain, Depends(get_brain)],
 ) -> PatternDetail:
     """Return one learned pattern with its full strategy/description."""
-    fiber = await storage.get_fiber(pattern_id)
+    async with _storage_for_scope(storage, _brain_scope(brain)) as scoped:
+        fiber = await scoped.get_fiber(pattern_id)
     if fiber is None or not _pattern_meta(fiber).get("_reasoning_pattern"):
         raise HTTPException(status_code=404, detail="Pattern not found")
     md = _pattern_meta(fiber)
@@ -695,10 +754,11 @@ async def delete_pattern(
     The pattern's private title-neuron is currently left as a harmless graph orphan
     (follow-up ticket); the shared reasoning_category neuron is kept by design.
     """
-    fiber = await storage.get_fiber(pattern_id)
-    if fiber is None or not _pattern_meta(fiber).get("_reasoning_pattern"):
-        raise HTTPException(status_code=404, detail="Pattern not found")
-    deleted = await storage.delete_fiber(pattern_id)
+    async with _storage_for_scope(storage, _brain_scope(brain)) as scoped:
+        fiber = await scoped.get_fiber(pattern_id)
+        if fiber is None or not _pattern_meta(fiber).get("_reasoning_pattern"):
+            raise HTTPException(status_code=404, detail="Pattern not found")
+        deleted = await scoped.delete_fiber(pattern_id)
     return DeleteResponse(deleted=1 if deleted else 0)
 
 
@@ -719,12 +779,16 @@ async def delete_patterns_by_model(
     """
     if not model.strip():
         return DeleteResponse(deleted=0)  # never a blanket wipe
-    fibers = await _fetch_pattern_fibers(storage)
-    victims = [f for f in fibers if _pattern_meta(f).get("_source_model") == model]
     deleted = 0
-    for f in victims:
-        if await storage.delete_fiber(str(f.id)):
-            deleted += 1
+    # Fetch AND delete on the same scoped storage: delete_fiber is brain-filtered
+    # too, so deleting through a differently-bound storage would silently miss
+    # every fiber it just listed.
+    async with _storage_for_scope(storage, _brain_scope(brain)) as scoped:
+        fibers = await _fetch_pattern_fibers(scoped)
+        victims = [f for f in fibers if _pattern_meta(f).get("_source_model") == model]
+        for f in victims:
+            if await scoped.delete_fiber(str(f.id)):
+                deleted += 1
     return DeleteResponse(deleted=deleted)
 
 
