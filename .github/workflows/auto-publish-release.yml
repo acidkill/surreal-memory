@@ -19,6 +19,7 @@ on:
 
 permissions:
   contents: write
+  actions: write  # to dispatch release.yml below
 
 jobs:
   publish-draft:
@@ -50,6 +51,7 @@ jobs:
           fi
 
       - name: Publish the matching draft release, if one exists
+        id: publish
         if: steps.version.outputs.bumped != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -60,8 +62,29 @@ jobs:
           if [ "$IS_DRAFT" = "true" ]; then
             echo "Publishing draft release $TAG"
             gh release edit "$TAG" --draft=false
+            echo "published=true" >> "$GITHUB_OUTPUT"
           elif [ -z "$IS_DRAFT" ]; then
             echo "No release named $TAG exists yet — nothing to publish"
+            echo "published=false" >> "$GITHUB_OUTPUT"
           else
             echo "$TAG is already published — nothing to do"
+            echo "published=false" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Dispatch release.yml explicitly
+        if: steps.publish.outputs.published == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: v${{ steps.version.outputs.bumped }}
+        run: |
+          set -euo pipefail
+          # Publishing the draft above pushes the real tag, but it does so via
+          # this job's own GITHUB_TOKEN — and GitHub does not let a
+          # GITHUB_TOKEN-authored event trigger ANOTHER workflow run, precisely
+          # to prevent infinite trigger chains. So `release.yml`'s
+          # `on: push: tags:` never fires from that publish, even though the
+          # tag is real. An explicit `workflow_dispatch` call is NOT subject to
+          # that same restriction, so dispatch release.yml directly against the
+          # tag ref: actions/checkout there has no ref: override, so GITHUB_REF
+          # resolves to this tag exactly as if it had been pushed normally.
+          gh workflow run release.yml --ref "$TAG"

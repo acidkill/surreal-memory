@@ -4,6 +4,14 @@ on:
   push:
     tags:
       - "v*"
+  # Lets this be dispatched explicitly against a tag ref (actions/checkout with
+  # no ref: override resolves GITHUB_REF to whatever ref triggered the run, so
+  # `gh workflow run release.yml --ref vX.Y.Z` reproduces a real tag push with
+  # no changes needed below). Exists because a GITHUB_TOKEN-driven tag creation
+  # (e.g. publishing a draft release from another Action) does NOT fire
+  # `push: tags:` — GitHub's own anti-recursion rule for the default token —
+  # so auto-publish-release.yml dispatches this explicitly as a fallback.
+  workflow_dispatch: {}
 
 jobs:
   # ── Gate: validate version consistency ──────────────────────────
