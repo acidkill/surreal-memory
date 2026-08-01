@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.20.0] — The embedding path stops being outperformed by its own fallback
 
+### Community — Spanish README (#127)
+
+Thanks to [WebBrain](https://github.com/webbrain-one) for this release's first outside
+contribution: a full Spanish translation, `README.es-ES.md`, alongside the original.
+
 ### Pattern clustering used a threshold that was never calibrated
 
 Distillation groups traces into patterns by cosine similarity when an embedder is available, and

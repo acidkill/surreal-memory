@@ -12,6 +12,8 @@ backends, and `storage_backend` still defaults to `sqlite` (SQLite schema v40) f
 have not pointed at a SurrealDB instance. Earlier revisions of this line conflated the two schema
 numbers and called SQLite a fixture; both claims contradicted the code.
 **Architecture**: Spreading activation reflex engine, biological memory model, MCP standard.
+**Community**: Thanks to [WebBrain](https://github.com/webbrain-one) for the project's first
+outside contribution — a full Spanish translation, `README.es-ES.md` (#127).
 
 ---
 
