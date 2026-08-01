@@ -5,6 +5,75 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.20.0] — The embedding path stops being outperformed by its own fallback
+
+### Pattern clustering used a threshold that was never calibrated
+
+Distillation groups traces into patterns by cosine similarity when an embedder is available, and
+falls back to move-set Jaccard when one is not. The cosine threshold was a module constant — and
+because `_get_embedder()` read the environment instead of the configured embedder, it could return
+nothing on a correctly configured machine, so the embedding branch never ran there and the constant
+was never exercised against a real embedding model.
+
+Embedding models do not share a similarity scale. Measured against a local bge-m3 corpus, the
+shipped constant sat **above the 99th percentile** of pairwise trace similarity in every category:
+the largest categories produced no clusters at all, and the embedding path yielded roughly a fifth
+of what the move-set fallback it is meant to supersede produced over the same traces. Mining
+reported patterns learned while whole categories stayed empty, which reads as "not enough material"
+rather than as a threshold defect.
+
+The threshold is now `reasoning_training.cluster_cosine` (default `0.75`, clamped to `0.05`–`1.0`),
+so it travels with the configured embedder instead of being frozen in the module. The floor exists
+because single-linkage clustering collapses into a single component as the threshold approaches the
+corpus baseline — a very low value yields fewer patterns, not more.
+
+If a brain's category coverage looks stuck, re-run distillation after checking this value; a raised
+`pattern_targets` cannot help when nothing clusters in the first place.
+
+```toml
+[reasoning_training]
+cluster_cosine = 0.75
+```
+
+A non-finite value in that field is rejected rather than clamped: `NaN` propagates through the
+bounds check into the FLOOR, which would merge every trace into a single cluster instead of falling
+back to a usable threshold.
+
+### The embedder ignored its own configuration
+
+`_get_embedder()` probed the environment rather than reading `[embedding]`, so a configured local
+provider was skipped whenever an unrelated cloud API key happened to be present, and classification
+silently degraded to keyword matching. It now reads the configuration first and delegates to the
+canonical provider factory, falling back to environment probing only when embedding is disabled.
+
+`[embedding] endpoint` joins the reranker's equivalent knob, so a local OpenAI-compatible embedding
+server can be pinned in `config.toml` instead of only through an environment variable.
+
+### A validated endpoint was not the endpoint that got connected to
+
+The loopback gate is meant to guarantee that reasoning traces — private user data — never leave the
+machine. For two providers the value it checked had no causal connection to the URL the HTTP client
+actually opened, so the gate passed while requests went to a remote host:
+
+- **openrouter**: the endpoint was loopback-checked, but the provider was then built through the
+  factory, which supplies no `base_url` and falls back to a hardcoded remote default. No attacker
+  required — just the documented configuration surface.
+- **openai**: `[embedding] endpoint` is read from `config.toml` first, but the client resolved its
+  own base URL from the environment variable alone. A loopback endpoint set only in the config file
+  — exactly what that field is for — passed the check and then fell back to the hosted default.
+- **ollama**: short-circuit evaluation meant the check was never called for this provider at all,
+  and its base URL comes from `OLLAMA_BASE_URL`, which nothing validated.
+
+The endpoint that clears the gate is now passed explicitly as the client's `base_url`, in both the
+configured and the auto-detect paths, and the ollama gate tests the URL that provider really opens.
+The factory delegation that re-resolved the endpoint independently is gone.
+
+### Loopback validation accepted hostnames that only looked local
+
+The check guarding local-only endpoints tested for a `127.` prefix, which accepts
+`127.0.0.1.attacker.example` — a remote host. It now parses the host and asks the address itself
+whether it is a loopback address.
+
 ## [2.19.0] — Learned reasoning patterns can be rebuilt, and pattern reads follow the request's brain
 
 ### Losing pattern fibers was permanent

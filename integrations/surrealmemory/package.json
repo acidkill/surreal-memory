@@ -1,7 +1,7 @@
 {
   "name": "surrealmemory",
-  "version": "2.19.0",
-  "description": "Surreal-Memory plugin for OpenClaw — graph-based persistent memory for AI agents with SurrealDB backend",
+  "version": "2.20.0",
+  "description": "Surreal-Memory plugin for OpenClaw \u2014 graph-based persistent memory for AI agents with SurrealDB backend",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
