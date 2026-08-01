@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.20.1] — A resolved model alias no longer points at a prior generation
+
+### The reasoning-injection alias table pointed at a superseded model
+
+`resolve_active_model`'s last-resort fallback maps a short alias (from `~/.claude/settings.json`'s
+`model` field) to a canonical model id when no other signal is available. `"opus"` and `"opusplan"`
+resolved to a prior model generation's id, so on that fallback path, pattern injection looked up a
+source model that no longer matches the current lineup. Both aliases now resolve to the current
+generation.
+
+### Release drafts now publish themselves
+
+Preparing a draft GitHub Release does not push a real tag — the tag only becomes real once the
+draft is published, and that is what actually triggers the publish pipeline (`on: push: tags: v*`).
+Nothing published a release's draft automatically once its own PR merged, so a draft could sit
+unpublished after merge until someone did it by hand.
+
+A new workflow watches for a merged PR that itself bumped `pyproject.toml`'s version and publishes
+the matching draft release, if one is still pending. It only acts on that specific signal, so an
+unrelated PR merging while an earlier release's draft awaits review cannot trigger a publish it has
+nothing to do with.
+
 ## [2.20.0] — The embedding path stops being outperformed by its own fallback
 
 ### Community — Spanish README (#127)
