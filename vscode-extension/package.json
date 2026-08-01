@@ -237,11 +237,9 @@
     "vscode:prepublish": "npm run build",
     "build": "node esbuild.js --production",
     "watch": "node esbuild.js --watch",
-    "lint": "eslint src --ext ts",
     "pretest": "tsc -p test/tsconfig.json",
     "test": "node ./out/test/runTest.js",
     "test:unit": "node test/unit/build.js && mocha out/test/unit/**/*.test.js --timeout 10000",
-    "test:perf": "npx playwright test test/webview/graph.perf.test.ts",
     "package": "vsce package"
   },
   "devDependencies": {

@@ -773,6 +773,16 @@ def create_app(
     if spa_dist.exists():
         app.mount("/assets", StaticFiles(directory=str(spa_dist / "assets")), name="spa-assets")
 
+        # The bundle's index.html links a favicon that sits at the dist root, not
+        # under /assets, so without this route every dashboard page requested a
+        # 404 icon.
+        @app.get("/favicon.svg", include_in_schema=False)
+        async def spa_favicon() -> Response:
+            icon = spa_dist / "favicon.svg"
+            if not icon.exists():
+                return Response(status_code=404)
+            return Response(icon.read_bytes(), media_type="image/svg+xml")
+
     return app
 
 
