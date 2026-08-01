@@ -2,6 +2,12 @@
 
 Surreal-Memory provides a FastAPI-based REST API server.
 
+!!! info "Looking for a specific endpoint?"
+
+    This page is a hand-written tour of the common ones. The complete list —
+    every method and path, generated from the app itself — is in
+    [REST Endpoints](rest.md).
+
 ## Quick Start
 
 ```bash
