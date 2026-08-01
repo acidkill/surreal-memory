@@ -51,7 +51,18 @@ plugins:
             heading_level: 2
 
 exclude_docs: |
-  llm-wiki/
+  # Outbound copy drafts (platform-specific, pasted elsewhere — not site pages).
+  promo/devto-article.md
+  promo/discord-anthropic.md
+  promo/hackernews.md
+  promo/reddit-claudeai.md
+  promo/reddit-localllama.md
+  # Internal engineering artifacts, not end-user docs.
+  lessons-learned.md
+  plans/
+  # Superseded snapshots that carry their own HISTORICAL banner.
+  ARCHITECTURE_V1_EXTENDED.md
+  architecture/architect-260302-0506-kb-retrieval-analysis.md
 
 markdown_extensions:
   - pymdownx.highlight:
@@ -105,6 +116,7 @@ nav:
     - OpenClaw Plugin: guides/openclaw-plugin.md
     - Cognitive Reasoning: guides/cognitive-reasoning.md
     - Schema v21 Migration: guides/schema-v21-migration.md
+    - Memory Layer Unification: guides/memory-layer-unification.md
     - Learning Habits: guides/learning-habits.md
     - Safety & Security: guides/safety.md
     - Companion Setup: guides/companion-setup.md

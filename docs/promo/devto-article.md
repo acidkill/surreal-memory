@@ -157,7 +157,7 @@ If you need a lightweight SQLite-backed version, the upstream project is the rig
 ## Numbers
 
 - **58 MCP tools** — 3-tool core, 53 fire automatically or on demand
-- **5,500+ unit tests**, 67%+ CI coverage
+- **7200+ unit tests**, 67%+ CI coverage
 - **15 memory types**: fact, decision, error, insight, preference, workflow, todo, and more
 - **41 synapse types**: `CAUSED_BY`, `LEADS_TO`, `RESOLVED_BY`, `CONTRADICTS`, and 37 more
 - **$0.00 per query** — no API keys needed for core encode + recall

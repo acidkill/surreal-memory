@@ -3,7 +3,7 @@
 Guide to using the Surreal-Memory CLI with examples and common workflows.
 
 !!! info "See also"
-    For a complete auto-generated reference of all 66 commands, see the [CLI Reference](cli-reference.md).
+    For a complete auto-generated reference of all 82 commands, see the [CLI Reference](cli-reference.md).
     For MCP tool usage in Claude Code, see the [MCP Tools Reference](../api/mcp-tools.md).
 
 ## Core Commands

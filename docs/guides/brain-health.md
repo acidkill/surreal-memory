@@ -100,7 +100,9 @@ EPISODIC → WORKING → SEMANTIC
 **How memories consolidate:**
 
 1. **Natural maturation**: Memories recalled multiple times over days mature automatically
-2. **Manual consolidation**: Run `smem consolidate --strategy mature`
+2. **Recall the memories you care about.** Maturation is driven by spaced recall, not by a
+   command: `smem consolidate --strategy mature` only promotes fibers that have ALREADY met the
+   dwell-and-spacing bar. Running it on a brain with nothing eligible advances nothing.
 3. **Time**: The system periodically checks for memories ready to advance
 
 **How to improve:**
@@ -240,7 +242,7 @@ backend that cannot report maturation — that is not the same as an empty distr
 
 ### Week 2-3: Growth (D → C)
 
-- [ ] Run `smem consolidate --strategy mature` to advance memory stages
+- [ ] Recall actively for a week, then run `smem consolidate --strategy mature` to promote whatever became eligible
 - [ ] Use varied language (causal, temporal, relational) for diversity
 - [ ] Start sessions with `smem_recap()` to maintain freshness
 - [ ] Resolve any memory conflicts: `smem_conflicts(action="list")`
@@ -258,7 +260,7 @@ backend that cannot report maturation — that is not the same as an empty distr
 
 ### "Consolidation is 0% — is something broken?"
 
-No. New brains always start at 0%. Memories must be recalled multiple times over several days before they're eligible for maturation. Run `smem consolidate --strategy mature` after your first week of active use.
+No. New brains always start at 0%. Memories must be recalled multiple times over several days before they are eligible for maturation — recall is what advances them. Once that has happened, `smem consolidate --strategy mature` promotes the ones that qualify; run before then it has nothing to promote.
 
 ### "25% orphan neurons — should I worry?"
 

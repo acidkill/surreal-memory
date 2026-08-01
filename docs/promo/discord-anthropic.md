@@ -24,7 +24,7 @@ smem-mcp  # starts the MCP server
 - All Pro-tier features free via the bundled community plugin (cone/HNSW vector search, smart merge, directional compression) — no license keys, no paywalls
 - 15 memory types · single-file portable brain · JSON export/import · multi-device sync via your own Cloudflare account
 
-**MIT · Python 3.11+ · 5,500+ unit tests**
+**MIT · Python 3.11+ · 7200+ unit tests**
 
 GitHub: https://github.com/acidkill/surreal-memory
 

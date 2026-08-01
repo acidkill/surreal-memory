@@ -417,14 +417,6 @@ Serve the React dashboard (SPA). Pages: Overview, Health, Graph, Timeline, Evolu
 
 Built with React 19 + TailwindCSS 4 + shadcn/ui + Recharts + Sigma.js. Warm cream light theme.
 
-#### GET /ui-legacy
-
-Serve the legacy vis.js graph visualization (backward compat).
-
-#### GET /dashboard-legacy
-
-Serve the legacy Alpine.js dashboard (backward compat).
-
 ---
 
 ## Dashboard API

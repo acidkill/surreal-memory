@@ -30,7 +30,7 @@ This gives you multi-hop causal reasoning. "Why did the outage happen?" traces: 
 - **Lifecycle**: Ebbinghaus decay, Hebbian reinforcement, sleep consolidation (ENRICH/PRUNE/MERGE/DREAM), 5-tier compression
 - **MCP server**: 58 tools (3-tool core: smem_remember, smem_recall, smem_health), stdio + HTTP, works with Claude Code, Cursor, Windsurf, Cline, Zed, Gemini CLI
 - **Pro features**: cone/HNSW vector search, smart merge, directional compression — all FREE via the bundled community plugin, no license keys
-- **Tests**: 5,500+ unit tests, 67%+ CI coverage, mypy + ruff + pytest
+- **Tests**: 7200+ unit tests, 67%+ CI coverage, mypy + ruff + pytest
 
 ## Why local/offline users care
 

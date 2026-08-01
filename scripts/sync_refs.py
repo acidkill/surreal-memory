@@ -29,6 +29,10 @@ SKIP_FILES = {
     "docs/changelog.md",
     "AUDIT-REPORT.md",
     "docs/guides/schema-v21-migration.md",  # Historical migration — references old schema versions
+    # Dated posts record what was true when they were written. "1,299 tests" in a
+    # post stamped February 2026 is a fact about February, not drift to correct.
+    "docs/blog/honest-comparison-2026.md",
+    "docs/blog/why-i-built-surrealmemory.md",
 }
 
 # Paths to skip entirely (not shipped docs)
@@ -38,7 +42,34 @@ SKIP_DIRS = {
     ".git",
     "coverage",
     "__pycache__",
+    # Run evidence, not shipped documentation. It is gitignored, and it QUOTES
+    # stale forms on purpose as examples of what the scanner used to miss —
+    # "correcting" those quotes would destroy the very thing they record.
+    "qa",
+    ".goal",
 }
+
+# Lines that legitimately carry a NUMBER THAT IS NOT OURS, or not ours *now*.
+# Without these the checker "fixes" true statements:
+#   - README Acknowledgments credits the upstream project's own tool count.
+#   - ROADMAP's "What We've Built" table is version-tagged history (a `v1.0` row
+#     describes v1.0, not today).
+HISTORICAL_LINE_MARKERS = (
+    "entirely their work",  # README § Acknowledgments — upstream's count
+    "| v1.0",  # ROADMAP "What We've Built" rows carry their own Version column
+    # (also catches "| v1.0-v2.29" — the substring match covers the ranged form)
+    "| v2.0 |",
+    # There are TWO schema counters — sqlite_schema.py (the truth this script
+    # reads) and surrealdb/schema.py. A line that says which backend it means
+    # is not stale just because the other backend's number differs.
+    "SurrealDB schema v",
+)
+
+
+def _is_historical_line(line: str) -> bool:
+    """True when a line states a number about the past or about another project."""
+    return any(marker in line for marker in HISTORICAL_LINE_MARKERS)
+
 
 PASS = "\033[92m PASS \033[0m"
 FAIL = "\033[91m FAIL \033[0m"
@@ -63,6 +94,10 @@ class TruthValues:
     mcp_tool_count: int = 0
     test_count_approx: int = 0  # Rounded to nearest 100
     schema_version: int = 0
+    memory_type_count: int = 0
+    synapse_type_count: int = 0
+    strategy_count: int = 0
+    cli_command_count: int = 0
     version: str = ""
     errors: list[str] = field(default_factory=list)
 
@@ -117,6 +152,24 @@ def derive_truth() -> TruthValues:
     else:
         truth.errors.append("pyproject.toml not found")
 
+    try:
+        from surreal_memory.core.memory_types import MemoryType
+        from surreal_memory.core.synapse import SynapseType
+        from surreal_memory.engine.consolidation import ConsolidationStrategy
+
+        truth.memory_type_count = len(list(MemoryType))
+        truth.synapse_type_count = len(list(SynapseType))
+        # "ALL" is an aggregate switch, not a strategy anyone runs on its own.
+        truth.strategy_count = len([s for s in ConsolidationStrategy if s.name != "ALL"])
+    except Exception:
+        truth.errors.append("enum counts unavailable (memory/synapse/strategy)")
+
+    cli_ref = ROOT / "docs/getting-started/cli-reference.md"
+    if cli_ref.exists():
+        m = re.search(r"\*\*(\d+) commands\*\*", cli_ref.read_text(encoding="utf-8"))
+        if m:
+            truth.cli_command_count = int(m.group(1))
+
     return truth
 
 
@@ -148,8 +201,17 @@ def scan_stale_refs(truth: TruthValues) -> list[RefFinding]:
         # Match any number followed by " tools" or " MCP tools" (but not in code blocks)
         patterns.append(
             (
-                re.compile(r"\b(\d+)(\s+(?:MCP\s+)?tools)\b"),
+                re.compile(r"\b(\d+)\+?(\s+(?:MCP\s+)?tools)\b"),
                 "tool_count",
+                str(truth.mcp_tool_count),
+            )
+        )
+        # Hyphenated form: "the 53-tool MCP interface". The plain pattern needs a
+        # space and a plural, so this shape drifted unnoticed across releases.
+        patterns.append(
+            (
+                re.compile(r"\b(\d+)(-tool\b)"),
+                "tool_count_hyphenated",
                 str(truth.mcp_tool_count),
             )
         )
@@ -168,6 +230,15 @@ def scan_stale_refs(truth: TruthValues) -> list[RefFinding]:
             (
                 re.compile(r"\b(\d{4})\+?\s+tests\b"),
                 "test_count",
+                f"{truth.test_count_approx}+",
+            )
+        )
+        # Comma-grouped counts have no four consecutive digits, so the pattern
+        # above never fired on "5,500+ tests" or "1,299 tests".
+        patterns.append(
+            (
+                re.compile(r"\b(\d{1,3},\d{3})\+?\s+tests\b"),
+                "test_count_comma",
                 f"{truth.test_count_approx}+",
             )
         )
@@ -199,6 +270,10 @@ def scan_stale_refs(truth: TruthValues) -> list[RefFinding]:
         for line_num, line in enumerate(lines, 1):
             # Skip code blocks
             if line.strip().startswith("```") or line.strip().startswith("`"):
+                continue
+
+            # Skip lines whose number is historical or belongs to another project
+            if _is_historical_line(line):
                 continue
 
             for pattern, ref_type, truth_val in patterns:
@@ -238,6 +313,36 @@ def scan_stale_refs(truth: TruthValues) -> list[RefFinding]:
                     elif ref_type == "test_count":
                         old_num = match.group(1)
                         if int(old_num) < truth.test_count_approx:
+                            old_text = match.group(0)
+                            new_text = f"{truth.test_count_approx}+ tests"
+                            findings.append(
+                                RefFinding(
+                                    file=rel_path,
+                                    line_num=line_num,
+                                    old_text=old_text,
+                                    new_text=new_text,
+                                    ref_type=ref_type,
+                                )
+                            )
+
+                    elif ref_type == "tool_count_hyphenated":
+                        old_num = match.group(1)
+                        if int(old_num) != truth.mcp_tool_count and 20 <= int(old_num) <= 200:
+                            old_text = match.group(0)
+                            new_text = f"{truth.mcp_tool_count}-tool"
+                            findings.append(
+                                RefFinding(
+                                    file=rel_path,
+                                    line_num=line_num,
+                                    old_text=old_text,
+                                    new_text=new_text,
+                                    ref_type=ref_type,
+                                )
+                            )
+
+                    elif ref_type == "test_count_comma":
+                        old_num = int(match.group(1).replace(",", ""))
+                        if old_num < truth.test_count_approx:
                             old_text = match.group(0)
                             new_text = f"{truth.test_count_approx}+ tests"
                             findings.append(

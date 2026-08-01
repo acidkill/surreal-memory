@@ -16,7 +16,7 @@ pip install surreal-memory[surrealdb]
 
 | Backend | Type | Best For |
 |---------|------|----------|
-| **SurrealDB** (default) | Document + Graph + Vector | Full-featured: semantic search, graph queries, vector indexing in one engine |
+| **SurrealDB** (recommended) | Document + Graph + Vector | Full-featured: semantic search, graph queries, vector indexing in one engine |
 | SQLite | Relational + FTS5 | Lightweight local-only setups, no external database |
 
 SurrealDB is the recommended backend. It provides native vector search (HNSW), graph traversal, and document storage in a single process -- no extra services to run.
@@ -93,7 +93,7 @@ Score per sentence = primary_similarity * 0.6 + max(reference_similarities) * 0.
 
 #### Consolidation
 
-14 consolidation strategies plus smart merge:
+20 consolidation strategies plus smart merge:
 
 | Strategy | Complexity | Best For |
 |----------|-----------|----------|
@@ -125,7 +125,7 @@ Deploy with the provided Worker template. No managed service dependency.
 
 | Interface | Description |
 |-----------|-------------|
-| **MCP Server** | 50+ tools for Claude, GPT, and other agents. Recall, store, consolidate, query. |
+| **MCP Server** | 58 tools for Claude, GPT, and other agents. Recall, store, consolidate, query. |
 | **Web Dashboard** | Browser-based brain inspector. Visualize neurons, fibers, and graph topology. |
 | **VS Code Extension** | Inline memory panel. Recall context without leaving the editor. |
 | **CLI** | Full control from the terminal. `smem recall`, `smem store`, `smem merge`, etc. |
@@ -167,21 +167,19 @@ Surreal-Memory vs. alternatives:
 
 ## MCP Tools
 
-50+ tools registered automatically. Key tools by category:
+58 tools registered automatically. Key tools by category:
 
 **Recall:**
 - `smem_recall` -- query memories with configurable depth and confidence
-- `smem_cone_query` -- semantic search with adjustable precision cone
 - `smem_suggest` -- autocomplete from brain neurons
 
 **Storage:**
 - `smem_remember` -- store facts, decisions, insights, todos
 - `smem_auto` -- auto-capture memories from text
-- `smem_delete` / `smem_delete_observations` -- remove specific data
+- `smem_forget` -- remove specific memories
 
 **Lifecycle:**
-- `smem_tier_info` -- view and manage storage tier distribution
-- `smem_pro_merge` -- smart consolidation with dry-run preview
+- `smem_tier` -- view and manage storage tier distribution
 - `smem_consolidate` -- trigger consolidation strategies
 
 **Sync:**

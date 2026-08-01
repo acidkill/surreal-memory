@@ -565,28 +565,6 @@ memory = TypedMemory.create(
 memories = await storage.get_project_memories(project.id)
 ```
 
-## Export & Import
-
-```python
-from surreal_memory.sharing import BrainExporter
-
-exporter = BrainExporter()
-
-# Export
-snapshot = await exporter.export(storage, brain.id)
-json_data = exporter.to_json(snapshot)
-
-# Save to file
-with open("brain.json", "w") as f:
-    f.write(json_data)
-
-# Import
-from surreal_memory.sharing import BrainImporter
-
-importer = BrainImporter()
-await importer.import_brain(storage, snapshot, "new-brain-id")
-```
-
 ## Complete Example
 
 ```python

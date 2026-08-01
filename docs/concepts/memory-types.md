@@ -7,14 +7,14 @@ Surreal-Memory supports typed memories for better organization and automatic lif
 | Type | Description | Default Expiry | Use Case |
 |------|-------------|----------------|----------|
 | `fact` | Objective information | Never | API endpoints, configuration values |
-| `decision` | Choices made | Never | Architectural decisions, tool choices |
+| `decision` | Choices made | 90 days | Architectural decisions, tool choices |
 | `preference` | User preferences | Never | Coding style, naming conventions |
 | `todo` | Action items | 30 days | Tasks, reminders, follow-ups |
-| `insight` | Learned patterns | Never | Debugging tricks, optimization tips |
-| `context` | Situational info | 7 days | Meeting notes, temporary context |
+| `insight` | Learned patterns | 180 days | Debugging tricks, optimization tips |
+| `context` | Situational info | Never | Meeting notes, temporary context |
 | `instruction` | User guidelines | Never | Project rules, conventions |
-| `error` | Error patterns | Never | Bug fixes, error solutions |
-| `workflow` | Process patterns | Never | Deployment steps, review processes |
+| `error` | Error patterns | 30 days | Bug fixes, error solutions |
+| `workflow` | Process patterns | 365 days | Deployment steps, review processes |
 | `reference` | External references | Never | Documentation links, resources |
 | `tool` | Tool/CLI usage patterns | 90 days | CLI flags, commands, invocation tips |
 | `boundary` | Safety rules | Never | "Never use eval()", "Always confirm before X" |
@@ -135,7 +135,7 @@ smem remember "DECISION: PostgreSQL over MongoDB. REASON: Strong consistency nee
 
 **Behavior:**
 
-- Never expires
+- Expires after 90 days by default
 - Searchable by decision keywords
 - Critical for understanding project history
 
@@ -181,7 +181,7 @@ smem remember "Always check for null before array access" --type insight
 
 **Behavior:**
 
-- Never expires
+- Expires after 180 days by default
 - High value for similar problem-solving
 - Good for documenting "lessons learned"
 
@@ -196,7 +196,7 @@ smem remember "Sprint 5 focus: performance" --type context --expires 14
 
 **Behavior:**
 
-- Expires in 7 days by default
+- Never expires by default
 - Lower retrieval priority for older queries
 - Good for session-specific context
 
@@ -231,7 +231,7 @@ smem remember "ERROR: CORS blocked request. SOLUTION: Add origin to allowed list
 
 **Behavior:**
 
-- Never expires
+- Expires after 30 days by default
 - Highly relevant for debugging queries
 - Pairs well with tags for categorization
 
@@ -245,7 +245,7 @@ smem remember "Deploy process: 1. Run tests 2. Build 3. Push to staging 4. Verif
 
 **Behavior:**
 
-- Never expires
+- Expires after 365 days by default
 - Good for recurring processes
 - Can be broken into steps
 

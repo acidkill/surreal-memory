@@ -621,7 +621,7 @@ Surreal-Memory is lightweight — it won't slow down your editor.
 
 ## Available Tools
 
-**3 tools you need. 53 the agent handles automatically.**
+**3 tools you need. 55 the agent handles automatically.**
 
 58 tools are available, but most users only interact with three:
 
@@ -701,6 +701,29 @@ These tools fire automatically via MCP instructions and hooks — you don't need
 | `smem_sync_status` | Show pending changes, devices, last sync |
 | `smem_sync_config` | Configure hub URL, auto-sync, conflict strategy |
 | `smem_telegram_backup` | Send brain backup to Telegram |
+
+### Not listed above
+
+These were absent from this page while it was presented as the complete tool list. Descriptions
+come from each tool's own schema.
+
+| Tool | Description |
+|------|-------------|
+| `smem_budget` | Token budget analysis for recall — estimate, analyze, or optimize context window usage |
+| `smem_consolidate` | Run memory consolidation on the current brain |
+| `smem_lifecycle` | Memory lifecycle management — view lifecycle states and manage compression resistance |
+| `smem_provenance` | Trace provenance / verify / approve a memory neuron, or query retrieval traces |
+| `smem_reasoning` | Reasoning training: status, mine, patterns, or config |
+| `smem_refine` | Refine an instruction or workflow memory — update its content, record a failure mode, or add a  |
+| `smem_remember_batch` | Store multiple memories in a single call |
+| `smem_report_outcome` | Report execution outcome for an instruction or workflow memory |
+| `smem_show` | Get full verbatim content + metadata + synapses for a specific memory by ID |
+| `smem_source` | Manage memory sources (provenance) |
+| `smem_surface` | Knowledge Surface management — generate or inspect the |
+| `smem_tier` | Auto-tier management — promote/demote memories between HOT/WARM/COLD based on access patterns |
+| `smem_uncertainty` | How much can you trust this brain's memories? Uncertainty diagnostics — contradictions, low-evi |
+| `smem_visualize` | Generate charts from memory data |
+| `smem_watch` | Watch directories for file changes and auto-ingest into memory |
 
 ---
 

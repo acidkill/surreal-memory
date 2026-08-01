@@ -65,7 +65,9 @@ namespace = "surreal_memory"
 database = "default"
 ```
 
-**Restart your MCP server** (or CLI session). > SurrealDB is the default and only first-class backend since the SurrealDB-only
+**Restart your MCP server** (or CLI session).
+
+> SurrealDB is the recommended and only first-class backend since the SurrealDB-only
 > release. SQLite remains solely as a lightweight test fixture; the legacy
 > SQLite↔SurrealDB migration / backend-switch flow was removed.
 

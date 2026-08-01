@@ -345,7 +345,8 @@ own SurrealDB instance (or Docker Compose service).
 ```
 
 This local layout applies only when `storage_backend = "sqlite"` (or InMemory, which
-persists nothing). When `storage_backend = "surrealdb"` (the production default), brain
+persists nothing). When `storage_backend = "surrealdb"` (the recommended production backend; the
+built-in default value is `"sqlite"`), brain
 data lives inside the SurrealDB instance itself — e.g. the `surrealdb_data` Docker volume
 used by `docker-compose.surrealdb.yml` — not under `~/.surrealmemory/brains/`.
 

@@ -230,7 +230,7 @@ Automatically extracts: 1 decision, 1 fact, 1 TODO.
 
 - **Zero LLM dependency** — Pure algorithmic: regex, graph traversal, Hebbian learning
 - **Spreading activation** — Associative recall through neural graph, not keyword/vector search
-- **20 synapse types** — Temporal (BEFORE/AFTER), causal (CAUSED_BY/LEADS_TO), semantic (IS_A/HAS_PROPERTY), emotional (FELT/EVOKES), conflict (CONTRADICTS)
+- **41 synapse types** — Temporal (BEFORE/AFTER), causal (CAUSED_BY/LEADS_TO), semantic (IS_A/HAS_PROPERTY), emotional (FELT/EVOKES), conflict (CONTRADICTS)
 - **Memory lifecycle** — Short-term → Working → Episodic → Semantic with Ebbinghaus decay
 - **Contradiction detection** — Auto-detects conflicting memories, deprioritizes outdated ones
 - **Hebbian learning** — "Neurons that fire together wire together" — memory improves with use

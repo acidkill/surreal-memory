@@ -80,7 +80,8 @@ make verify
 
 ## Environment Variables
 
-<!-- AUTO-GENERATED from .env.example — do not edit this table manually -->
+<!-- Maintained by hand. No script generates this table; when you add an env var to
+     the code, add it here and to .env.example in the same change. -->
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `SURREAL_MEMORY_STORAGE` | No | `sqlite` | Storage backend: `sqlite`/`memory` (test fixtures) or `surrealdb` (production backend) |
@@ -99,10 +100,11 @@ make verify
 | `SURREAL_MEMORY_HUB_URL` | Sync only | — | Cloudflare sync hub URL |
 | `SURREAL_MEMORY_API_KEY` | Sync only | — | Sync hub API key |
 | `SURREAL_MEMORY_DEVICE_ID` | No | — | Device identifier for sync |
-| `SURREAL_MEMORY_SYNC_ENABLED` | No | `true` | Enable sync |
-| `SURREAL_MEMORY_SYNC_AUTO` | No | `true` | Auto-sync on changes |
+| `SURREAL_MEMORY_SYNC_ENABLED` | No | `false` | Enable sync |
+| `SURREAL_MEMORY_SYNC_AUTO` | No | `false` | Auto-sync on changes |
 | `SURREAL_MEMORY_EMBEDDING_ENABLED` | No | `false` | Enable vector embeddings |
-| `SURREAL_MEMORY_EMBEDDING_PROVIDER` | Embeddings only | — | `gemini`, `openai`, `openrouter` |
+| `SURREAL_MEMORY_EMBEDDING_PROVIDER` | Embeddings only | `sentence_transformer` | `sentence_transformer`, `openai`, `openrouter`, `gemini`, `ollama`, `bge_m3`, `auto` |
+| `SURREAL_MEMORY_EMBEDDING_ENDPOINT` | No | — | Base URL of a local OpenAI-compatible embedding server (e.g. llamastash bge-m3 at `http://127.0.0.1:11435/v1`). Config key `[embedding] endpoint` wins over this. |
 | `SURREAL_MEMORY_EMBEDDING_MODEL` | No | — | Model name for embeddings |
 | `GEMINI_API_KEY` | Gemini only | — | Google Gemini API key |
 | `OPENAI_API_KEY` | OpenAI only | — | OpenAI API key |

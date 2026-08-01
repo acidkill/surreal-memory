@@ -222,6 +222,13 @@ Sync uses **Merkle delta** — only diffs travel, not the full brain.
   distill_llm_unload_cmd = ["<your-launcher>", "stop", "{model}"]
   ```
 
+- **Clustering threshold travels with the embedder** — two traces become one pattern when their embeddings exceed `cluster_cosine` (default `0.75`). Embedding models do not share a similarity scale, so a value borrowed from another model can sit above the *99th percentile* of your corpus and cluster nothing at all, silently leaving the move-set fallback to outperform the embedding path it is meant to back up. If mining reports patterns learned but categories stay empty, compare the threshold against your own pairwise distribution before raising `pattern_targets`:
+
+  ```toml
+  [reasoning_training]
+  cluster_cosine = 0.75   # lower = more merging; too low collapses everything into one cluster
+  ```
+
 #### Lifecycle & Storage
 - **Memory consolidation** — episodic memories mature into semantic knowledge through **spaced recall**, not through a command. A fiber reaches `semantic` after 7 days in `episodic` *plus* reinforcement spread across 3+ distinct days (or 15+ rehearsals across 5+ time windows) — recalling a memory is what advances it; `smem consolidate` cannot move it on its own. `smem health` shows where every memory sits (`stage_distribution`) and what each one is still waiting on (`semantic_gate_blockers`: dwell time, recall spacing, or already eligible), so a flat `consolidation_ratio` is diagnosable instead of mysterious. Recall rehearses the memories it actually surfaced — raise `brain.reinforcement_neuron_limit` (default 15) to widen that reach at the cost of some recall latency.
 - **Compression tiers** — full → summary → essence → ghost → metadata
@@ -263,8 +270,28 @@ smem setup embeddings            # choose "Sentence Transformers"
 | **Gemini** (recommended) | `gemini-embedding-001` | `GEMINI_API_KEY` | 3072-dim, multilingual, free tier |
 | Local (sentence-transformers) | `all-MiniLM-L6-v2` · `paraphrase-multilingual-MiniLM-L12-v2` | — | offline, no key, ~440MB download |
 | Ollama | `nomic-embed-text` · `bge-m3` | — | local server (`ollama serve`) |
+| **Local OpenAI-compatible** (e.g. llamastash) | `bge-m3` | — | any server exposing `/v1/embeddings`; pairs with `bge-reranker-v2-m3` on the same host |
 | OpenAI | `text-embedding-3-small` | `OPENAI_API_KEY` | paid |
 | OpenRouter | `openai/text-embedding-3-small` | `OPENROUTER_API_KEY` | OpenAI-compatible |
+
+**Running bge-m3 on your own OpenAI-compatible server** (llama.cpp, llamastash, vLLM …) — this is
+the local pairing for the `bge-reranker-v2-m3` cross-encoder described under Reranking, so both
+halves of retrieval stay on one host and nothing leaves the machine:
+
+```toml
+[embedding]
+enabled = true
+provider = "openai"          # the wire format, not the vendor
+model = "bge-m3-FP16"        # whatever name your server serves it under
+dimension = 1024             # bge-m3 is 1024-dim; drives the HNSW index
+endpoint = "http://127.0.0.1:11435/v1"
+```
+
+`endpoint` may also come from `SURREAL_MEMORY_EMBEDDING_ENDPOINT`; the config key wins, matching
+`[reranker] endpoint`. Only a loopback host is accepted for reasoning-trace work — a remote base is
+refused with a warning rather than silently downgrading, because those traces never leave the machine.
+The endpoint that passes that check is the one handed to the client as its base URL, so "the check
+passed" means the requests really went there — a provider's own hosted default cannot override it.
 
 Set the provider to `auto` to pick the best available option at runtime
 (order: Ollama → local sentence-transformers → Gemini → OpenAI → OpenRouter).
@@ -459,7 +486,7 @@ with `RunnableWithMessageHistory`.
 git clone https://github.com/acidkill/surreal-memory
 cd surreal-memory && pip install -e ".[dev]"
 smem doctor --dev        # Verify contributor setup
-pytest tests/ -v          # 7200+ tests
+pytest tests/ -v          # 7,267 tests
 ruff check src/ tests/    # Lint
 make verify               # Full CI gate
 ```

@@ -49,7 +49,7 @@ Works with Claude Code, Cursor, Windsurf, VS Code, Cline, Zed, and Gemini CLI.
 
 ## Numbers
 
-- **58 MCP tools** · **5,500+ unit tests** · **67%+ CI coverage**
+- **58 MCP tools** · **7200+ unit tests** · **67%+ CI coverage**
 - **$0.00/query** — no API calls for core encode + recall
 - 15 memory types · 41 synapse types
 - Python 3.11+ · async · MIT license

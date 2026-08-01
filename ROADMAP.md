@@ -4,7 +4,13 @@
 > Every item passes the VISION.md 4-question test + brain test.
 > ZERO LLM dependency — pure algorithmic, regex, graph-based.
 
-**Current state**: v2.0.0 — 58 MCP tools, 7200+ tests, schema v40, SurrealDB backend (SQLite/InMemory retained only as test fixtures), neuroscience engine (10 brain-inspired algorithms), tiered memory loading (HOT/WARM/COLD).
+**Current state**: v2.20.0 — 58 MCP tools, 7,267 tests, neuroscience engine (10 brain-inspired algorithms), tiered memory loading (HOT/WARM/COLD).
+
+**Storage**: SurrealDB is the recommended backend and the one the project is built around —
+SurrealDB schema v9. SQLite and InMemory are not test-only fixtures; they are real, selectable
+backends, and `storage_backend` still defaults to `sqlite` (SQLite schema v40) for installs that
+have not pointed at a SurrealDB instance. Earlier revisions of this line conflated the two schema
+numbers and called SQLite a fixture; both claims contradicted the code.
 **Architecture**: Spreading activation reflex engine, biological memory model, MCP standard.
 
 ---

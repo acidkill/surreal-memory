@@ -15,7 +15,7 @@ This page explains what was inherited and what changed so you can make an inform
 - 41 explicit synapse types (`CAUSED_BY`, `LEADS_TO`, `RESOLVED_BY`, `CONTRADICTS`, …) for causal reasoning
 - 15 memory types (`fact`, `decision`, `error`, `insight`, `preference`, `workflow`, `todo`, …)
 - Memory lifecycle: decay (Ebbinghaus curve), Hebbian reinforcement, sleep-consolidation phases
-- The 56-tool MCP surface — including the 3-tool core (`smem_remember`, `smem_recall`, `smem_health`)
+- The 58-tool MCP surface — including the 3-tool core (`smem_remember`, `smem_recall`, `smem_health`)
 
 ---
 

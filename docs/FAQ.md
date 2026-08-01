@@ -467,30 +467,43 @@ smem doctor  # Shows current schema version + any issues
 
 This is **completely normal for new brains**. Consolidation measures how many memories have matured from episodic (raw) to semantic (pattern) stage. A new brain has no matured memories yet.
 
-**When to worry**: If your brain is older than 1 week with 50+ memories and consolidation is still 0%, run:
+**When to worry**: if your brain is older than a week with 50+ memories and consolidation is still
+0%, the question is whether anything is *eligible* — maturation is driven by spaced recall, so a
+memory advances by being recalled across several distinct days, not by running a command. Check
+what each memory is waiting on:
+
+```bash
+smem health          # stage_distribution + semantic_gate_blockers
+```
+
+If memories show as eligible but the ratio has not moved, promote them:
 
 ```bash
 smem consolidate --strategy mature
 ```
 
-Or in Claude Code, just say: "consolidate my memories".
+If they are still waiting on dwell time or recall spacing, that command has nothing to promote —
+keep using the brain instead.
 
 **Expected progression**: After 1-2 weeks of active use → 20-40%. After a month → 50%+. A brand new brain at 0% is not a bug — it just means no memories have been recalled enough times to qualify for maturation.
 
 ### Q: How does consolidation work? When should I run it?
 
-Consolidation maintains brain health through three strategies:
+Consolidation maintains brain health. The strategies you will reach for most:
 
 | Strategy | What it does | When to use |
 |----------|-------------|-------------|
-| `mature` | Advances episodic memories to semantic stage | Weekly — promotes stable patterns |
+| `mature` | Promotes memories that have ALREADY met the spaced-recall bar | Weekly — it advances what is eligible, it does not create eligibility |
 | `merge` | Combines overlapping fibers, prunes weak synapses | When brain grows large (1000+ fibers) |
-| `full` | All strategies + topic summarization | Monthly deep cleanup |
+| `all` | Every strategy in one pass | Monthly deep cleanup |
+
+`--strategy full` does not exist; `all` is the name for "run everything". Run
+`smem consolidate --help` for the current list.
 
 ```bash
 # Recommended schedule
 smem consolidate --strategy mature     # Weekly
-smem consolidate --strategy full       # Monthly
+smem consolidate --strategy all        # Monthly
 
 # Check what would be affected first
 smem brain health
@@ -543,7 +556,7 @@ Surreal-Memory is designed for **AI agent memory** — not as a general-purpose 
 
 | Aspect | Status |
 |--------|--------|
-| **Test suite** | 7200+ tests, 67%+ coverage enforced by CI |
+| **Test suite** | 7200+ tests; CI gate 65% coverage, release gate 67% |
 | **Security** | Input validation, ReDoS protection, activation queue caps, sensitive content detection |
 | **Stability** | 51+ releases, used daily by the maintainers in production AI workflows |
 | **Scalability** | Tested up to 5,000 neurons with sub-ms latency; designed for agent-scale data, not big data |
@@ -567,7 +580,7 @@ Surreal-Memory is designed for **AI agent memory** — not as a general-purpose 
 
 ### Q: How does Surreal-Memory handle concurrent access from multiple agents?
 
-Surreal-Memory stores every brain in **SurrealDB**, which handles concurrency at the storage engine:
+On the recommended **SurrealDB** backend, concurrency is handled by the storage engine:
 
 - **Multiple concurrent readers** — agents can query the same brain simultaneously
 - **Concurrent writers** — SurrealDB serializes conflicting writes through its own transaction engine, so there is no external file lock to manage
