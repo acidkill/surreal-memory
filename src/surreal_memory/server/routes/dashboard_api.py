@@ -1212,6 +1212,10 @@ async def test_embedding_connection() -> dict[str, Any]:
             from surreal_memory.engine.embedding.ollama_embedding import OllamaEmbedding
 
             provider = OllamaEmbedding(model=model_name)
+        elif provider_name in ("bge_m3", "bge-m3"):
+            from surreal_memory.engine.embedding.bge_m3_embedding import BGEM3Embedding
+
+            provider = BGEM3Embedding(model=model_name)
         else:
             return {"status": "error", "error": f"Unknown embedding provider: {provider_name!r}"}
 

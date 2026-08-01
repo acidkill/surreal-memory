@@ -33,7 +33,7 @@ from surreal_memory.core.fiber import Fiber
 from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.core.synapse import Direction, Synapse, SynapseType
 from surreal_memory.engine.clustering import UnionFind
-from surreal_memory.engine.reasoning_naming import build_namer
+from surreal_memory.engine.reasoning_naming import _is_loopback, build_namer
 from surreal_memory.engine.reasoning_progress import PHASE_DISTILLING, MiningProgress
 
 if TYPE_CHECKING:
@@ -45,7 +45,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_CLUSTER_COSINE = 0.83
+_CLUSTER_COSINE = 0.75  # fallback only; reasoning_training.cluster_cosine wins
 _CATEGORY_COS_THRESHOLD = 0.35
 _MOVE_JACCARD = 0.6
 _CLASSIFY_CHARS = 500
@@ -277,14 +277,21 @@ def _medoid_index(vectors: list[list[float]]) -> int:
 def _cluster(
     vectors: list[list[float]] | None,
     moves: list[list[str]],
+    cosine_threshold: float = _CLUSTER_COSINE,
 ) -> list[list[int]]:
-    """Cluster items by cosine (vectors) or move-set Jaccard (fallback)."""
+    """Cluster items by cosine (vectors) or move-set Jaccard (fallback).
+
+    ``cosine_threshold`` belongs to the configured embedder, not to this
+    module: two models embedding the same pair of traces disagree on the
+    absolute cosine, so a value tuned for one silently clusters nothing under
+    another.
+    """
     n = len(moves)
     uf = UnionFind(n)
     for i in range(n):
         for j in range(i + 1, n):
             if vectors is not None:
-                if _cosine(vectors[i], vectors[j]) >= _CLUSTER_COSINE:
+                if _cosine(vectors[i], vectors[j]) >= cosine_threshold:
                     uf.union(i, j)
             else:
                 a, b = set(moves[i]), set(moves[j])
@@ -405,14 +412,101 @@ async def _materialize_pattern(
     return True
 
 
-def _get_embedder() -> EmbeddingProvider | None:
+_LOCAL_SAFE_PROVIDERS: tuple[str, ...] = ("openai", "openrouter", "bge_m3")
+_OLLAMA_DEFAULT_BASE = "http://localhost:11434"
+
+
+def _warn_remote_endpoint(endpoint: str) -> None:
+    """Say the embedder was refused, rather than degrading silently.
+
+    A silent fallback to keyword classification is indistinguishable from
+    "embeddings are off" from the outside, which is how a misconfigured
+    endpoint went unnoticed long enough to freeze category coverage.
+    """
+    logger.warning(
+        "reasoning distiller: embedding endpoint %r is not loopback — "
+        "reasoning traces never leave this machine, so classification "
+        "falls back to keywords. Point SURREAL_MEMORY_EMBEDDING_ENDPOINT "
+        "or [embedding] endpoint at a local server to enable it.",
+        endpoint or "<unset>",
+    )
+
+
+def _endpoint_is_loopback(endpoint: str) -> bool:
+    """True when *endpoint* is a URL whose host is genuinely loopback.
+
+    ``_is_loopback`` takes a HOST, not a URL — parsing is the caller's job (see
+    ``resolve_llm_endpoint``), so handing it a full URL always answers False.
+    The host test itself lives there and is shared, so both the distill-LLM and
+    the embedder reach a remote endpoint under exactly one rule.
+    """
+    from urllib.parse import urlsplit
+
+    if not endpoint.strip():
+        return False
+    try:
+        return _is_loopback(urlsplit(endpoint.strip()).hostname)
+    except ValueError:
+        return False
+
+
+def _get_embedder(config: UnifiedConfig | None = None) -> EmbeddingProvider | None:
     """Best-effort LOCAL embedding provider; None if unavailable (fail-soft).
 
-    Mirrors the stop-hook pattern: only a local Ollama or a loopback
-    OpenAI-compatible endpoint (llamastash bge-m3) is used, so distillation stays
-    local + fast and never blocks on a remote/heavy provider. Any failure -> None
-    and the caller falls back to keyword classification + move-set clustering.
+    Only a local Ollama or a loopback OpenAI-compatible endpoint (llamastash
+    bge-m3) is used, so distillation stays local + fast and never blocks on a
+    remote/heavy provider. Any failure -> None and the caller falls back to
+    keyword classification + move-set clustering.
+
+    The CONFIGURED provider wins when embeddings are enabled. Deciding by
+    environment probe alone meant an unrelated GEMINI_API_KEY export shadowed a
+    correctly configured loopback endpoint: the probe answered "gemini", which
+    this function cannot build, so it returned None and every trace was
+    classified by keyword while a working bge-m3 sat idle. Delegating to the
+    canonical factory also picks up the configured model name and the shared
+    provider cache, neither of which the hand-rolled construction had.
     """
+    if config is not None and config.embedding.enabled:
+        provider = (config.embedding.provider or "").strip().lower()
+        endpoint = config.embedding.resolved_endpoint()
+        if provider == "auto":
+            provider = ""  # fall through to the probe below
+        elif provider == "ollama":
+            # Ollama's own base URL, NOT the embedding endpoint: it is the value
+            # this provider actually connects to, so it is the one that has to
+            # clear the gate. Checking anything else would validate a string
+            # that never reaches the socket.
+            ollama_base = endpoint or os.environ.get("OLLAMA_BASE_URL", _OLLAMA_DEFAULT_BASE)
+            if not _endpoint_is_loopback(ollama_base):
+                _warn_remote_endpoint(ollama_base)
+                return None
+            try:
+                from surreal_memory.engine.embedding.ollama_embedding import OllamaEmbedding
+
+                return OllamaEmbedding(model=config.embedding.model, base_url=ollama_base)
+            except Exception:
+                logger.debug("reasoning distiller: ollama embedder could not be built")
+                return None
+        elif provider in _LOCAL_SAFE_PROVIDERS and _endpoint_is_loopback(endpoint):
+            try:
+                from surreal_memory.engine.embedding.openai_embedding import OpenAIEmbedding
+
+                # base_url is passed EXPLICITLY so the endpoint that cleared the
+                # gate is the endpoint the client connects to. Delegating to the
+                # provider factory instead re-resolved it independently: an
+                # openrouter provider carries a hardcoded remote default, and an
+                # openai one reads only the env var, so a loopback endpoint set
+                # in config.toml passed the check while traces went to the cloud.
+                return OpenAIEmbedding(model=config.embedding.model, base_url=endpoint)
+            except Exception:
+                logger.debug(
+                    "reasoning distiller: configured provider %r could not be built", provider
+                )
+                return None
+        elif provider in _LOCAL_SAFE_PROVIDERS:
+            _warn_remote_endpoint(endpoint)
+            return None
+
     try:
         from surreal_memory.engine.semantic_discovery import _auto_detect_provider
 
@@ -423,15 +517,20 @@ def _get_embedder() -> EmbeddingProvider | None:
 
     try:
         endpoint = os.environ.get("SURREAL_MEMORY_EMBEDDING_ENDPOINT", "")
-        is_local = any(host in endpoint for host in ("127.0.0.1", "localhost", "::1"))
         if provider_name == "ollama":
+            # Same rule as the configured path: gate the URL this provider will
+            # really open, which is OLLAMA_BASE_URL, not the embedding endpoint.
+            ollama_base = os.environ.get("OLLAMA_BASE_URL", _OLLAMA_DEFAULT_BASE)
+            if not _endpoint_is_loopback(ollama_base):
+                _warn_remote_endpoint(ollama_base)
+                return None
             from surreal_memory.engine.embedding.ollama_embedding import OllamaEmbedding
 
-            return OllamaEmbedding(model=model_name)
-        if provider_name in ("openai", "openrouter") and is_local:
+            return OllamaEmbedding(model=model_name, base_url=ollama_base)
+        if provider_name in ("openai", "openrouter") and _endpoint_is_loopback(endpoint):
             from surreal_memory.engine.embedding.openai_embedding import OpenAIEmbedding
 
-            return OpenAIEmbedding(model=model_name)
+            return OpenAIEmbedding(model=model_name, base_url=endpoint)
     except Exception:
         logger.debug("reasoning distiller: embedding provider construction failed", exc_info=True)
     return None
@@ -523,7 +622,7 @@ async def _process_model_batch(
         sub_moves = [moves_list[i] for i in idxs]
         sub_traces = [traces[i] for i in idxs]
         capped_mid_category = False
-        for local_cluster in _cluster(sub_vectors, sub_moves):
+        for local_cluster in _cluster(sub_vectors, sub_moves, rt.cluster_cosine):
             if len(local_cluster) < rt.min_cluster_support:
                 continue
             if created >= budget:
@@ -575,7 +674,7 @@ async def distill_reasoning_patterns(
     advances.
     """
     rt = config.reasoning_training
-    embedder = embedder or _get_embedder()
+    embedder = embedder or _get_embedder(config)
     seeds = await _seed_centroids(embedder, rt.categories) if embedder is not None else None
     # None unless distill_use_llm is on AND a local endpoint and model are set.
     # acquire() explicitly loads the chat model when distill_llm_load_cmd is

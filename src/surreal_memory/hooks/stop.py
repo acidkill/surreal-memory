@@ -252,8 +252,19 @@ async def _embedding_dedup(
         from surreal_memory.engine.embedding.provider import EmbeddingProvider
 
         embed_provider: EmbeddingProvider
-        endpoint = os.environ.get("SURREAL_MEMORY_EMBEDDING_ENDPOINT", "")
-        is_local_endpoint = any(h in endpoint for h in ("127.0.0.1", "localhost", "::1"))
+        # Same resolution the distiller uses: the configured endpoint wins, the
+        # env var is the fallback, and the host is parsed rather than
+        # substring-matched — "127.0.0.1.attacker.example" contains the loopback
+        # literal but is not loopback.
+        from surreal_memory.engine.reasoning_distiller import _endpoint_is_loopback
+
+        try:
+            from surreal_memory.unified_config import get_config
+
+            endpoint = get_config().embedding.resolved_endpoint()
+        except Exception:
+            endpoint = os.environ.get("SURREAL_MEMORY_EMBEDDING_ENDPOINT", "")
+        is_local_endpoint = _endpoint_is_loopback(endpoint)
         if provider_name == "ollama":
             from surreal_memory.engine.embedding.ollama_embedding import OllamaEmbedding
 

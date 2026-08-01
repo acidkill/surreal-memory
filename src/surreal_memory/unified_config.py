@@ -124,6 +124,12 @@ class EmbeddingSettings:
     # (e.g. a local OpenAI-compatible server serving bge-m3 → 1024); it drives
     # the SurrealDB HNSW index dimension so the index always matches the vectors.
     dimension: int = 0
+    # Base URL of an OpenAI-compatible embedding server (e.g. llamastash serving
+    # bge-m3 at "http://127.0.0.1:11435/v1"). Mirrors RerankerConfig.endpoint so the
+    # two halves of a local embed+rerank pair are configured the same way; before
+    # this existed the endpoint could only be given as an env var, which no
+    # config-driven consumer could see. Config wins, env is the fallback.
+    endpoint: str = ""
 
     _VALID_PROVIDERS: ClassVar[tuple[str, ...]] = (
         "sentence_transformer",
@@ -155,6 +161,7 @@ class EmbeddingSettings:
             "model": self.model,
             "similarity_threshold": self.similarity_threshold,
             "dimension": self.dimension,
+            "endpoint": self.endpoint,
         }
 
     @classmethod
@@ -165,6 +172,20 @@ class EmbeddingSettings:
             model=str(data.get("model", "all-MiniLM-L6-v2")),
             similarity_threshold=float(data.get("similarity_threshold", 0.7)),
             dimension=int(data.get("dimension", 0) or 0),
+            endpoint=str(data.get("endpoint", "") or "").strip(),
+        )
+
+    def resolved_endpoint(self) -> str:
+        """Endpoint in effect: the configured value, else the env override.
+
+        Same precedence as the reranker (config first, env fallback), so a
+        machine-wide export cannot silently override an explicit per-brain
+        setting while still working for setups that only export the env var.
+        """
+        import os
+
+        return (
+            self.endpoint.strip() or os.environ.get("SURREAL_MEMORY_EMBEDDING_ENDPOINT", "").strip()
         )
 
 
@@ -193,6 +214,13 @@ def _load_embedding_settings(data: dict[str, Any]) -> EmbeddingSettings:
         SURREAL_MEMORY_EMBEDDING_DIMENSION            -> dimension
 
     Only env vars that are actually set (non-empty) override the file values.
+
+    ``endpoint`` is deliberately NOT in that list. It follows the reranker's
+    precedence instead — config first, env as the fallback — resolved at read
+    time by :meth:`EmbeddingSettings.resolved_endpoint`. Overriding it here too
+    would make the config value unreachable whenever the env var is exported
+    machine-wide, which is exactly the case an explicit per-brain endpoint
+    exists to serve.
     """
     base = EmbeddingSettings.from_dict(data)
 
@@ -239,6 +267,7 @@ def _load_embedding_settings(data: dict[str, Any]) -> EmbeddingSettings:
         model=model,
         similarity_threshold=similarity_threshold,
         dimension=dimension,
+        endpoint=base.endpoint,
     )
 
 
@@ -1172,6 +1201,13 @@ class ReasoningTrainingConfig:
     retention_days: int = 90
     max_traces_total: int = 20_000
     min_cluster_support: int = 3
+    # Cosine above which two traces are treated as the same pattern. Embedding
+    # models do not share a similarity scale, so this travels with the
+    # configured embedder: under bge-m3 the median pairwise cosine of real
+    # traces sits near 0.46 and the 99th percentile near 0.62, so a threshold
+    # in the high 0.8s clusters almost nothing and the move-set fallback
+    # silently outperforms the embedding path it is supposed to back up.
+    cluster_cosine: float = 0.75
     min_confidence: float = 0.2
     min_patterns_per_category: int = 3
     injection_max_patterns: int = 5
@@ -1215,6 +1251,7 @@ class ReasoningTrainingConfig:
             "retention_days": self.retention_days,
             "max_traces_total": self.max_traces_total,
             "min_cluster_support": self.min_cluster_support,
+            "cluster_cosine": self.cluster_cosine,
             "min_confidence": self.min_confidence,
             "min_patterns_per_category": self.min_patterns_per_category,
             "injection_max_patterns": self.injection_max_patterns,
@@ -1266,6 +1303,21 @@ class ReasoningTrainingConfig:
             min_confidence = max(0.0, min(float(data.get("min_confidence", 0.2)), 1.0))
         except (ValueError, TypeError):
             min_confidence = 0.2
+
+        # Floor at 0.05: single-linkage clustering collapses into one giant
+        # component once the threshold drops near the corpus baseline, which
+        # yields FEWER patterns, not more, so a near-zero value is never what
+        # an operator meant.
+        try:
+            raw_cosine = float(data.get("cluster_cosine", 0.75))
+            # NaN must not reach the clamp: min()/max() propagate it into the
+            # FLOOR, which would merge every trace into one cluster instead of
+            # falling back to a sane threshold.
+            if raw_cosine != raw_cosine:
+                raise ValueError("cluster_cosine is NaN")
+            cluster_cosine = max(0.05, min(raw_cosine, 1.0))
+        except (ValueError, TypeError):
+            cluster_cosine = 0.75
 
         # Per-model pattern targets: {model: 0..100}. Keys must be model-name
         # shaped (bad keys skipped, not fatal — this loads from disk); values
@@ -1333,6 +1385,7 @@ class ReasoningTrainingConfig:
             retention_days=_int("retention_days", 90, 1, 100_000),
             max_traces_total=_int("max_traces_total", 20_000, 1, 100_000_000),
             min_cluster_support=_int("min_cluster_support", 3, 1, 100_000),
+            cluster_cosine=cluster_cosine,
             min_confidence=min_confidence,
             min_patterns_per_category=_int("min_patterns_per_category", 3, 1, 100_000),
             injection_max_patterns=_int("injection_max_patterns", 5, 1, 1000),
@@ -1918,6 +1971,7 @@ class UnifiedConfig:
             f"retention_days = {rt.retention_days}",
             f"max_traces_total = {rt.max_traces_total}",
             f"min_cluster_support = {rt.min_cluster_support}",
+            f"cluster_cosine = {rt.cluster_cosine}",
             f"min_confidence = {rt.min_confidence}",
             f"min_patterns_per_category = {rt.min_patterns_per_category}",
             f"injection_max_patterns = {rt.injection_max_patterns}",
@@ -1984,6 +2038,7 @@ class UnifiedConfig:
             f'model = "{self.embedding.model}"',
             f"similarity_threshold = {self.embedding.similarity_threshold}",
             f"dimension = {self.embedding.dimension}",
+            f'endpoint = "{_sanitize_toml_url(self.embedding.endpoint)}"',
             "",
             "# Auto-capture settings for MCP server",
             "[auto]",

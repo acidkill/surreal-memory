@@ -57,6 +57,7 @@ import json
 import logging
 import os
 import re
+from ipaddress import ip_address
 from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import urlsplit
 
@@ -159,10 +160,22 @@ class RunCommand(Protocol):
 
 
 def _is_loopback(host: str | None) -> bool:
+    """True only when *host* really is a loopback address or ``localhost``.
+
+    The prefix test this replaced (``host.startswith("127.")``) accepted
+    ``127.0.0.1.attacker.example`` — a hostname anyone can register and point
+    anywhere. That matters here because this check is what keeps reasoning
+    traces and prompts on the machine: passing it is what allows a remote
+    endpoint to receive them. Parsing the address decides it, and a name that
+    is not a literal IP is loopback only if it is exactly ``localhost``.
+    """
     if not host:
         return False
     host = host.strip().strip("[]").lower()
-    return host in _LOOPBACK_NAMES or host.startswith("127.")
+    try:
+        return ip_address(host).is_loopback
+    except ValueError:
+        return host in _LOOPBACK_NAMES
 
 
 def resolve_llm_endpoint(configured: str = "") -> str | None:

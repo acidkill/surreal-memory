@@ -16,6 +16,7 @@ import pytest
 from surreal_memory.engine.reasoning_distiller import (
     DistillResult,
     _classify_by_keywords,
+    _cluster,
     distill_reasoning_patterns,
     reasoning_coverage,
     segment_moves,
@@ -29,7 +30,9 @@ BRAIN = "b1"
 @pytest.fixture
 def no_embedder(monkeypatch: pytest.MonkeyPatch) -> None:
     """Force the fail-soft (no embedding provider) path — keyword + Jaccard."""
-    monkeypatch.setattr("surreal_memory.engine.reasoning_distiller._get_embedder", lambda: None)
+    monkeypatch.setattr(
+        "surreal_memory.engine.reasoning_distiller._get_embedder", lambda *_a, **_k: None
+    )
 
 
 def _ucfg(tmp_path: Path, **rt_kw: object) -> UnifiedConfig:
@@ -615,3 +618,257 @@ async def test_reset_cannot_recover_traces_the_retention_prune_removed(
 
     assert await storage.get_reasoning_trace_models(BRAIN) == []
     assert await storage.reset_reasoning_traces_processed(BRAIN) == 0
+
+
+# ── embedder selection: config wins over the environment probe ────────────────
+
+
+class TestEndpointIsLoopback:
+    """The check that decides whether reasoning text may leave this machine.
+
+    A prefix or substring test passes hostnames an attacker can register, so
+    these cases are the point of the helper, not decoration.
+    """
+
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            "http://127.0.0.1:11435/v1",
+            "http://localhost:11435/v1",
+            "http://[::1]:11435/v1",
+            "http://127.1.2.3:8080/v1",
+        ],
+    )
+    def test_accepts_real_loopback(self, endpoint: str) -> None:
+        from surreal_memory.engine.reasoning_distiller import _endpoint_is_loopback
+
+        assert _endpoint_is_loopback(endpoint) is True
+
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            "https://127.0.0.1.attacker.example/v1",  # starts with "127."
+            "https://localhost.evil.example/v1",  # starts with "localhost"
+            "https://not-127.0.0.1.example/v1",  # contains the literal
+            "https://api.openai.com/v1",
+            "",
+            "   ",
+        ],
+    )
+    def test_refuses_everything_else(self, endpoint: str) -> None:
+        from surreal_memory.engine.reasoning_distiller import _endpoint_is_loopback
+
+        assert _endpoint_is_loopback(endpoint) is False
+
+
+class TestGetEmbedderUsesConfig:
+    """Selection logic had no coverage at all, which is why the defect survived.
+
+    The `no_embedder` fixture blanks `_get_embedder` for most of this module, so
+    nothing ever exercised the real function.
+    """
+
+    @staticmethod
+    def _cfg(tmp_path: Path, **kw: object) -> UnifiedConfig:
+        from surreal_memory.unified_config import EmbeddingSettings
+
+        base: dict[str, object] = {
+            "enabled": True,
+            "provider": "openai",
+            "model": "bge-m3-FP16",
+            "dimension": 1024,
+            "endpoint": "http://127.0.0.1:11435/v1",
+        }
+        base.update(kw)
+        return UnifiedConfig(
+            data_dir=tmp_path / ".surrealmemory",
+            current_brain="default",
+            embedding=EmbeddingSettings(**base),  # type: ignore[arg-type]
+        )
+
+    def test_configured_loopback_provider_is_built(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # An unrelated GEMINI_API_KEY used to win the environment probe and
+        # shadow this configuration entirely.
+        monkeypatch.setenv("GEMINI_API_KEY", "irrelevant-but-present")
+        # The provider factory must NOT be consulted: it re-resolves the base
+        # URL on its own, which is how a validated loopback endpoint ended up
+        # pointing at a remote host.
+        monkeypatch.setattr(
+            "surreal_memory.engine.semantic_discovery._create_provider",
+            lambda *_a, **_k: pytest.fail("provider factory must not be used"),
+        )
+        from surreal_memory.engine.reasoning_distiller import _get_embedder
+
+        embedder = _get_embedder(self._cfg(tmp_path))
+
+        assert embedder is not None
+        assert "127.0.0.1" in (getattr(embedder, "_base_url", "") or "")
+
+    def test_remote_endpoint_is_refused_not_silently_degraded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("SURREAL_MEMORY_EMBEDDING_ENDPOINT", raising=False)
+        from surreal_memory.engine.reasoning_distiller import _get_embedder
+
+        cfg = self._cfg(tmp_path, endpoint="https://api.openai.com/v1")
+        assert _get_embedder(cfg) is None
+
+    def test_hostname_that_merely_looks_local_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("SURREAL_MEMORY_EMBEDDING_ENDPOINT", raising=False)
+        from surreal_memory.engine.reasoning_distiller import _get_embedder
+
+        cfg = self._cfg(tmp_path, endpoint="https://127.0.0.1.attacker.example/v1")
+        assert _get_embedder(cfg) is None
+
+    def test_disabled_embedding_falls_back_to_the_probe(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Fail-soft contract: embeddings off must not start reading config.
+        monkeypatch.setattr(
+            "surreal_memory.engine.semantic_discovery._auto_detect_provider",
+            lambda: (_ for _ in ()).throw(RuntimeError("no provider")),
+        )
+        from surreal_memory.engine.reasoning_distiller import _get_embedder
+
+        assert _get_embedder(self._cfg(tmp_path, enabled=False)) is None
+
+    def test_no_config_keeps_the_old_behaviour(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "surreal_memory.engine.semantic_discovery._auto_detect_provider",
+            lambda: (_ for _ in ()).throw(RuntimeError("no provider")),
+        )
+        from surreal_memory.engine.reasoning_distiller import _get_embedder
+
+        assert _get_embedder() is None
+
+
+class TestClusterCosineIsConfigurable:
+    """The clustering threshold belongs to the embedder, not to the module.
+
+    A constant tuned for one embedding model clusters nothing under another:
+    the value that shipped sat above the 99th percentile of real bge-m3 trace
+    similarity, so the embedding path produced strictly fewer patterns than the
+    move-set fallback it is meant to supersede.
+    """
+
+    @staticmethod
+    def _pair(cosine_like: float) -> list[list[float]]:
+        """Two unit vectors whose cosine is exactly ``cosine_like``."""
+        import math
+
+        angle = math.acos(cosine_like)
+        return [[1.0, 0.0], [math.cos(angle), math.sin(angle)]]
+
+    def test_pair_clusters_below_threshold_and_splits_above_it(self) -> None:
+        vectors = self._pair(0.80)
+        moves = [[], []]
+
+        lenient = _cluster(vectors, moves, 0.75)
+        strict = _cluster(vectors, moves, 0.83)
+
+        assert [len(c) for c in lenient] == [2], "0.80 similarity must cluster at 0.75"
+        assert sorted(len(c) for c in strict) == [1, 1], "0.80 must not cluster at 0.83"
+
+    def test_default_threshold_is_taken_from_config_not_the_module(self) -> None:
+        rt = ReasoningTrainingConfig()
+
+        assert rt.cluster_cosine == 0.75
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            (0.9, 0.9),
+            (5.0, 1.0),  # clamped
+            (0.0, 0.05),  # floored: single-linkage collapses into one blob
+            ("not-a-number", 0.75),  # falls back rather than raising
+            (float("nan"), 0.75),  # NaN must not propagate into the floor
+            (float("inf"), 1.0),
+            (None, 0.75),
+        ],
+    )
+    def test_loader_clamps_and_survives_junk(self, raw: object, expected: float) -> None:
+        rt = ReasoningTrainingConfig.from_dict({"cluster_cosine": raw})
+
+        assert rt.cluster_cosine == expected
+
+    def test_survives_a_config_round_trip(self) -> None:
+        original = ReasoningTrainingConfig(cluster_cosine=0.62)
+
+        restored = ReasoningTrainingConfig.from_dict(original.to_dict())
+
+        assert restored.cluster_cosine == 0.62
+
+
+class TestValidatedEndpointIsTheUsedEndpoint:
+    """The endpoint that clears the loopback gate must be the one connected to.
+
+    Checking one value and connecting to another makes the gate decorative:
+    reasoning traces are private user data, and "the check passed" has to imply
+    "the data stayed on this machine".
+    """
+
+    @staticmethod
+    def _config(tmp_path: Path, provider: str, endpoint: str) -> UnifiedConfig:
+        from surreal_memory.unified_config import EmbeddingSettings
+
+        return UnifiedConfig(
+            data_dir=tmp_path / ".surrealmemory",
+            current_brain="default",
+            embedding=EmbeddingSettings(
+                enabled=True,
+                provider=provider,
+                model="bge-m3-FP16",
+                dimension=1024,
+                endpoint=endpoint,
+            ),
+        )
+
+    def test_openrouter_cannot_reach_its_hardcoded_remote_default(self, tmp_path: Path) -> None:
+        from surreal_memory.engine.reasoning_distiller import _get_embedder
+
+        embedder = _get_embedder(self._config(tmp_path, "openrouter", "http://127.0.0.1:11435/v1"))
+
+        assert embedder is not None
+        base = getattr(embedder, "_base_url", None)
+        assert base is not None and "openrouter.ai" not in base
+        assert "127.0.0.1" in base
+
+    def test_config_only_loopback_endpoint_reaches_the_client(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A loopback endpoint set ONLY in config.toml must be used, not just checked."""
+        from surreal_memory.engine.reasoning_distiller import _get_embedder
+
+        monkeypatch.delenv("SURREAL_MEMORY_EMBEDDING_ENDPOINT", raising=False)
+
+        embedder = _get_embedder(self._config(tmp_path, "openai", "http://127.0.0.1:11435/v1"))
+
+        assert embedder is not None
+        assert "127.0.0.1" in (getattr(embedder, "_base_url", "") or "")
+
+    def test_ollama_is_refused_when_its_own_base_url_is_remote(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        from surreal_memory.engine.reasoning_distiller import _get_embedder
+
+        # Isolate the OLLAMA_BASE_URL path: with no embedding endpoint set,
+        # ollama's own base URL is what the client will open.
+        monkeypatch.delenv("SURREAL_MEMORY_EMBEDDING_ENDPOINT", raising=False)
+        monkeypatch.setenv("OLLAMA_BASE_URL", "http://attacker.example:11434")
+
+        assert _get_embedder(self._config(tmp_path, "ollama", "")) is None
+
+    def test_ollama_is_allowed_on_a_loopback_base_url(self, tmp_path: Path, monkeypatch) -> None:
+        from surreal_memory.engine.reasoning_distiller import _get_embedder
+
+        monkeypatch.delenv("SURREAL_MEMORY_EMBEDDING_ENDPOINT", raising=False)
+        monkeypatch.setenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+
+        embedder = _get_embedder(self._config(tmp_path, "ollama", ""))
+
+        assert embedder is not None
+        assert "127.0.0.1" in (getattr(embedder, "_base_url", "") or "")

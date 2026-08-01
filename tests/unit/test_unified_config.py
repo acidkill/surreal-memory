@@ -10,6 +10,7 @@ from surreal_memory.cli.config import _sync_brain_to_toml
 from surreal_memory.unified_config import (
     _MIN_LEGACY_DB_BYTES,
     MAX_PATTERN_TARGET,
+    EmbeddingSettings,
     ReasoningTrainingConfig,
     UnifiedConfig,
     _migrate_legacy_db,
@@ -792,3 +793,39 @@ class TestPatternTargetCeiling:
         # with a few thousand staged traces can yield, so it silently capped
         # coverage instead of guarding against misconfiguration.
         assert MAX_PATTERN_TARGET >= 1000
+
+
+class TestEmbeddingEndpoint:
+    """Parity with the reranker: the endpoint is configurable, not env-only.
+
+    Before this field existed the endpoint could only be exported as an env var,
+    so nothing that resolved from config could see it — which is how a correctly
+    configured local server ended up unused.
+    """
+
+    def test_endpoint_round_trips_through_dict(self) -> None:
+        cfg = EmbeddingSettings.from_dict(
+            {"enabled": True, "provider": "openai", "endpoint": "http://127.0.0.1:11435/v1"}
+        )
+        assert cfg.endpoint == "http://127.0.0.1:11435/v1"
+        assert cfg.to_dict()["endpoint"] == "http://127.0.0.1:11435/v1"
+
+    def test_endpoint_defaults_to_empty(self) -> None:
+        assert EmbeddingSettings.from_dict({}).endpoint == ""
+
+    def test_config_wins_over_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Same precedence as the reranker. A machine-wide export must not
+        # silently override an explicit per-brain endpoint.
+        monkeypatch.setenv("SURREAL_MEMORY_EMBEDDING_ENDPOINT", "http://127.0.0.1:9999/v1")
+        cfg = EmbeddingSettings(endpoint="http://127.0.0.1:11435/v1")
+        assert cfg.resolved_endpoint() == "http://127.0.0.1:11435/v1"
+
+    def test_env_is_the_fallback_when_config_is_empty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SURREAL_MEMORY_EMBEDDING_ENDPOINT", "http://127.0.0.1:11435/v1")
+        assert EmbeddingSettings().resolved_endpoint() == "http://127.0.0.1:11435/v1"
+
+    def test_no_endpoint_anywhere_resolves_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("SURREAL_MEMORY_EMBEDDING_ENDPOINT", raising=False)
+        assert EmbeddingSettings().resolved_endpoint() == ""
