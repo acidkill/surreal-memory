@@ -75,30 +75,12 @@ def get_plugins() -> list[ProPlugin]:
     return list(_plugins)
 
 
-def get_retrieval_strategy(name: str) -> Callable[..., Any] | None:
-    """Look up a retrieval strategy from any registered plugin."""
-    for plugin in get_plugins():
-        strategies = plugin.get_retrieval_strategies()
-        if name in strategies:
-            return strategies[name]
-    return None
-
-
 def get_compression_fn() -> Callable[..., Any] | None:
     """Get Pro compression function if available."""
     for plugin in get_plugins():
         fn = plugin.get_compression_fn()
         if fn is not None:
             return fn
-    return None
-
-
-def get_consolidation_strategy(name: str) -> Callable[..., Any] | None:
-    """Look up a consolidation strategy from any registered plugin."""
-    for plugin in get_plugins():
-        strategies = plugin.get_consolidation_strategies()
-        if name in strategies:
-            return strategies[name]
     return None
 
 
@@ -128,11 +110,9 @@ __all__ = [
     "ProPlugin",
     "discover",
     "get_compression_fn",
-    "get_consolidation_strategy",
     "get_plugin_tool_handler",
     "get_plugin_tools",
     "get_plugins",
-    "get_retrieval_strategy",
     "has_pro",
     "register",
 ]

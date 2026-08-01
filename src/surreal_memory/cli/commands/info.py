@@ -543,17 +543,9 @@ def _quality_label(value: float, *, invert: bool = False) -> str:
     return "poor"
 
 
-def version() -> None:
-    """Show version information."""
-    from surreal_memory import __version__
-
-    typer.echo(f"surreal-memory v{__version__}")
-
-
 def register(app: typer.Typer) -> None:
     """Register info commands on the app."""
     app.command()(stats)
     app.command()(check)
     app.command()(status)
     app.command()(health)
-    app.command()(version)

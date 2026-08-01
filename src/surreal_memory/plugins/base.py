@@ -27,28 +27,10 @@ class ProPlugin(ABC):
         ...
 
     @abstractmethod
-    def get_retrieval_strategies(self) -> dict[str, Callable[..., Any]]:
-        """Return named retrieval strategies.
-
-        Keys are strategy names (e.g. 'cone', 'ppr_pro').
-        Values are async callables matching the retrieval interface.
-        """
-        ...
-
-    @abstractmethod
     def get_compression_fn(self) -> Callable[..., Any] | None:
         """Return a compression function, or None if not provided.
 
         Should match: async def compress(content: str, level: FidelityLevel, embed_fn) -> str
-        """
-        ...
-
-    @abstractmethod
-    def get_consolidation_strategies(self) -> dict[str, Callable[..., Any]]:
-        """Return named consolidation strategies.
-
-        Keys are strategy names (e.g. 'smart_merge', 'priority_aware').
-        Values are async callables for consolidation.
         """
         ...
 

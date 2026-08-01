@@ -93,9 +93,8 @@ NLP and parsing utilities:
 - **QueryRouter** (`router.py`) - Determines query intent and depth
 - **TemporalExtractor** (`temporal.py`) - Extracts time references
 - **EntityExtractor** (`entities.py`), **keywords.py** - Entity/keyword extraction
-- **structure_detector.py**, **relations.py**, **sentiment.py**, **codebase.py**,
-  **llm_provider.py** - Structured data detection, relation extraction, sentiment,
-  codebase indexing, optional LLM-assisted extraction
+- **structure_detector.py**, **relations.py**, **sentiment.py**, **codebase.py** -
+  Structured data detection, relation extraction, sentiment, codebase indexing
 
 ### Storage Layer
 
@@ -394,8 +393,7 @@ src/surreal_memory/
 │   ├── structure_detector.py   # Table/CSV/JSON structure detection
 │   ├── relations.py            # Relation extraction
 │   ├── sentiment.py            # Sentiment/emotional valence signals
-│   ├── codebase.py             # Codebase indexing extraction
-│   └── llm_provider.py         # Optional LLM-assisted extraction
+│   └── codebase.py             # Codebase indexing extraction
 ├── storage/
 │   ├── base.py                     # NeuralStorage ABC (see "Storage Interface" above)
 │   ├── factory.py                  # create_storage() (BrainMode-based) + HybridStorage
@@ -462,7 +460,7 @@ src/surreal_memory/
 │   ├── main.py                # Entry point, app registration
 │   ├── doctor.py               # `smem doctor` — setup diagnostics (incl. SurrealDB probe)
 │   └── commands/               # One file per command group (storage.py manages SurrealDB)
-├── plugins/                   # CommunityPlugin — cone queries, smart merge, compression
+├── plugins/                   # CommunityPlugin — directional compression, Pro-feature gate
 ├── safety/                    # Encryption, sensitive-content detection, input firewall
 ├── sync/                      # Multi-device sync engine, Merkle delta, device registry
 ├── integration/ + integrations/  # ChromaDB/Mem0/Cognee/Graphiti/LlamaIndex import adapters,

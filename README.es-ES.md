@@ -161,12 +161,10 @@ Todo lo demás — sesiones, carga de contexto, seguimiento de hábitos, manteni
 
 ### Plugin comunitario
 
-El `CommunityPlugin` integrado proporciona todas las funciones de nivel Pro sin costo:
+El `CommunityPlugin` integrado habilita las capacidades de nivel Pro sin costo:
 
-- **Consultas cónicas** — búsqueda vectorial HNSW mediante SurrealDB para recuperación semántica
-- **Fusión inteligente** — consolidación de neuronas basada en embeddings
-- **Compresión direccional** — preservación semántica multieje
-- **Backend de almacenamiento SurrealDB** — se registra automáticamente cuando se instala el extra `[surrealdb]`
+- **Compresión direccional** — preservación semántica multieje, usada por el paso de compresión
+- **Auto-tier durante la consolidación** — requiere un plugin registrado, incluido de forma predeterminada
 
 ---
 

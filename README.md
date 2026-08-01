@@ -160,12 +160,10 @@ Everything else — sessions, context loading, habit tracking, maintenance — w
 
 ### Community Plugin
 
-The built-in `CommunityPlugin` provides all Pro-tier features at no cost:
+The built-in `CommunityPlugin` unlocks the Pro-tier capabilities at no cost:
 
-- **Cone Queries** — HNSW vector search via SurrealDB for semantic recall
-- **Smart Merge** — embedding-based neuron consolidation
-- **Directional Compression** — multi-axis semantic preservation
-- **SurrealDB Storage Backend** — registered automatically when `[surrealdb]` extra is installed
+- **Directional Compression** — multi-axis semantic preservation, used by the compression pass
+- **Auto-tier during consolidation** — gated behind a registered plugin, which ships by default
 
 ---
 

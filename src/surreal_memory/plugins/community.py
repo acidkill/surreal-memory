@@ -1,11 +1,10 @@
-"""Community plugin — full Pro features without a commercial license.
+"""Community plugin — Pro-tier capabilities without a commercial license.
 
-Registers at server startup to enable:
-  - Cone queries (HNSW vector search via SurrealDB)
-  - Smart merge (embedding-based neuron consolidation)
-  - Directional compression (multi-axis semantic preservation)
-  - SurrealDB storage backend
-  - Merkle delta sync (is_pro=True gate bypass)
+Provides:
+  - Directional compression (multi-axis semantic preservation), consumed by
+    `engine/compression.py` via `plugins.get_compression_fn()`
+  - A registered plugin, so `plugins.has_pro()` is True — which unlocks
+    auto-tier during consolidation and is reported by `smem doctor`/`smem_stats`
 
 This plugin is discovered by `plugins.discover()` and also registered
 explicitly in `server/app.py` startup.
@@ -20,96 +19,6 @@ from typing import Any
 from surreal_memory.plugins.base import ProPlugin
 
 logger = logging.getLogger(__name__)
-
-
-# ── Cone Query ────────────────────────────────────────────────────────
-
-
-async def cone_query(
-    query_vec: list[float],
-    db: Any,
-    top_k: int = 10,
-) -> list[Any]:
-    """HNSW cone query via SurrealDB vector search.
-
-    Uses vector::distance::knn() to find the nearest neighbors
-    to the query embedding. Returns activation-like results.
-    """
-    from surreal_memory.engine.activation import ActivationResult
-
-    if hasattr(db, "find_neurons_by_embedding"):
-        results = await db.find_neurons_by_embedding(query_vec, limit=top_k)
-        activations = []
-        for neuron, similarity in results:
-            activations.append(
-                ActivationResult(
-                    neuron_id=neuron.id,
-                    activation_level=similarity,
-                    hop_distance=0,
-                    path=[neuron.id],
-                    source_anchor=neuron.id,
-                )
-            )
-        return activations
-
-    return []
-
-
-# ── Smart Merge ───────────────────────────────────────────────────────
-
-
-async def smart_merge(db: Any, dry_run: bool = False) -> dict[str, Any]:
-    """Merge near-duplicate neurons using embedding similarity.
-
-    Finds neurons with cosine similarity >= 0.95 and deletes one of each pair,
-    keeping whichever has the **longer content**. (The docstring used to claim
-    the more-accessed neuron survived; the code has always compared content
-    length.) Unlike the consolidation ``dedup`` strategy, which only records an
-    ALIAS edge, this really does destroy a neuron.
-    """
-    merged_count = 0
-
-    if not hasattr(db, "find_neurons_by_embedding"):
-        return {"merged_count": 0}
-
-    # Get all neurons with embeddings
-    brain_id = db._get_brain_id() if hasattr(db, "_get_brain_id") else None
-    if brain_id is None:
-        return {"merged_count": 0}
-
-    neurons = await db.find_neurons(limit=10000)
-    seen: set[str] = set()
-
-    for neuron in neurons:
-        if neuron.id in seen:
-            continue
-
-        meta = neuron.metadata
-        emb = meta.get("_embedding")
-        if emb is None:
-            continue
-
-        # Find near-duplicates
-        similar = await db.find_neurons_by_embedding(emb, limit=5)
-        for sim_neuron, similarity in similar:
-            if sim_neuron.id == neuron.id or sim_neuron.id in seen:
-                continue
-            if similarity >= 0.95:
-                if not dry_run:
-                    # Keep the one with more content, delete the other
-                    if len(sim_neuron.content) > len(neuron.content):
-                        await db.delete_neuron(neuron.id)
-                        seen.add(neuron.id)
-                    else:
-                        await db.delete_neuron(sim_neuron.id)
-                        seen.add(sim_neuron.id)
-
-                merged_count += 1
-                seen.add(sim_neuron.id)
-
-        seen.add(neuron.id)
-
-    return {"merged_count": merged_count}
 
 
 # ── Directional Compression ──────────────────────────────────────────
@@ -189,14 +98,8 @@ class CommunityPlugin(ProPlugin):
     def version(self) -> str:
         return "1.0.0"
 
-    def get_retrieval_strategies(self) -> dict[str, Callable[..., Any]]:
-        return {"cone": cone_query}
-
     def get_compression_fn(self) -> Callable[..., Any] | None:
         return directional_compress
-
-    def get_consolidation_strategies(self) -> dict[str, Callable[..., Any]]:
-        return {"smart_merge": smart_merge}
 
 
 def auto_register() -> None:
