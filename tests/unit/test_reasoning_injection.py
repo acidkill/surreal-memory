@@ -149,7 +149,20 @@ def test_resolve_from_settings_alias(clean_env: Path) -> None:
     claude_dir = clean_env / ".claude"
     claude_dir.mkdir(parents=True, exist_ok=True)
     (claude_dir / "settings.json").write_text(json.dumps({"model": "opusplan"}), encoding="utf-8")
-    assert resolve_active_model({}) == "claude-opus-4-8"
+    assert resolve_active_model({}) == "claude-opus-5"
+
+
+def test_model_aliases_track_the_current_lineup() -> None:
+    """Regression: the alias table shipped a stale 4.8-era id for months.
+
+    Injection is keyed on the model string in ``injection_map``, so a stale
+    alias here silently routes a user's short "opus" setting to the wrong
+    source model's patterns.
+    """
+    from surreal_memory.engine.reasoning_injection import _MODEL_ALIASES
+
+    assert _MODEL_ALIASES["opus"] == "claude-opus-5"
+    assert _MODEL_ALIASES["opusplan"] == "claude-opus-5"
 
 
 def test_resolve_default_when_nothing_available(clean_env: Path) -> None:

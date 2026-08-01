@@ -49,8 +49,8 @@ _PATTERN_FETCH_LIMIT = 20_000
 # pipeline. Full ids pass through ``normalize_model`` unchanged.
 _MODEL_ALIASES: dict[str, str] = {
     "sonnet": "claude-sonnet-5",
-    "opus": "claude-opus-4-8",
-    "opusplan": "claude-opus-4-8",
+    "opus": "claude-opus-5",
+    "opusplan": "claude-opus-5",
     "haiku": "claude-haiku-4-5",
     "fable": "claude-fable-5",
 }
