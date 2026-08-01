@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from surreal_memory.core.sync_records import DeviceRecord
 from surreal_memory.utils.timeutils import utcnow
 
 if TYPE_CHECKING:
@@ -14,17 +14,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-
-@dataclass(frozen=True)
-class DeviceRecord:
-    """A registered device for a brain."""
-
-    device_id: str
-    brain_id: str
-    device_name: str
-    last_sync_at: datetime | None
-    last_sync_sequence: int
-    registered_at: datetime
+__all__ = ["DeviceRecord", "SQLiteDevicesMixin"]
 
 
 class SQLiteDevicesMixin:

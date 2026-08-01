@@ -15,19 +15,26 @@ from uuid import uuid4
 
 import networkx as nx
 
+from surreal_memory.core.alert import Alert
 from surreal_memory.core.brain import Brain
 from surreal_memory.core.fiber import Fiber
 from surreal_memory.core.memory_types import TypedMemory
 from surreal_memory.core.neuron import Neuron, NeuronState, NeuronType
 from surreal_memory.core.project import Project
 from surreal_memory.core.retrieval_trace import RetrievalTrace
+from surreal_memory.core.source import Source
 from surreal_memory.core.synapse import Synapse, SynapseType
+from surreal_memory.core.sync_records import ChangeEntry, DeviceRecord
 from surreal_memory.engine.brain_versioning import BrainVersion
+from surreal_memory.engine.depth_prior import DepthPrior
 from surreal_memory.storage.base import NeuralStorage
 from surreal_memory.storage.memory_brain_ops import InMemoryBrainMixin
 from surreal_memory.storage.memory_collections import InMemoryCollectionsMixin
+from surreal_memory.storage.memory_knowledge import InMemoryKnowledgeMixin
+from surreal_memory.storage.memory_lifecycle_ops import InMemoryLifecycleMixin
 from surreal_memory.storage.memory_pinning import InMemoryPinningMixin
 from surreal_memory.storage.memory_reviews import InMemoryReviewsMixin
+from surreal_memory.storage.memory_sync_ops import InMemorySyncMixin
 from surreal_memory.utils.timeutils import utcnow
 
 
@@ -36,6 +43,9 @@ class InMemoryStorage(
     InMemoryCollectionsMixin,
     InMemoryPinningMixin,
     InMemoryBrainMixin,
+    InMemoryKnowledgeMixin,
+    InMemorySyncMixin,
+    InMemoryLifecycleMixin,
     NeuralStorage,
 ):
     """NetworkX-based in-memory storage for development and testing.
@@ -62,6 +72,18 @@ class InMemoryStorage(
         self._review_schedules: dict[str, dict[str, Any]] = defaultdict(dict)
         self._keyword_df: dict[str, dict[str, int]] = defaultdict(dict)
         self._entity_refs: dict[str, dict[str, list[str]]] = defaultdict(dict)
+        self._sources: dict[str, dict[str, Source]] = defaultdict(dict)
+        self._alerts: dict[str, dict[str, Alert]] = defaultdict(dict)
+        self._cognitive_states: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
+        self._knowledge_gaps: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
+        self._devices: dict[str, dict[str, DeviceRecord]] = defaultdict(dict)
+        self._change_log: dict[str, list[ChangeEntry]] = defaultdict(list)
+        self._change_log_seq: dict[str, int] = defaultdict(int)
+        self._merkle_hashes: dict[str, dict[str, dict[str, str]]] = defaultdict(dict)
+        self._depth_priors: dict[str, dict[str, dict[int, DepthPrior]]] = defaultdict(dict)
+        self._compression_backups: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
+        self._neuron_snapshots: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
+        self._hot_index: dict[str, list[dict[str, Any]]] = defaultdict(list)
         self._current_brain_id: str | None = None
 
     @property

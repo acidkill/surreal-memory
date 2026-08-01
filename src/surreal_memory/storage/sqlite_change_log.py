@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from surreal_memory.core.sync_records import ChangeEntry
 from surreal_memory.utils.timeutils import utcnow
 
 if TYPE_CHECKING:
@@ -15,20 +15,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-
-@dataclass(frozen=True)
-class ChangeEntry:
-    """A single change log entry."""
-
-    id: int  # Auto-incremented sequence number
-    brain_id: str
-    entity_type: str  # "neuron", "synapse", "fiber"
-    entity_id: str
-    operation: str  # "insert", "update", "delete"
-    device_id: str
-    changed_at: datetime
-    payload: dict[str, Any] = field(default_factory=dict)
-    synced: bool = False
+__all__ = ["ChangeEntry", "SQLiteChangeLogMixin"]
 
 
 class SQLiteChangeLogMixin:
