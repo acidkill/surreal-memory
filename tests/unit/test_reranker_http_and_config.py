@@ -229,7 +229,6 @@ class TestRerankerBridge:
         rc = RerankerConfig(
             enabled=True,
             model_name="BAAI/bge-reranker-v2-m3",
-            overfetch_multiplier=4,
             blend_weight=0.65,
             min_score=0.2,
             max_candidates=25,
@@ -239,7 +238,6 @@ class TestRerankerBridge:
         assert ov == {
             "reranker_enabled": True,
             "reranker_model": "BAAI/bge-reranker-v2-m3",
-            "reranker_overfetch_multiplier": 4,
             "reranker_blend_weight": 0.65,
             "reranker_min_score": 0.2,
             "reranker_max_candidates": 25,

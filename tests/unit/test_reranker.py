@@ -290,7 +290,7 @@ class TestRerankerConfig:
         cfg = RerankerConfig()
         assert cfg.enabled is False
         assert cfg.model_name == "BAAI/bge-reranker-v2-m3"
-        assert cfg.overfetch_multiplier == 3
+        assert cfg.max_candidates == 30
 
     def test_unified_reranker_config_roundtrip(self) -> None:
         from surreal_memory.unified_config import RerankerConfig

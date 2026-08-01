@@ -442,7 +442,6 @@ class EternalConfig:
 
     enabled: bool = True
     notifications: bool = True
-    snapshot_retention_days: int = 7
     auto_save_interval: int = 15
     context_warning_threshold: float = 0.8
     max_context_tokens: int = 128_000
@@ -451,7 +450,6 @@ class EternalConfig:
         return {
             "enabled": self.enabled,
             "notifications": self.notifications,
-            "snapshot_retention_days": self.snapshot_retention_days,
             "auto_save_interval": self.auto_save_interval,
             "context_warning_threshold": self.context_warning_threshold,
             "max_context_tokens": self.max_context_tokens,
@@ -462,7 +460,6 @@ class EternalConfig:
         return cls(
             enabled=data.get("enabled", True),
             notifications=data.get("notifications", True),
-            snapshot_retention_days=data.get("snapshot_retention_days", 7),
             auto_save_interval=data.get("auto_save_interval", 15),
             context_warning_threshold=data.get("context_warning_threshold", 0.8),
             max_context_tokens=data.get("max_context_tokens", 128_000),
@@ -600,10 +597,6 @@ class MaintenanceConfig:
     scheduled_consolidation_strategies: tuple[str, ...] = ("prune", "merge", "enrich")
     version_check_enabled: bool = True
     version_check_interval_hours: int = 24
-    # Lifecycle engine configuration
-    lifecycle_enabled: bool = True
-    lifecycle_heat_threshold: float = 0.5
-    lifecycle_recency_active_days: float = 3.0
     # Auto-decay in serve daemon
     decay_enabled: bool = True
     decay_interval_hours: int = 12
@@ -656,9 +649,6 @@ class MaintenanceConfig:
             "scheduled_consolidation_strategies": list(self.scheduled_consolidation_strategies),
             "version_check_enabled": self.version_check_enabled,
             "version_check_interval_hours": self.version_check_interval_hours,
-            "lifecycle_enabled": self.lifecycle_enabled,
-            "lifecycle_heat_threshold": self.lifecycle_heat_threshold,
-            "lifecycle_recency_active_days": self.lifecycle_recency_active_days,
             "decay_enabled": self.decay_enabled,
             "decay_interval_hours": self.decay_interval_hours,
             "reindex_enabled": self.reindex_enabled,
@@ -707,9 +697,6 @@ class MaintenanceConfig:
             scheduled_consolidation_strategies=sched_strategies,
             version_check_enabled=data.get("version_check_enabled", True),
             version_check_interval_hours=data.get("version_check_interval_hours", 24),
-            lifecycle_enabled=data.get("lifecycle_enabled", True),
-            lifecycle_heat_threshold=data.get("lifecycle_heat_threshold", 0.5),
-            lifecycle_recency_active_days=data.get("lifecycle_recency_active_days", 3.0),
             decay_enabled=data.get("decay_enabled", True),
             decay_interval_hours=data.get("decay_interval_hours", 12),
             reindex_enabled=data.get("reindex_enabled", False),
@@ -764,28 +751,6 @@ class ToolTierConfig:
         if raw not in _VALID_TOOL_TIERS:
             raw = "full"
         return cls(tier=raw)
-
-
-@dataclass(frozen=True)
-class ConflictConfig:
-    """Auto-conflict resolution configuration.
-
-    Controls whether trivial conflicts are automatically resolved
-    instead of requiring manual intervention.
-    """
-
-    auto_resolve_trivial: bool = True
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "auto_resolve_trivial": self.auto_resolve_trivial,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> ConflictConfig:
-        return cls(
-            auto_resolve_trivial=data.get("auto_resolve_trivial", True),
-        )
 
 
 @dataclass(frozen=True)
@@ -1075,7 +1040,6 @@ class ToolMemoryConfig:
     """
 
     enabled: bool = True
-    min_duration_ms: int = 0  # Ignore tool calls faster than this
     blacklist: tuple[str, ...] = ()  # Tool name prefixes to skip
     cooccurrence_window_s: int = 60  # Seconds for USED_WITH detection
     min_frequency: int = 3  # Min calls before creating a tool neuron
@@ -1085,7 +1049,6 @@ class ToolMemoryConfig:
     def to_dict(self) -> dict[str, Any]:
         return {
             "enabled": self.enabled,
-            "min_duration_ms": self.min_duration_ms,
             "blacklist": list(self.blacklist),
             "cooccurrence_window_s": self.cooccurrence_window_s,
             "min_frequency": self.min_frequency,
@@ -1100,10 +1063,6 @@ class ToolMemoryConfig:
             blacklist = tuple(str(b)[:128] for b in blacklist_raw[:50])
         else:
             blacklist = ()
-        try:
-            min_dur = max(0, min(int(data.get("min_duration_ms", 0)), 60_000))
-        except (ValueError, TypeError):
-            min_dur = 0
         try:
             window = max(1, min(int(data.get("cooccurrence_window_s", 60)), 3600))
         except (ValueError, TypeError):
@@ -1122,7 +1081,6 @@ class ToolMemoryConfig:
             batch = 200
         return cls(
             enabled=bool(data.get("enabled", False)),
-            min_duration_ms=min_dur,
             blacklist=blacklist,
             cooccurrence_window_s=window,
             min_frequency=min_freq,
@@ -1596,7 +1554,6 @@ class RerankerConfig:
 
     enabled: bool = False
     model_name: str = "BAAI/bge-reranker-v2-m3"
-    overfetch_multiplier: int = 3
     blend_weight: float = 0.7  # Reranker weight (SA gets 1 - this)
     min_score: float = 0.15
     max_candidates: int = 30  # Safety cap on overfetch
@@ -1608,7 +1565,6 @@ class RerankerConfig:
         return {
             "enabled": self.enabled,
             "model_name": self.model_name,
-            "overfetch_multiplier": self.overfetch_multiplier,
             "blend_weight": self.blend_weight,
             "min_score": self.min_score,
             "max_candidates": self.max_candidates,
@@ -1620,7 +1576,6 @@ class RerankerConfig:
         return cls(
             enabled=bool(data.get("enabled", False)),
             model_name=str(data.get("model_name", "BAAI/bge-reranker-v2-m3")),
-            overfetch_multiplier=int(data.get("overfetch_multiplier", 3)),
             blend_weight=float(data.get("blend_weight", 0.7)),
             min_score=float(data.get("min_score", 0.15)),
             max_candidates=int(data.get("max_candidates", 30)),
@@ -1639,7 +1594,6 @@ def reranker_brain_config_overrides(reranker: RerankerConfig) -> dict[str, Any]:
     return {
         "reranker_enabled": reranker.enabled,
         "reranker_model": reranker.model_name,
-        "reranker_overfetch_multiplier": reranker.overfetch_multiplier,
         "reranker_blend_weight": reranker.blend_weight,
         "reranker_min_score": reranker.min_score,
         "reranker_max_candidates": reranker.max_candidates,
@@ -1789,9 +1743,6 @@ class UnifiedConfig:
     # Proactive maintenance settings
     maintenance: MaintenanceConfig = field(default_factory=MaintenanceConfig)
 
-    # Conflict resolution settings
-    conflict: ConflictConfig = field(default_factory=ConflictConfig)
-
     # Safety settings
     safety: SafetyConfig = field(default_factory=SafetyConfig)
 
@@ -1924,7 +1875,6 @@ class UnifiedConfig:
             auto=AutoConfig.from_dict(data.get("auto", {})),
             eternal=EternalConfig.from_dict(data.get("eternal", {})),
             maintenance=MaintenanceConfig.from_dict(data.get("maintenance", {})),
-            conflict=ConflictConfig.from_dict(data.get("conflict", {})),
             safety=SafetyConfig.from_dict(data.get("safety", {})),
             encryption=EncryptionConfig.from_dict(data.get("encryption", {})),
             write_gate=WriteGateConfig.from_dict(data.get("write_gate", {})),
@@ -2055,7 +2005,6 @@ class UnifiedConfig:
             "[eternal]",
             f"enabled = {'true' if self.eternal.enabled else 'false'}",
             f"notifications = {'true' if self.eternal.notifications else 'false'}",
-            f"snapshot_retention_days = {self.eternal.snapshot_retention_days}",
             f"auto_save_interval = {self.eternal.auto_save_interval}",
             f"context_warning_threshold = {self.eternal.context_warning_threshold}",
             f"max_context_tokens = {self.eternal.max_context_tokens}",
@@ -2081,10 +2030,6 @@ class UnifiedConfig:
             f"scheduled_consolidation_enabled = {'true' if self.maintenance.scheduled_consolidation_enabled else 'false'}",
             f"scheduled_consolidation_interval_hours = {self.maintenance.scheduled_consolidation_interval_hours}",
             f"scheduled_consolidation_strategies = {json.dumps(list(self.maintenance.scheduled_consolidation_strategies))}",
-            "",
-            "# Conflict resolution settings",
-            "[conflict]",
-            f"auto_resolve_trivial = {'true' if self.conflict.auto_resolve_trivial else 'false'}",
             "",
             "# Safety settings",
             "[safety]",
@@ -2123,7 +2068,6 @@ class UnifiedConfig:
             "# Tool memory auto-capture",
             "[tool_memory]",
             f"enabled = {'true' if self.tool_memory.enabled else 'false'}",
-            f"min_duration_ms = {self.tool_memory.min_duration_ms}",
             f"blacklist = [{', '.join(repr(b) for b in self.tool_memory.blacklist)}]",
             f"cooccurrence_window_s = {self.tool_memory.cooccurrence_window_s}",
             f"min_frequency = {self.tool_memory.min_frequency}",
@@ -2172,7 +2116,6 @@ class UnifiedConfig:
             "[reranker]",
             f"enabled = {'true' if self.reranker.enabled else 'false'}",
             f'model_name = "{_sanitize_toml_str(self.reranker.model_name)}"',
-            f"overfetch_multiplier = {self.reranker.overfetch_multiplier}",
             f"blend_weight = {self.reranker.blend_weight}",
             f"min_score = {self.reranker.min_score}",
             f"max_candidates = {self.reranker.max_candidates}",
