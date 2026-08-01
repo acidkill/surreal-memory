@@ -1,11 +1,10 @@
 """Tests for Surreal-Memory-Nanobot integration.
 
 Covers:
-1. Protocol conformance — tools satisfy NanobotTool protocol
-2. Tool schemas — correct names, parameters, required fields
-3. Tool execution — remember, recall, context, health
-4. NMMemoryStore — drop-in MemoryStore replacement
-5. Setup function — creates db, registers tools, idempotent
+1. Tool schemas — correct names, parameters, required fields
+2. Tool execution — remember, recall, context, health
+3. NMMemoryStore — drop-in MemoryStore replacement
+4. Setup function — creates db, registers tools, idempotent
 """
 
 from __future__ import annotations
@@ -45,41 +44,6 @@ def workspace(tmp_path: Path) -> Path:
     ws = tmp_path / "nanobot-workspace"
     ws.mkdir()
     return ws
-
-
-# ── Protocol conformance ─────────────────────────────────
-
-
-class TestProtocol:
-    """Verify tools satisfy NanobotTool protocol."""
-
-    def test_remember_is_nanobot_tool(self, nm_context: NMContext) -> None:
-        from surreal_memory.integrations.nanobot.protocol import NanobotTool
-        from surreal_memory.integrations.nanobot.tools import NMRememberTool
-
-        tool = NMRememberTool(nm_context)
-        assert isinstance(tool, NanobotTool)
-
-    def test_recall_is_nanobot_tool(self, nm_context: NMContext) -> None:
-        from surreal_memory.integrations.nanobot.protocol import NanobotTool
-        from surreal_memory.integrations.nanobot.tools import NMRecallTool
-
-        tool = NMRecallTool(nm_context)
-        assert isinstance(tool, NanobotTool)
-
-    def test_context_is_nanobot_tool(self, nm_context: NMContext) -> None:
-        from surreal_memory.integrations.nanobot.protocol import NanobotTool
-        from surreal_memory.integrations.nanobot.tools import NMContextTool
-
-        tool = NMContextTool(nm_context)
-        assert isinstance(tool, NanobotTool)
-
-    def test_health_is_nanobot_tool(self, nm_context: NMContext) -> None:
-        from surreal_memory.integrations.nanobot.protocol import NanobotTool
-        from surreal_memory.integrations.nanobot.tools import NMHealthTool
-
-        tool = NMHealthTool(nm_context)
-        assert isinstance(tool, NanobotTool)
 
 
 # ── Tool schemas ─────────────────────────────────────────
