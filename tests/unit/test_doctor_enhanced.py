@@ -339,6 +339,7 @@ class TestRunDoctorIntegration:
     @patch("surreal_memory.cli.doctor._check_dependencies")
     @patch("surreal_memory.cli.doctor._check_brain")
     @patch("surreal_memory.cli.doctor._check_config_freshness")
+    @patch("surreal_memory.cli.doctor._check_storage_backend")
     @patch("surreal_memory.cli.doctor._check_config")
     @patch("surreal_memory.cli.doctor._check_python_version")
     def test_reports_every_registered_check(self, *mocks: MagicMock) -> None:

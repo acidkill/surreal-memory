@@ -194,8 +194,28 @@ class TestDoctor:
             patch("surreal_memory.cli.doctor._check_surrealdb_connection") as m14,
             patch("surreal_memory.cli.doctor._check_mcp_env_completeness") as m15,
             patch("surreal_memory.cli.doctor._check_surrealdb_version") as m16,
+            patch("surreal_memory.cli.doctor._check_storage_backend") as m17,
         ):
-            for m in [m1, m2, m3, m4, m5, m6, m7, m7b, m8, m9, m10, m11, m12, m13, m14, m15, m16]:
+            for m in [
+                m1,
+                m2,
+                m3,
+                m4,
+                m5,
+                m6,
+                m7,
+                m7b,
+                m8,
+                m9,
+                m10,
+                m11,
+                m12,
+                m13,
+                m14,
+                m15,
+                m16,
+                m17,
+            ]:
                 m.return_value = {"name": "test", "status": "ok", "detail": "ok"}
 
             result = run_doctor(json_output=True)
@@ -224,10 +244,11 @@ class TestDoctor:
             patch("surreal_memory.cli.doctor._check_surrealdb_connection") as m14,
             patch("surreal_memory.cli.doctor._check_mcp_env_completeness") as m15,
             patch("surreal_memory.cli.doctor._check_surrealdb_version") as m16,
+            patch("surreal_memory.cli.doctor._check_storage_backend") as m17,
         ):
             m1.return_value = {"name": "Python", "status": "ok", "detail": "ok"}
             m2.return_value = {"name": "Config", "status": "fail", "detail": "missing"}
-            for m in [m3, m4, m5, m6, m7, m7b, m8, m9, m10, m11, m12, m13, m14, m15, m16]:
+            for m in [m3, m4, m5, m6, m7, m7b, m8, m9, m10, m11, m12, m13, m14, m15, m16, m17]:
                 m.return_value = {"name": "test", "status": "ok", "detail": "ok"}
 
             result = run_doctor(json_output=True)
@@ -255,9 +276,29 @@ class TestDoctor:
             patch("surreal_memory.cli.doctor._check_surrealdb_connection") as m14,
             patch("surreal_memory.cli.doctor._check_mcp_env_completeness") as m16,
             patch("surreal_memory.cli.doctor._check_surrealdb_version") as m17,
+            patch("surreal_memory.cli.doctor._check_storage_backend") as m18,
             patch("surreal_memory.cli.doctor._check_dev_environment") as m15,
         ):
-            for m in [m1, m2, m3, m4, m5, m6, m7, m7b, m8, m9, m10, m11, m12, m13, m14, m16, m17]:
+            for m in [
+                m1,
+                m2,
+                m3,
+                m4,
+                m5,
+                m6,
+                m7,
+                m7b,
+                m8,
+                m9,
+                m10,
+                m11,
+                m12,
+                m13,
+                m14,
+                m16,
+                m17,
+                m18,
+            ]:
                 m.return_value = {"name": "test", "status": "ok", "detail": "ok"}
             m15.return_value = [
                 {"name": "Source checkout", "status": "ok", "detail": "ok"},
