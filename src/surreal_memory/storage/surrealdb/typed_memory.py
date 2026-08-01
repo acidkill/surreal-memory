@@ -14,7 +14,6 @@ from surreal_memory.core.memory_types import (
     Provenance,
     TypedMemory,
 )
-from surreal_memory.storage.sqlite_row_mappers import provenance_to_dict
 from surreal_memory.storage.surrealdb._ids import _safe_brain_id, _to_surreal_id
 from surreal_memory.utils.timeutils import utcnow
 
@@ -126,7 +125,7 @@ class SurrealDBTypedMemoryMixin:
         sid = _to_surreal_id(typed_memory.fiber_id)
 
         full_metadata = dict(typed_memory.metadata)
-        full_metadata["_provenance"] = provenance_to_dict(typed_memory.provenance)
+        full_metadata["_provenance"] = typed_memory.provenance.to_dict()
 
         record_data: dict[str, Any] = {
             "fiber_id": typed_memory.fiber_id,
@@ -299,7 +298,7 @@ class SurrealDBTypedMemoryMixin:
         sid = _to_surreal_id(typed_memory.fiber_id)
 
         full_metadata = dict(typed_memory.metadata)
-        full_metadata["_provenance"] = provenance_to_dict(typed_memory.provenance)
+        full_metadata["_provenance"] = typed_memory.provenance.to_dict()
 
         rows = await self._query(
             "SELECT id FROM typed_memory WHERE brain_id = $brain_id AND fiber_id = $fiber_id LIMIT 1",

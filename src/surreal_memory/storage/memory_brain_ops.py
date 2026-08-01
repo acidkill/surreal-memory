@@ -9,10 +9,6 @@ from typing import Any
 from surreal_memory.core.brain import Brain, BrainConfig, BrainSnapshot
 from surreal_memory.core.fiber import Fiber
 from surreal_memory.core.memory_types import (
-    Confidence,
-    MemoryType,
-    Priority,
-    Provenance,
     TypedMemory,
 )
 from surreal_memory.core.neuron import Neuron, NeuronType
@@ -113,33 +109,7 @@ class InMemoryBrainMixin:
             for f in self._fibers[brain_id].values()
         ]
 
-        typed_memories = [
-            {
-                "fiber_id": tm.fiber_id,
-                "memory_type": tm.memory_type.value,
-                "priority": tm.priority.value,
-                "provenance": {
-                    "source": tm.provenance.source,
-                    "confidence": tm.provenance.confidence.value,
-                    "verified": tm.provenance.verified,
-                    "verified_at": (
-                        tm.provenance.verified_at.isoformat() if tm.provenance.verified_at else None
-                    ),
-                    "created_by": tm.provenance.created_by,
-                    "last_confirmed": (
-                        tm.provenance.last_confirmed.isoformat()
-                        if tm.provenance.last_confirmed
-                        else None
-                    ),
-                },
-                "expires_at": tm.expires_at.isoformat() if tm.expires_at else None,
-                "project_id": tm.project_id,
-                "tags": list(tm.tags),
-                "metadata": tm.metadata,
-                "created_at": tm.created_at.isoformat(),
-            }
-            for tm in self._typed_memories[brain_id].values()
-        ]
+        typed_memories = [tm.to_dict() for tm in self._typed_memories[brain_id].values()]
 
         projects = [p.to_dict() for p in self._projects[brain_id].values()]
 
@@ -249,39 +219,7 @@ class InMemoryBrainMixin:
         self, brain_id: str, typed_memories_data: list[dict[str, Any]]
     ) -> None:
         for tm_data in typed_memories_data:
-            prov_data = tm_data.get("provenance", {})
-            provenance = Provenance(
-                source=prov_data.get("source", "import"),
-                confidence=Confidence(prov_data.get("confidence", "medium")),
-                verified=prov_data.get("verified", False),
-                verified_at=(
-                    datetime.fromisoformat(prov_data["verified_at"])
-                    if prov_data.get("verified_at")
-                    else None
-                ),
-                created_by=prov_data.get("created_by", "import"),
-                last_confirmed=(
-                    datetime.fromisoformat(prov_data["last_confirmed"])
-                    if prov_data.get("last_confirmed")
-                    else None
-                ),
-            )
-
-            typed_memory = TypedMemory(
-                fiber_id=tm_data["fiber_id"],
-                memory_type=MemoryType(tm_data["memory_type"]),
-                priority=Priority(tm_data["priority"]),
-                provenance=provenance,
-                expires_at=(
-                    datetime.fromisoformat(tm_data["expires_at"])
-                    if tm_data.get("expires_at")
-                    else None
-                ),
-                project_id=tm_data.get("project_id"),
-                tags=frozenset(tm_data.get("tags", [])),
-                metadata=tm_data.get("metadata", {}),
-                created_at=datetime.fromisoformat(tm_data["created_at"]),
-            )
+            typed_memory = TypedMemory.from_dict(tm_data)
             if typed_memory.fiber_id in self._fibers[brain_id]:
                 self._typed_memories[brain_id][typed_memory.fiber_id] = typed_memory
 

@@ -19,7 +19,9 @@ from uuid import uuid4
 
 from surreal_memory.core.brain import Brain, BrainConfig, BrainSnapshot
 from surreal_memory.core.fiber import Fiber
+from surreal_memory.core.memory_types import TypedMemory
 from surreal_memory.core.neuron import Neuron, NeuronState, NeuronType
+from surreal_memory.core.project import Project
 from surreal_memory.core.synapse import Direction, Synapse, SynapseType
 from surreal_memory.storage.base import NeuralStorage
 from surreal_memory.storage.surrealdb._ids import _safe_brain_id, _to_surreal_id
@@ -37,12 +39,53 @@ from surreal_memory.storage.surrealdb.review_schedules import SurrealDBReviewSch
 from surreal_memory.storage.surrealdb.schema import ensure_schema
 from surreal_memory.storage.surrealdb.sources import SurrealDBSourcesMixin
 from surreal_memory.storage.surrealdb.tool_events import SurrealDBToolEventsMixin
-from surreal_memory.storage.surrealdb.typed_memory import SurrealDBTypedMemoryMixin
+from surreal_memory.storage.surrealdb.typed_memory import (
+    SurrealDBTypedMemoryMixin,
+    _row_to_typed_memory,
+)
 from surreal_memory.storage.surrealdb.versions import SurrealDBVersionsMixin
 from surreal_memory.utils.geo import GeoFilter, fiber_within
 from surreal_memory.utils.timeutils import utcnow
 
 logger = logging.getLogger(__name__)
+
+#: Every table carrying a ``brain_id``. ``clear()`` walks this list, so a brain
+#: wipe leaves nothing behind. It used to name nine tables by hand and drift as
+#: new ones appeared: rows in project, source, entity_refs, co_activations,
+#: depth_priors, tool_events and the trace tables survived their brain and
+#: accumulated permanently, since nothing else deletes by brain. Keep this in
+#: sync with the DEFINE TABLE statements in schema.py.
+_BRAIN_SCOPED_TABLES: tuple[str, ...] = (
+    "action_log",
+    "alerts",
+    "brain_versions",
+    "change_log",
+    "co_activations",
+    "cognitive_state",
+    "compression_backups",
+    "depth_priors",
+    "device",
+    "entity_refs",
+    "fiber",
+    "hot_index",
+    "keyword_document_frequency",
+    "knowledge_gaps",
+    # Maturation rows outlive their fiber (delete_fiber has no cascade, by
+    # design -- see engine/consolidation.py's merge path).
+    "maturation",
+    "merkle_hash",
+    "neuron",
+    "neuron_snapshots",
+    "neuron_state",
+    "project",
+    "reasoning_traces",
+    "retrieval_trace",
+    "review_schedules",
+    "source",
+    "synapse",
+    "tool_events",
+    "typed_memory",
+)
 
 
 def _serialize_brain_config(config: Any) -> dict[str, Any]:
@@ -1824,6 +1867,40 @@ class SurrealDBStorage(
             for f in raw_fibers
         ]
 
+        # Typed memories and projects live in their own tables, not as neurons:
+        # without them a snapshot carries the graph but loses memory type,
+        # priority, tags, trust score, expiry, tier and project scoping.
+        # A brain still on a schema that predates either table exports without
+        # it rather than failing outright — but says so, because a silently
+        # thinner snapshot is what made this data go missing in the first place.
+        typed_memories: list[dict[str, Any]] = []
+        try:
+            typed_rows = await self._query(
+                "SELECT * FROM typed_memory WHERE brain_id = $brain_id LIMIT 50000",
+                brain_id=_safe_brain_id(brain_id),
+            )
+            typed_memories = [
+                tm.to_dict() for tm in (_row_to_typed_memory(r) for r in typed_rows) if tm
+            ]
+        except Exception:
+            logger.warning(
+                "Exporting brain %r without typed memories — the typed_memory "
+                "table is unreadable on this schema",
+                brain_id,
+                exc_info=True,
+            )
+
+        projects: list[dict[str, Any]] = []
+        try:
+            projects = [p.to_dict() for p in await self.list_projects(limit=1000)]
+        except Exception:
+            logger.warning(
+                "Exporting brain %r without projects — the project table is "
+                "unreadable on this schema",
+                brain_id,
+                exc_info=True,
+            )
+
         return BrainSnapshot(
             brain_id=brain_id,
             brain_name=brain.name,
@@ -1833,6 +1910,7 @@ class SurrealDBStorage(
             synapses=synapses,
             fibers=fibers,
             config=dict(brain.metadata),
+            metadata={"typed_memories": typed_memories, "projects": projects},
         )
 
     async def import_brain(
@@ -1893,6 +1971,20 @@ class SurrealDBStorage(
                 await self.add_fiber(fiber)
             except Exception:
                 pass
+
+        # Restore the side tables the graph does not carry. Snapshots written by
+        # versions before these were exported simply have no such keys.
+        for pd in snapshot.metadata.get("projects", []):
+            try:
+                await self.add_project(Project.from_dict(pd))
+            except Exception:
+                logger.debug("Skipped unimportable project record", exc_info=True)
+
+        for td in snapshot.metadata.get("typed_memories", []):
+            try:
+                await self.add_typed_memory(TypedMemory.from_dict(td))
+            except Exception:
+                logger.debug("Skipped unimportable typed memory record", exc_info=True)
 
         return bid
 
@@ -1986,20 +2078,8 @@ class SurrealDBStorage(
     # ================================================================
 
     async def clear(self, brain_id: str) -> None:
-        await self._query("DELETE neuron WHERE brain_id = $bid", bid=brain_id)
-        await self._query("DELETE neuron_state WHERE brain_id = $bid", bid=brain_id)
-        await self._query("DELETE synapse WHERE brain_id = $bid", bid=brain_id)
-        await self._query("DELETE fiber WHERE brain_id = $bid", bid=brain_id)
-        # Maturation rows outlive their fiber (delete_fiber has no cascade, by
-        # design -- see engine/consolidation.py's merge path), so a brain wipe
-        # must clear them explicitly or they orphan permanently once the
-        # brain record itself is gone (found live: run 010's own benchmark
-        # left rows behind before this line existed).
-        await self._query("DELETE maturation WHERE brain_id = $bid", bid=brain_id)
-        await self._query("DELETE change_log WHERE brain_id = $bid", bid=brain_id)
-        await self._query("DELETE device WHERE brain_id = $bid", bid=brain_id)
-        await self._query("DELETE merkle_hash WHERE brain_id = $bid", bid=brain_id)
-        await self._query("DELETE typed_memory WHERE brain_id = $bid", bid=brain_id)
+        for table in _BRAIN_SCOPED_TABLES:
+            await self._query(f"DELETE {table} WHERE brain_id = $bid", bid=brain_id)
 
     # ================================================================
     # Vector Search (for cone queries / semantic search)

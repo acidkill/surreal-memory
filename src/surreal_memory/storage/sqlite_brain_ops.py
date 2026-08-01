@@ -10,10 +10,6 @@ from typing import TYPE_CHECKING, Any
 from surreal_memory.core.brain import Brain, BrainConfig, BrainSnapshot
 from surreal_memory.core.fiber import Fiber
 from surreal_memory.core.memory_types import (
-    Confidence,
-    MemoryType,
-    Priority,
-    Provenance,
     TypedMemory,
 )
 from surreal_memory.core.neuron import Neuron, NeuronType
@@ -377,40 +373,7 @@ class SQLiteBrainMixin:
 
     async def _import_typed_memories(self, typed_memories_data: list[dict[str, Any]]) -> None:
         for tm_data in typed_memories_data:
-            prov_data = tm_data.get("provenance", {})
-            provenance = Provenance(
-                source=prov_data.get("source", "import"),
-                confidence=Confidence(prov_data.get("confidence", "medium")),
-                verified=prov_data.get("verified", False),
-                verified_at=(
-                    datetime.fromisoformat(prov_data["verified_at"])
-                    if prov_data.get("verified_at")
-                    else None
-                ),
-                created_by=prov_data.get("created_by", "import"),
-                last_confirmed=(
-                    datetime.fromisoformat(prov_data["last_confirmed"])
-                    if prov_data.get("last_confirmed")
-                    else None
-                ),
-            )
-
-            typed_memory = TypedMemory(
-                fiber_id=tm_data["fiber_id"],
-                memory_type=MemoryType(tm_data["memory_type"]),
-                priority=Priority(tm_data["priority"]),
-                provenance=provenance,
-                expires_at=(
-                    datetime.fromisoformat(tm_data["expires_at"])
-                    if tm_data.get("expires_at")
-                    else None
-                ),
-                project_id=tm_data.get("project_id"),
-                tags=frozenset(tm_data.get("tags", [])),
-                metadata=tm_data.get("metadata", {}),
-                created_at=datetime.fromisoformat(tm_data["created_at"]),
-            )
-            await self.add_typed_memory(typed_memory)
+            await self.add_typed_memory(TypedMemory.from_dict(tm_data))
 
 
 # ========== Export helpers (module-level) ==========

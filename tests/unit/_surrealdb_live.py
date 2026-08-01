@@ -42,6 +42,8 @@ LIVE_TEST_BRAIN_NAMES = frozenset(
         "u8-geo-live",  # test_surrealdb_geo_live.py
         "ub1-recordid-fix-live",  # test_surrealdb_recordid_fix_live.py
         "parity-test-surreal",  # test_get_project_memories.py
+        "snapshot-roundtrip-live",  # test_surrealdb_export_import_live.py
+        "snapshot-roundtrip-live-target",  # test_surrealdb_export_import_live.py
         "pinned-expiry-test-9f3a1c",  # test_surrealdb_expiry_respects_pinned_live.py
     }
 )

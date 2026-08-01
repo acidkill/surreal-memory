@@ -303,14 +303,9 @@ def row_to_brain(row: aiosqlite.Row) -> Brain:
 
 
 def provenance_to_dict(provenance: Provenance) -> dict[str, object]:
-    """Serialize Provenance to a JSON-compatible dict."""
-    return {
-        "source": provenance.source,
-        "confidence": provenance.confidence.value,
-        "verified": provenance.verified,
-        "verified_at": (provenance.verified_at.isoformat() if provenance.verified_at else None),
-        "created_by": provenance.created_by,
-        "last_confirmed": (
-            provenance.last_confirmed.isoformat() if provenance.last_confirmed else None
-        ),
-    }
+    """Serialize Provenance to a JSON-compatible dict.
+
+    Thin wrapper kept for the SQLite mappers; new code calls
+    ``Provenance.to_dict()`` directly.
+    """
+    return provenance.to_dict()

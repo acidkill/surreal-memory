@@ -147,6 +147,17 @@ class Provenance:
             last_confirmed=utcnow(),
         )
 
+    def to_dict(self) -> dict[str, object]:
+        """Serialize to a JSON-compatible dict."""
+        return {
+            "source": self.source,
+            "confidence": self.confidence.value,
+            "verified": self.verified,
+            "verified_at": self.verified_at.isoformat() if self.verified_at else None,
+            "created_by": self.created_by,
+            "last_confirmed": self.last_confirmed.isoformat() if self.last_confirmed else None,
+        }
+
 
 # Trust score ceilings per source — agents can lower but not exceed system ceiling.
 _TRUST_CEILINGS: dict[str, float] = {
@@ -225,6 +236,81 @@ class TypedMemory:
     valid_from: datetime | None = None
     valid_until: datetime | None = None
     superseded_by: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize for brain export/import.
+
+        Key names match what the SQLite backend has always written into a
+        BrainSnapshot, so snapshots stay readable across backends and versions.
+        """
+
+        def _iso(value: datetime | None) -> str | None:
+            return value.isoformat() if value else None
+
+        return {
+            "fiber_id": self.fiber_id,
+            "memory_type": self.memory_type.value,
+            "priority": self.priority.value,
+            "provenance": self.provenance.to_dict(),
+            "expires_at": _iso(self.expires_at),
+            "project_id": self.project_id,
+            "tags": sorted(self.tags),
+            "metadata": dict(self.metadata),
+            "created_at": _iso(self.created_at),
+            "trust_score": self.trust_score,
+            "source": self.source,
+            "tier": self.tier,
+            "valid_from": _iso(self.valid_from),
+            "valid_until": _iso(self.valid_until),
+            "superseded_by": self.superseded_by,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> TypedMemory:
+        """Rebuild from a to_dict() payload.
+
+        Tolerant by design: snapshots written by older versions lack the newer
+        fields, and every value is optional except fiber_id and memory_type.
+        """
+
+        def _dt(value: Any) -> datetime | None:
+            if not value:
+                return None
+            if isinstance(value, datetime):
+                return value
+            try:
+                return datetime.fromisoformat(str(value))
+            except ValueError:
+                return None
+
+        prov_data = data.get("provenance") or {}
+        provenance = Provenance(
+            source=prov_data.get("source", "import"),
+            confidence=Confidence(prov_data.get("confidence", Confidence.MEDIUM.value)),
+            verified=bool(prov_data.get("verified", False)),
+            verified_at=_dt(prov_data.get("verified_at")),
+            created_by=prov_data.get("created_by", "import"),
+            last_confirmed=_dt(prov_data.get("last_confirmed")),
+        )
+
+        trust_raw = data.get("trust_score")
+        return cls(
+            fiber_id=str(data["fiber_id"]),
+            memory_type=MemoryType(data["memory_type"]),
+            priority=Priority(data.get("priority", Priority.NORMAL.value)),
+            provenance=provenance,
+            expires_at=_dt(data.get("expires_at")),
+            project_id=data.get("project_id"),
+            tags=frozenset(data.get("tags") or []),
+            metadata=dict(data.get("metadata") or {}),
+            created_at=_dt(data.get("created_at")) or utcnow(),
+            trust_score=float(trust_raw) if trust_raw is not None else None,
+            source=data.get("source"),
+            tier=str(data.get("tier") or MemoryTier.WARM),
+            valid_from=_dt(data.get("valid_from")),
+            valid_until=_dt(data.get("valid_until")),
+            superseded_by=data.get("superseded_by"),
+        )
 
     @classmethod
     def create(
