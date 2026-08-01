@@ -97,6 +97,21 @@ jobs:
       - name: Check CLI docs are up-to-date
         run: python scripts/gen_cli_docs.py --check
 
+      - name: Check config reference is up-to-date
+        run: python scripts/gen_config_docs.py --check
+
+      - name: Check REST reference is up-to-date
+        run: python scripts/gen_api_docs.py --check
+
+      # mkdocs is not a project dependency — the site is built from these
+      # plugins only. Strict mode turns every dead link into a failure, which
+      # is the point: it had silently broken and nothing was running it.
+      - name: Install docs toolchain
+        run: pip install mkdocs-material mkdocs-mermaid2-plugin mkdocstrings-python mike
+
+      - name: Build the docs site
+        run: mkdocs build --strict
+
   security:
     name: Security Scan
     runs-on: ubuntu-latest

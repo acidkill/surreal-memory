@@ -1,4 +1,4 @@
-.PHONY: install install-dev lint format typecheck test test-cov security audit check clean build docs serve
+.PHONY: install install-dev lint format typecheck test test-cov security audit check clean build docs gen-docs serve
 
 # Install package
 install:
@@ -74,8 +74,15 @@ serve:
 	uvicorn surreal_memory.server.app:create_app --factory --reload --port 8000
 
 # Generate docs
+# Regenerate every generated reference page (CI checks these are current)
+gen-docs:
+	python scripts/gen_mcp_docs.py
+	python scripts/gen_cli_docs.py
+	python scripts/gen_config_docs.py
+	python scripts/gen_api_docs.py
+
 docs:
-	mkdocs build
+	mkdocs build --strict
 
 # Serve docs locally
 docs-serve:
