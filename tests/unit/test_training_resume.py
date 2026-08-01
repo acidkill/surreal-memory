@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from surreal_memory.storage.sqlite_training_files import compute_file_hash
+from surreal_memory.utils.file_hash import compute_file_hash
 
 
 class TestComputeFileHash:

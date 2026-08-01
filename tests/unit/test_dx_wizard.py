@@ -199,8 +199,8 @@ class TestDoctor:
                 m.return_value = {"name": "test", "status": "ok", "detail": "ok"}
 
             result = run_doctor(json_output=True)
-            assert result["passed"] == 17
-            assert result["total"] == 17
+            assert result["passed"] == 18
+            assert result["total"] == 18
             assert result["failed"] == 0
 
     def test_run_doctor_with_failures(self) -> None:
@@ -232,7 +232,7 @@ class TestDoctor:
 
             result = run_doctor(json_output=True)
             assert result["failed"] == 1
-            assert result["passed"] == 16
+            assert result["passed"] == 17
 
     def test_run_doctor_dev_adds_dev_checks(self) -> None:
         from surreal_memory.cli.doctor import run_doctor
@@ -266,8 +266,8 @@ class TestDoctor:
 
             result = run_doctor(json_output=True, dev=True)
 
-        assert result["passed"] == 19
-        assert result["total"] == 19
+        assert result["passed"] == 20
+        assert result["total"] == 20
         assert any(c["tier"] == "dev" for c in result["checks"])
 
 

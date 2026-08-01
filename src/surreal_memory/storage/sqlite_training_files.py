@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import hashlib
 import logging
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from surreal_memory.utils.file_hash import compute_file_hash
 from surreal_memory.utils.timeutils import utcnow
 
 if TYPE_CHECKING:
@@ -15,8 +14,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Maximum file size to hash (2GB — streaming hash, safe for large files)
-_MAX_HASH_SIZE = 2 * 1024 * 1024 * 1024
+__all__ = ["SQLiteTrainingFilesMixin", "compute_file_hash"]
 
 
 class SQLiteTrainingFilesMixin:
@@ -158,26 +156,3 @@ class SQLiteTrainingFilesMixin:
                 "failed": row[3] or 0,
                 "total_chunks": row[4] or 0,
             }
-
-
-def compute_file_hash(file_path: Path) -> str:
-    """Compute SHA-256 hash of a file's content.
-
-    Args:
-        file_path: Path to the file.
-
-    Returns:
-        Hex digest of the SHA-256 hash.
-
-    Raises:
-        ValueError: If file is too large.
-    """
-    file_size = file_path.stat().st_size
-    if file_size > _MAX_HASH_SIZE:
-        raise ValueError(f"File too large to hash: {file_size} bytes (max {_MAX_HASH_SIZE})")
-
-    hasher = hashlib.sha256()
-    with open(file_path, "rb") as f:
-        while chunk := f.read(8192):
-            hasher.update(chunk)
-    return hasher.hexdigest()

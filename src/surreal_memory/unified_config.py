@@ -20,6 +20,7 @@ import os
 import re
 import shutil
 import tomllib
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -1018,7 +1019,15 @@ def _sanitize_sync_id(value: str) -> str:
     return cleaned
 
 
-_VALID_STORAGE_BACKENDS = {"sqlite", "surrealdb"}
+_VALID_STORAGE_BACKENDS = {"sqlite", "surrealdb", "memory"}
+
+SQLITE_REMOVAL_NOTICE = (
+    "The SQLite storage backend is deprecated and will be REMOVED in 3.0.0. "
+    "Migrate now: run `smem export backup.json`, set "
+    "SURREAL_MEMORY_STORAGE=surrealdb, then `smem import backup.json`. "
+    "For a persistence-free install, set SURREAL_MEMORY_STORAGE=memory. "
+    "See docs/guides/migrating-to-3.0.md."
+)
 
 
 def _validate_storage_backend(value: str) -> str:
@@ -2412,6 +2421,7 @@ def _warn_sqlite_backend() -> None:
         return
     _sqlite_backend_warned = True
     logger = logging.getLogger(__name__)
+    warnings.warn(SQLITE_REMOVAL_NOTICE, DeprecationWarning, stacklevel=3)
     has_surreal_env = bool(os.environ.get("SURREALDB_URL") or os.environ.get("SURREALDB_PASS"))
     if has_surreal_env:
         logger.warning(
@@ -2420,12 +2430,14 @@ def _warn_sqlite_backend() -> None:
             "LOCAL SQLite brain, NOT SurrealDB — this splits your data across two "
             "stores (the dashboard reads SurrealDB). Set "
             'SURREAL_MEMORY_STORAGE=surrealdb (or storage_backend = "surrealdb" '
-            "in config.toml) to use SurrealDB."
+            "in config.toml) to use SurrealDB. %s",
+            SQLITE_REMOVAL_NOTICE,
         )
     else:
         logger.warning(
             "Using the SQLite storage backend (internal test fixture). For real "
-            "use set SURREAL_MEMORY_STORAGE=surrealdb."
+            "use set SURREAL_MEMORY_STORAGE=surrealdb. %s",
+            SQLITE_REMOVAL_NOTICE,
         )
 
 
@@ -2501,10 +2513,15 @@ async def get_shared_storage(brain_name: str | None = None) -> NeuralStorage:
     if config.storage_backend == "surrealdb":
         return await _get_surrealdb_storage(config, name)
 
-    # Default: SQLite — internal test fixture only. Production must set
-    # storage_backend = "surrealdb" explicitly. Warn loudly so a misconfigured
-    # install does not silently route memories into a local SQLite brain that
-    # then diverges from the SurrealDB the dashboard reads.
+    # Non-persistent backend: everything lives in this process and is gone when
+    # it exits. Opt-in only, for trying the tool out without running a database.
+    if config.storage_backend == "memory":
+        return await _get_memory_storage(config, name)
+
+    # Default: SQLite — internal test fixture only, removed in 3.0.0. Production
+    # must set storage_backend = "surrealdb" explicitly. Warn loudly so a
+    # misconfigured install does not silently route memories into a local SQLite
+    # brain that then diverges from the SurrealDB the dashboard reads.
     _warn_sqlite_backend()
     return await _get_sqlite_storage(config, name, brain_name)
 
@@ -2581,6 +2598,54 @@ async def _migrate_brain_runtime_config(
             getattr(brain, "name", "?"),
             exc_info=True,
         )
+
+
+_memory_backend_warned = False
+
+
+async def _get_memory_storage(config: UnifiedConfig, name: str) -> NeuralStorage:
+    """Create or return the cached InMemoryStorage for *name*.
+
+    Nothing is written to disk: closing the process discards every memory. This
+    exists so `pip install surreal-memory` can be tried without provisioning a
+    database, and so container images can run without a datastore volume.
+    """
+    global _memory_backend_warned
+    if not _memory_backend_warned:
+        _memory_backend_warned = True
+        logger.warning(
+            "Using the in-memory storage backend — NOTHING IS PERSISTED. "
+            "Every memory is lost when this process exits. Set "
+            "SURREAL_MEMORY_STORAGE=surrealdb for a durable store."
+        )
+
+    from surreal_memory.core.brain import Brain, BrainConfig
+    from surreal_memory.storage.memory_store import InMemoryStorage
+
+    cache_key = f"memory:{name}"
+    lock = _get_storage_lock()
+    async with lock:
+        cached = _storage_cache.get(cache_key)
+        if cached is not None:
+            cached.set_brain(name)
+            return cached
+
+        # No initialize(): the in-memory store has no connection to open.
+        storage = InMemoryStorage()
+
+        brain = await storage.get_brain(name)
+        if brain is None:
+            brain = await storage.find_brain_by_name(name)
+        if brain is None:
+            brain_config = BrainConfig(
+                **config.brain.to_brain_config_kwargs(config.embedding, config.reranker)
+            )
+            brain = Brain.create(name=name, config=brain_config, brain_id=name)
+            await storage.save_brain(brain)
+
+        storage.set_brain(name)
+        _storage_cache[cache_key] = storage
+        return storage
 
 
 async def _get_sqlite_storage(

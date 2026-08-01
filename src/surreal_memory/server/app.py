@@ -29,7 +29,6 @@ from surreal_memory.server.routes import (
     sync_router,
 )
 from surreal_memory.storage.base import NeuralStorage
-from surreal_memory.storage.sqlite_schema import SCHEMA_VERSION
 
 # Static files directory
 STATIC_DIR = Path(__file__).parent / "static"
@@ -39,6 +38,25 @@ STATIC_DIR = Path(__file__).parent / "static"
 # is slow-moving, so cache the built payload per (brain, limit, offset) for a
 # short window (see dashboard_cache).
 _GRAPH_CACHE = TTLCache()
+
+
+def _active_schema_version() -> int:
+    """Return the schema version of the backend actually in use.
+
+    /health used to report the SQLite schema version unconditionally, so a
+    SurrealDB deployment advertised a version number from a store it never
+    touched.
+    """
+    from surreal_memory.unified_config import get_config
+
+    if get_config().storage_backend == "surrealdb":
+        from surreal_memory.storage.surrealdb.schema import SCHEMA_VERSION as SURREAL_VERSION
+
+        return SURREAL_VERSION
+
+    from surreal_memory.storage.sqlite_schema import SCHEMA_VERSION as SQLITE_VERSION
+
+    return SQLITE_VERSION
 
 
 @asynccontextmanager
@@ -560,7 +578,7 @@ def create_app(
             version=__version__,
             brain_name="***",
             uptime_seconds=round(uptime, 3),
-            schema_version=SCHEMA_VERSION,
+            schema_version=_active_schema_version(),
         )
 
     # Readiness check endpoint

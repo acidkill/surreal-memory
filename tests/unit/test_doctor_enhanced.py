@@ -341,14 +341,17 @@ class TestRunDoctorIntegration:
     @patch("surreal_memory.cli.doctor._check_config_freshness")
     @patch("surreal_memory.cli.doctor._check_config")
     @patch("surreal_memory.cli.doctor._check_python_version")
-    def test_includes_all_14_checks(self, *mocks: MagicMock) -> None:
+    def test_reports_every_registered_check(self, *mocks: MagicMock) -> None:
         for mock in mocks:
             mock.return_value = {"name": "test", "status": OK, "detail": "ok"}
 
         result = run_doctor(json_output=True)
-        # 14 original + SurrealDB connection + SurrealDB version + MCP env completeness
-        assert result["total"] == 17
-        assert result["passed"] == 17
+        # Bump when run_doctor gains a check: config, storage backend, brain,
+        # dependencies, embedding, schema, MCP config/connection/env, hooks,
+        # dedup, surface, config freshness, CLI tools, SurrealDB
+        # connection/version, Pro plugin, Python version.
+        assert result["total"] == 18
+        assert result["passed"] == 18
 
     def test_quickstart_url_defined(self) -> None:
         assert "quickstart" in QUICKSTART_URL

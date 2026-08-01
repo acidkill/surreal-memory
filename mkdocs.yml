@@ -115,6 +115,7 @@ nav:
     - Agent Memory Governance: guides/agent-memory-governance.md
     - OpenClaw Plugin: guides/openclaw-plugin.md
     - Cognitive Reasoning: guides/cognitive-reasoning.md
+    - Migrating to 3.0: guides/migrating-to-3.0.md
     - Schema v21 Migration: guides/schema-v21-migration.md
     - Memory Layer Unification: guides/memory-layer-unification.md
     - Learning Habits: guides/learning-habits.md

@@ -36,6 +36,7 @@ TIER_DEV = "dev"  # contributor/source checkout diagnostics
 _CHECK_TIERS: dict[str, str] = {
     "Python version": TIER_CORE,
     "Configuration": TIER_CORE,
+    "Storage backend": TIER_CORE,
     "Brain database": TIER_CORE,
     "Dependencies": TIER_CORE,
     "Schema version": TIER_CORE,
@@ -78,6 +79,7 @@ def run_doctor(
 
     checks.append(_check_python_version())
     checks.append(_check_config())
+    checks.append(_check_storage_backend())
     checks.append(_check_brain())
     checks.append(_check_dependencies())
     checks.append(_check_embedding_provider())
@@ -321,6 +323,42 @@ def _check_config() -> dict[str, Any]:
             "detail": "parse error — run: smem init --force",
             "fix": "Run: smem init --force",
         }
+
+
+def _check_storage_backend() -> dict[str, Any]:
+    """Report the active backend, warning when it is one that 3.0.0 drops."""
+    try:
+        from surreal_memory.unified_config import get_config
+
+        backend = get_config(reload=True).storage_backend
+    except Exception as e:
+        return {
+            "name": "Storage backend",
+            "status": FAIL,
+            "detail": f"could not resolve backend: {e}",
+            "fix": "Run: smem init --force",
+        }
+
+    if backend == "surrealdb":
+        return {"name": "Storage backend", "status": OK, "detail": "surrealdb"}
+
+    if backend == "memory":
+        return {
+            "name": "Storage backend",
+            "status": WARN,
+            "detail": "memory — nothing is persisted; every memory is lost on exit",
+            "fix": "Set SURREAL_MEMORY_STORAGE=surrealdb for a durable store",
+        }
+
+    return {
+        "name": "Storage backend",
+        "status": WARN,
+        "detail": "sqlite — deprecated, removed in 3.0.0",
+        "fix": (
+            "Migrate: smem export backup.json → set SURREAL_MEMORY_STORAGE=surrealdb "
+            "→ smem import backup.json (see docs/guides/migrating-to-3.0.md)"
+        ),
+    }
 
 
 def _check_brain() -> dict[str, Any]:

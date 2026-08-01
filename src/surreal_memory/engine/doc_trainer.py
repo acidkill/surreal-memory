@@ -238,7 +238,7 @@ class DocTrainer:
             return False
 
         try:
-            from surreal_memory.storage.sqlite_training_files import compute_file_hash
+            from surreal_memory.utils.file_hash import compute_file_hash
 
             file_hash = compute_file_hash(file_path)
             record = await self._storage.get_training_file_by_hash(file_hash)
@@ -257,7 +257,7 @@ class DocTrainer:
             return
 
         try:
-            from surreal_memory.storage.sqlite_training_files import compute_file_hash
+            from surreal_memory.utils.file_hash import compute_file_hash
 
             file_hash = compute_file_hash(file_path)
             await self._storage.upsert_training_file(
