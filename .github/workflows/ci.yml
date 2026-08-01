@@ -30,6 +30,12 @@ jobs:
       - name: Run ruff format check
         run: ruff format --check src/ tests/
 
+      # Reads the source tree only — no install needed, and ruff cannot see
+      # this class of dead code because a test importing a module counts as an
+      # import.
+      - name: Check for unreachable modules
+        run: python scripts/check_dead_modules.py --strict
+
   typecheck:
     name: Type Check
     runs-on: ubuntu-latest

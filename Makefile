@@ -1,4 +1,4 @@
-.PHONY: install install-dev lint format typecheck test test-cov security audit check clean build docs gen-docs serve
+.PHONY: install install-dev lint format typecheck test test-cov security audit audit-dead check clean build docs gen-docs serve
 
 # Install package
 install:
@@ -41,6 +41,10 @@ security:
 # Preview extended rules (non-blocking audit)
 audit:
 	ruff check src/ tests/ --select S,A,DTZ,T20,PT,PERF,PIE,ERA --statistics || true
+
+# Modules nothing outside tests/ can reach (ruff's F401 cannot see these)
+audit-dead:
+	python scripts/check_dead_modules.py
 
 # Format check (no changes, just verify — matches CI)
 format-check:
