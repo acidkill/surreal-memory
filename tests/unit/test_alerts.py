@@ -11,20 +11,17 @@ from surreal_memory.core.alert import Alert, AlertStatus, AlertType
 from surreal_memory.core.brain import Brain, BrainConfig
 from surreal_memory.mcp.alert_handler import _hint_to_alert_type
 from surreal_memory.mcp.maintenance_handler import HealthHint, HintSeverity
-from surreal_memory.storage.sqlite_store import SQLiteStorage
+from surreal_memory.storage.memory_store import InMemoryStorage
 from surreal_memory.utils.timeutils import utcnow
 
 # ── Fixtures ─────────────────────────────────────────────────────
 
 
 @pytest_asyncio.fixture
-async def store(tmp_path: object) -> SQLiteStorage:
+async def store(tmp_path: object) -> InMemoryStorage:
     """SQLite storage with alerts table, ready for testing."""
-    import pathlib
 
-    db_path = pathlib.Path(str(tmp_path)) / "test_alerts.db"
-    storage = SQLiteStorage(db_path)
-    await storage.initialize()
+    storage = InMemoryStorage()
 
     brain = Brain.create(name="alert-test", config=BrainConfig(), owner_id="test")
     await storage.save_brain(brain)
@@ -148,7 +145,7 @@ class TestHintMapping:
 class TestSQLiteAlerts:
     """Tests for SQLiteAlertsMixin operations."""
 
-    async def test_record_and_get(self, store: SQLiteStorage) -> None:
+    async def test_record_and_get(self, store: InMemoryStorage) -> None:
         alert = _make_alert()
         result = await store.record_alert(alert)
         assert result == alert.id
@@ -158,7 +155,7 @@ class TestSQLiteAlerts:
         assert fetched.alert_type == AlertType.HIGH_NEURON_COUNT
         assert fetched.status == AlertStatus.ACTIVE
 
-    async def test_dedup_cooldown(self, store: SQLiteStorage) -> None:
+    async def test_dedup_cooldown(self, store: InMemoryStorage) -> None:
         alert1 = _make_alert()
         result1 = await store.record_alert(alert1)
         assert result1 != ""
@@ -167,7 +164,7 @@ class TestSQLiteAlerts:
         result2 = await store.record_alert(alert2)
         assert result2 == ""  # Suppressed
 
-    async def test_different_types_not_deduped(self, store: SQLiteStorage) -> None:
+    async def test_different_types_not_deduped(self, store: InMemoryStorage) -> None:
         a1 = _make_alert(alert_type=AlertType.HIGH_NEURON_COUNT)
         a2 = _make_alert(alert_type=AlertType.LOW_CONNECTIVITY)
         r1 = await store.record_alert(a1)
@@ -175,7 +172,7 @@ class TestSQLiteAlerts:
         assert r1 != ""
         assert r2 != ""
 
-    async def test_get_active_alerts(self, store: SQLiteStorage) -> None:
+    async def test_get_active_alerts(self, store: InMemoryStorage) -> None:
         a1 = _make_alert(severity="critical")
         a2 = _make_alert(alert_type=AlertType.LOW_CONNECTIVITY, severity="low")
         await store.record_alert(a1)
@@ -186,14 +183,14 @@ class TestSQLiteAlerts:
         # Critical severity should come first
         assert alerts[0].severity == "critical"
 
-    async def test_count_pending_alerts(self, store: SQLiteStorage) -> None:
+    async def test_count_pending_alerts(self, store: InMemoryStorage) -> None:
         a1 = _make_alert()
         await store.record_alert(a1)
 
         count = await store.count_pending_alerts()
         assert count == 1
 
-    async def test_mark_seen(self, store: SQLiteStorage) -> None:
+    async def test_mark_seen(self, store: InMemoryStorage) -> None:
         a = _make_alert()
         await store.record_alert(a)
 
@@ -205,7 +202,7 @@ class TestSQLiteAlerts:
         assert fetched.status == AlertStatus.SEEN
         assert fetched.seen_at is not None
 
-    async def test_mark_acknowledged(self, store: SQLiteStorage) -> None:
+    async def test_mark_acknowledged(self, store: InMemoryStorage) -> None:
         a = _make_alert()
         await store.record_alert(a)
 
@@ -216,7 +213,7 @@ class TestSQLiteAlerts:
         assert fetched is not None
         assert fetched.status == AlertStatus.ACKNOWLEDGED
 
-    async def test_resolve_by_type(self, store: SQLiteStorage) -> None:
+    async def test_resolve_by_type(self, store: InMemoryStorage) -> None:
         a1 = _make_alert(alert_type=AlertType.HIGH_NEURON_COUNT)
         a2 = _make_alert(alert_type=AlertType.LOW_CONNECTIVITY)
         await store.record_alert(a1)
@@ -229,7 +226,7 @@ class TestSQLiteAlerts:
         assert len(remaining) == 1
         assert remaining[0].alert_type == AlertType.LOW_CONNECTIVITY
 
-    async def test_acknowledged_not_resolved_by_type(self, store: SQLiteStorage) -> None:
+    async def test_acknowledged_not_resolved_by_type(self, store: InMemoryStorage) -> None:
         a = _make_alert()
         await store.record_alert(a)
         await store.mark_alert_acknowledged(a.id)
@@ -237,6 +234,6 @@ class TestSQLiteAlerts:
         resolved = await store.resolve_alerts_by_type([AlertType.HIGH_NEURON_COUNT.value])
         assert resolved == 0
 
-    async def test_get_nonexistent_alert(self, store: SQLiteStorage) -> None:
+    async def test_get_nonexistent_alert(self, store: InMemoryStorage) -> None:
         result = await store.get_alert("nonexistent")
         assert result is None

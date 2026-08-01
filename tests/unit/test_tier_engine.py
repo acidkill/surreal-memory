@@ -19,7 +19,7 @@ from surreal_memory.core.memory_types import (
 )
 from surreal_memory.core.neuron import Neuron, NeuronState, NeuronType
 from surreal_memory.engine.tier_engine import TierChange, TierEngine, TierReport
-from surreal_memory.storage.sqlite_store import SQLiteStorage
+from surreal_memory.storage.memory_store import InMemoryStorage
 from surreal_memory.unified_config import TierConfig
 from surreal_memory.utils.timeutils import utcnow
 
@@ -27,11 +27,9 @@ from surreal_memory.utils.timeutils import utcnow
 
 
 @pytest_asyncio.fixture
-async def storage(tmp_path: Path) -> SQLiteStorage:
-    """Create an initialized SQLiteStorage with a brain."""
-    db_path = tmp_path / "test_tier.db"
-    store = SQLiteStorage(db_path=str(db_path))
-    await store.initialize()
+async def storage(tmp_path: Path) -> InMemoryStorage:
+    """Create an initialized InMemoryStorage with a brain."""
+    store = InMemoryStorage()
 
     config = BrainConfig(
         decay_rate=0.1,
@@ -61,7 +59,7 @@ def tier_config() -> TierConfig:
 
 
 async def _create_memory(
-    storage: SQLiteStorage,
+    storage: InMemoryStorage,
     fiber_id: str,
     memory_type: MemoryType = MemoryType.FACT,
     tier: str = MemoryTier.WARM,
@@ -200,7 +198,7 @@ class TestTierReport:
 class TestPromotion:
     @pytest.mark.asyncio
     async def test_promotes_warm_with_high_access(
-        self, storage: SQLiteStorage, tier_config: TierConfig
+        self, storage: InMemoryStorage, tier_config: TierConfig
     ) -> None:
         """WARM memories with access_frequency >= threshold get promoted to HOT."""
         await _create_memory(storage, "f1", access_frequency=5, last_activated_days_ago=1)
@@ -218,7 +216,7 @@ class TestPromotion:
 
     @pytest.mark.asyncio
     async def test_does_not_promote_below_threshold(
-        self, storage: SQLiteStorage, tier_config: TierConfig
+        self, storage: InMemoryStorage, tier_config: TierConfig
     ) -> None:
         """WARM memories below promote_threshold stay WARM."""
         await _create_memory(storage, "f1", access_frequency=2, last_activated_days_ago=1)
@@ -228,7 +226,7 @@ class TestPromotion:
         assert len(report.promoted) == 0
 
     @pytest.mark.asyncio
-    async def test_respects_max_hot_cap(self, storage: SQLiteStorage) -> None:
+    async def test_respects_max_hot_cap(self, storage: InMemoryStorage) -> None:
         """Promotion stops when max_hot_memories cap is reached."""
         config = TierConfig(
             auto_enabled=True,
@@ -260,7 +258,7 @@ class TestPromotion:
 
     @pytest.mark.asyncio
     async def test_dry_run_does_not_mutate(
-        self, storage: SQLiteStorage, tier_config: TierConfig
+        self, storage: InMemoryStorage, tier_config: TierConfig
     ) -> None:
         """Dry run calculates changes but doesn't apply them."""
         await _create_memory(storage, "f1", access_frequency=5, last_activated_days_ago=1)
@@ -282,7 +280,7 @@ class TestPromotion:
 class TestDemotion:
     @pytest.mark.asyncio
     async def test_demotes_inactive_hot(
-        self, storage: SQLiteStorage, tier_config: TierConfig
+        self, storage: InMemoryStorage, tier_config: TierConfig
     ) -> None:
         """HOT memories inactive for > demote_inactive_days get demoted to WARM."""
         await _create_memory(
@@ -304,7 +302,7 @@ class TestDemotion:
 
     @pytest.mark.asyncio
     async def test_does_not_demote_recently_active(
-        self, storage: SQLiteStorage, tier_config: TierConfig
+        self, storage: InMemoryStorage, tier_config: TierConfig
     ) -> None:
         """HOT memories accessed recently stay HOT."""
         await _create_memory(
@@ -326,7 +324,7 @@ class TestDemotion:
 class TestArchive:
     @pytest.mark.asyncio
     async def test_archives_long_inactive_warm(
-        self, storage: SQLiteStorage, tier_config: TierConfig
+        self, storage: InMemoryStorage, tier_config: TierConfig
     ) -> None:
         """WARM memories inactive for > cold_archive_days get archived to COLD."""
         await _create_memory(
@@ -346,7 +344,7 @@ class TestArchive:
 
     @pytest.mark.asyncio
     async def test_does_not_archive_recent_warm(
-        self, storage: SQLiteStorage, tier_config: TierConfig
+        self, storage: InMemoryStorage, tier_config: TierConfig
     ) -> None:
         """WARM memories with recent access stay WARM."""
         await _create_memory(
@@ -367,7 +365,7 @@ class TestArchive:
 class TestBoundaryProtection:
     @pytest.mark.asyncio
     async def test_boundary_never_demoted(
-        self, storage: SQLiteStorage, tier_config: TierConfig
+        self, storage: InMemoryStorage, tier_config: TierConfig
     ) -> None:
         """BOUNDARY type memories are never demoted from HOT."""
         await _create_memory(
@@ -386,7 +384,7 @@ class TestBoundaryProtection:
 
     @pytest.mark.asyncio
     async def test_boundary_never_archived(
-        self, storage: SQLiteStorage, tier_config: TierConfig
+        self, storage: InMemoryStorage, tier_config: TierConfig
     ) -> None:
         """BOUNDARY type WARM memories are never archived to COLD."""
         await _create_memory(
@@ -410,7 +408,7 @@ class TestBoundaryProtection:
 class TestPinnedProtection:
     @pytest.mark.asyncio
     async def test_pinned_never_demoted(
-        self, storage: SQLiteStorage, tier_config: TierConfig
+        self, storage: InMemoryStorage, tier_config: TierConfig
     ) -> None:
         """Pinned fibers are never demoted from HOT."""
         await _create_memory(
@@ -429,7 +427,7 @@ class TestPinnedProtection:
 
     @pytest.mark.asyncio
     async def test_pinned_never_archived(
-        self, storage: SQLiteStorage, tier_config: TierConfig
+        self, storage: InMemoryStorage, tier_config: TierConfig
     ) -> None:
         """Pinned fibers are never archived from WARM."""
         await _create_memory(
@@ -451,7 +449,7 @@ class TestPinnedProtection:
 
 class TestOscillation:
     @pytest.mark.asyncio
-    async def test_no_promote_then_demote_same_cycle(self, storage: SQLiteStorage) -> None:
+    async def test_no_promote_then_demote_same_cycle(self, storage: InMemoryStorage) -> None:
         """A memory promoted in this cycle cannot be demoted in the same cycle."""
         config = TierConfig(
             auto_enabled=True,
@@ -483,7 +481,7 @@ class TestOscillation:
 class TestPromotionHistory:
     @pytest.mark.asyncio
     async def test_history_recorded_on_promotion(
-        self, storage: SQLiteStorage, tier_config: TierConfig
+        self, storage: InMemoryStorage, tier_config: TierConfig
     ) -> None:
         """Promotion adds an entry to promotion_history in metadata."""
         await _create_memory(
@@ -504,7 +502,7 @@ class TestPromotionHistory:
 
     @pytest.mark.asyncio
     async def test_history_recorded_on_demotion(
-        self, storage: SQLiteStorage, tier_config: TierConfig
+        self, storage: InMemoryStorage, tier_config: TierConfig
     ) -> None:
         """Demotion adds an entry to promotion_history in metadata."""
         await _create_memory(
@@ -550,7 +548,7 @@ class TestTierChange:
 class TestNeverActivatedFallback:
     @pytest.mark.asyncio
     async def test_demotes_hot_never_activated(
-        self, storage: SQLiteStorage, tier_config: TierConfig
+        self, storage: InMemoryStorage, tier_config: TierConfig
     ) -> None:
         """HOT memories that were never activated get demoted using created_at fallback."""
         # last_activated_days_ago=None → last_activated=None, but created 100 days ago
@@ -579,7 +577,7 @@ class TestNeverActivatedFallback:
 
     @pytest.mark.asyncio
     async def test_archives_warm_never_activated(
-        self, storage: SQLiteStorage, tier_config: TierConfig
+        self, storage: InMemoryStorage, tier_config: TierConfig
     ) -> None:
         """WARM memories never activated get archived using created_at fallback."""
         await _create_memory(
@@ -642,7 +640,7 @@ class TestTierConfigValidation:
 class TestHistoryCap:
     @pytest.mark.asyncio
     async def test_history_capped_at_20(
-        self, storage: SQLiteStorage, tier_config: TierConfig
+        self, storage: InMemoryStorage, tier_config: TierConfig
     ) -> None:
         """promotion_history is capped at 20 entries."""
         # Create a memory with 19 existing history entries
@@ -678,7 +676,7 @@ class TestHistoryCap:
 class TestDoubleReportDryRun:
     @pytest.mark.asyncio
     async def test_dry_run_idempotent(
-        self, storage: SQLiteStorage, tier_config: TierConfig
+        self, storage: InMemoryStorage, tier_config: TierConfig
     ) -> None:
         """Running evaluate twice returns the same report (no side effects)."""
         await _create_memory(
@@ -709,7 +707,7 @@ class TestDoubleReportDryRun:
 class TestBrainIdMismatch:
     @pytest.mark.asyncio
     async def test_warns_on_brain_id_mismatch(
-        self, storage: SQLiteStorage, tier_config: TierConfig
+        self, storage: InMemoryStorage, tier_config: TierConfig
     ) -> None:
         """TierEngine logs warning when brain_id doesn't match storage."""
         await _create_memory(storage, "f1", access_frequency=5)

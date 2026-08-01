@@ -18,7 +18,7 @@ from surreal_memory.engine.depth_prior import AdaptiveDepthSelector, DepthPrior
 from surreal_memory.engine.retrieval_types import DepthLevel
 from surreal_memory.extraction.entities import Entity, EntityType
 from surreal_memory.extraction.parser import Perspective, QueryIntent, Stimulus
-from surreal_memory.storage.sqlite_store import SQLiteStorage
+from surreal_memory.storage.memory_store import InMemoryStorage
 from surreal_memory.utils.timeutils import utcnow
 
 # ---------------------------------------------------------------------------
@@ -457,16 +457,14 @@ class TestAdaptiveDepthSelectorRecordOutcome:
 
 
 # ---------------------------------------------------------------------------
-# Storage tests using real SQLiteStorage + tmp_path
+# Storage tests using real InMemoryStorage + tmp_path
 # ---------------------------------------------------------------------------
 
 
 @pytest_asyncio.fixture
-async def sqlite_storage(tmp_path: Path) -> SQLiteStorage:
-    """SQLiteStorage backed by a temp file, brain context set."""
-    db_path = tmp_path / "test_depth.db"
-    store = SQLiteStorage(db_path)
-    await store.initialize()
+async def sqlite_storage(tmp_path: Path) -> InMemoryStorage:
+    """InMemoryStorage backed by a temp file, brain context set."""
+    store = InMemoryStorage()
     brain = Brain.create(name="test-depth-brain")
     await store.save_brain(brain)
     store.set_brain(brain.id)
@@ -474,11 +472,9 @@ async def sqlite_storage(tmp_path: Path) -> SQLiteStorage:
 
 
 @pytest_asyncio.fixture
-async def sqlite_storage_alt_brain(tmp_path: Path) -> SQLiteStorage:
-    """Second SQLiteStorage sharing the same DB file but a different brain."""
-    db_path = tmp_path / "test_depth.db"
-    store = SQLiteStorage(db_path)
-    await store.initialize()
+async def sqlite_storage_alt_brain(tmp_path: Path) -> InMemoryStorage:
+    """Second InMemoryStorage sharing the same DB file but a different brain."""
+    store = InMemoryStorage()
 
     brain_a = Brain.create(name="brain-A")
     brain_b = Brain.create(name="brain-B")
@@ -492,7 +488,7 @@ async def sqlite_storage_alt_brain(tmp_path: Path) -> SQLiteStorage:
 
 class TestSQLiteDepthPriorStorage:
     @pytest.mark.asyncio
-    async def test_upsert_and_get_depth_prior(self, sqlite_storage: SQLiteStorage) -> None:
+    async def test_upsert_and_get_depth_prior(self, sqlite_storage: InMemoryStorage) -> None:
         """Round-trip: upsert then get_depth_priors returns same data."""
         prior = DepthPrior(
             entity_text="Alice",
@@ -513,7 +509,7 @@ class TestSQLiteDepthPriorStorage:
         assert r.total_queries == 5
 
     @pytest.mark.asyncio
-    async def test_upsert_updates_existing(self, sqlite_storage: SQLiteStorage) -> None:
+    async def test_upsert_updates_existing(self, sqlite_storage: InMemoryStorage) -> None:
         """Upserting same (entity, depth) key updates fields, not inserts duplicate."""
         prior = DepthPrior(entity_text="Bob", depth_level=DepthLevel.INSTANT, alpha=2.0, beta=1.0)
         await sqlite_storage.upsert_depth_prior(prior)
@@ -530,7 +526,7 @@ class TestSQLiteDepthPriorStorage:
         assert results[0].total_queries == 4
 
     @pytest.mark.asyncio
-    async def test_get_depth_priors_batch(self, sqlite_storage: SQLiteStorage) -> None:
+    async def test_get_depth_priors_batch(self, sqlite_storage: InMemoryStorage) -> None:
         """Batch fetch returns priors grouped by entity."""
         for entity, depth, alpha in [
             ("A", DepthLevel.INSTANT, 2.0),
@@ -549,14 +545,16 @@ class TestSQLiteDepthPriorStorage:
         assert result["B"][0].alpha == pytest.approx(4.0)
 
     @pytest.mark.asyncio
-    async def test_get_depth_priors_batch_empty_input(self, sqlite_storage: SQLiteStorage) -> None:
+    async def test_get_depth_priors_batch_empty_input(
+        self, sqlite_storage: InMemoryStorage
+    ) -> None:
         """Empty entity list returns empty dict without DB error."""
         result = await sqlite_storage.get_depth_priors_batch([])
         assert result == {}
 
     @pytest.mark.asyncio
     async def test_get_depth_priors_batch_missing_entity(
-        self, sqlite_storage: SQLiteStorage
+        self, sqlite_storage: InMemoryStorage
     ) -> None:
         """Entity with no priors gets empty list in result."""
         await sqlite_storage.upsert_depth_prior(
@@ -567,7 +565,7 @@ class TestSQLiteDepthPriorStorage:
         assert result["absent"] == []
 
     @pytest.mark.asyncio
-    async def test_get_stale_priors(self, sqlite_storage: SQLiteStorage) -> None:
+    async def test_get_stale_priors(self, sqlite_storage: InMemoryStorage) -> None:
         """get_stale_priors returns priors with last_updated before the cutoff."""
         old_time = utcnow() - timedelta(days=60)
         stale_prior = DepthPrior(
@@ -591,7 +589,7 @@ class TestSQLiteDepthPriorStorage:
         assert "fresh" not in entity_texts
 
     @pytest.mark.asyncio
-    async def test_delete_depth_priors(self, sqlite_storage: SQLiteStorage) -> None:
+    async def test_delete_depth_priors(self, sqlite_storage: InMemoryStorage) -> None:
         """delete_depth_priors removes all depth levels for an entity."""
         for depth in [DepthLevel.INSTANT, DepthLevel.CONTEXT, DepthLevel.DEEP]:
             await sqlite_storage.upsert_depth_prior(
@@ -605,7 +603,7 @@ class TestSQLiteDepthPriorStorage:
         assert remaining == []
 
     @pytest.mark.asyncio
-    async def test_delete_nonexistent_returns_zero(self, sqlite_storage: SQLiteStorage) -> None:
+    async def test_delete_nonexistent_returns_zero(self, sqlite_storage: InMemoryStorage) -> None:
         """Deleting an entity with no priors returns 0."""
         count = await sqlite_storage.delete_depth_priors("ghost")
         assert count == 0
@@ -613,9 +611,7 @@ class TestSQLiteDepthPriorStorage:
     @pytest.mark.asyncio
     async def test_brain_isolation(self, tmp_path: Path) -> None:
         """Priors stored under brain A are not visible under brain B."""
-        db_path = tmp_path / "isolation.db"
-        store = SQLiteStorage(db_path)
-        await store.initialize()
+        store = InMemoryStorage()
 
         brain_a = Brain.create(name="brain-a")
         brain_b = Brain.create(name="brain-b")
@@ -639,7 +635,7 @@ class TestSQLiteDepthPriorStorage:
         assert len(priors_a) == 1
 
     @pytest.mark.asyncio
-    async def test_all_depth_levels_round_trip(self, sqlite_storage: SQLiteStorage) -> None:
+    async def test_all_depth_levels_round_trip(self, sqlite_storage: InMemoryStorage) -> None:
         """Every DepthLevel value can be stored and retrieved correctly."""
         for level in DepthLevel:
             prior = DepthPrior(
@@ -654,13 +650,13 @@ class TestSQLiteDepthPriorStorage:
 
 
 # ---------------------------------------------------------------------------
-# Integration: AdaptiveDepthSelector + real SQLiteStorage
+# Integration: AdaptiveDepthSelector + real InMemoryStorage
 # ---------------------------------------------------------------------------
 
 
 class TestAdaptiveDepthSelectorIntegration:
     @pytest.mark.asyncio
-    async def test_full_cycle_record_then_select(self, sqlite_storage: SQLiteStorage) -> None:
+    async def test_full_cycle_record_then_select(self, sqlite_storage: InMemoryStorage) -> None:
         """Record many successes for CONTEXT, then select_depth should choose CONTEXT."""
         selector = AdaptiveDepthSelector(sqlite_storage, epsilon=0.0)
         stimulus = _make_stimulus(["Project"])
@@ -683,7 +679,7 @@ class TestAdaptiveDepthSelectorIntegration:
 
     @pytest.mark.asyncio
     async def test_record_outcome_persists_across_selector_instances(
-        self, sqlite_storage: SQLiteStorage
+        self, sqlite_storage: InMemoryStorage
     ) -> None:
         """Outcomes recorded by one selector instance are visible to another."""
         selector_a = AdaptiveDepthSelector(sqlite_storage, epsilon=0.0)

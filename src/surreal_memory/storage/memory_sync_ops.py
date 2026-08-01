@@ -275,6 +275,12 @@ class InMemorySyncMixin:
 
     # ========== Depth Prior Operations ==========
 
+    async def get_depth_priors(self, entity_text: str) -> list[DepthPrior]:
+        """Get all priors for an entity across all depth levels."""
+        brain_id = self._get_brain_id()
+        by_entity = self._depth_priors.get(brain_id, {})
+        return list(by_entity.get(entity_text, {}).values())
+
     async def get_depth_priors_batch(
         self,
         entity_texts: list[str],

@@ -9,18 +9,16 @@ import pytest
 import pytest_asyncio
 
 from surreal_memory.core.brain import Brain, BrainConfig
+from surreal_memory.storage.memory_store import InMemoryStorage
 from surreal_memory.storage.sqlite_change_log import ChangeEntry
-from surreal_memory.storage.sqlite_store import SQLiteStorage
 
 # ── Fixture ───────────────────────────────────────────────────────────────────
 
 
 @pytest_asyncio.fixture
-async def storage_with_brain(tmp_path: pathlib.Path) -> SQLiteStorage:
-    """Create SQLiteStorage with an initialized brain context."""
-    db_path = tmp_path / "test_change_log.db"
-    storage = SQLiteStorage(db_path)
-    await storage.initialize()
+async def storage_with_brain(tmp_path: pathlib.Path) -> InMemoryStorage:
+    """Create InMemoryStorage with an initialized brain context."""
+    storage = InMemoryStorage()
 
     brain = Brain.create(name="change-log-test", config=BrainConfig())
     await storage.save_brain(brain)
@@ -37,7 +35,7 @@ async def storage_with_brain(tmp_path: pathlib.Path) -> SQLiteStorage:
 class TestRecordChange:
     """Test record_change returns a positive sequence number."""
 
-    async def test_record_change(self, storage_with_brain: SQLiteStorage) -> None:
+    async def test_record_change(self, storage_with_brain: InMemoryStorage) -> None:
         """Insert a change, verify returned sequence > 0."""
         seq = await storage_with_brain.record_change(
             entity_type="neuron",
@@ -49,7 +47,7 @@ class TestRecordChange:
         assert seq > 0
 
     async def test_record_change_increments_sequence(
-        self, storage_with_brain: SQLiteStorage
+        self, storage_with_brain: InMemoryStorage
     ) -> None:
         """Each record_change call returns a strictly increasing sequence."""
         seq1 = await storage_with_brain.record_change(
@@ -65,7 +63,7 @@ class TestGetChangesSince:
     """Test get_changes_since returns changes in order after a given sequence."""
 
     async def test_get_changes_since_zero_returns_all(
-        self, storage_with_brain: SQLiteStorage
+        self, storage_with_brain: InMemoryStorage
     ) -> None:
         """get_changes_since(0) returns all 3 inserted changes in order."""
         await storage_with_brain.record_change("neuron", "n-1", "insert", device_id="dev-a")
@@ -79,7 +77,7 @@ class TestGetChangesSince:
         assert changes[2].entity_type == "fiber"
 
     async def test_get_changes_since_filters_by_sequence(
-        self, storage_with_brain: SQLiteStorage
+        self, storage_with_brain: InMemoryStorage
     ) -> None:
         """get_changes_since(seq1) returns only changes after seq1."""
         seq1 = await storage_with_brain.record_change("neuron", "n-1", "insert")
@@ -91,7 +89,7 @@ class TestGetChangesSince:
         assert len(changes) == 2
 
     async def test_get_changes_since_returns_ordered_asc(
-        self, storage_with_brain: SQLiteStorage
+        self, storage_with_brain: InMemoryStorage
     ) -> None:
         """Changes are returned in ascending id order."""
         for i in range(5):
@@ -103,7 +101,7 @@ class TestGetChangesSince:
             assert changes[i].id < changes[i + 1].id
 
     async def test_get_changes_since_returns_change_entry_instances(
-        self, storage_with_brain: SQLiteStorage
+        self, storage_with_brain: InMemoryStorage
     ) -> None:
         """get_changes_since returns ChangeEntry instances."""
         await storage_with_brain.record_change("neuron", "n-x", "insert")
@@ -116,7 +114,7 @@ class TestGetUnsyncedChanges:
     """Test get_unsynced_changes returns only un-marked changes."""
 
     async def test_get_unsynced_changes_returns_all_when_none_synced(
-        self, storage_with_brain: SQLiteStorage
+        self, storage_with_brain: InMemoryStorage
     ) -> None:
         """All new changes are unsynced initially."""
         await storage_with_brain.record_change("neuron", "n-1", "insert")
@@ -126,7 +124,7 @@ class TestGetUnsyncedChanges:
         assert len(unsynced) == 2
 
     async def test_get_unsynced_changes_excludes_synced(
-        self, storage_with_brain: SQLiteStorage
+        self, storage_with_brain: InMemoryStorage
     ) -> None:
         """After mark_synced(seq1), get_unsynced_changes returns only seq2+."""
         seq1 = await storage_with_brain.record_change("neuron", "n-1", "insert")
@@ -139,7 +137,7 @@ class TestGetUnsyncedChanges:
         assert unsynced[0].entity_id == "n-2"
 
     async def test_get_unsynced_changes_empty_after_all_synced(
-        self, storage_with_brain: SQLiteStorage
+        self, storage_with_brain: InMemoryStorage
     ) -> None:
         """After marking all synced, get_unsynced_changes returns empty list."""
         seq1 = await storage_with_brain.record_change("neuron", "n-1", "insert")
@@ -154,7 +152,7 @@ class TestGetUnsyncedChanges:
 class TestMarkSynced:
     """Test mark_synced marks changes and returns correct count."""
 
-    async def test_mark_synced_returns_count(self, storage_with_brain: SQLiteStorage) -> None:
+    async def test_mark_synced_returns_count(self, storage_with_brain: InMemoryStorage) -> None:
         """mark_synced returns the number of rows marked."""
         await storage_with_brain.record_change("neuron", "n-1", "insert")
         seq2 = await storage_with_brain.record_change("neuron", "n-2", "insert")
@@ -162,7 +160,9 @@ class TestMarkSynced:
         count = await storage_with_brain.mark_synced(seq2)
         assert count == 2
 
-    async def test_mark_synced_only_marks_unsynced(self, storage_with_brain: SQLiteStorage) -> None:
+    async def test_mark_synced_only_marks_unsynced(
+        self, storage_with_brain: InMemoryStorage
+    ) -> None:
         """mark_synced does not count already-synced rows."""
         seq1 = await storage_with_brain.record_change("neuron", "n-1", "insert")
         seq2 = await storage_with_brain.record_change("neuron", "n-2", "insert")
@@ -176,7 +176,7 @@ class TestMarkSynced:
         assert count2 == 1
 
     async def test_mark_synced_persists_synced_flag(
-        self, storage_with_brain: SQLiteStorage
+        self, storage_with_brain: InMemoryStorage
     ) -> None:
         """After mark_synced, get_changes_since still returns those changes
         (synced flag is separate from existence)."""
@@ -192,7 +192,7 @@ class TestPruneSyncedChanges:
     """Test prune_synced_changes removes old synced entries."""
 
     async def test_prune_synced_changes_removes_synced_old(
-        self, storage_with_brain: SQLiteStorage
+        self, storage_with_brain: InMemoryStorage
     ) -> None:
         """Synced changes older than older_than_days=0 are pruned."""
         seq = await storage_with_brain.record_change("neuron", "n-old", "insert")
@@ -207,7 +207,7 @@ class TestPruneSyncedChanges:
         assert all(c.entity_id != "n-old" for c in changes)
 
     async def test_prune_synced_changes_keeps_unsynced(
-        self, storage_with_brain: SQLiteStorage
+        self, storage_with_brain: InMemoryStorage
     ) -> None:
         """Unsynced changes are never pruned."""
         await storage_with_brain.record_change("neuron", "n-keep", "insert")
@@ -220,7 +220,7 @@ class TestPruneSyncedChanges:
         assert any(c.entity_id == "n-keep" for c in unsynced)
 
     async def test_prune_synced_changes_returns_count(
-        self, storage_with_brain: SQLiteStorage
+        self, storage_with_brain: InMemoryStorage
     ) -> None:
         """prune_synced_changes returns an integer count."""
         result = await storage_with_brain.prune_synced_changes(older_than_days=365)
@@ -231,7 +231,7 @@ class TestPruneSyncedChanges:
 class TestGetChangeLogStats:
     """Test get_change_log_stats returns accurate aggregates."""
 
-    async def test_get_change_log_stats_empty(self, storage_with_brain: SQLiteStorage) -> None:
+    async def test_get_change_log_stats_empty(self, storage_with_brain: InMemoryStorage) -> None:
         """Stats on empty change log return all zeros."""
         stats = await storage_with_brain.get_change_log_stats()
         assert stats["total"] == 0
@@ -239,7 +239,9 @@ class TestGetChangeLogStats:
         assert stats["synced"] == 0
         assert stats["last_sequence"] == 0
 
-    async def test_get_change_log_stats_with_data(self, storage_with_brain: SQLiteStorage) -> None:
+    async def test_get_change_log_stats_with_data(
+        self, storage_with_brain: InMemoryStorage
+    ) -> None:
         """Insert 3 changes, mark 1 synced, verify stats totals."""
         seq1 = await storage_with_brain.record_change("neuron", "n-1", "insert")
         await storage_with_brain.record_change("neuron", "n-2", "insert")
@@ -254,7 +256,7 @@ class TestGetChangeLogStats:
         assert stats["last_sequence"] > 0
 
     async def test_get_change_log_stats_last_sequence_is_highest_id(
-        self, storage_with_brain: SQLiteStorage
+        self, storage_with_brain: InMemoryStorage
     ) -> None:
         """last_sequence equals the highest change id inserted."""
         await storage_with_brain.record_change("neuron", "n-1", "insert")
@@ -267,7 +269,7 @@ class TestGetChangeLogStats:
 class TestChangeEntryFields:
     """Test ChangeEntry frozen dataclass immutability and field types."""
 
-    async def test_change_entry_fields_populated(self, storage_with_brain: SQLiteStorage) -> None:
+    async def test_change_entry_fields_populated(self, storage_with_brain: InMemoryStorage) -> None:
         """ChangeEntry returned from storage has all expected fields."""
         await storage_with_brain.record_change(
             entity_type="fiber",
@@ -341,9 +343,7 @@ class TestBrainIsolation:
 
     async def test_brain_isolation(self, tmp_path: pathlib.Path) -> None:
         """Changes in brain A are not visible when brain B is active."""
-        db_path = tmp_path / "isolation_test.db"
-        storage = SQLiteStorage(db_path)
-        await storage.initialize()
+        storage = InMemoryStorage()
 
         brain_a = Brain.create(name="brain-a", config=BrainConfig())
         brain_b = Brain.create(name="brain-b", config=BrainConfig())

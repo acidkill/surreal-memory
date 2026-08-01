@@ -12,9 +12,7 @@ only real intervals (time_start < time_end) are event-time filtered.
 
 from __future__ import annotations
 
-import tempfile
 from datetime import datetime, timedelta
-from pathlib import Path
 
 import pytest
 
@@ -22,7 +20,7 @@ from surreal_memory.core.brain import Brain, BrainConfig
 from surreal_memory.core.fiber import Fiber
 from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.engine.retrieval import ReflexPipeline, _fiber_valid_at
-from surreal_memory.storage.sqlite_store import SQLiteStorage
+from surreal_memory.storage.memory_store import InMemoryStorage
 
 _T = datetime(2026, 1, 15, 12, 0, 0)
 
@@ -57,19 +55,19 @@ class TestFiberValidAtUnit:
 
 
 @pytest.fixture
-async def storage() -> SQLiteStorage:
-    with tempfile.TemporaryDirectory() as tmpdir:
-        s = SQLiteStorage(Path(tmpdir) / "test.db")
-        await s.initialize()
-        brain = Brain.create(name="valid_at_test")
-        await s.save_brain(brain)
-        s.set_brain(brain.id)
-        yield s
-        await s.close()
+async def storage() -> InMemoryStorage:
+    s = InMemoryStorage()
+    brain = Brain.create(name="valid_at_test")
+    await s.save_brain(brain)
+    s.set_brain(brain.id)
+    yield s
+    await s.close()
 
 
 class TestValidAtThroughPipeline:
-    async def test_zero_width_fiber_survives_valid_at_filter(self, storage: SQLiteStorage) -> None:
+    async def test_zero_width_fiber_survives_valid_at_filter(
+        self, storage: InMemoryStorage
+    ) -> None:
         # A fiber with a zero-width event window (as BuildFiberStep produces) must be
         # returned by a valid_at recall for a DIFFERENT time — the pre-fix bug dropped it.
         neuron = Neuron.create(type=NeuronType.CONCEPT, content="Emma lives in Oslo Norway")

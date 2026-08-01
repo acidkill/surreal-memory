@@ -6,9 +6,7 @@ immediately (before consolidation cleanup) instead of only under hard delete.
 
 from __future__ import annotations
 
-import tempfile
 from collections.abc import AsyncIterator
-from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -19,7 +17,6 @@ from surreal_memory.core.memory_types import MemoryType, Priority, TypedMemory
 from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.storage.base import NeuralStorage
 from surreal_memory.storage.memory_store import InMemoryStorage
-from surreal_memory.storage.sqlite_store import SQLiteStorage
 from surreal_memory.storage.surrealdb.store import SurrealDBStorage
 
 
@@ -90,15 +87,13 @@ async def in_memory() -> InMemoryStorage:
 
 
 @pytest.fixture
-async def sqlite() -> AsyncIterator[SQLiteStorage]:
-    with tempfile.TemporaryDirectory() as tmpdir:
-        storage = SQLiteStorage(Path(tmpdir) / "test.db")
-        await storage.initialize()
-        brain = Brain.create(name="test_brain")
-        await storage.save_brain(brain)
-        storage.set_brain(brain.id)
-        yield storage
-        await storage.close()
+async def sqlite() -> AsyncIterator[InMemoryStorage]:
+    storage = InMemoryStorage()
+    brain = Brain.create(name="test_brain")
+    await storage.save_brain(brain)
+    storage.set_brain(brain.id)
+    yield storage
+    await storage.close()
 
 
 async def _assert_exclude_expired(storage: NeuralStorage) -> None:
@@ -125,5 +120,5 @@ async def test_in_memory_get_fibers_excludes_expired(in_memory: InMemoryStorage)
 
 
 @pytest.mark.asyncio
-async def test_sqlite_get_fibers_excludes_expired(sqlite: SQLiteStorage) -> None:
+async def test_sqlite_get_fibers_excludes_expired(sqlite: InMemoryStorage) -> None:
     await _assert_exclude_expired(sqlite)

@@ -24,7 +24,7 @@ from surreal_memory.core.memory_types import MemoryType, Priority, TypedMemory
 from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.core.project import Project
 from surreal_memory.storage.base import NeuralStorage
-from surreal_memory.storage.sqlite_store import SQLiteStorage
+from surreal_memory.storage.memory_store import InMemoryStorage
 from tests.unit._surrealdb_live import cleanup_live_brains, ensure_real_surrealdb_sdk
 
 SURREALDB_URL = os.getenv("SURREALDB_URL")
@@ -98,9 +98,8 @@ async def _seed_six_memories(
 
 
 @pytest.fixture
-async def sqlite_storage(tmp_path: Path) -> SQLiteStorage:
-    storage = SQLiteStorage(tmp_path / "parity.db")
-    await storage.initialize()
+async def sqlite_storage(tmp_path: Path) -> InMemoryStorage:
+    storage = InMemoryStorage()
     brain = Brain.create(name="parity-test")
     await storage.save_brain(brain)
     storage.set_brain(brain.id)
@@ -140,7 +139,7 @@ async def surrealdb_storage():  # type: ignore[no-untyped-def]
 class TestGetProjectMemoriesParity:
     @pytest.mark.asyncio
     async def test_sqlite_filters_by_project_id_excludes_expired(
-        self, sqlite_storage: SQLiteStorage
+        self, sqlite_storage: InMemoryStorage
     ) -> None:
         seed = await _seed_six_memories(sqlite_storage)
         rows = await sqlite_storage.get_project_memories(seed.alpha_id)
@@ -149,14 +148,18 @@ class TestGetProjectMemoriesParity:
         assert rows[0].fiber_id in seed.fibers_by_project[seed.alpha_id]
 
     @pytest.mark.asyncio
-    async def test_sqlite_include_expired_returns_both(self, sqlite_storage: SQLiteStorage) -> None:
+    async def test_sqlite_include_expired_returns_both(
+        self, sqlite_storage: InMemoryStorage
+    ) -> None:
         seed = await _seed_six_memories(sqlite_storage)
         rows = await sqlite_storage.get_project_memories(seed.alpha_id, include_expired=True)
         assert {r.fiber_id for r in rows} == seed.fibers_by_project[seed.alpha_id]
         assert len(rows) == 2
 
     @pytest.mark.asyncio
-    async def test_sqlite_other_projects_not_returned(self, sqlite_storage: SQLiteStorage) -> None:
+    async def test_sqlite_other_projects_not_returned(
+        self, sqlite_storage: InMemoryStorage
+    ) -> None:
         seed = await _seed_six_memories(sqlite_storage)
         rows = await sqlite_storage.get_project_memories(seed.beta_id)
         assert {r.fiber_id for r in rows} == seed.fibers_by_project[seed.beta_id]
@@ -168,7 +171,7 @@ class TestGetProjectMemoriesParity:
     @pytest.mark.asyncio
     @_skip_surrealdb
     async def test_surrealdb_matches_sqlite_partitioning(
-        self, sqlite_storage: SQLiteStorage, surrealdb_storage: NeuralStorage
+        self, sqlite_storage: InMemoryStorage, surrealdb_storage: NeuralStorage
     ) -> None:
         """Cross-backend parity: same partition shape on both backends.
 

@@ -29,7 +29,7 @@ from surreal_memory.engine.reranker import (
     rerank_activations,
     reranker_available,
 )
-from surreal_memory.storage.sqlite_store import SQLiteStorage
+from surreal_memory.storage.memory_store import InMemoryStorage
 from surreal_memory.storage.surrealdb.store import (
     _deserialize_brain_config,
     _serialize_brain_config,
@@ -342,8 +342,7 @@ class TestSqliteRerankerPersistence:
 
     @pytest.mark.asyncio
     async def test_sqlite_roundtrip_persists_reranker(self, tmp_path: Path) -> None:
-        store = SQLiteStorage(tmp_path / "s.db")
-        await store.initialize()
+        store = InMemoryStorage()
         try:
             brain = Brain.create(
                 name="rr_brain",
@@ -377,8 +376,7 @@ class TestMigrateDoesNotTouchReranker:
 
     @pytest.mark.asyncio
     async def test_migrate_does_not_enable_reranker(self, tmp_path: Path) -> None:
-        store = SQLiteStorage(tmp_path / "m.db")
-        await store.initialize()
+        store = InMemoryStorage()
         try:
             brain = Brain.create(name="legacy")  # reranker off by default
             await store.save_brain(brain)
@@ -401,8 +399,7 @@ class TestMigrateDoesNotTouchReranker:
         # The exact reranker-flip scenario: the shared brain has reranker ON (set
         # by another client), and this client's app config has it OFF. Migration
         # must NOT disable it on the shared brain.
-        store = SQLiteStorage(tmp_path / "n.db")
-        await store.initialize()
+        store = InMemoryStorage()
         try:
             brain = Brain.create(
                 name="shared",

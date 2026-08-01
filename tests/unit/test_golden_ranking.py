@@ -13,24 +13,28 @@ which is float-deterministic for a given query.
 
 from __future__ import annotations
 
-import tempfile
-from pathlib import Path
-
 import pytest
 
 from surreal_memory.core.brain import Brain, BrainConfig
 from surreal_memory.core.fiber import Fiber
 from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.engine.retrieval import ReflexPipeline
-from surreal_memory.storage.sqlite_store import SQLiteStorage
+from surreal_memory.storage.memory_store import InMemoryStorage
 
 # Ordered (fiber_id) ranking recorded on the pre-trust baseline for QUERY below.
 # Regenerate ONLY intentionally (a real ranking change): run this test, read the
 # assertion diff, and paste the observed order here.
+#
+# Re-recorded for the SQLite -> InMemoryStorage backend swap (PR6): SQLite's FTS5
+# index stems "synapses" (query) to match "synapse" (g-synapse's neuron content),
+# so g-synapse entered the SQLite-backed ranking. InMemoryStorage.find_neurons()
+# does plain case-insensitive substring matching (no stemming), so it never
+# anchors on g-synapse for this query and the fiber is correctly absent here —
+# this is a known, accepted limitation of the in-memory test double relative to
+# both real backends' full-text search, not a ranking regression.
 GOLDEN_ORDER: list[str] = [
     "g-activation",
     "g-decay",
-    "g-synapse",
 ]
 
 QUERY = "spreading activation through weighted synapses in the neural graph"
@@ -56,10 +60,8 @@ _FIBERS: list[tuple[str, str, str]] = [
 ]
 
 
-async def _build() -> SQLiteStorage:
-    tmp = tempfile.mkdtemp()
-    store = SQLiteStorage(Path(tmp) / "golden.db")
-    await store.initialize()
+async def _build() -> InMemoryStorage:
+    store = InMemoryStorage()
     brain = Brain.create(name="golden_brain")
     await store.save_brain(brain)
     store.set_brain(brain.id)
@@ -138,8 +140,7 @@ async def test_trust_weight_demotes_low_trust_fiber() -> None:
     # trust-multiply (score *= (1-tw) + tw*trust) would fail this.
     from surreal_memory.core.memory_types import MemoryType, TypedMemory
 
-    store = SQLiteStorage(Path(tempfile.mkdtemp()) / "trust_dir.db")
-    await store.initialize()
+    store = InMemoryStorage()
     brain = Brain.create(name="trust_dir")
     await store.save_brain(brain)
     store.set_brain(brain.id)

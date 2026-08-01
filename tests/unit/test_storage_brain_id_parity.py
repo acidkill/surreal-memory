@@ -46,15 +46,12 @@ class TestBrainIdProperty:
 
 
 class TestSQLiteStorageBrainId:
-    """Verify SQLiteStorage brain_id property."""
+    """Verify InMemoryStorage brain_id property."""
 
     @pytest.fixture
     async def storage(self, tmp_path):
-        from surreal_memory.storage.sqlite_store import SQLiteStorage
 
-        db_path = tmp_path / "test.db"
-        s = SQLiteStorage(db_path)
-        await s.initialize()
+        s = InMemoryStorage()
         yield s
         await s.close()
 

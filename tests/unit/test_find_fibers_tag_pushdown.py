@@ -10,9 +10,7 @@ the sibling live tests.
 
 from __future__ import annotations
 
-import tempfile
 from collections.abc import AsyncIterator
-from pathlib import Path
 
 import pytest
 
@@ -20,28 +18,17 @@ from surreal_memory.core.brain import Brain
 from surreal_memory.core.fiber import Fiber
 from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.storage.memory_store import InMemoryStorage
-from surreal_memory.storage.sqlite_store import SQLiteStorage
 
 _TAG = "lc-session:keep-me"
 
 
-@pytest.fixture(params=["memory", "sqlite"])
-async def storage(request: pytest.FixtureRequest) -> AsyncIterator[object]:
-    if request.param == "memory":
-        s: object = InMemoryStorage()
-        brain = Brain.create(name="tagpush")
-        await s.save_brain(brain)  # type: ignore[attr-defined]
-        s.set_brain(brain.id)  # type: ignore[attr-defined]
-        yield s
-    else:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            sq = SQLiteStorage(Path(tmpdir) / "t.db")
-            await sq.initialize()
-            brain = Brain.create(name="tagpush")
-            await sq.save_brain(brain)
-            sq.set_brain(brain.id)
-            yield sq
-            await sq.close()
+@pytest.fixture
+async def storage() -> AsyncIterator[object]:
+    s: object = InMemoryStorage()
+    brain = Brain.create(name="tagpush")
+    await s.save_brain(brain)  # type: ignore[attr-defined]
+    s.set_brain(brain.id)  # type: ignore[attr-defined]
+    return s
 
 
 async def _add(storage: object, summary: str, salience: float, tag: str | None) -> Fiber:

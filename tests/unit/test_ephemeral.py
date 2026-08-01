@@ -13,8 +13,8 @@ import pytest
 
 from surreal_memory.core.brain import Brain
 from surreal_memory.core.neuron import Neuron, NeuronType
+from surreal_memory.storage.memory_store import InMemoryStorage
 from surreal_memory.storage.sqlite_schema import SCHEMA_VERSION
-from surreal_memory.storage.sqlite_store import SQLiteStorage
 from surreal_memory.utils.timeutils import utcnow
 
 # ── Schema ──────────────────────────────────────────────────────────
@@ -53,10 +53,9 @@ class TestNeuronEphemeral:
 
 
 @pytest.fixture
-async def storage(tmp_path: Path) -> SQLiteStorage:
-    """Create a fresh SQLiteStorage with a default brain."""
-    s = SQLiteStorage(db_path=str(tmp_path / "test_ephemeral.db"))
-    await s.initialize()
+async def storage(tmp_path: Path) -> InMemoryStorage:
+    """Create a fresh InMemoryStorage with a default brain."""
+    s = InMemoryStorage()
     brain = Brain.create(name="ephemeral-test")
     await s.save_brain(brain)
     s.set_brain(brain.id)
@@ -65,7 +64,7 @@ async def storage(tmp_path: Path) -> SQLiteStorage:
 
 @pytest.mark.asyncio
 class TestEphemeralStorage:
-    async def test_add_ephemeral_neuron(self, storage: SQLiteStorage) -> None:
+    async def test_add_ephemeral_neuron(self, storage: InMemoryStorage) -> None:
         n = Neuron.create(type=NeuronType.CONCEPT, content="temp note", ephemeral=True)
         await storage.add_neuron(n)
 
@@ -73,7 +72,7 @@ class TestEphemeralStorage:
         assert fetched is not None
         assert fetched.ephemeral is True
 
-    async def test_add_permanent_neuron(self, storage: SQLiteStorage) -> None:
+    async def test_add_permanent_neuron(self, storage: InMemoryStorage) -> None:
         n = Neuron.create(type=NeuronType.CONCEPT, content="permanent note")
         await storage.add_neuron(n)
 
@@ -81,7 +80,7 @@ class TestEphemeralStorage:
         assert fetched is not None
         assert fetched.ephemeral is False
 
-    async def test_find_neurons_ephemeral_filter(self, storage: SQLiteStorage) -> None:
+    async def test_find_neurons_ephemeral_filter(self, storage: InMemoryStorage) -> None:
         n_perm = Neuron.create(type=NeuronType.CONCEPT, content="permanent fact")
         n_eph = Neuron.create(type=NeuronType.CONCEPT, content="ephemeral fact", ephemeral=True)
         await storage.add_neuron(n_perm)
@@ -101,7 +100,7 @@ class TestEphemeralStorage:
         assert len(eph_only) == 1
         assert eph_only[0].ephemeral is True
 
-    async def test_find_neurons_no_filter_includes_all(self, storage: SQLiteStorage) -> None:
+    async def test_find_neurons_no_filter_includes_all(self, storage: InMemoryStorage) -> None:
         for i in range(3):
             await storage.add_neuron(
                 Neuron.create(
@@ -113,7 +112,7 @@ class TestEphemeralStorage:
         all_neurons = await storage.find_neurons()
         assert len(all_neurons) == 3
 
-    async def test_cleanup_ephemeral_neurons(self, storage: SQLiteStorage) -> None:
+    async def test_cleanup_ephemeral_neurons(self, storage: InMemoryStorage) -> None:
         # Create an ephemeral neuron with old timestamp
         old_time = utcnow() - timedelta(hours=25)
         n_old = Neuron(
@@ -140,7 +139,7 @@ class TestEphemeralStorage:
         assert n_fresh.id in remaining_ids
         assert n_perm.id in remaining_ids
 
-    async def test_cleanup_does_not_touch_permanent(self, storage: SQLiteStorage) -> None:
+    async def test_cleanup_does_not_touch_permanent(self, storage: InMemoryStorage) -> None:
         old_time = utcnow() - timedelta(hours=48)
         n_perm = Neuron(
             id="old-perm",
@@ -153,7 +152,7 @@ class TestEphemeralStorage:
         deleted = await storage.cleanup_ephemeral_neurons(max_age_hours=24.0)
         assert deleted == 0
 
-    async def test_batch_get_includes_ephemeral_flag(self, storage: SQLiteStorage) -> None:
+    async def test_batch_get_includes_ephemeral_flag(self, storage: InMemoryStorage) -> None:
         n1 = Neuron.create(type=NeuronType.CONCEPT, content="a", ephemeral=True)
         n2 = Neuron.create(type=NeuronType.CONCEPT, content="b", ephemeral=False)
         await storage.add_neuron(n1)
@@ -169,7 +168,7 @@ class TestEphemeralStorage:
 
 @pytest.mark.asyncio
 class TestEphemeralSyncExclusion:
-    async def test_seed_change_log_excludes_ephemeral(self, storage: SQLiteStorage) -> None:
+    async def test_seed_change_log_excludes_ephemeral(self, storage: InMemoryStorage) -> None:
         n_perm = Neuron.create(type=NeuronType.CONCEPT, content="permanent for sync")
         n_eph = Neuron.create(type=NeuronType.CONCEPT, content="ephemeral no sync", ephemeral=True)
         await storage.add_neuron(n_perm)
@@ -191,7 +190,7 @@ class TestEphemeralSyncExclusion:
 
 @pytest.mark.asyncio
 class TestEphemeralConsolidationExclusion:
-    async def test_find_neurons_ephemeral_false_excludes(self, storage: SQLiteStorage) -> None:
+    async def test_find_neurons_ephemeral_false_excludes(self, storage: InMemoryStorage) -> None:
         """Consolidation uses find_neurons(ephemeral=False) — must exclude ephemeral."""
         n_eph = Neuron.create(type=NeuronType.CONCEPT, content="temp debug note", ephemeral=True)
         n_perm = Neuron.create(type=NeuronType.CONCEPT, content="important decision")

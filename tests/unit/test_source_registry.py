@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from surreal_memory.core.source import Source, SourceStatus, SourceType
+from surreal_memory.storage.memory_store import InMemoryStorage
 
 # ──────────────────── Source dataclass ────────────────────
 
@@ -122,15 +123,12 @@ class TestSchemaMigrationV23:
 
 
 class TestSQLiteSourcesMixin:
-    """Test source CRUD via SQLiteStorage."""
+    """Test source CRUD via InMemoryStorage."""
 
     @pytest.fixture
     async def storage(self, tmp_path):
-        from surreal_memory.storage.sqlite_store import SQLiteStorage
 
-        db_path = tmp_path / "test.db"
-        s = SQLiteStorage(db_path)
-        await s.initialize()
+        s = InMemoryStorage()
         # Create a brain
         from surreal_memory.core.brain import Brain
 

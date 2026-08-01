@@ -81,6 +81,9 @@ class InMemoryCollectionsMixin:
         tags: set[str] | None = None,
     ) -> list[Fiber]:
         """Find fibers containing any of the given neurons from in-memory store."""
+        if not neuron_ids:
+            return []
+
         brain_id = self._get_brain_id()
         nid_set = set(neuron_ids)
         seen: set[str] = set()
@@ -98,7 +101,9 @@ class InMemoryCollectionsMixin:
             result.append(fiber)
 
         result.sort(key=lambda f: f.salience, reverse=True)
-        return result
+        # Mirrors SQLite's total_limit = limit_per_neuron * len(neuron_ids).
+        total_limit = limit_per_neuron * len(neuron_ids)
+        return result[:total_limit]
 
     async def update_fiber(self, fiber: Fiber) -> None:
         brain_id = self._get_brain_id()

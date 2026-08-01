@@ -35,7 +35,7 @@ from surreal_memory.engine.compression import (
     split_sentences,
 )
 from surreal_memory.engine.consolidation import ConsolidationReport, ConsolidationStrategy
-from surreal_memory.storage.sqlite_store import SQLiteStorage
+from surreal_memory.storage.memory_store import InMemoryStorage
 from surreal_memory.utils.timeutils import utcnow
 
 # ---------------------------------------------------------------------------
@@ -520,16 +520,14 @@ class TestDetermineTargetTier:
 
 
 # ---------------------------------------------------------------------------
-# Storage tests (SQLiteCompressionMixin via SQLiteStorage)
+# Storage tests (SQLiteCompressionMixin via InMemoryStorage)
 # ---------------------------------------------------------------------------
 
 
 @pytest_asyncio.fixture
-async def sqlite_storage(tmp_path: Path) -> SQLiteStorage:
-    """SQLiteStorage backed by a temp file, brain context set."""
-    db_path = tmp_path / "test_compression.db"
-    store = SQLiteStorage(db_path)
-    await store.initialize()
+async def sqlite_storage(tmp_path: Path) -> InMemoryStorage:
+    """InMemoryStorage backed by a temp file, brain context set."""
+    store = InMemoryStorage()
     brain = Brain.create(name="test-compression-brain")
     await store.save_brain(brain)
     store.set_brain(brain.id)
@@ -538,7 +536,7 @@ async def sqlite_storage(tmp_path: Path) -> SQLiteStorage:
 
 class TestSQLiteCompressionMixin:
     @pytest.mark.asyncio
-    async def test_save_and_get_backup(self, sqlite_storage: SQLiteStorage) -> None:
+    async def test_save_and_get_backup(self, sqlite_storage: InMemoryStorage) -> None:
         """Round-trip: save a backup then retrieve it with matching fields."""
         await sqlite_storage.save_compression_backup(
             fiber_id="fiber-abc",
@@ -556,12 +554,14 @@ class TestSQLiteCompressionMixin:
         assert result["compressed_token_count"] == 40
 
     @pytest.mark.asyncio
-    async def test_get_nonexistent_backup_returns_none(self, sqlite_storage: SQLiteStorage) -> None:
+    async def test_get_nonexistent_backup_returns_none(
+        self, sqlite_storage: InMemoryStorage
+    ) -> None:
         result = await sqlite_storage.get_compression_backup("does-not-exist")
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_delete_backup_returns_true(self, sqlite_storage: SQLiteStorage) -> None:
+    async def test_delete_backup_returns_true(self, sqlite_storage: InMemoryStorage) -> None:
         await sqlite_storage.save_compression_backup(
             fiber_id="fiber-del",
             original_content="Some content.",
@@ -573,7 +573,7 @@ class TestSQLiteCompressionMixin:
         assert deleted is True
 
     @pytest.mark.asyncio
-    async def test_delete_backup_removes_row(self, sqlite_storage: SQLiteStorage) -> None:
+    async def test_delete_backup_removes_row(self, sqlite_storage: InMemoryStorage) -> None:
         await sqlite_storage.save_compression_backup(
             fiber_id="fiber-gone",
             original_content="Content.",
@@ -587,20 +587,20 @@ class TestSQLiteCompressionMixin:
 
     @pytest.mark.asyncio
     async def test_delete_nonexistent_backup_returns_false(
-        self, sqlite_storage: SQLiteStorage
+        self, sqlite_storage: InMemoryStorage
     ) -> None:
         deleted = await sqlite_storage.delete_compression_backup("ghost-fiber")
         assert deleted is False
 
     @pytest.mark.asyncio
-    async def test_compression_stats_empty(self, sqlite_storage: SQLiteStorage) -> None:
+    async def test_compression_stats_empty(self, sqlite_storage: InMemoryStorage) -> None:
         stats = await sqlite_storage.get_compression_stats()
         assert stats["total_backups"] == 0
         assert stats["by_tier"] == {}
         assert stats["total_tokens_saved"] == 0
 
     @pytest.mark.asyncio
-    async def test_compression_stats_counts_by_tier(self, sqlite_storage: SQLiteStorage) -> None:
+    async def test_compression_stats_counts_by_tier(self, sqlite_storage: InMemoryStorage) -> None:
         await sqlite_storage.save_compression_backup(
             fiber_id="f1",
             original_content="Content 1.",
@@ -629,7 +629,7 @@ class TestSQLiteCompressionMixin:
         assert stats["total_tokens_saved"] == (100 - 40) + (80 - 30) + (60 - 10)
 
     @pytest.mark.asyncio
-    async def test_upsert_backup_replaces_existing(self, sqlite_storage: SQLiteStorage) -> None:
+    async def test_upsert_backup_replaces_existing(self, sqlite_storage: InMemoryStorage) -> None:
         """Saving twice for the same fiber_id replaces the old backup."""
         await sqlite_storage.save_compression_backup(
             fiber_id="fiber-upsert",
@@ -653,9 +653,7 @@ class TestSQLiteCompressionMixin:
     @pytest.mark.asyncio
     async def test_brain_isolation(self, tmp_path: Path) -> None:
         """Backups stored under brain A are not visible under brain B."""
-        db_path = tmp_path / "isolation.db"
-        store = SQLiteStorage(db_path)
-        await store.initialize()
+        store = InMemoryStorage()
 
         brain_a = Brain.create(name="brain-a")
         brain_b = Brain.create(name="brain-b")

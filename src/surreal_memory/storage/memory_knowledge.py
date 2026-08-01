@@ -205,6 +205,11 @@ class InMemoryKnowledgeMixin:
         )
         return alert.id
 
+    async def get_alert(self, alert_id: str) -> Alert | None:
+        """Get a single alert by ID within the current brain."""
+        brain_id = self._get_brain_id()
+        return self._alerts.get(brain_id, {}).get(alert_id)
+
     async def get_active_alerts(self, limit: int = 50) -> list[Alert]:
         """Get active/seen/acknowledged alerts (not resolved)."""
         brain_id = self._get_brain_id()

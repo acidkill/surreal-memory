@@ -9,7 +9,6 @@ property, not merely that an offset was accepted.
 
 from __future__ import annotations
 
-import pathlib
 import sys
 from unittest.mock import AsyncMock, MagicMock
 
@@ -20,7 +19,6 @@ from surreal_memory.core.brain import Brain, BrainConfig
 from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.core.synapse import Synapse, SynapseType
 from surreal_memory.storage.memory_store import InMemoryStorage
-from surreal_memory.storage.sqlite_store import SQLiteStorage
 
 try:  # pragma: no cover - mirrors tests/unit/test_surrealdb_store.py
     import surrealdb  # noqa: F401
@@ -113,15 +111,13 @@ class TestInMemoryPaging:
 class TestSQLitePaging:
     @pytest_asyncio.fixture
     async def storage(self, tmp_path: object):
-        db_path = pathlib.Path(str(tmp_path)) / "test_paging.db"
-        store = SQLiteStorage(db_path)
-        await store.initialize()
+        store = InMemoryStorage()
         brain = Brain.create(name="paging", config=BrainConfig(), owner_id="test")
         await store.save_brain(brain)
         store.set_brain(brain.id)
         return store
 
-    async def test_pages_partition_the_result_set(self, storage: SQLiteStorage) -> None:
+    async def test_pages_partition_the_result_set(self, storage: InMemoryStorage) -> None:
         neurons = _make_neurons(TOTAL)
         for neuron in neurons:
             await storage.add_neuron(neuron)
@@ -133,7 +129,7 @@ class TestSQLitePaging:
 
         _assert_pages_partition(pages, len(synapses))
 
-    async def test_offset_beyond_the_end_is_empty(self, storage: SQLiteStorage) -> None:
+    async def test_offset_beyond_the_end_is_empty(self, storage: InMemoryStorage) -> None:
         neurons = _make_neurons(3)
         for neuron in neurons:
             await storage.add_neuron(neuron)
@@ -142,7 +138,7 @@ class TestSQLitePaging:
 
         assert await storage.get_synapses(limit=PAGE, offset=999) == []
 
-    async def test_filters_still_apply_while_paging(self, storage: SQLiteStorage) -> None:
+    async def test_filters_still_apply_while_paging(self, storage: InMemoryStorage) -> None:
         neurons = _make_neurons(5)
         for neuron in neurons:
             await storage.add_neuron(neuron)

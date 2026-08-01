@@ -1,23 +1,26 @@
-"""Shared fixtures for stress tests — real SQLiteStorage, no mocks."""
+"""Shared fixtures for stress tests — InMemoryStorage, no mocks.
+
+Named ``sqlite_storage`` for compatibility with the six test files that use it
+as a fixture parameter; the fixture itself now runs on InMemoryStorage, which
+grew the full NeuralStorage surface. Disk-contention behaviour (WAL, concurrent
+file access) was never something this suite exercised — none of the stress
+tests assert on it — so nothing is lost by dropping the file backing.
+"""
 
 from __future__ import annotations
-
-from pathlib import Path
 
 import pytest
 import pytest_asyncio
 
 from surreal_memory.core.brain import Brain, BrainConfig
 from surreal_memory.engine.encoder import MemoryEncoder
-from surreal_memory.storage.sqlite_store import SQLiteStorage
+from surreal_memory.storage.memory_store import InMemoryStorage
 
 
 @pytest_asyncio.fixture
-async def sqlite_storage(tmp_path: Path) -> SQLiteStorage:
-    """Create a real SQLiteStorage with initialized schema and brain."""
-    db_path = tmp_path / "test.db"
-    storage = SQLiteStorage(db_path=str(db_path))
-    await storage.initialize()
+async def sqlite_storage() -> InMemoryStorage:
+    """Create an initialized InMemoryStorage with a stress-test brain."""
+    storage = InMemoryStorage()
 
     config = BrainConfig(
         decay_rate=0.1,
@@ -30,13 +33,11 @@ async def sqlite_storage(tmp_path: Path) -> SQLiteStorage:
     await storage.save_brain(brain)
     storage.set_brain(brain.id)
 
-    yield storage  # type: ignore[misc]
-
-    await storage.close()
+    return storage
 
 
 @pytest_asyncio.fixture
-async def encoder(sqlite_storage: SQLiteStorage) -> MemoryEncoder:
+async def encoder(sqlite_storage: InMemoryStorage) -> MemoryEncoder:
     """Create a MemoryEncoder bound to the stress-test brain."""
     brain = await sqlite_storage.get_brain(sqlite_storage._current_brain_id)  # type: ignore[arg-type]
     assert brain is not None

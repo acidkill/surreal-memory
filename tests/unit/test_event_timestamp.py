@@ -9,7 +9,7 @@ import pytest
 
 from surreal_memory.core.brain import Brain
 from surreal_memory.engine.encoder import MemoryEncoder
-from surreal_memory.storage.sqlite_store import SQLiteStorage
+from surreal_memory.storage.memory_store import InMemoryStorage
 from surreal_memory.utils.timeutils import utcnow
 
 
@@ -17,8 +17,7 @@ class TestEventTimestampMCP:
     """Test event_at parameter in encoder (simulating MCP handler logic)."""
 
     async def test_encode_with_custom_timestamp(self, tmp_path: Path) -> None:
-        storage = SQLiteStorage(tmp_path / "test.db")
-        await storage.initialize()
+        storage = InMemoryStorage()
 
         brain = Brain.create(name="test-brain")
         await storage.save_brain(brain)
@@ -51,8 +50,7 @@ class TestEventTimestampMCP:
         await storage.close()
 
     async def test_encode_without_timestamp_uses_now(self, tmp_path: Path) -> None:
-        storage = SQLiteStorage(tmp_path / "test.db")
-        await storage.initialize()
+        storage = InMemoryStorage()
 
         brain = Brain.create(name="test-brain")
         await storage.save_brain(brain)

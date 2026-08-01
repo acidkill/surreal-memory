@@ -7,18 +7,16 @@ import pathlib
 import pytest_asyncio
 
 from surreal_memory.core.brain import Brain, BrainConfig
+from surreal_memory.storage.memory_store import InMemoryStorage
 from surreal_memory.storage.sqlite_devices import DeviceRecord
-from surreal_memory.storage.sqlite_store import SQLiteStorage
 
 # ── Fixture ───────────────────────────────────────────────────────────────────
 
 
 @pytest_asyncio.fixture
-async def storage_with_brain(tmp_path: pathlib.Path) -> SQLiteStorage:
-    """SQLiteStorage with one initialized brain, ready for device tests."""
-    db_path = tmp_path / "test_devices.db"
-    storage = SQLiteStorage(db_path)
-    await storage.initialize()
+async def storage_with_brain(tmp_path: pathlib.Path) -> InMemoryStorage:
+    """InMemoryStorage with one initialized brain, ready for device tests."""
+    storage = InMemoryStorage()
 
     brain = Brain.create(name="device-test", config=BrainConfig())
     await storage.save_brain(brain)
@@ -35,7 +33,7 @@ async def storage_with_brain(tmp_path: pathlib.Path) -> SQLiteStorage:
 class TestRegisterDevice:
     """Test register_device creates and returns a DeviceRecord."""
 
-    async def test_register_device(self, storage_with_brain: SQLiteStorage) -> None:
+    async def test_register_device(self, storage_with_brain: InMemoryStorage) -> None:
         """Register a device — verify all returned fields."""
         record = await storage_with_brain.register_device(
             device_id="dev-001", device_name="my-laptop"
@@ -49,7 +47,7 @@ class TestRegisterDevice:
         # registered_at is populated
         assert record.registered_at is not None
 
-    async def test_register_device_upsert(self, storage_with_brain: SQLiteStorage) -> None:
+    async def test_register_device_upsert(self, storage_with_brain: InMemoryStorage) -> None:
         """Registering the same device_id twice updates device_name."""
         await storage_with_brain.register_device("dev-001", "old-name")
         await storage_with_brain.register_device("dev-001", "new-name")
@@ -58,12 +56,14 @@ class TestRegisterDevice:
         assert fetched is not None
         assert fetched.device_name == "new-name"
 
-    async def test_register_device_without_name(self, storage_with_brain: SQLiteStorage) -> None:
+    async def test_register_device_without_name(self, storage_with_brain: InMemoryStorage) -> None:
         """register_device with no name uses empty string."""
         record = await storage_with_brain.register_device("dev-no-name")
         assert record.device_name == ""
 
-    async def test_register_device_stores_brain_id(self, storage_with_brain: SQLiteStorage) -> None:
+    async def test_register_device_stores_brain_id(
+        self, storage_with_brain: InMemoryStorage
+    ) -> None:
         """Registered DeviceRecord carries the current brain_id."""
         record = await storage_with_brain.register_device("dev-002", "desktop")
         expected_brain_id = storage_with_brain._get_brain_id()
@@ -73,12 +73,12 @@ class TestRegisterDevice:
 class TestGetDevice:
     """Test get_device retrieves or returns None."""
 
-    async def test_get_device_not_found(self, storage_with_brain: SQLiteStorage) -> None:
+    async def test_get_device_not_found(self, storage_with_brain: InMemoryStorage) -> None:
         """get_device returns None when device_id is not registered."""
         result = await storage_with_brain.get_device("nonexistent-dev")
         assert result is None
 
-    async def test_get_device_returns_record(self, storage_with_brain: SQLiteStorage) -> None:
+    async def test_get_device_returns_record(self, storage_with_brain: InMemoryStorage) -> None:
         """get_device returns the correct DeviceRecord after registration."""
         await storage_with_brain.register_device("dev-abc", "work-machine")
 
@@ -88,7 +88,7 @@ class TestGetDevice:
         assert record.device_name == "work-machine"
 
     async def test_get_device_returns_device_record_type(
-        self, storage_with_brain: SQLiteStorage
+        self, storage_with_brain: InMemoryStorage
     ) -> None:
         """get_device returns a DeviceRecord instance."""
         await storage_with_brain.register_device("dev-typed", "typed-machine")
@@ -99,12 +99,12 @@ class TestGetDevice:
 class TestListDevices:
     """Test list_devices returns all devices sorted by registered_at."""
 
-    async def test_list_devices_empty(self, storage_with_brain: SQLiteStorage) -> None:
+    async def test_list_devices_empty(self, storage_with_brain: InMemoryStorage) -> None:
         """list_devices returns empty list when no devices registered."""
         devices = await storage_with_brain.list_devices()
         assert devices == []
 
-    async def test_list_devices_two_devices(self, storage_with_brain: SQLiteStorage) -> None:
+    async def test_list_devices_two_devices(self, storage_with_brain: InMemoryStorage) -> None:
         """register 2 devices, list returns 2 sorted by registered_at ASC."""
         await storage_with_brain.register_device("dev-first", "machine-a")
         await storage_with_brain.register_device("dev-second", "machine-b")
@@ -117,7 +117,7 @@ class TestListDevices:
         assert "dev-second" in ids
 
     async def test_list_devices_sorted_by_registered_at(
-        self, storage_with_brain: SQLiteStorage
+        self, storage_with_brain: InMemoryStorage
     ) -> None:
         """Devices come back in ascending registered_at order."""
         await storage_with_brain.register_device("dev-a", "alpha")
@@ -130,7 +130,7 @@ class TestListDevices:
             assert devices[i].registered_at <= devices[i + 1].registered_at
 
     async def test_list_devices_returns_device_record_instances(
-        self, storage_with_brain: SQLiteStorage
+        self, storage_with_brain: InMemoryStorage
     ) -> None:
         """All items returned by list_devices are DeviceRecord instances."""
         await storage_with_brain.register_device("dev-x", "x")
@@ -141,7 +141,7 @@ class TestListDevices:
 class TestUpdateDeviceSync:
     """Test update_device_sync updates last_sync_at and last_sync_sequence."""
 
-    async def test_update_device_sync(self, storage_with_brain: SQLiteStorage) -> None:
+    async def test_update_device_sync(self, storage_with_brain: InMemoryStorage) -> None:
         """After update_device_sync, fetched record reflects new values."""
         await storage_with_brain.register_device("dev-sync", "sync-machine")
 
@@ -153,7 +153,7 @@ class TestUpdateDeviceSync:
         assert record.last_sync_at is not None
 
     async def test_update_device_sync_increases_sequence(
-        self, storage_with_brain: SQLiteStorage
+        self, storage_with_brain: InMemoryStorage
     ) -> None:
         """Updating sync twice carries the latest sequence."""
         await storage_with_brain.register_device("dev-seq", "seq-machine")
@@ -165,7 +165,7 @@ class TestUpdateDeviceSync:
         assert record.last_sync_sequence == 99
 
     async def test_update_device_sync_sets_last_sync_at(
-        self, storage_with_brain: SQLiteStorage
+        self, storage_with_brain: InMemoryStorage
     ) -> None:
         """update_device_sync sets last_sync_at to a recent timestamp."""
         from surreal_memory.utils.timeutils import utcnow
@@ -184,7 +184,7 @@ class TestUpdateDeviceSync:
 class TestRemoveDevice:
     """Test remove_device deletes a registered device."""
 
-    async def test_remove_device(self, storage_with_brain: SQLiteStorage) -> None:
+    async def test_remove_device(self, storage_with_brain: InMemoryStorage) -> None:
         """remove_device returns True and the device is no longer found."""
         await storage_with_brain.register_device("dev-remove", "to-remove")
 
@@ -195,14 +195,14 @@ class TestRemoveDevice:
         assert fetched is None
 
     async def test_remove_device_not_found_returns_false(
-        self, storage_with_brain: SQLiteStorage
+        self, storage_with_brain: InMemoryStorage
     ) -> None:
         """remove_device returns False if device_id does not exist."""
         result = await storage_with_brain.remove_device("ghost-device")
         assert result is False
 
     async def test_remove_device_does_not_affect_others(
-        self, storage_with_brain: SQLiteStorage
+        self, storage_with_brain: InMemoryStorage
     ) -> None:
         """Removing one device does not remove others."""
         await storage_with_brain.register_device("dev-keep", "keeper")
@@ -219,9 +219,7 @@ class TestBrainIsolation:
 
     async def test_brain_isolation(self, tmp_path: pathlib.Path) -> None:
         """Devices in brain A are invisible when brain B is the active context."""
-        db_path = tmp_path / "isolation_devices.db"
-        storage = SQLiteStorage(db_path)
-        await storage.initialize()
+        storage = InMemoryStorage()
 
         brain_a = Brain.create(name="brain-a", config=BrainConfig())
         brain_b = Brain.create(name="brain-b", config=BrainConfig())

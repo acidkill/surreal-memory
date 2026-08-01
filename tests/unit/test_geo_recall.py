@@ -10,9 +10,7 @@ a mock. A hard filter: fibers outside the radius (or without a location) are dro
 
 from __future__ import annotations
 
-import tempfile
 from collections.abc import AsyncIterator
-from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -23,7 +21,6 @@ from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.engine.retrieval import ReflexPipeline, _fiber_near
 from surreal_memory.engine.retrieval_types import DepthLevel, RetrievalResult, Subgraph
 from surreal_memory.storage.memory_store import InMemoryStorage
-from surreal_memory.storage.sqlite_store import SQLiteStorage
 from surreal_memory.utils.geo import GeoFilter, GeoPoint
 
 _OSLO = {"lat": 59.9139, "lon": 10.7522, "label": "Oslo"}
@@ -59,19 +56,17 @@ class TestFiberNearUnit:
 
 
 @pytest.fixture
-async def storage() -> AsyncIterator[SQLiteStorage]:
-    with tempfile.TemporaryDirectory() as tmpdir:
-        s = SQLiteStorage(Path(tmpdir) / "test.db")
-        await s.initialize()
-        brain = Brain.create(name="geo_test")
-        await s.save_brain(brain)
-        s.set_brain(brain.id)
-        yield s
-        await s.close()
+async def storage() -> AsyncIterator[InMemoryStorage]:
+    s = InMemoryStorage()
+    brain = Brain.create(name="geo_test")
+    await s.save_brain(brain)
+    s.set_brain(brain.id)
+    yield s
+    await s.close()
 
 
 async def _add_located_fiber(
-    storage: SQLiteStorage, content: str, location: dict[str, float] | None
+    storage: InMemoryStorage, content: str, location: dict[str, float] | None
 ) -> Fiber:
     neuron = Neuron.create(type=NeuronType.CONCEPT, content=content)
     await storage.add_neuron(neuron)
@@ -87,7 +82,7 @@ async def _add_located_fiber(
 
 
 class TestNearThroughPipeline:
-    async def test_near_keeps_only_fibers_in_radius(self, storage: SQLiteStorage) -> None:
+    async def test_near_keeps_only_fibers_in_radius(self, storage: InMemoryStorage) -> None:
         oslo = await _add_located_fiber(storage, "Cafe Mocca is in Oslo Norway", _OSLO)
         bergen = await _add_located_fiber(storage, "Cafe Mocca is in Bergen Norway", _BERGEN)
 
@@ -97,7 +92,7 @@ class TestNearThroughPipeline:
         assert oslo.id in result.fibers_matched
         assert bergen.id not in result.fibers_matched  # ~305 km away, filtered out
 
-    async def test_wider_radius_keeps_both(self, storage: SQLiteStorage) -> None:
+    async def test_wider_radius_keeps_both(self, storage: InMemoryStorage) -> None:
         oslo = await _add_located_fiber(storage, "Cafe Mocca is in Oslo Norway", _OSLO)
         bergen = await _add_located_fiber(storage, "Cafe Mocca is in Bergen Norway", _BERGEN)
 
@@ -107,7 +102,7 @@ class TestNearThroughPipeline:
         assert oslo.id in result.fibers_matched
         assert bergen.id in result.fibers_matched  # 400 km covers Bergen
 
-    async def test_no_near_is_a_noop(self, storage: SQLiteStorage) -> None:
+    async def test_no_near_is_a_noop(self, storage: InMemoryStorage) -> None:
         # Golden invariant: near=None leaves recall unchanged (both returned).
         oslo = await _add_located_fiber(storage, "Cafe Mocca is in Oslo Norway", _OSLO)
         bergen = await _add_located_fiber(storage, "Cafe Mocca is in Bergen Norway", _BERGEN)
@@ -119,7 +114,7 @@ class TestNearThroughPipeline:
         assert bergen.id in result.fibers_matched
 
     async def test_fiber_without_location_excluded_when_near_set(
-        self, storage: SQLiteStorage
+        self, storage: InMemoryStorage
     ) -> None:
         located = await _add_located_fiber(storage, "Cafe Mocca is in Oslo Norway", _OSLO)
         unlocated = await _add_located_fiber(storage, "Cafe Mocca is in Oslo Norway too", None)
@@ -151,7 +146,7 @@ def _sentinel_result() -> RetrievalResult:
 class TestNearBypassesFastPaths:
     """The valid_at lesson: an early-return fast-path must NOT swallow the geo filter."""
 
-    async def test_near_skips_temporal_fast_path(self, storage: SQLiteStorage) -> None:
+    async def test_near_skips_temporal_fast_path(self, storage: InMemoryStorage) -> None:
         oslo = await _add_located_fiber(storage, "Cafe Mocca is in Oslo Norway", _OSLO)
         pipeline = ReflexPipeline(storage, BrainConfig())
 
@@ -168,24 +163,14 @@ class TestNearBypassesFastPaths:
         assert oslo.id in geo.fibers_matched
 
 
-@pytest.fixture(params=["memory", "sqlite"])
-async def browse_storage(request: pytest.FixtureRequest) -> AsyncIterator[object]:
-    """Same geo browse contract on both in-process backends (SurrealDB: *_live test)."""
-    if request.param == "memory":
-        s: object = InMemoryStorage()
-        brain = Brain.create(name="geo_browse")
-        await s.save_brain(brain)  # type: ignore[attr-defined]
-        s.set_brain(brain.id)  # type: ignore[attr-defined]
-        yield s
-    else:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            sq = SQLiteStorage(Path(tmpdir) / "test.db")
-            await sq.initialize()
-            brain = Brain.create(name="geo_browse")
-            await sq.save_brain(brain)
-            sq.set_brain(brain.id)
-            yield sq
-            await sq.close()
+@pytest.fixture
+async def browse_storage() -> AsyncIterator[object]:
+    """Geo browse contract on the in-process backend (SurrealDB: *_live test)."""
+    s: object = InMemoryStorage()
+    brain = Brain.create(name="geo_browse")
+    await s.save_brain(brain)  # type: ignore[attr-defined]
+    s.set_brain(brain.id)  # type: ignore[attr-defined]
+    return s
 
 
 async def _browse_add(storage: object, content: str, location: dict[str, float] | None) -> Fiber:
