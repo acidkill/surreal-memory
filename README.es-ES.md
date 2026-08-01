@@ -181,9 +181,11 @@ Laptop ←→ Your Cloudflare Worker ←→ Desktop
 Despliegas el centro de sincronización en **tu propia cuenta de Cloudflare**. Tu base de datos D1, tu clave de cifrado, tus datos.
 
 ```bash
-smem sync --full    # bi-directional sync
-smem sync --auto    # auto-sync after every remember/recall
+smem sync sync --direction both   # sincronización bidireccional (también: push, pull)
 ```
+
+Define `SURREAL_MEMORY_SYNC_AUTO=true` (o `auto_sync` en `[sync]` de
+`config.toml`) para sincronizar automáticamente tras cada remember/recall.
 
 La sincronización usa **delta de Merkle** — solo viajan las diferencias, no todo el cerebro.
 
@@ -231,7 +233,7 @@ La sincronización usa **delta de Merkle** — solo viajan las diferencias, no t
 - **Extensión para VS Code** — árbol de memoria, explorador de grafo, CodeLens, sincronización por WebSocket
 - **Adaptador para LangChain** — extra opcional (`pip install surreal-memory[langchain]`) que expone un `BaseRetriever` e historial de mensajes de chat respaldado por un cerebro — ver [API de Python](#python-api)
 - **Seguridad** — cifrado Fernet, detección automática de contenido sensible, firewall de entrada
-- **Sistema de plugins** — extensible con estrategias de recuperación personalizadas, compresión y backends de almacenamiento
+- **Sistema de plugins** — extensible con herramientas MCP propias y una función de compresión
 
 ---
 
@@ -491,7 +493,7 @@ Los elementos aquí están explícitamente **no** incluidos en la versión actua
 - **Prueba en un solo comando** — `docker compose up` que levante SurrealDB, la API, el panel y un cerebro de demostración precargado. Evaluar el proyecto actualmente significa aprovisionar una base de datos y elegir un proveedor de embeddings primero; un nuevo usuario debería poder ver un grafo poblado en un solo comando y juzgarlo a partir de ahí.
 - **Inyección de patrones de razonamiento activada por defecto** — la minería aprende estrategias por modelo, pero `injection_enabled` predetermina `false`, por lo que los patrones se quedan sin usar a menos que encuentres la bandera. Actívala detrás de un presupuesto de tokens y un piso de calidad, y muestra en el panel qué patrón se activó en qué turno.
 - **Enrutamiento de cerebro por proyecto** — resolver el cerebro activo desde la raíz del proyecto o el remoto de git en lugar de un `current_brain` global único, para que cambiar de repositorio cambie la memoria sin `smem brain use`. Elimina la fuente más común de "por qué está este recuerdo aquí".
-- **Gancho de restauración de contexto PostCompact** — análogo a `session_start.py` pero disparado justo después de una compactación de Claude Code. Canaliza `smem recap` + `smem context --limit 20` a stdout como un bloque `## Context restored after compaction`, para que el agente no pierda el hilo cuando se activa el búfer del 80%.
+- **Gancho de restauración de contexto PostCompact** — análogo a `session_start.py` pero disparado justo después de una compactación de Claude Code. Canaliza `smem context --limit 20` — más un equivalente CLI de la herramienta MCP `smem_recap`, que el gancho necesitaría primero — a stdout como un bloque `## Context restored after compaction`, para que el agente no pierda el hilo cuando se activa el búfer del 80%.
 - **Plugin para IDE JetBrains** — plugin Kotlin / Java que use la misma API REST que el panel. Característica de paridad para IDEs de la familia IntelliJ.
 - **Cloudflare Pages para documentación** — alternativa al flujo eliminado de GitHub Pages. `mkdocs build` estático desplegado en CF Pages, sin dependencia de GitHub.
 - **Adaptador de retriever para LlamaIndex** — misma forma que el adaptador de LangChain enviado (`from surreal_memory.adapters.langchain import SurrealMemoryRetriever`; ver la sección API de Python), para el lado de LlamaIndex del ecosistema RAG.

@@ -198,17 +198,17 @@ smem serve
 
 - **Document storage** -- Neurons stored as rich, typed records with full metadata
 - **Graph traversal** -- Synapses as native SurrealDB graph edges, queried with graph queries
-- **Vector search** -- HNSW cone queries via SurrealDB's built-in `vector::distance::knn()`
+- **Vector search** -- HNSW similarity via SurrealDB's built-in `vector::distance::knn()`
 - **Single database** -- No separate vector store, no embedding service, one SurrealDB instance
 
-### Community Plugin (Free)
+### Everything included (Free)
 
-All advanced features are provided by the built-in **CommunityPlugin** at no cost:
+No capability is gated behind a licence:
 
-- **Cone queries** -- HNSW vector search for semantic similarity retrieval
-- **Smart merge** -- Embedding-based consolidation of near-duplicate neurons
-- **Directional compression** -- Multi-axis semantic compression preserving entity relationships
-- **Merkle delta sync** -- Efficient multi-device synchronization with conflict resolution
+- **Vector search** -- HNSW similarity retrieval blended into recall
+- **Consolidation** -- `merge` and `dedup` passes fold near-duplicate memories together
+- **Directional compression** -- multi-axis semantic compression preserving entity relationships, supplied by the built-in **CommunityPlugin**
+- **Merkle delta sync** -- efficient multi-device synchronization with conflict resolution
 
 !!! success "100% Free, No Paywalls"
     There is no paid tier, no license key, and no feature gate. Every feature listed on this page -- including vector search, cloud sync, smart merge, and the web dashboard -- works out of the box.

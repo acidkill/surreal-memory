@@ -286,11 +286,7 @@ Quantity doesn't equal quality. Check your `top_penalties`:
 
 Use `smem_explain` to understand **why** two concepts are (or aren't) connected:
 
-```bash
-# CLI
-smem explain "Redis" "auth outage"
-
-# MCP tool
+```text
 smem_explain(entity_a="Redis", entity_b="auth outage")
 ```
 

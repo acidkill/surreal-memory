@@ -98,7 +98,7 @@ Query embedding: [0.12, -0.34, 0.56, ...]
   Ranked results by semantic similarity
 ```
 
-This powers **cone queries** - a retrieval strategy that combines vector similarity with graph traversal for high-precision semantic recall.
+This powers **vector-boosted recall** - similarity search combined with graph traversal for high-precision semantic recall.
 
 ## Key Components
 
@@ -200,9 +200,9 @@ Distance-based decay through BFS:
 activation(hop) = initial * decay_factor^hop
 ```
 
-### Cone Queries (vector-boosted)
+### Vector-boosted recall
 
-The community plugin adds cone queries that combine HNSW vector similarity with graph traversal:
+With embeddings enabled, recall combines HNSW vector similarity with graph traversal:
 
 ```
 Query embedding ──► KNN search ──► top-k candidates
@@ -257,9 +257,12 @@ Original: [20 detailed neurons about Tuesday meeting]
 Compressed: [1 summary neuron: "API design meeting with Alice"]
 ```
 
-### Smart Merge
+### Merging duplicates
 
-The community plugin provides embedding-based neuron consolidation. Near-duplicate neurons (cosine similarity > 0.95) are automatically detected and merged, keeping the more-accessed neuron as the canonical version.
+Consolidation's `merge` pass folds overlapping fibers together, and `dedup`
+links the near-duplicates it leaves behind with ALIAS edges rather than deleting
+them. With embeddings enabled both work on semantic similarity instead of
+keyword overlap.
 
 ### Directional Compression
 
@@ -280,7 +283,7 @@ Multi-axis semantic compression preserves entity relationships when summarizing 
 | Memory lifecycle | Static | Dynamic decay/reinforce/compress |
 | Semantic search | External embedding index | Native HNSW in SurrealDB |
 | Path finding | Not supported | Native BFS via graph edges |
-| Deduplication | Manual | Smart merge via embedding similarity |
+| Deduplication | Manual | Consolidation `merge`/`dedup` via embedding similarity |
 
 ## Smart Context Optimization
 
@@ -330,14 +333,14 @@ Surreal-Memory monitors brain health and creates persistent alerts when issues a
 
 Alerts follow a lifecycle: `active → seen → acknowledged → resolved`. They're surfaced as a `pending_alerts` count in regular tool responses, and can be managed via `smem_alerts`.
 
-## Community Plugin
+## Everything included
 
-The community plugin unlocks advanced features at no cost:
+No feature is gated behind a licence:
 
-- **Cone queries** - HNSW vector search via SurrealDB's native `vector::distance::knn()`
-- **Smart merge** - Embedding-based neuron consolidation (deduplication)
-- **Directional compression** - Multi-axis semantic preservation during summarization
-- **SurrealDB storage backend** - Multi-model storage with document, graph, and vector in one database
+- **Vector search** - HNSW via SurrealDB's native `vector::distance::knn()`
+- **Consolidation** - `merge` and `dedup` passes fold near-duplicates together
+- **Directional compression** - multi-axis semantic preservation during summarization, supplied by the bundled community plugin
+- **SurrealDB storage backend** - document, graph, and vector in one database
 - **Merkle delta sync** - Efficient multi-device synchronization
 
 The plugin is auto-discovered at server startup. No license key or configuration required.

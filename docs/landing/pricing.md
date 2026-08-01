@@ -14,15 +14,15 @@ We believe a memory system for AI agents should be universally accessible. Locki
 
 ## How Every Feature Ships Free
 
-The built-in **CommunityPlugin** registers all advanced capabilities automatically on startup:
+Every advanced capability is available out of the box:
 
 | Feature | How It's Delivered |
 |---------|--------------------|
-| HNSW vector search | CommunityPlugin (SurrealDB vector index) |
-| Cone queries (semantic recall) | CommunityPlugin |
-| Smart merge (O(N x k) consolidation) | CommunityPlugin |
-| Directional compression (multi-axis) | CommunityPlugin |
-| 5-tier vector lifecycle | CommunityPlugin + SurrealDB |
+| HNSW vector search | SurrealDB vector index |
+| Semantic recall | Spreading activation blended with vector similarity |
+| Consolidation (`merge`, `dedup`) | Consolidation engine |
+| Directional compression (multi-axis) | Built-in CommunityPlugin |
+| 5-tier vector lifecycle | Tier engine + SurrealDB |
 | Cloud sync | Optional self-hosted Cloudflare Worker |
 
 No separate package to install. No activation step. No expiration date.

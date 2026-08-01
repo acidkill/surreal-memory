@@ -181,8 +181,8 @@ smem_verify("prediction_id", outcome="correct")
 Sync your brain across devices:
 
 ```bash
-smem sync push    # Upload to sync hub
-smem sync pull    # Download from sync hub
+smem sync sync --direction push   # Upload to sync hub
+smem sync sync --direction pull   # Download from sync hub
 ```
 
 ### Background Maintenance

@@ -180,9 +180,11 @@ Laptop ←→ Your Cloudflare Worker ←→ Desktop
 You deploy the sync hub to **your own Cloudflare account**. Your D1 database, your encryption key, your data.
 
 ```bash
-smem sync --full    # bi-directional sync
-smem sync --auto    # auto-sync after every remember/recall
+smem sync sync --direction both   # bi-directional sync (also: push, pull)
 ```
+
+Set `SURREAL_MEMORY_SYNC_AUTO=true` (or `auto_sync` under `[sync]` in
+`config.toml`) to sync automatically after every remember/recall.
 
 Sync uses **Merkle delta** — only diffs travel, not the full brain.
 
@@ -233,11 +235,11 @@ Sync uses **Merkle delta** — only diffs travel, not the full brain.
 - **Brain versioning** — snapshot, rollback, diff, transplant memories between brains
 
 #### Ecosystem
-- **Web dashboard** — multi-page React UI at `/ui` (overview, health radar, graph, timeline, evolution, storage, tool-stats, visualize, settings, uncertainty) — every page free, no Pro gate
+- **Web dashboard** — multi-page React UI at `/ui` (overview, health radar, graph, timeline, evolution, storage, sync, diagrams, reasoning, oracle, tool-stats, visualize, settings, uncertainty) — every page free, no Pro gate
 - **VS Code extension** — memory tree, graph explorer, CodeLens, WebSocket sync
 - **LangChain adapter** — optional extra (`pip install surreal-memory[langchain]`) exposing a `BaseRetriever` and chat message history backed by a brain — see [Python API](#python-api)
 - **Safety** — Fernet encryption, sensitive content auto-detection, input firewall
-- **Plugin system** — extend with custom retrieval strategies, compression, and storage backends
+- **Plugin system** — extend with custom MCP tools and a compression function
 
 ---
 
@@ -517,7 +519,7 @@ Items here are explicitly **not** in the current release. Community PRs welcome 
 - **One-command trial** — `docker compose up` that brings up SurrealDB, the API, the dashboard and a pre-seeded demo brain. Evaluating the project currently means provisioning a database and choosing an embedding provider first; a newcomer should be able to see a populated graph in one command and judge it from there.
 - **Reasoning-pattern injection on by default** — mining learns per-model strategies, but `injection_enabled` defaults to `false`, so the patterns sit unused unless you find the flag. Turn it on behind a token budget and a quality floor, and surface in the dashboard which pattern fired on which turn.
 - **Per-project brain routing** — resolve the active brain from the project root or git remote instead of a single global `current_brain`, so changing repository changes memory without `smem brain use`. Removes the most common source of "why is this memory here".
-- **PostCompact context restore hook** — analog to `session_start.py` but fired right after a Claude Code compaction. Pipes `smem recap` + `smem context --limit 20` to stdout as a `## Context restored after compaction` block, so the agent doesn't lose the thread when the 80% buffer kicks in.
+- **PostCompact context restore hook** — analog to `session_start.py` but fired right after a Claude Code compaction. Pipes `smem context --limit 20` — plus a CLI equivalent of the `smem_recap` MCP tool, which the hook would need first — to stdout as a `## Context restored after compaction` block, so the agent doesn't lose the thread when the 80% buffer kicks in.
 - **JetBrains IDE plugin** — Kotlin / Java plugin using the same REST API as the dashboard. Parity feature for IntelliJ-family IDEs.
 - **Cloudflare Pages for docs** — alternative to the removed GitHub Pages workflow. Static `mkdocs build` deployed to CF Pages, no GitHub dependency.
 - **LlamaIndex retriever adapter** — same shape as the shipped LangChain adapter (`from surreal_memory.adapters.langchain import SurrealMemoryRetriever`; see the Python API section), for the LlamaIndex side of the RAG ecosystem.

@@ -167,7 +167,7 @@ def main() -> None:
     # ── 6. DB-to-Brain ──
     section("6. DB-to-Brain Training")
 
-    prompt('smem train-db sqlite:///myapp.db --domain ecommerce')
+    prompt('smem_train_db(dsn="sqlite:///myapp.db", domain="ecommerce")')
     pause(0.5)
     output(f"""
   {CYAN}Introspecting schema...{RESET}

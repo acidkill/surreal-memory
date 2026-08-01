@@ -29,9 +29,8 @@ smem doctor
 ```
 
 ```
-Plugin: surreal-memory-community v1.0.0
-Backend: SurrealDB
-Features: cone_query, smart_merge, directional_compress
+Pro plugin: surreal-memory-community v1.0.0
+Storage backend: surrealdb
 ```
 
 ---
@@ -47,10 +46,10 @@ Edit your config:
 storage_backend = "surrealdb"
 ```
 
-Or via CLI:
+Or via the environment:
 
 ```bash
-smem config set storage_backend surrealdb
+export SURREAL_MEMORY_STORAGE=surrealdb
 ```
 
 Then configure the connection:
@@ -88,17 +87,18 @@ smem recall "database decisions"       # finds PostgreSQL memory
 smem recall "security improvements"    # finds JWT + rate limiting
 ```
 
-### Cone Queries — adjustable precision
+### Semantic recall — adjustable breadth
 
-Narrow the cone for exact matches, widen it for exploration:
+Recall blends spreading activation with vector similarity. Ask for fewer
+results to keep only strong matches, more to explore:
 
-```bash
-# Via MCP tool
-smem_cone_query(query="auth", threshold=0.85)   # precise — only strong matches
-smem_cone_query(query="auth", threshold=0.60)   # exploratory — cast a wide net
+```text
+smem_recall(query="auth", limit=5)    # precise — only the strongest matches
+smem_recall(query="auth", limit=30)   # exploratory — cast a wide net
 ```
 
-Default threshold is `0.75`. Lower = more results, higher = more relevant.
+Tune the similarity floor with `SURREAL_MEMORY_EMBEDDING_SIMILARITY_THRESHOLD`,
+and the reranker's cut-off with `min_score` under `[reranker]` in `config.toml`.
 
 ---
 
@@ -116,8 +116,8 @@ Surreal-Memory automatically manages memory lifecycle across 5 tiers:
 
 Memories auto-promote back to higher tiers when accessed. Check your distribution:
 
-```bash
-smem_tier_info
+```text
+smem_tier(action="status")
 ```
 
 ```
@@ -134,26 +134,26 @@ Savings: 76%
 
 ---
 
-## 5. Run Smart Merge
+## 5. Merge duplicates
 
-Standard consolidation is O(N²) — it slows down past 10K neurons. Smart Merge uses HNSW neighbor clustering for O(N x k):
+The `merge` pass folds overlapping fibers together; `dedup` links the rest with
+ALIAS edges instead of deleting them. With embeddings enabled both work on
+semantic similarity, not just keyword overlap.
 
 ```bash
 # Dry run first — see what would be merged
-smem consolidate --strategy smart_merge --dry-run
+smem consolidate --strategy merge --dry-run
 
 # Run it
-smem consolidate --strategy smart_merge
+smem consolidate --strategy merge
 ```
 
 Or via MCP:
 
+```text
+smem_consolidate(strategy="merge", dry_run=true)   # preview
+smem_consolidate(strategy="merge")                 # execute
 ```
-smem_pro_merge(dry_run=true)    # preview
-smem_pro_merge()                 # execute
-```
-
-Smart Merge finds semantically similar memories (not just keyword duplicates) and consolidates them while preserving causal links.
 
 ---
 
@@ -168,13 +168,11 @@ Sync your brain across all your machines:
 # Configure sync
 smem_sync_config(hub_url="https://your-hub.workers.dev", api_key="your-key")
 
-# Initial seed (uploads full brain)
-smem sync --seed
-
-# After that: incremental sync
-smem sync              # manual
-smem sync --auto       # auto after every remember/recall
+# Manual sync
+smem sync sync --direction both
 ```
+
+Set `SURREAL_MEMORY_SYNC_AUTO=true` to sync after every remember/recall.
 
 Sync uses **Merkle delta** — only changes are transmitted. A brain with 100K neurons syncs in under 2 seconds.
 
@@ -186,12 +184,14 @@ Sync uses **Merkle delta** — only changes are transmitted. A brain with 100K n
 |--------|------------------|---------------------|
 | Storage engine | SQLite + FTS5 | SurrealDB (doc + graph + vector) |
 | Recall method | Keyword matching | Semantic similarity + graph traversal |
-| Consolidation | O(N²) brute force | O(N x k) Smart Merge |
+| Consolidation | Keyword overlap | Embedding similarity via HNSW neighbours |
 | Compression | Text-level trimming | 5-tier vector lifecycle |
-| MCP tools | 58 tools | 58 tools + cone_query, tier_info, pro_merge |
+| MCP tools | 58 tools | the same 58 tools |
 | Setup | Built-in, zero config | Requires SurrealDB instance |
 
-**Everything stays the same.** All 58 MCP tools work with both backends. Your existing memories are preserved — when you switch to SurrealDB, they're auto-migrated on first startup.
+All 58 MCP tools work with both backends. Switching does **not** move your data:
+the two backends are separate stores, so export from one and import into the
+other — see [Migrating to 3.0](migrating-to-3.0.md).
 
 ---
 
@@ -209,19 +209,18 @@ pip install surreal-memory[surrealdb]
 
 ### Recall quality didn't improve
 
-Make sure SurrealDB backend is active. If `smem doctor` shows `Backend: SQLite`, the config change didn't take effect. Verify in `~/.surrealmemory/config.toml`:
-
-```bash
-smem config get storage_backend    # should show "surrealdb"
-```
+Make sure the SurrealDB backend is active. `smem doctor` reports the resolved
+backend under **Storage backend**; if it says `sqlite`, the config change did
+not take effect. Check `storage_backend` in `~/.surrealmemory/config.toml`, or
+that `SURREAL_MEMORY_STORAGE` is exported in the same environment as the
+process you are running.
 
 ### Want to switch back to SQLite?
 
-```bash
-smem config set storage_backend sqlite
-```
-
-Your data stays intact in both databases. No data loss, no migration needed.
+The SQLite backend is deprecated and **removed in 3.0.0** — see
+[Migrating to 3.0](migrating-to-3.0.md). Until then, `SURREAL_MEMORY_STORAGE=sqlite`
+still resolves and your `.db` files are untouched, but the two backends do not
+share data: whatever you wrote to SurrealDB stays there.
 
 ---
 

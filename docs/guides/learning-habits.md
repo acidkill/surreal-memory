@@ -127,11 +127,7 @@ smem_habits(action="list")
 
 ### Get Next-Action Suggestions
 
-```bash
-# CLI
-smem habits suggest --current recall
-
-# MCP
+```text
 smem_habits(action="suggest", current_action="recall")
 ```
 

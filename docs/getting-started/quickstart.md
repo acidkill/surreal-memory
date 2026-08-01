@@ -9,13 +9,13 @@ This guide walks you through Surreal-Memory setup and usage in 5 minutes.
 
 Surreal-Memory uses **SurrealDB** as its sole storage backend -- a single database that provides **document**, **graph**, and **vector search** in one engine. No separate vector database, no graph database, no SQLite files scattered across projects. One database, all capabilities.
 
-A bundled **community plugin** unlocks every feature for free:
+Every feature is free, with no license key and no paid tier:
 
-- **Semantic search** -- HNSW vector similarity via SurrealDB's native `vector::distance::knn()` cone queries
-- **Smart merge** -- embedding-based neuron consolidation that detects and merges semantically duplicate memories
+- **Semantic search** -- HNSW vector similarity via SurrealDB's native `vector::distance::knn()`
+- **Consolidation** -- the `merge` and `dedup` passes fold near-duplicate memories together instead of accumulating them
 - **Directional compression** -- multi-axis semantic preservation so the most important information survives compaction
 
-No license key. No paid tier. Everything runs locally.
+Everything runs locally.
 
 ## 0. Setup
 
@@ -211,11 +211,11 @@ The health command checks memory quality, freshness, topology coherence, and fla
 
 ## Community Plugin Features
 
-The community plugin ships with every `surreal-memory[surrealdb]` install and activates automatically when SurrealDB is detected as the storage backend. It provides these capabilities at no cost:
+These capabilities ship with every `surreal-memory[surrealdb]` install, at no cost:
 
-### Semantic Search (HNSW Cone Queries)
+### Semantic search (HNSW)
 
-Instead of keyword matching, memories are found by meaning. The plugin uses SurrealDB's native HNSW vector index to perform approximate nearest neighbor search across all stored embeddings.
+Instead of keyword matching, memories are found by meaning, using SurrealDB's native HNSW vector index for approximate nearest neighbour search across all stored embeddings.
 
 ```bash
 # Semantic recall finds related concepts, not just exact words
@@ -223,13 +223,16 @@ smem recall "how do we handle user authentication"
 # Finds: "DECISION: Use JWT for auth" even without keyword overlap
 ```
 
-### Smart Merge
+### Merging duplicates
 
-When similar memories are detected through embedding similarity, smart merge consolidates them into a single, richer neuron rather than accumulating duplicates.
+When similar memories pile up, consolidation folds them together instead of
+letting the brain accumulate near-identical copies. The `merge` pass combines
+overlapping fibers; `dedup` links the rest with ALIAS edges.
 
 ```bash
-# Smart merge runs automatically during consolidation
-smem auto --action process --text "Session notes from today"
+smem consolidate                      # runs every pass in order
+smem consolidate --strategy merge     # just the merge pass
+smem consolidate --strategy merge --dry-run
 ```
 
 ### Directional Compression

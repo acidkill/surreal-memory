@@ -241,7 +241,7 @@ To separate data per project, use different brains:
 
 ```bash
 smem brain create my-project
-smem brain switch my-project
+smem brain use my-project
 ```
 
 ### Q: How to share brain data between AntiGravity and Claude Code?
@@ -254,7 +254,7 @@ They already share the same brain automatically. Both read/write to the same fil
 As long as both tools point to the same `current_brain`, all memories are synced. Verify with:
 
 ```bash
-smem config show
+smem status
 ```
 
 ### Q: How do I let Claude Code query my brain using natural language?
@@ -397,11 +397,11 @@ This means:
 Two **optional** layers sit on top of that deterministic core, off by default:
 
 - **Embeddings** — SurrealDB HNSW vector search for semantic similarity when wording
-  differs. See [Embeddings](../README.md#embeddings) for providers (Gemini, OpenAI,
+  differs. See [Embeddings](guides/embedding-setup.md) for providers (Gemini, OpenAI,
   OpenRouter, local `sentence-transformers`, Ollama).
 - **Cross-encoder reranking** — a `config.toml [reranker]` precision pass that
   rescores spreading-activation candidates, blended with the activation level. See
-  [Reranking](../README.md#reranking). Never an LLM — a small cross-encoder classifier
+  [Reranking](https://github.com/acidkill/surreal-memory/blob/main/README.md#reranking). Never an LLM — a small cross-encoder classifier
   that scores relevance, not a text generator.
 
 Neither is required, and recall works identically without them — they only sharpen
@@ -541,13 +541,13 @@ Device C (SurrealDB) ──┘
 **Concurrent writes**: Each device tracks a vector clock. When two devices modify the same neuron, the configured strategy resolves the conflict automatically. No manual merge required.
 
 ```bash
-# Configure sync
-smem sync config set --hub-url https://your-hub:8000 --strategy prefer_recent
+# Configure sync (conflict strategy lives under [sync] in config.toml)
+smem sync enable https://your-hub:8000 --api-key <key>
 
 # Manual sync
-smem sync push    # Send local changes
-smem sync pull    # Get remote changes
-smem sync full    # Bidirectional
+smem sync sync --direction push   # Send local changes
+smem sync sync --direction pull   # Get remote changes
+smem sync sync --direction both   # Bidirectional
 ```
 
 ### Q: Is Surreal-Memory production-ready?

@@ -18,8 +18,8 @@ Surreal-Memory supports typed memories for better organization and automatic lif
 | `reference` | External references | Never | Documentation links, resources |
 | `tool` | Tool/CLI usage patterns | 90 days | CLI flags, commands, invocation tips |
 | `boundary` | Safety rules | Never | "Never use eval()", "Always confirm before X" |
-| `hypothesis` | Evolving beliefs | 180 days | Cognitive layer — produced by `smem hypothesize` |
-| `prediction` | Falsifiable claims | 30 days | Cognitive layer — produced by `smem predict` |
+| `hypothesis` | Evolving beliefs | 180 days | Cognitive layer — produced by `smem_hypothesize` |
+| `prediction` | Falsifiable claims | 30 days | Cognitive layer — produced by `smem_predict` |
 | `schema` | Mental model versions | Never | Cognitive layer — produced by knowledge-gap flows |
 
 ## Classifier Coverage Matrix
@@ -43,8 +43,8 @@ content.
 | `boundary` | ✓ | ✓ | |
 | `tool` | ✓ | ✓ | |
 | `context` | ✓ | ✓ | |
-| `hypothesis` | | ✓ | ✓ (`smem hypothesize`) |
-| `prediction` | | ✓ | ✓ (`smem predict`) |
+| `hypothesis` | | ✓ | ✓ (`smem_hypothesize`) |
+| `prediction` | | ✓ | ✓ (`smem_predict`) |
 | `schema` | | ✓ | ✓ (knowledge-gap flow) |
 
 **Branch precedence** (top wins on collisions):
@@ -65,9 +65,10 @@ others are auto-classifiable) must be created via explicit `--type` or
 the appropriate cognitive command:
 
 ```bash
-# Cognitive layer — these create HYPOTHESIS, PREDICTION, SCHEMA via handlers
-smem hypothesize "The slow path is gated by a global lock"
-smem predict "Cache hit rate will drop after the migration"
+# Cognitive layer — MCP tools, no CLI equivalent. These create HYPOTHESIS and
+# PREDICTION via their handlers:
+#   smem_hypothesize(statement="The slow path is gated by a global lock")
+#   smem_predict(statement="Cache hit rate will drop after the migration")
 # SCHEMA is produced by knowledge-gap detection during smem_remember /
 # consolidate flows, not directly authored.
 
@@ -303,8 +304,8 @@ smem remember "Always confirm before pushing to main" --type boundary
 
 Evolving beliefs with evidence-based confidence. Cognitive layer.
 
-```bash
-smem hypothesize "The encoder is the throughput bottleneck"
+```text
+smem_hypothesize(statement="The encoder is the throughput bottleneck")
 ```
 
 **Behavior:**
@@ -312,22 +313,22 @@ smem hypothesize "The encoder is the throughput bottleneck"
 - Default expiry: 180 days
 - Tracked in the `cognitive_state` table with evidence_for / against counts
 - **Not auto-classified** from free-form content — must be authored via
-  the dedicated `smem hypothesize` command or MCP handler
+  the `smem_hypothesize` MCP tool
 - Produces `confidence` updates as evidence accumulates
 
 ### prediction
 
 Falsifiable claims about future observations. Cognitive layer.
 
-```bash
-smem predict "Migration will take more than 8 hours" --resolves-at 2026-06-01
+```text
+smem_predict(statement="Migration will take more than 8 hours", resolves_at="2026-06-01")
 ```
 
 **Behavior:**
 
 - Default expiry: 30 days (predictions should be verified soon)
 - Tracked in `cognitive_state` with `predicted_at` and `resolved_at`
-- **Not auto-classified** — produced by `smem predict` only
+- **Not auto-classified** — produced by the `smem_predict` MCP tool only
 - Calibration stats are aggregated by `get_calibration_stats`
 
 ### schema

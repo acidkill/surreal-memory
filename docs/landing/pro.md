@@ -29,25 +29,18 @@ SurrealDB is the recommended backend. It provides native vector search (HNSW), g
 |--------|-------------|
 | Spreading activation | Graph-based recall that spreads signal through connected neurons. Depth 0-3 controls traversal range. |
 | HNSW vector search | Approximate nearest neighbor via SurrealDB's built-in vector index. ~5ms at 1M neurons. |
-| Cone queries | Semantic recall within an adjustable similarity cone. Threshold controls precision vs. breadth. |
-| Smart merge | O(N x k) consolidation using HNSW neighbor clustering instead of brute-force pairwise comparison. |
-| FTS5 keyword search | BM25 full-text search via SQLite fallback. Exact and fuzzy word matching. |
+| Consolidation | The `merge` and `dedup` passes fold near-duplicate memories together using embedding similarity rather than pairwise text comparison. |
+| Keyword search | Exact and fuzzy word matching, blended with the graph and vector signals. |
 
-**Cone query scoring:**
+**Blending the signals:** recall runs spreading activation and vector search
+together, then optionally reranks. A memory can be semantically relevant (high
+similarity) even if rarely accessed, and a frequently accessed one (high
+activation) gets a boost at moderate similarity — both signals matter.
 
-```
-combined_score = similarity * 0.7 + activation_level * 0.3
-```
-
-A memory can be semantically relevant (high similarity) even if rarely accessed. A frequently accessed memory (high activation) gets a boost even at moderate similarity. Both signals matter.
-
-**Threshold controls precision:**
-
-| Threshold | Behavior | Use case |
-|-----------|----------|----------|
-| 0.60 - 0.70 | Wide cone -- more results, broader context | Exploration, brainstorming |
-| 0.75 - 0.85 | Balanced -- relevant results | Default recall |
-| 0.90 - 0.95 | Narrow cone -- only near-exact matches | Precise lookup |
+The weighting is configurable under `[reranker]` in `config.toml`:
+`blend_weight` (default `0.7`) is the reranker's share against spreading
+activation, and `min_score` (default `0.15`) drops weak candidates. The vector
+floor is `SURREAL_MEMORY_EMBEDDING_SIMILARITY_THRESHOLD`.
 
 ---
 
@@ -98,7 +91,7 @@ Score per sentence = primary_similarity * 0.6 + max(reference_similarities) * 0.
 | Strategy | Complexity | Best For |
 |----------|-----------|----------|
 | Brute-force pairwise | O(N^2) | Small brains (<1K neurons) |
-| Smart merge (HNSW) | O(N x k) | Large brains (1K-1M+ neurons) |
+| Embedding-similarity `merge` / `dedup` | O(N x k) | Large brains (1K-1M+ neurons) |
 
 #### Decay and Reinforcement
 
@@ -128,7 +121,7 @@ Deploy with the provided Worker template. No managed service dependency.
 | **MCP Server** | 58 tools for Claude, GPT, and other agents. Recall, store, consolidate, query. |
 | **Web Dashboard** | Browser-based brain inspector. Visualize neurons, fibers, and graph topology. |
 | **VS Code Extension** | Inline memory panel. Recall context without leaving the editor. |
-| **CLI** | Full control from the terminal. `smem recall`, `smem store`, `smem merge`, etc. |
+| **CLI** | Full control from the terminal. `smem recall`, `smem remember`, `smem consolidate`, etc. |
 
 All interfaces share the same backend. Use one or use them all.
 
@@ -155,7 +148,7 @@ Surreal-Memory vs. alternatives:
 | **Semantic search** | HNSW + spreading activation | Cosine similarity | Embedding search | Embedding search |
 | **Graph traversal** | Native adjacency BFS | None | Limited | None |
 | **Lifecycle management** | 5-tier auto compression | Manual | Manual | Manual |
-| **Consolidation** | Smart merge (O(N x k)) | N/A | N/A | N/A |
+| **Consolidation** | `merge` / `dedup` (O(N x k)) | N/A | N/A | N/A |
 | **Decay / reinforcement** | Built-in | N/A | Partial | N/A |
 | **Cloud sync** | Self-hosted (free tier) | N/A | Managed (paid) | N/A |
 | **Encryption at rest** | Yes | Varies | No | No |
@@ -215,7 +208,7 @@ To enable cloud sync, deploy the Cloudflare Worker template and set the endpoint
 | Vector dimensions | 384 (default, configurable) |
 | HNSW params | M=16, ef_construction=200 |
 | Max BFS traversal | 1,000 nodes |
-| Max cone results | 500 |
+| Max vector candidates | 500 |
 | Batch insert | Vectorized, atomic rollback |
 | Crash recovery | SurrealDB WAL / SQLite WAL |
 | Encryption | AES-256 |
