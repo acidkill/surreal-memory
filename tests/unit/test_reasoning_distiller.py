@@ -701,10 +701,16 @@ class TestGetEmbedderUsesConfig:
         )
         from surreal_memory.engine.reasoning_distiller import _get_embedder
 
-        embedder = _get_embedder(self._cfg(tmp_path))
+        # The real client is an optional extra; record the construction instead
+        # of requiring it, so this runs everywhere.
+        seen: dict[str, object] = {}
+        monkeypatch.setattr(
+            "surreal_memory.engine.embedding.openai_embedding.OpenAIEmbedding",
+            lambda model="", base_url=None: seen.update(base_url=base_url) or object(),
+        )
 
-        assert embedder is not None
-        assert "127.0.0.1" in (getattr(embedder, "_base_url", "") or "")
+        assert _get_embedder(self._cfg(tmp_path)) is not None
+        assert seen["base_url"] == "http://127.0.0.1:11435/v1"
 
     def test_remote_endpoint_is_refused_not_silently_degraded(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -812,6 +818,28 @@ class TestValidatedEndpointIsTheUsedEndpoint:
     """
 
     @staticmethod
+    def _record_openai(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+        """Capture the kwargs the embedder is constructed with.
+
+        The real client is an OPTIONAL extra, so building it would make these
+        tests pass only where it happens to be installed — and these guard a
+        security property, so they must run everywhere. The contract under test
+        is this module's, not the SDK's: which base_url does it hand over.
+        """
+        seen: dict[str, object] = {}
+
+        class _Recorder:
+            def __init__(self, model: str = "", base_url: str | None = None) -> None:
+                seen["model"] = model
+                seen["base_url"] = base_url
+                self._base_url = base_url
+
+        monkeypatch.setattr(
+            "surreal_memory.engine.embedding.openai_embedding.OpenAIEmbedding", _Recorder
+        )
+        return seen
+
+    @staticmethod
     def _config(tmp_path: Path, provider: str, endpoint: str) -> UnifiedConfig:
         from surreal_memory.unified_config import EmbeddingSettings
 
@@ -827,15 +855,17 @@ class TestValidatedEndpointIsTheUsedEndpoint:
             ),
         )
 
-    def test_openrouter_cannot_reach_its_hardcoded_remote_default(self, tmp_path: Path) -> None:
+    def test_openrouter_cannot_reach_its_hardcoded_remote_default(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         from surreal_memory.engine.reasoning_distiller import _get_embedder
 
-        embedder = _get_embedder(self._config(tmp_path, "openrouter", "http://127.0.0.1:11435/v1"))
+        seen = self._record_openai(monkeypatch)
 
-        assert embedder is not None
-        base = getattr(embedder, "_base_url", None)
-        assert base is not None and "openrouter.ai" not in base
-        assert "127.0.0.1" in base
+        assert _get_embedder(self._config(tmp_path, "openrouter", "http://127.0.0.1:11435/v1"))
+
+        assert seen["base_url"] == "http://127.0.0.1:11435/v1"
+        assert "openrouter.ai" not in str(seen["base_url"])
 
     def test_config_only_loopback_endpoint_reaches_the_client(
         self, tmp_path: Path, monkeypatch
@@ -844,11 +874,11 @@ class TestValidatedEndpointIsTheUsedEndpoint:
         from surreal_memory.engine.reasoning_distiller import _get_embedder
 
         monkeypatch.delenv("SURREAL_MEMORY_EMBEDDING_ENDPOINT", raising=False)
+        seen = self._record_openai(monkeypatch)
 
-        embedder = _get_embedder(self._config(tmp_path, "openai", "http://127.0.0.1:11435/v1"))
+        assert _get_embedder(self._config(tmp_path, "openai", "http://127.0.0.1:11435/v1"))
 
-        assert embedder is not None
-        assert "127.0.0.1" in (getattr(embedder, "_base_url", "") or "")
+        assert seen["base_url"] == "http://127.0.0.1:11435/v1"
 
     def test_ollama_is_refused_when_its_own_base_url_is_remote(
         self, tmp_path: Path, monkeypatch
