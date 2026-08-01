@@ -1,0 +1,67 @@
+name: Auto-publish release draft
+
+# A release PR bumps the version in pyproject.toml (see CLAUDE.md: "One release
+# = ONE version bumped EVERYWHERE"); the release process separately prepares a
+# matching DRAFT GitHub Release, tagged vX.Y.Z, ahead of the merge. Publishing
+# that draft is what actually pushes the tag and triggers release.yml
+# (on: push: tags: v*) — nothing does that automatically on merge, so a
+# forgotten manual "Publish release" click left v2.20.0 sitting unpublished
+# for a while even after its PR merged.
+#
+# This only fires for a PR that itself bumped pyproject.toml's version — not
+# for every merge to main — so an unrelated PR merging after a release PR (but
+# before someone publishes its draft) can't accidentally trigger a publish.
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  publish-draft:
+    name: Publish matching draft release
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Check whether this PR bumped pyproject.toml's version
+        id: version
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          set -euo pipefail
+          BUMPED=$(git diff "$BASE_SHA" "$MERGE_SHA" -- pyproject.toml \
+            | grep -E '^\+version = "[0-9]+\.[0-9]+\.[0-9]+"' \
+            | head -1 \
+            | sed -E 's/^\+version = "([0-9]+\.[0-9]+\.[0-9]+)"/\1/' || true)
+          echo "bumped=$BUMPED" >> "$GITHUB_OUTPUT"
+          if [ -n "$BUMPED" ]; then
+            echo "This PR bumped pyproject.toml's version to $BUMPED"
+          else
+            echo "This PR did not touch pyproject.toml's version line — nothing to do"
+          fi
+
+      - name: Publish the matching draft release, if one exists
+        if: steps.version.outputs.bumped != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: v${{ steps.version.outputs.bumped }}
+        run: |
+          set -euo pipefail
+          IS_DRAFT="$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null || echo "")"
+          if [ "$IS_DRAFT" = "true" ]; then
+            echo "Publishing draft release $TAG"
+            gh release edit "$TAG" --draft=false
+          elif [ -z "$IS_DRAFT" ]; then
+            echo "No release named $TAG exists yet — nothing to publish"
+          else
+            echo "$TAG is already published — nothing to do"
+          fi
