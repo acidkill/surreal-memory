@@ -1258,7 +1258,7 @@ old fact's history is preserved, just no longer presented as current by default.
     embedding model (e.g. Gemini, `paraphrase-multilingual-*`), not of the removed
     extraction layer. The extraction `language` parameter is retained for
     backward-compatible call sites but is ignored (English-only). See
-    [`docs/architecture/vietnamese-removal.md`](docs/architecture/vietnamese-removal.md).
+    [`docs/architecture/vietnamese-removal.md`](https://github.com/acidkill/surreal-memory/blob/main/docs/architecture/vietnamese-removal.md).
 
 ### Fixed
 

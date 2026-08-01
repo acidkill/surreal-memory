@@ -45,7 +45,9 @@ For scaling beyond 100k neurons or concurrent access.
 - Need concurrent multi-user access
 - Need complex graph queries (Cypher)
 
-**Interface exists at:** `src/surreal_memory/storage/neo4j_store.py`
+**Not implemented.** A Neo4j backend would subclass the `NeuralStorage` ABC in
+`src/surreal_memory/storage/base.py`, the same contract the SurrealDB backend
+implements:
 
 ```python
 class Neo4jStorage(NeuralStorage):

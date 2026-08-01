@@ -138,7 +138,7 @@ blended_score = blend_weight * rerank_score + (1 - blend_weight) * activation_le
 - The activation level always contributes to the final score (`blend_weight` defaults
   to `0.7`, so activation keeps a `0.3` floor), and any reranker error falls back to
   the unmodified spreading-activation ordering — reranking never breaks recall.
-- Off by default; see [Reranking](../../README.md#reranking) for setup.
+- Off by default; see [Reranking](https://github.com/acidkill/surreal-memory/blob/main/README.md#reranking) for setup.
 
 ## Configuration
 

@@ -8,8 +8,8 @@
 ## Table of Contents
 
 - [Requirements](#requirements)
-- [Claude Code (Plugin)](#claude-code-plugin--recommended)
-- [Claude Code (Manual MCP)](#claude-code-manual-mcp)
+- [Claude Code (Plugin)](#claude-code-plugin-recommended)
+- [Claude Code (CLI)](#claude-code-cli-recommended-for-manual-setup)
 - [Cursor](#cursor)
 - [Windsurf (Codeium)](#windsurf-codeium)
 - [VS Code](#vs-code)
@@ -584,7 +584,7 @@ docker run -i --rm -v surrealmemory:/root/.surrealmemory ghcr.io/acidkill/surrea
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SURREAL_MEMORY_BRAIN` | `"default"` | Brain name to use |
-| `SURREAL_MEMORY_DATA_DIR` | `~/.surrealmemory` | Data directory |
+| `SURREAL_MEMORY_DIR` | `~/.surrealmemory` | Data directory |
 | `SURREAL_MEMORY_DEBUG` | `0` | Enable debug logging (`1` to enable) |
 | `MEM0_API_KEY` | — | Mem0 API key (for import) |
 | `COGNEE_API_KEY` | — | Cognee API key (for import) |

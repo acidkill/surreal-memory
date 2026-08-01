@@ -78,7 +78,7 @@ config = BrainConfig(
 ```
 
 `BrainConfig` also carries optional cross-encoder reranking fields (off by default;
-see [Reranking](../../README.md#reranking)), persisted per-brain since v2.7.0:
+see [Reranking](https://github.com/acidkill/surreal-memory/blob/main/README.md#reranking)), persisted per-brain since v2.7.0:
 
 ```python
 config = BrainConfig(

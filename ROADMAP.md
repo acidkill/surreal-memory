@@ -1,7 +1,6 @@
 # Surreal-Memory Roadmap
 
 > Forward-looking vision. What's next, what's possible, where we're going.
-> Every item passes the VISION.md 4-question test + brain test.
 > ZERO LLM dependency — pure algorithmic, regex, graph-based.
 
 **Current state**: v2.20.0 — 58 MCP tools, 7,267 tests, neuroscience engine (10 brain-inspired algorithms), tiered memory loading (HOT/WARM/COLD).
@@ -409,5 +408,4 @@ Every roadmap item must pass:
 
 ---
 
-*See [VISION.md](VISION.md) for the north star guiding all decisions.*
 *Last updated: 2026-03-28*

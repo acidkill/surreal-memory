@@ -38,7 +38,7 @@ theme:
   icon:
     repo: fontawesome/brands/github
   logo: assets/logo.svg
-  favicon: assets/favicon.png
+  favicon: assets/logo.svg
 
 plugins:
   - search
@@ -57,12 +57,14 @@ exclude_docs: |
   promo/hackernews.md
   promo/reddit-claudeai.md
   promo/reddit-localllama.md
+  promo/vs-neural-memory.md
   # Internal engineering artifacts, not end-user docs.
   lessons-learned.md
   plans/
   # Superseded snapshots that carry their own HISTORICAL banner.
   ARCHITECTURE_V1_EXTENDED.md
   architecture/architect-260302-0506-kb-retrieval-analysis.md
+  architecture/vietnamese-removal.md
 
 markdown_extensions:
   - pymdownx.highlight:
@@ -70,7 +72,11 @@ markdown_extensions:
       line_spans: __span
       pygments_lang_class: true
   - pymdownx.inlinehilite
-  - pymdownx.snippets
+  - pymdownx.snippets:
+      # Lets changelog.md include the repository-root CHANGELOG.md verbatim
+      # instead of keeping a hand-maintained copy that drifts behind releases.
+      base_path: ['.', 'docs']
+      check_paths: true
   - pymdownx.superfences:
       custom_fences:
         - name: mermaid
@@ -121,7 +127,6 @@ nav:
     - Learning Habits: guides/learning-habits.md
     - Safety & Security: guides/safety.md
     - Companion Setup: guides/companion-setup.md
-    - Docs Chatbot: guides/docs-chatbot.md
   - API Reference:
     - MCP Tools: api/mcp-tools.md
     - Python API: api/python.md

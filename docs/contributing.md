@@ -95,11 +95,8 @@ make verify
 | `SURREALDB_PASS` | SurrealDB only | `surrealmemory` | SurrealDB password |
 | `SURREALDB_NS` | No | `surreal_memory` | SurrealDB namespace |
 | `SURREALDB_DB` | No | `default` | SurrealDB database name |
-| `SURREAL_MEMORY_ENCRYPTION_ENABLED` | No | `false` | Enable memory encryption at rest |
-| `SURREAL_MEMORY_ENCRYPTION_KEYS_DIR` | No | — | Path to encryption keys directory |
 | `SURREAL_MEMORY_HUB_URL` | Sync only | — | Cloudflare sync hub URL |
 | `SURREAL_MEMORY_API_KEY` | Sync only | — | Sync hub API key |
-| `SURREAL_MEMORY_DEVICE_ID` | No | — | Device identifier for sync |
 | `SURREAL_MEMORY_SYNC_ENABLED` | No | `false` | Enable sync |
 | `SURREAL_MEMORY_SYNC_AUTO` | No | `false` | Auto-sync on changes |
 | `SURREAL_MEMORY_EMBEDDING_ENABLED` | No | `false` | Enable vector embeddings |
