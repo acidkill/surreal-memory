@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.1] — 2026-08-02 — `smem doctor` no longer carries dead SQLite-era checks
+
+### Fixed
+
+Two `smem doctor` checks became permanently inert when the SQLite backend was
+removed in 3.0.0: `Schema version` could only ever return `SKIP` for either
+remaining storage backend (SurrealDB applies its schema idempotently with no
+stored version marker to compare against), and `Brain database` fell through
+to a dead code path that checked for a local `.db` file that no longer exists
+for any valid backend. Both permanently capped the doctor summary below 100%
+even on a fully healthy install.
+
+`Schema version` is removed. `Brain database` now does a real check for the
+`surrealdb` backend: it looks up the configured brain in SurrealDB and reports
+whether it exists, instead of unconditionally skipping.
+
 ## [3.0.0] — 2026-08-02 — The SQLite storage backend is removed
 
 ### Breaking: `storage_backend = "sqlite"` is now a hard error

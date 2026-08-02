@@ -182,7 +182,6 @@ class TestDoctor:
             patch("surreal_memory.cli.doctor._check_brain") as m3,
             patch("surreal_memory.cli.doctor._check_dependencies") as m4,
             patch("surreal_memory.cli.doctor._check_embedding_provider") as m5,
-            patch("surreal_memory.cli.doctor._check_schema_version") as m6,
             patch("surreal_memory.cli.doctor._check_mcp_config") as m7,
             patch("surreal_memory.cli.doctor._check_mcp_connection") as m7b,
             patch("surreal_memory.cli.doctor._check_cli_tools") as m8,
@@ -202,7 +201,6 @@ class TestDoctor:
                 m3,
                 m4,
                 m5,
-                m6,
                 m7,
                 m7b,
                 m8,
@@ -219,8 +217,8 @@ class TestDoctor:
                 m.return_value = {"name": "test", "status": "ok", "detail": "ok"}
 
             result = run_doctor(json_output=True)
-            assert result["passed"] == 18
-            assert result["total"] == 18
+            assert result["passed"] == 17
+            assert result["total"] == 17
             assert result["failed"] == 0
 
     def test_run_doctor_with_failures(self) -> None:
@@ -232,7 +230,6 @@ class TestDoctor:
             patch("surreal_memory.cli.doctor._check_brain") as m3,
             patch("surreal_memory.cli.doctor._check_dependencies") as m4,
             patch("surreal_memory.cli.doctor._check_embedding_provider") as m5,
-            patch("surreal_memory.cli.doctor._check_schema_version") as m6,
             patch("surreal_memory.cli.doctor._check_mcp_config") as m7,
             patch("surreal_memory.cli.doctor._check_mcp_connection") as m7b,
             patch("surreal_memory.cli.doctor._check_cli_tools") as m8,
@@ -248,12 +245,12 @@ class TestDoctor:
         ):
             m1.return_value = {"name": "Python", "status": "ok", "detail": "ok"}
             m2.return_value = {"name": "Config", "status": "fail", "detail": "missing"}
-            for m in [m3, m4, m5, m6, m7, m7b, m8, m9, m10, m11, m12, m13, m14, m15, m16, m17]:
+            for m in [m3, m4, m5, m7, m7b, m8, m9, m10, m11, m12, m13, m14, m15, m16, m17]:
                 m.return_value = {"name": "test", "status": "ok", "detail": "ok"}
 
             result = run_doctor(json_output=True)
             assert result["failed"] == 1
-            assert result["passed"] == 17
+            assert result["passed"] == 16
 
     def test_run_doctor_dev_adds_dev_checks(self) -> None:
         from surreal_memory.cli.doctor import run_doctor
@@ -264,7 +261,6 @@ class TestDoctor:
             patch("surreal_memory.cli.doctor._check_brain") as m3,
             patch("surreal_memory.cli.doctor._check_dependencies") as m4,
             patch("surreal_memory.cli.doctor._check_embedding_provider") as m5,
-            patch("surreal_memory.cli.doctor._check_schema_version") as m6,
             patch("surreal_memory.cli.doctor._check_mcp_config") as m7,
             patch("surreal_memory.cli.doctor._check_mcp_connection") as m7b,
             patch("surreal_memory.cli.doctor._check_cli_tools") as m8,
@@ -285,7 +281,6 @@ class TestDoctor:
                 m3,
                 m4,
                 m5,
-                m6,
                 m7,
                 m7b,
                 m8,
@@ -307,8 +302,8 @@ class TestDoctor:
 
             result = run_doctor(json_output=True, dev=True)
 
-        assert result["passed"] == 20
-        assert result["total"] == 20
+        assert result["passed"] == 19
+        assert result["total"] == 19
         assert any(c["tier"] == "dev" for c in result["checks"])
 
 

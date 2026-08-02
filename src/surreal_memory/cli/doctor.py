@@ -39,7 +39,6 @@ _CHECK_TIERS: dict[str, str] = {
     "Storage backend": TIER_CORE,
     "Brain database": TIER_CORE,
     "Dependencies": TIER_CORE,
-    "Schema version": TIER_CORE,
     "CLI tools": TIER_CORE,
     "SurrealDB connection": TIER_CORE,
     "SurrealDB version": TIER_CORE,
@@ -83,7 +82,6 @@ def run_doctor(
     checks.append(_check_brain())
     checks.append(_check_dependencies())
     checks.append(_check_embedding_provider())
-    checks.append(_check_schema_version())
     checks.append(_check_mcp_config())
     checks.append(_check_mcp_connection())
     checks.append(_check_hooks())
@@ -350,48 +348,74 @@ def _check_storage_backend() -> dict[str, Any]:
     }
 
 
+def _run_surrealdb_get_brain(brain_name: str) -> Any:
+    """Look up a brain by name via a short-lived SurrealDB connection."""
+    import asyncio
+
+    from surreal_memory.storage.surrealdb.connection import SurrealSettings
+    from surreal_memory.storage.surrealdb.store import SurrealDBStorage
+
+    async def _lookup() -> Any:
+        settings = SurrealSettings.from_env()
+        storage = SurrealDBStorage(
+            url=settings.url,
+            user=settings.user,
+            password=settings.password,
+            namespace=settings.namespace,
+            database=settings.database,
+        )
+        try:
+            await asyncio.wait_for(storage.initialize(), timeout=5)
+            return await storage.get_brain(brain_name)
+        finally:
+            await storage.close()
+
+    return run_async(_lookup())
+
+
 def _check_brain() -> dict[str, Any]:
-    """Check default brain DB exists and is accessible."""
-    from surreal_memory.unified_config import get_surrealmemory_dir
-
-    data_dir = get_surrealmemory_dir()
-
+    """Check the configured brain exists and is accessible."""
     try:
         from surreal_memory.unified_config import get_config
 
         config = get_config(reload=True)
-        brain_name = config.current_brain
-        if config.storage_backend == "surrealdb":
-            return {
-                "name": "Brain database",
-                "status": SKIP,
-                "detail": "surrealdb backend — brain lives in SurrealDB, not a local .db file",
-            }
-        if config.storage_backend == "memory":
-            return {
-                "name": "Brain database",
-                "status": SKIP,
-                "detail": "memory backend — non-persistent, no database file to check",
-            }
-    except Exception:
-        brain_name = "default"
-
-    brains_dir = data_dir / "brains"
-    db_path = brains_dir / f"{brain_name}.db"
-
-    if not db_path.exists():
+    except Exception as exc:
         return {
             "name": "Brain database",
-            "status": FAIL,
-            "detail": f"{db_path} not found",
-            "fix": f"Run: smem brain create {brain_name}",
+            "status": WARN,
+            "detail": f"could not load config to check brain: {type(exc).__name__}",
         }
 
-    size_kb = db_path.stat().st_size / 1024
+    brain_name = config.current_brain
+
+    if config.storage_backend == "memory":
+        return {
+            "name": "Brain database",
+            "status": SKIP,
+            "detail": "memory backend — non-persistent, no brain to check",
+        }
+
+    try:
+        brain = _run_surrealdb_get_brain(brain_name)
+    except Exception as exc:
+        return {
+            "name": "Brain database",
+            "status": WARN,
+            "detail": f"could not reach SurrealDB: {type(exc).__name__}",
+            "fix": "Ensure SurrealDB is running and SURREALDB_URL is correct",
+        }
+
+    if brain is None:
+        return {
+            "name": "Brain database",
+            "status": WARN,
+            "detail": f"brain '{brain_name}' not created yet — will be created on first remember",
+        }
+
     return {
         "name": "Brain database",
         "status": OK,
-        "detail": f"{brain_name} ({size_kb:.0f} KB)",
+        "detail": f"{brain_name} (created {brain.created_at.date()})",
     }
 
 
@@ -498,31 +522,6 @@ def _check_embedding_provider() -> dict[str, Any]:
         "status": OK,
         "detail": f"{provider} (model: {config.embedding.model})",
     }
-
-
-def _check_schema_version() -> dict[str, Any]:
-    """Check database schema version."""
-    try:
-        from surreal_memory.unified_config import get_config
-
-        config = get_config(reload=True)
-        if config.storage_backend == "surrealdb":
-            return {
-                "name": "Schema version",
-                "status": SKIP,
-                "detail": "surrealdb backend — schema managed by SurrealDB migrations",
-            }
-        return {
-            "name": "Schema version",
-            "status": SKIP,
-            "detail": "memory backend — non-persistent, no schema to version",
-        }
-    except Exception:
-        return {
-            "name": "Schema version",
-            "status": WARN,
-            "detail": "could not check — ensure brain is accessible",
-        }
 
 
 def _check_mcp_config() -> dict[str, Any]:

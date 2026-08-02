@@ -334,7 +334,6 @@ class TestRunDoctorIntegration:
     @patch("surreal_memory.cli.doctor._check_surrealdb_connection")
     @patch("surreal_memory.cli.doctor._check_mcp_connection")
     @patch("surreal_memory.cli.doctor._check_mcp_config")
-    @patch("surreal_memory.cli.doctor._check_schema_version")
     @patch("surreal_memory.cli.doctor._check_embedding_provider")
     @patch("surreal_memory.cli.doctor._check_dependencies")
     @patch("surreal_memory.cli.doctor._check_brain")
@@ -348,11 +347,11 @@ class TestRunDoctorIntegration:
 
         result = run_doctor(json_output=True)
         # Bump when run_doctor gains a check: config, storage backend, brain,
-        # dependencies, embedding, schema, MCP config/connection/env, hooks,
+        # dependencies, embedding, MCP config/connection/env, hooks,
         # dedup, surface, config freshness, CLI tools, SurrealDB
         # connection/version, Pro plugin, Python version.
-        assert result["total"] == 18
-        assert result["passed"] == 18
+        assert result["total"] == 17
+        assert result["passed"] == 17
 
     def test_quickstart_url_defined(self) -> None:
         assert "quickstart" in QUICKSTART_URL
