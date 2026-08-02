@@ -426,7 +426,7 @@ src/surreal_memory/
 │   ├── sqlite_maturation.py / sqlite_cognitive.py / sqlite_compression.py
 │   ├── sqlite_depth_priors.py / sqlite_coactivation.py / sqlite_drift.py
 │   ├── sqlite_change_log.py / sqlite_sync_state.py / sqlite_devices.py / sqlite_merkle.py
-│   ├── sqlite_action_log.py / sqlite_calibration.py / sqlite_entity_refs.py
+│   ├── sqlite_action_log.py / sqlite_graph_stats.py / sqlite_entity_refs.py
 │   ├── sqlite_sources.py / sqlite_sessions.py / sqlite_training_files.py
 │   ├── sqlite_tool_events.py
 │   ├── read_pool.py                 # Read-only connection pool for parallel WAL reads

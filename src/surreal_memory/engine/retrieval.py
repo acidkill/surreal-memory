@@ -322,19 +322,11 @@ class ReflexPipeline:
         )
 
         # 3.5 RRF score fusion: compute initial activation levels from multi-retriever ranks
-        # Use dynamic per-brain retriever weights when available
-        _rrf_weights: dict[str, float] | None = None
-        try:
-            _rrf_weights = await self._storage.get_retriever_weights()  # type: ignore[attr-defined]
-        except Exception:
-            pass  # Storage doesn't support retriever calibration — use defaults
-
         anchor_activations: dict[str, float] | None = None
         if ranked_lists and any(ranked_lists):
             fused_scores = rrf_fuse(
                 ranked_lists,
                 k=self._config.rrf_k,
-                retriever_weights=_rrf_weights,
             )
             if fused_scores:
                 anchor_activations = rrf_to_activation_levels(fused_scores)
@@ -466,22 +458,7 @@ class ReflexPipeline:
         activations, disputed_ids = await self._deprioritize_disputed(activations)
 
         # 4.8 Sufficiency check: early exit if signal is too weak
-        from surreal_memory.engine.sufficiency import GateCalibration, check_sufficiency
-
-        # Fetch EMA calibration stats (non-critical; falls back gracefully)
-        _gate_calibration: dict[str, GateCalibration] | None = None
-        try:
-            _raw_cal = await self._storage.get_gate_ema_stats()  # type: ignore[attr-defined]
-            _gate_calibration = {
-                gate: GateCalibration(
-                    accuracy=stats["accuracy"],
-                    avg_confidence=stats["avg_confidence"],
-                    sample_count=int(stats["sample_count"]),
-                )
-                for gate, stats in _raw_cal.items()
-            }
-        except Exception:
-            logger.debug("Gate calibration fetch failed (non-critical)", exc_info=True)
+        from surreal_memory.engine.sufficiency import check_sufficiency
 
         _sufficiency = check_sufficiency(
             activations=activations,
@@ -490,7 +467,6 @@ class ReflexPipeline:
             stab_converged=_stab_report.converged,
             stab_neurons_removed=_stab_report.neurons_removed,
             query_intent=stimulus.intent.value,
-            calibration=_gate_calibration,
         )
 
         if not _sufficiency.sufficient:
@@ -755,46 +731,6 @@ class ReflexPipeline:
             except Exception:
                 logger.debug("Priming cache update failed (non-critical)", exc_info=True)
 
-        # Record calibration feedback (non-critical)
-        try:
-            await self._storage.save_calibration_record(  # type: ignore[attr-defined]
-                gate=_sufficiency.gate,
-                predicted_sufficient=True,
-                actual_confidence=reconstruction.confidence,
-                actual_fibers=len(fibers_matched),
-                query_intent=stimulus.intent.value,
-            )
-        except Exception:
-            # AttributeError: storage doesn't have calibration mixin (e.g. InMemoryStorage)
-            logger.debug("Calibration record save failed (non-critical)", exc_info=True)
-
-        # Record retriever contribution outcomes for dynamic RRF weights (non-critical)
-        if ranked_lists and fibers_matched:
-            try:
-                # Which neurons ended up in final results?
-                result_neuron_ids = {
-                    next(iter(f.neuron_ids)) for f in fibers_matched if f.neuron_ids
-                }
-                for ranked_list in ranked_lists:
-                    if not ranked_list:
-                        continue
-                    rtype = ranked_list[0].retriever
-                    contributed = any(ra.neuron_id in result_neuron_ids for ra in ranked_list)
-                    await self._storage.save_retriever_outcome(  # type: ignore[attr-defined]
-                        retriever_type=rtype,
-                        contributed=contributed,
-                    )
-                # Periodic pruning: cap retriever_calibration per type (every ~100 saves)
-                import random as _rnd
-
-                if _rnd.random() < 0.01:  # ~1% chance per save → prunes ~every 100 saves
-                    try:
-                        await self._storage.prune_retriever_calibration()  # type: ignore[attr-defined]
-                    except Exception:
-                        pass
-            except Exception:
-                logger.debug("Retriever outcome save failed (non-critical)", exc_info=True)
-
         # Record adaptive depth outcome (non-critical)
         if _depth_decision is not None:
             result.metadata["depth_selection"] = {
@@ -922,9 +858,13 @@ class ReflexPipeline:
         Medium → hybrid.
         """
         try:
-            density = await self._storage.get_graph_density()  # type: ignore[attr-defined]
+            density = await self._storage.get_graph_density()
         except Exception:
-            return "classic"  # Fallback if storage doesn't support it
+            # Every backend implements this now, so a failure here means the
+            # database itself is unhappy rather than the method being absent.
+            # Strategy selection is not worth failing a recall over.
+            logger.debug("Graph density lookup failed (non-critical)", exc_info=True)
+            return "classic"
 
         if density < 3.0:
             return "classic"

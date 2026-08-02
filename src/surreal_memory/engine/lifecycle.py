@@ -97,9 +97,7 @@ class DecayManager:
         report = DecayReport(reference_time=reference_time)
 
         # Preload pinned neuron IDs to skip during decay
-        pinned_neuron_ids: set[str] = set()
-        if hasattr(storage, "get_pinned_neuron_ids"):
-            pinned_neuron_ids = await storage.get_pinned_neuron_ids()
+        pinned_neuron_ids = await storage.get_pinned_neuron_ids()
 
         # Preload neuron→tier mapping for tier-aware decay
         from surreal_memory.core.memory_types import TIER_DECAY_FLOORS, TIER_DECAY_MULTIPLIERS

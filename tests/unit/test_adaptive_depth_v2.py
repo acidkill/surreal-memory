@@ -17,12 +17,7 @@ import pytest
 from surreal_memory.engine.depth_prior import AdaptiveDepthSelector, DepthPrior
 from surreal_memory.engine.retrieval_types import DepthLevel
 from surreal_memory.engine.score_fusion import DEFAULT_RETRIEVER_WEIGHTS
-from surreal_memory.engine.sufficiency import (
-    GateCalibration,
-    SufficiencyMetrics,
-    SufficiencyResult,
-    _apply_calibration,
-)
+from surreal_memory.engine.sufficiency import SufficiencyMetrics
 from surreal_memory.extraction.entities import Entity, EntityType
 from surreal_memory.extraction.parser import Perspective, QueryIntent, Stimulus
 
@@ -221,106 +216,6 @@ class TestSessionAwareDepth:
 
 
 # ===========================================================================
-# 2.2: Calibration-driven gate threshold tuning
-# ===========================================================================
-
-
-class TestCalibrationThresholdTuning:
-    """Tests for enhanced _apply_calibration with boost/dampen/downgrade."""
-
-    def _make_result(self, gate: str = "intersection_convergence", confidence: float = 0.6):
-        return SufficiencyResult(
-            sufficient=True,
-            confidence=confidence,
-            gate=gate,
-            reason="Test result",
-            metrics=_make_sufficiency_metrics(),
-        )
-
-    def test_no_calibration_passthrough(self):
-        """Without calibration data, result passes through unchanged."""
-        result = self._make_result()
-        adjusted = _apply_calibration(result, None)
-        assert adjusted.confidence == result.confidence
-        assert adjusted.sufficient
-
-    def test_high_accuracy_boosts_confidence(self):
-        """Gate with >0.8 accuracy gets 10% confidence boost."""
-        result = self._make_result(confidence=0.6)
-        calibration = {
-            "intersection_convergence": GateCalibration(
-                accuracy=0.9, avg_confidence=0.7, sample_count=20
-            )
-        }
-        adjusted = _apply_calibration(result, calibration)
-        assert adjusted.confidence == pytest.approx(0.66, abs=0.01)  # 0.6 * 1.1
-        assert adjusted.sufficient
-        assert "boost" in adjusted.reason
-
-    def test_low_accuracy_dampens_confidence(self):
-        """Gate with <0.4 accuracy gets 30% confidence reduction."""
-        result = self._make_result(confidence=0.6)
-        calibration = {
-            "intersection_convergence": GateCalibration(
-                accuracy=0.3, avg_confidence=0.5, sample_count=15
-            )
-        }
-        adjusted = _apply_calibration(result, calibration)
-        assert adjusted.confidence == pytest.approx(0.42, abs=0.01)  # 0.6 * 0.7
-        assert adjusted.sufficient
-        assert "dampen" in adjusted.reason
-
-    def test_very_low_confidence_downgrades_to_insufficient(self):
-        """Gate with avg_confidence <0.15 downgrades to insufficient."""
-        result = self._make_result(confidence=0.6)
-        calibration = {
-            "intersection_convergence": GateCalibration(
-                accuracy=0.2, avg_confidence=0.1, sample_count=20
-            )
-        }
-        adjusted = _apply_calibration(result, calibration)
-        assert not adjusted.sufficient
-        assert "downgrade" in adjusted.reason
-
-    def test_insufficient_result_never_upgraded(self):
-        """INSUFFICIENT results are never changed by calibration."""
-        result = SufficiencyResult(
-            sufficient=False,
-            confidence=0.05,
-            gate="no_anchors",
-            reason="No anchors",
-            metrics=_make_sufficiency_metrics(anchor_count=0),
-        )
-        calibration = {
-            "no_anchors": GateCalibration(accuracy=0.95, avg_confidence=0.9, sample_count=100)
-        }
-        adjusted = _apply_calibration(result, calibration)
-        assert not adjusted.sufficient  # Still insufficient
-
-    def test_too_few_samples_no_adjustment(self):
-        """With <10 samples, no adjustment is made."""
-        result = self._make_result(confidence=0.6)
-        calibration = {
-            "intersection_convergence": GateCalibration(
-                accuracy=0.9, avg_confidence=0.7, sample_count=5
-            )
-        }
-        adjusted = _apply_calibration(result, calibration)
-        assert adjusted.confidence == 0.6  # Unchanged
-
-    def test_confidence_clamped_at_1(self):
-        """Boosted confidence doesn't exceed 1.0."""
-        result = self._make_result(confidence=0.95)
-        calibration = {
-            "intersection_convergence": GateCalibration(
-                accuracy=0.95, avg_confidence=0.8, sample_count=50
-            )
-        }
-        adjusted = _apply_calibration(result, calibration)
-        assert adjusted.confidence <= 1.0
-
-
-# ===========================================================================
 # 2.3: Result quality feedback
 # ===========================================================================
 
@@ -401,26 +296,12 @@ class TestResultQualityFeedback:
 
 
 class TestDynamicRRFWeights:
-    """Tests for retriever calibration and dynamic weight computation."""
+    """Tests for the static RRF retriever weights.
 
-    @pytest.mark.asyncio
-    async def test_default_weights_when_no_data(self):
-        """Returns default weights when no retriever calibration data exists."""
-        from surreal_memory.storage.sqlite_calibration import SQLiteCalibrationMixin
-
-        mixin = MagicMock(spec=SQLiteCalibrationMixin)
-        mixin._ensure_read_conn = MagicMock()
-        mixin._get_brain_id = MagicMock(return_value="brain-1")
-
-        conn = AsyncMock()
-        cursor = AsyncMock()
-        cursor.fetchall = AsyncMock(return_value=[])
-        conn.execute = AsyncMock(return_value=cursor)
-        mixin._ensure_read_conn.return_value = conn
-
-        # Call the actual method
-        result = await SQLiteCalibrationMixin.get_retriever_weights(mixin)
-        assert result == dict(DEFAULT_RETRIEVER_WEIGHTS)
+    The per-brain EMA that used to adjust these was removed: it lived only on
+    SQLiteStorage, so on SurrealDB every recall already fused with exactly the
+    defaults asserted below.
+    """
 
     def test_default_retriever_weights_has_all_types(self):
         """DEFAULT_RETRIEVER_WEIGHTS includes all 5 retriever types."""
@@ -564,20 +445,3 @@ class TestBackwardCompat:
             session,
         )
         assert bias == 0
-
-    def test_calibration_unchanged_for_mid_accuracy(self):
-        """Accuracy between 0.4-0.8 doesn't trigger boost or dampen."""
-        result = SufficiencyResult(
-            sufficient=True,
-            confidence=0.6,
-            gate="intersection_convergence",
-            reason="Test",
-            metrics=_make_sufficiency_metrics(),
-        )
-        calibration = {
-            "intersection_convergence": GateCalibration(
-                accuracy=0.6, avg_confidence=0.5, sample_count=20
-            )
-        }
-        adjusted = _apply_calibration(result, calibration)
-        assert adjusted.confidence == 0.6  # No change

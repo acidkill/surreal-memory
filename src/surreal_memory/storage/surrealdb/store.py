@@ -32,6 +32,7 @@ from surreal_memory.storage.surrealdb.compression import SurrealDBCompressionMix
 from surreal_memory.storage.surrealdb.depth_priors import SurrealDBDepthPriorsMixin
 from surreal_memory.storage.surrealdb.keyword_entity import SurrealDBKeywordEntityMixin
 from surreal_memory.storage.surrealdb.maturation import SurrealDBMaturationMixin
+from surreal_memory.storage.surrealdb.pinning import SurrealDBPinningMixin
 from surreal_memory.storage.surrealdb.projects import SurrealDBProjectsMixin
 from surreal_memory.storage.surrealdb.reasoning_traces import SurrealDBReasoningTracesMixin
 from surreal_memory.storage.surrealdb.retrieval_trace import SurrealDBRetrievalTraceMixin
@@ -39,6 +40,7 @@ from surreal_memory.storage.surrealdb.review_schedules import SurrealDBReviewSch
 from surreal_memory.storage.surrealdb.schema import ensure_schema
 from surreal_memory.storage.surrealdb.sources import SurrealDBSourcesMixin
 from surreal_memory.storage.surrealdb.tool_events import SurrealDBToolEventsMixin
+from surreal_memory.storage.surrealdb.training_files import SurrealDBTrainingFilesMixin
 from surreal_memory.storage.surrealdb.typed_memory import (
     SurrealDBTypedMemoryMixin,
     _row_to_typed_memory,
@@ -84,6 +86,7 @@ _BRAIN_SCOPED_TABLES: tuple[str, ...] = (
     "source",
     "synapse",
     "tool_events",
+    "training_files",
     "typed_memory",
 )
 
@@ -449,6 +452,8 @@ class SurrealDBStorage(
     SurrealDBDepthPriorsMixin,
     SurrealDBReasoningTracesMixin,
     SurrealDBToolEventsMixin,
+    SurrealDBPinningMixin,
+    SurrealDBTrainingFilesMixin,
     NeuralStorage,
 ):
     """SurrealDB-backed storage for Surreal-Memory.
@@ -2013,6 +2018,21 @@ class SurrealDBStorage(
             "synapse_count": _count(synapse_rows),
             "fiber_count": _count(fiber_rows),
         }
+
+    async def get_graph_density(self) -> float:
+        """Average synapses per neuron for the current brain, or 0.0 if empty.
+
+        Backs ``activation_strategy="auto"`` in the retrieval engine. This lived
+        only on SQLiteStorage, and the caller swallows the resulting
+        AttributeError, so "auto" silently resolved to classic BFS on every
+        SurrealDB brain — PPR and hybrid activation were unreachable for anyone
+        who opted in.
+        """
+        stats = await self.get_stats(self._get_brain_id())
+        neuron_count = stats["neuron_count"]
+        if neuron_count == 0:
+            return 0.0
+        return stats["synapse_count"] / neuron_count
 
     async def get_enhanced_stats(
         self, brain_id: str, include_neuron_types: bool = True

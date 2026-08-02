@@ -72,7 +72,9 @@ outside contribution — a full Spanish translation, `README.es-ES.md` (#127).
 
 **Scope**:
 - [ ] Cognitive tables parity (cognitive_state, hot_index, knowledge_gaps) in SurrealDB
-- [ ] `pin_fibers()` implementation for SurrealDB storage
+- [x] `pin_fibers()` implementation for SurrealDB storage — shipped with `get_pinned_neuron_ids()`,
+      `list_pinned_fibers()`, graph density and document-training file tracking, all promoted to the
+      `NeuralStorage` interface so a backend can no longer drop a capability silently
 - [ ] `smem_edit` type/priority changes persisted via SurrealDB
 - [ ] Parity test suite: run SQLite test matrix against SurrealDB
 

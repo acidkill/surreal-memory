@@ -76,14 +76,21 @@ Compare `smem stats` against what the SQLite brain reported before the switch.
 
 | Carried | Not carried |
 |---|---|
-| Neurons, synapses, fibers | Retrieval calibration (gate EMA, retriever weights, graph density) |
+| Neurons, synapses, fibers | Document-training progress (the first `smem train` after migrating re-scans) |
 | Typed memories — type, priority, tags, trust score, expiry, tier, validity window, supersession | Drift clusters and tag co-occurrence counts |
 | Projects | Sync cursors and device registrations |
-| Brain configuration | Document-training progress (re-running `smem train` re-scans) |
-| | Change-log history |
+| Brain configuration | Change-log history |
+| Pinned status of trained memories | |
 
 Everything in the right column is derived state: consolidation, recall and the
 next training run rebuild it. Nothing you explicitly remembered is in it.
+
+Training progress is the one entry worth a caveat. It is tracked per brain, so
+the first `smem train` after you migrate re-encodes the corpus once and records
+it; runs after that skip files whose contents have not changed. Before 2.21.0
+the tracking existed only on the SQLite backend, so a SurrealDB brain re-scanned
+on *every* run and duplicated the corpus each time — if you migrated earlier and
+trained repeatedly, `smem consolidate` will merge the duplicates.
 
 !!! note "Typed memories and projects need 2.21.0 or newer"
 

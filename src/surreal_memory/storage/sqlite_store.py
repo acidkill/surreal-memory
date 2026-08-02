@@ -22,7 +22,6 @@ from surreal_memory.storage.read_pool import ReadPool
 from surreal_memory.storage.sqlite_action_log import SQLiteActionLogMixin
 from surreal_memory.storage.sqlite_alerts import SQLiteAlertsMixin
 from surreal_memory.storage.sqlite_brain_ops import SQLiteBrainMixin
-from surreal_memory.storage.sqlite_calibration import SQLiteCalibrationMixin
 from surreal_memory.storage.sqlite_change_log import SQLiteChangeLogMixin
 from surreal_memory.storage.sqlite_coactivation import SQLiteCoActivationMixin
 from surreal_memory.storage.sqlite_cognitive import SQLiteCognitiveMixin
@@ -32,6 +31,7 @@ from surreal_memory.storage.sqlite_devices import SQLiteDevicesMixin
 from surreal_memory.storage.sqlite_drift import SQLiteDriftMixin
 from surreal_memory.storage.sqlite_entity_refs import SQLiteEntityRefsMixin
 from surreal_memory.storage.sqlite_fibers import SQLiteFiberMixin
+from surreal_memory.storage.sqlite_graph_stats import SQLiteGraphStatsMixin
 from surreal_memory.storage.sqlite_maturation import SQLiteMaturationMixin
 from surreal_memory.storage.sqlite_merkle import SQLiteMerkleMixin
 from surreal_memory.storage.sqlite_neurons import SQLiteNeuronMixin
@@ -74,7 +74,7 @@ class SQLiteStorage(
     SQLiteReviewsMixin,
     SQLiteDepthPriorMixin,
     SQLiteCompressionMixin,
-    SQLiteCalibrationMixin,
+    SQLiteGraphStatsMixin,
     SQLiteCognitiveMixin,
     SQLiteChangeLogMixin,
     SQLiteDevicesMixin,

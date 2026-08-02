@@ -37,20 +37,17 @@ class TestComputeFileHash:
 
 
 class TestTrainingFilesStorage:
-    """Test training file CRUD operations."""
+    """Training file CRUD against every backend that stores memories.
 
-    async def test_upsert_and_lookup(self, tmp_path: Path) -> None:
-        from surreal_memory.core.brain import Brain
-        from surreal_memory.storage.sqlite_store import SQLiteStorage
+    These used to instantiate ``SQLiteStorage`` directly, which is how the gap
+    survived: the four methods existed on no other backend, ``DocTrainer``
+    probed for them with ``hasattr``, and so on SurrealDB every ``smem train``
+    re-encoded the entire corpus and duplicated it.
+    """
 
-        storage = SQLiteStorage(tmp_path / "test.db")
-        await storage.initialize()
+    async def test_upsert_and_lookup(self, pin_storage) -> None:
+        storage = pin_storage
 
-        brain = Brain.create(name="test-brain")
-        await storage.save_brain(brain)
-        storage.set_brain(brain.id)
-
-        # Insert a training file record
         record_id = await storage.upsert_training_file(
             file_hash="abc123",
             file_path="/docs/test.md",
@@ -62,30 +59,16 @@ class TestTrainingFilesStorage:
         )
         assert record_id
 
-        # Look it up
         record = await storage.get_training_file_by_hash("abc123")
         assert record is not None
         assert record["status"] == "completed"
         assert record["file_path"] == "/docs/test.md"
 
-        # Not found
-        not_found = await storage.get_training_file_by_hash("nonexistent")
-        assert not_found is None
+        assert await storage.get_training_file_by_hash("nonexistent") is None
 
-        await storage.close()
+    async def test_upsert_updates_existing(self, pin_storage) -> None:
+        storage = pin_storage
 
-    async def test_upsert_updates_existing(self, tmp_path: Path) -> None:
-        from surreal_memory.core.brain import Brain
-        from surreal_memory.storage.sqlite_store import SQLiteStorage
-
-        storage = SQLiteStorage(tmp_path / "test.db")
-        await storage.initialize()
-
-        brain = Brain.create(name="test-brain")
-        await storage.save_brain(brain)
-        storage.set_brain(brain.id)
-
-        # First insert
         record_id = await storage.upsert_training_file(
             file_hash="abc123",
             file_path="/docs/test.md",
@@ -95,7 +78,7 @@ class TestTrainingFilesStorage:
             status="in_progress",
         )
 
-        # Upsert with same hash → should update
+        # Same hash → update in place, not a second row.
         record_id2 = await storage.upsert_training_file(
             file_hash="abc123",
             file_path="/docs/test.md",
@@ -104,7 +87,6 @@ class TestTrainingFilesStorage:
             chunks_completed=5,
             status="completed",
         )
-
         assert record_id == record_id2
 
         record = await storage.get_training_file_by_hash("abc123")
@@ -112,20 +94,34 @@ class TestTrainingFilesStorage:
         assert record["status"] == "completed"
         assert record["chunks_completed"] == 5
 
-        await storage.close()
+    async def test_update_progress_supports_resume(self, pin_storage) -> None:
+        storage = pin_storage
+        record_id = await storage.upsert_training_file(
+            file_hash="resume-me",
+            file_path="/docs/big.md",
+            file_size=4096,
+            chunks_total=10,
+            chunks_completed=0,
+            status="in_progress",
+        )
 
-    async def test_training_stats(self, tmp_path: Path) -> None:
-        from surreal_memory.core.brain import Brain
-        from surreal_memory.storage.sqlite_store import SQLiteStorage
+        await storage.update_training_file_progress(record_id, chunks_completed=4)
+        record = await storage.get_training_file_by_hash("resume-me")
+        assert record is not None
+        assert record["chunks_completed"] == 4
+        assert record["status"] == "in_progress"
 
-        storage = SQLiteStorage(tmp_path / "test.db")
-        await storage.initialize()
+        await storage.update_training_file_progress(
+            record_id, chunks_completed=10, status="completed"
+        )
+        record = await storage.get_training_file_by_hash("resume-me")
+        assert record is not None
+        assert record["chunks_completed"] == 10
+        assert record["status"] == "completed"
 
-        brain = Brain.create(name="test-brain")
-        await storage.save_brain(brain)
-        storage.set_brain(brain.id)
+    async def test_training_stats(self, pin_storage) -> None:
+        storage = pin_storage
 
-        # Add some records
         await storage.upsert_training_file(
             file_hash="h1",
             file_path="a.md",
@@ -149,4 +145,43 @@ class TestTrainingFilesStorage:
         assert stats["in_progress"] == 1
         assert stats["total_chunks"] == 6
 
-        await storage.close()
+    async def test_stats_empty_brain(self, pin_storage) -> None:
+        assert await pin_storage.get_training_stats() == {
+            "total_files": 0,
+            "completed": 0,
+            "in_progress": 0,
+            "failed": 0,
+            "total_chunks": 0,
+        }
+
+
+class TestTrainingDedupEndToEnd:
+    """Re-training an unchanged corpus must be a no-op on every backend."""
+
+    async def test_second_run_skips_unchanged_files(self, pin_storage, tmp_path) -> None:
+        from surreal_memory.core.brain import BrainConfig
+        from surreal_memory.engine.doc_trainer import DocTrainer, TrainingConfig
+
+        docs = tmp_path / "docs"
+        docs.mkdir()
+        (docs / "guide.md").write_text(
+            "# Guide\n\n"
+            + (
+                "The deployment pipeline uses Kubernetes and Helm charts to roll "
+                "out services across the staging cluster. " * 6
+            ),
+            encoding="utf-8",
+        )
+
+        trainer = DocTrainer(pin_storage, BrainConfig())
+        tc = TrainingConfig(consolidate=False)
+
+        first = await trainer.train_directory(docs, training_config=tc)
+        assert first.files_processed == 1
+        assert first.chunks_encoded > 0
+        fibers_after_first = len(await pin_storage.get_fibers(limit=10_000))
+
+        second = await trainer.train_directory(docs, training_config=tc)
+        assert second.files_processed == 0, "unchanged file must be skipped on re-train"
+        assert second.chunks_encoded == 0
+        assert len(await pin_storage.get_fibers(limit=10_000)) == fibers_after_first

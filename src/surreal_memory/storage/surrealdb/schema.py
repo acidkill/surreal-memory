@@ -451,6 +451,28 @@ DEFINE INDEX idx_rtr_hash   ON reasoning_traces FIELDS brain_id, trace_hash;
 DEFINE INDEX idx_rtr_model  ON reasoning_traces FIELDS brain_id, model;
 DEFINE INDEX idx_rtr_unproc ON reasoning_traces FIELDS brain_id, processed;
 DEFINE INDEX idx_rtr_time   ON reasoning_traces FIELDS brain_id, created_at;
+
+-- Document-training files (content-hash dedup + resume for `smem train`).
+-- Purely additive, so it ships in SCHEMA_SQL rather than behind a SCHEMA_VERSION
+-- bump: ensure_schema is idempotent and runs before apply_migrations on every
+-- initialize(), so existing databases pick this up on their next start. Bumping
+-- the version would break them — MIGRATIONS keys off TARGET_VERSION, so raising
+-- it to 10 rewrites the (8, 9) entry to (8, 10) and strands every v8 database.
+DEFINE TABLE training_files SCHEMAFULL;
+DEFINE FIELD id               ON training_files TYPE string;
+DEFINE FIELD brain_id         ON training_files TYPE string;
+DEFINE FIELD file_hash        ON training_files TYPE string;
+DEFINE FIELD file_path        ON training_files TYPE string DEFAULT '';
+DEFINE FIELD file_size        ON training_files TYPE int DEFAULT 0;
+DEFINE FIELD chunks_total     ON training_files TYPE int DEFAULT 0;
+DEFINE FIELD chunks_completed ON training_files TYPE int DEFAULT 0;
+DEFINE FIELD status           ON training_files TYPE string DEFAULT 'pending';
+DEFINE FIELD domain_tag       ON training_files TYPE string DEFAULT '';
+DEFINE FIELD trained_at       ON training_files TYPE option<datetime>;
+DEFINE FIELD created_at       ON training_files TYPE datetime DEFAULT time::now();
+DEFINE INDEX idx_tfile_brain  ON training_files FIELDS brain_id;
+DEFINE INDEX idx_tfile_hash   ON training_files FIELDS brain_id, file_hash UNIQUE;
+DEFINE INDEX idx_tfile_status ON training_files FIELDS brain_id, status;
 """
 
 

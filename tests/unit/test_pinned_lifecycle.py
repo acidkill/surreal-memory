@@ -252,20 +252,18 @@ class TestPinnedPruneBypass:
 
 
 class TestPinUnpin:
-    """Test pin/unpin operations."""
+    """Pin/unpin/list against every backend that stores memories.
 
-    async def test_pin_fibers(self, tmp_path):
-        from surreal_memory.storage.sqlite_store import SQLiteStorage
+    These used to run against SQLiteStorage only. That is exactly how the gap
+    hid: ``pin_fibers``, ``get_pinned_neuron_ids`` and ``list_pinned_fibers``
+    existed on no other backend, every caller probed for them with ``hasattr``,
+    and so on SurrealDB — the production backend since 2.0.0 — decay and prune
+    silently deleted pinned memories while ``smem_pin`` refused to run at all.
+    Parametrizing over backends is what keeps that from being reintroduced.
+    """
 
-        storage = SQLiteStorage(tmp_path / "test.db")
-        await storage.initialize()
-
-        from surreal_memory.core.brain import Brain
-
-        brain = Brain.create(name="test-brain")
-        await storage.save_brain(brain)
-        storage.set_brain(brain.id)
-
+    async def test_pin_and_unpin_round_trip(self, pin_storage) -> None:
+        storage = pin_storage
         neuron = Neuron.create(type=NeuronType.ENTITY, content="test")
         await storage.add_neuron(neuron)
 
@@ -277,47 +275,54 @@ class TestPinUnpin:
         await storage.add_fiber(fiber)
         assert fiber.pinned is False
 
-        # Pin
-        count = await storage.pin_fibers([fiber.id], pinned=True)
-        assert count == 1
+        assert await storage.pin_fibers([fiber.id], pinned=True) == 1
+        updated = await storage.get_fiber(fiber.id)
+        assert updated is not None
+        assert updated.pinned is True
+
+        assert await storage.pin_fibers([fiber.id], pinned=False) == 1
+        updated = await storage.get_fiber(fiber.id)
+        assert updated is not None
+        assert updated.pinned is False
+
+    async def test_pin_empty_list_is_a_noop(self, pin_storage) -> None:
+        assert await pin_storage.pin_fibers([], pinned=True) == 0
+
+    async def test_pin_unknown_fiber_updates_nothing(self, pin_storage) -> None:
+        assert await pin_storage.pin_fibers(["does-not-exist"], pinned=True) == 0
+
+    async def test_repinning_still_counts_the_fiber(self, pin_storage) -> None:
+        """The count is "fibers matched", not "flags flipped".
+
+        SQLite reports the UPDATE rowcount, which ignores the prior value, and
+        smem_pin echoes it straight back to the user as "pinned N fiber(s)".
+        Every backend must agree, or the same call reports differently
+        depending on which one is configured.
+        """
+        storage = pin_storage
+        neuron = Neuron.create(type=NeuronType.ENTITY, content="test")
+        await storage.add_neuron(neuron)
+        fiber = Fiber.create(neuron_ids={neuron.id}, synapse_ids=set(), anchor_neuron_id=neuron.id)
+        await storage.add_fiber(fiber)
+
+        assert await storage.pin_fibers([fiber.id], pinned=True) == 1
+        assert await storage.pin_fibers([fiber.id], pinned=True) == 1
 
         updated = await storage.get_fiber(fiber.id)
         assert updated is not None
         assert updated.pinned is True
 
-        # Unpin
-        count = await storage.pin_fibers([fiber.id], pinned=False)
-        assert count == 1
-
-        updated = await storage.get_fiber(fiber.id)
-        assert updated is not None
-        assert updated.pinned is False
-
-        await storage.close()
-
-    async def test_get_pinned_neuron_ids(self, tmp_path):
-        from surreal_memory.storage.sqlite_store import SQLiteStorage
-
-        storage = SQLiteStorage(tmp_path / "test.db")
-        await storage.initialize()
-
-        from surreal_memory.core.brain import Brain
-
-        brain = Brain.create(name="test-brain")
-        await storage.save_brain(brain)
-        storage.set_brain(brain.id)
-
+    async def test_get_pinned_neuron_ids(self, pin_storage) -> None:
+        storage = pin_storage
         n1 = Neuron.create(type=NeuronType.ENTITY, content="pinned")
         n2 = Neuron.create(type=NeuronType.ENTITY, content="not pinned")
         await storage.add_neuron(n1)
         await storage.add_neuron(n2)
 
-        # Pinned fiber
         f1 = Fiber.create(neuron_ids={n1.id}, synapse_ids=set(), anchor_neuron_id=n1.id)
         f1 = dc_replace(f1, pinned=True)
         await storage.add_fiber(f1)
 
-        # Not pinned fiber
         f2 = Fiber.create(neuron_ids={n2.id}, synapse_ids=set(), anchor_neuron_id=n2.id)
         await storage.add_fiber(f2)
 
@@ -325,4 +330,40 @@ class TestPinUnpin:
         assert n1.id in pinned_ids
         assert n2.id not in pinned_ids
 
-        await storage.close()
+    async def test_list_pinned_fibers(self, pin_storage) -> None:
+        """Regression: this query selected fibers.type / fibers.priority, columns
+        that do not exist, so smem_pin(action="list") raised OperationalError on
+        SQLite and was unimplemented everywhere else — broken on every backend.
+        """
+        storage = pin_storage
+        neuron = Neuron.create(type=NeuronType.ENTITY, content="kb fact")
+        await storage.add_neuron(neuron)
+
+        fiber = Fiber.create(
+            neuron_ids={neuron.id},
+            synapse_ids=set(),
+            anchor_neuron_id=neuron.id,
+            summary="a pinned summary",
+        )
+        await storage.add_fiber(fiber)
+        await storage.pin_fibers([fiber.id], pinned=True)
+
+        listed = await storage.list_pinned_fibers()
+        assert len(listed) == 1
+        entry = listed[0]
+        assert entry["fiber_id"] == fiber.id
+        assert entry["summary"] == "a pinned summary"
+        # No typed memory attached, so type/priority fall back to documented defaults.
+        assert entry["type"] == "unknown"
+        assert entry["priority"] == 5
+        assert entry["tags"] == []
+        assert entry["created_at"]
+
+    async def test_list_pinned_fibers_excludes_unpinned(self, pin_storage) -> None:
+        storage = pin_storage
+        neuron = Neuron.create(type=NeuronType.ENTITY, content="ordinary")
+        await storage.add_neuron(neuron)
+        fiber = Fiber.create(neuron_ids={neuron.id}, synapse_ids=set(), anchor_neuron_id=neuron.id)
+        await storage.add_fiber(fiber)
+
+        assert await storage.list_pinned_fibers() == []

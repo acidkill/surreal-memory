@@ -145,10 +145,7 @@ class TrainHandler:
         )
         trained_count = sum(1 for n in doc_neurons if n.metadata.get("doc_train"))
 
-        # Include training file stats if available
-        file_stats: dict[str, Any] = {}
-        if hasattr(storage, "get_training_stats"):
-            file_stats = await storage.get_training_stats()
+        file_stats: dict[str, Any] = await storage.get_training_stats()
 
         result: dict[str, Any] = {
             "trained_chunks": trained_count,
@@ -174,8 +171,6 @@ class TrainHandler:
             action = "unpin"
 
         if action == "list":
-            if not hasattr(storage, "list_pinned_fibers"):
-                return {"error": "Storage does not support listing pinned fibers"}
             limit = min(args.get("limit", 50), 200)
             fibers = await storage.list_pinned_fibers(limit=limit)
             return {
@@ -190,9 +185,6 @@ class TrainHandler:
 
         if not isinstance(fiber_ids, list) or len(fiber_ids) > 100:
             return {"error": "fiber_ids must be a list of up to 100 IDs"}
-
-        if not hasattr(storage, "pin_fibers"):
-            return {"error": "Storage does not support pinning"}
 
         pinned = action == "pin"
         count = await storage.pin_fibers(fiber_ids, pinned=pinned)

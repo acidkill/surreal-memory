@@ -401,10 +401,18 @@ class SQLiteFiberMixin:
         brain_id = self._get_brain_id()
         safe_limit = min(limit, 200)
 
+        # ``type`` and ``priority`` are columns of typed_memories, not fibers —
+        # selecting them straight off ``fibers`` raised "no such column: type" on
+        # every call, so smem_pin(action="list") has never worked on any backend.
+        # LEFT JOIN so a pinned fiber with no typed-memory row still lists, at the
+        # documented defaults.
         async with conn.execute(
-            "SELECT id, summary, type, priority, tags, created_at "
-            "FROM fibers WHERE brain_id = ? AND pinned = 1 "
-            "ORDER BY created_at DESC LIMIT ?",
+            "SELECT f.id, f.summary, t.memory_type, t.priority, "
+            "COALESCE(t.tags, f.tags), f.created_at "
+            "FROM fibers f "
+            "LEFT JOIN typed_memories t ON t.brain_id = f.brain_id AND t.fiber_id = f.id "
+            "WHERE f.brain_id = ? AND f.pinned = 1 "
+            "ORDER BY f.created_at DESC LIMIT ?",
             (brain_id, safe_limit),
         ) as cursor:
             rows = await cursor.fetchall()

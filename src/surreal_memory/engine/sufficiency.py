@@ -9,7 +9,6 @@ worse than false-SUFFICIENT (wasting compute on reconstruction).
 
 Advanced features:
 - Per-query-type threshold profiles (strict / lenient / default)
-- EMA calibration adjustment (auto-tune based on historical accuracy)
 - Diminishing returns gate (future-proofing for multi-pass retrieval)
 """
 
@@ -52,18 +51,6 @@ class SufficiencyResult:
     gate: str
     reason: str
     metrics: SufficiencyMetrics
-
-
-@dataclass(frozen=True)
-class GateCalibration:
-    """EMA-derived calibration stats for a single gate.
-
-    Used to optionally adjust gate decisions based on historical accuracy.
-    """
-
-    accuracy: float
-    avg_confidence: float
-    sample_count: int
 
 
 @dataclass(frozen=True)
@@ -254,7 +241,6 @@ def check_sufficiency(
     stab_converged: bool,
     stab_neurons_removed: int,
     query_intent: str = "",
-    calibration: dict[str, GateCalibration] | None = None,
     prev_metrics: SufficiencyMetrics | None = None,
 ) -> SufficiencyResult:
     """Evaluate whether retrieval has sufficient signal for reconstruction.
@@ -270,7 +256,6 @@ def check_sufficiency(
         stab_neurons_removed: Neurons killed by noise floor.
         query_intent: Intent string from QueryParser (e.g. "ask_what").
             Used to select strict/lenient/default threshold profile.
-        calibration: Optional per-gate EMA stats (from get_gate_ema_stats).
             When provided, gates for SUFFICIENT decisions with low historical
             avg_confidence will be downgraded to INSUFFICIENT.
         prev_metrics: Optional metrics from a previous retrieval pass.
@@ -379,7 +364,7 @@ def check_sufficiency(
             ),
             metrics=m,
         )
-        return _apply_calibration(result, calibration)
+        return result
 
     # Gate 6: high_coverage_strong_hit
     _top_act_threshold_strong = 0.7 * profile.min_top_activation_factor
@@ -398,7 +383,7 @@ def check_sufficiency(
             ),
             metrics=m,
         )
-        return _apply_calibration(result, calibration)
+        return result
 
     # Gate 7: focused_result
     _top_act_threshold_focused = 0.5 * profile.min_top_activation_factor
@@ -417,7 +402,7 @@ def check_sufficiency(
             ),
             metrics=m,
         )
-        return _apply_calibration(result, calibration)
+        return result
 
     # Gate 8: default_pass
     result = SufficiencyResult(
@@ -427,77 +412,4 @@ def check_sufficiency(
         reason=f"Default pass: {m.neuron_count} neurons, conf={conf:.2f}",
         metrics=m,
     )
-    return _apply_calibration(result, calibration)
-
-
-# ---------------------------------------------------------------------------
-# Calibration adjustment
-# ---------------------------------------------------------------------------
-
-
-def _apply_calibration(
-    result: SufficiencyResult,
-    calibration: dict[str, GateCalibration] | None,
-) -> SufficiencyResult:
-    """Adjust gate decisions based on historical calibration.
-
-    Three modes:
-    1. High-accuracy gate (>0.8, >=10 samples): boost confidence by 10%
-       (trust this gate more — it's been reliably correct).
-    2. Low-accuracy gate (<0.4, >=10 samples): reduce confidence by 30%
-       (this gate often gets it wrong — dampen its signal).
-    3. Very low avg_confidence (<0.15, >=10 samples): downgrade to INSUFFICIENT
-       (systematic over-prediction — conservative fallback).
-
-    Does not upgrade INSUFFICIENT results (preserves conservative bias).
-    """
-    if calibration is None or not result.sufficient:
-        return result
-
-    gate_cal = calibration.get(result.gate)
-    if gate_cal is None:
-        return result
-
-    # Downgrade: gate historically predicts sufficient but actual results are weak
-    if gate_cal.avg_confidence < 0.15 and gate_cal.sample_count >= 10:
-        return SufficiencyResult(
-            sufficient=False,
-            confidence=max(0.0, min(result.confidence, gate_cal.avg_confidence)),
-            gate=result.gate,
-            reason=(
-                f"{result.reason} [calibration downgrade: "
-                f"avg_conf={gate_cal.avg_confidence:.2f}, "
-                f"n={gate_cal.sample_count}]"
-            ),
-            metrics=result.metrics,
-        )
-
-    # Low accuracy: dampen confidence (gate often wrong)
-    if gate_cal.accuracy < 0.4 and gate_cal.sample_count >= 10:
-        dampened = max(0.0, min(1.0, result.confidence * 0.7))
-        return SufficiencyResult(
-            sufficient=True,
-            confidence=dampened,
-            gate=result.gate,
-            reason=(
-                f"{result.reason} [calibration dampen: "
-                f"accuracy={gate_cal.accuracy:.2f}, conf {result.confidence:.2f}→{dampened:.2f}]"
-            ),
-            metrics=result.metrics,
-        )
-
-    # High accuracy: boost confidence (gate reliably correct)
-    if gate_cal.accuracy > 0.8 and gate_cal.sample_count >= 10:
-        boosted = max(0.0, min(1.0, result.confidence * 1.1))
-        return SufficiencyResult(
-            sufficient=True,
-            confidence=boosted,
-            gate=result.gate,
-            reason=(
-                f"{result.reason} [calibration boost: "
-                f"accuracy={gate_cal.accuracy:.2f}, conf {result.confidence:.2f}→{boosted:.2f}]"
-            ),
-            metrics=result.metrics,
-        )
-
     return result

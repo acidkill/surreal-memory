@@ -543,9 +543,7 @@ class ConsolidationEngine:
         pruned_synapse_ids: set[str] = set()
 
         # Preload pinned neuron IDs to protect from pruning
-        pinned_neuron_ids: set[str] = set()
-        if hasattr(self._storage, "get_pinned_neuron_ids"):
-            pinned_neuron_ids = await self._storage.get_pinned_neuron_ids()
+        pinned_neuron_ids = await self._storage.get_pinned_neuron_ids()
 
         # Build fiber salience cache for high-salience protection
         fibers_for_salience = await self._storage.get_fibers(limit=10000)

@@ -2078,3 +2078,98 @@ class NeuralStorage(ABC):
     async def find_source_by_name(self, name: str) -> Any:
         """Find a source by exact name."""
         raise NotImplementedError
+
+    # ========== Pinned (KB) Memory ==========
+    #
+    # These five, plus the four training-file methods below, used to exist only
+    # on SQLiteStorage. Every caller probed for them with ``hasattr`` and quietly
+    # did nothing when they were absent, so on SurrealDB — the production backend
+    # since 2.0.0 — pinning half-worked and training dedup never worked at all.
+    # ``Fiber.pinned`` round-trips fine, and compression, the tier engine and the
+    # typed-memory TTL sweep all honour it, but decay and prune resolve pinned
+    # neurons through ``get_pinned_neuron_ids``: without it they deleted exactly
+    # the memories the docs call permanent.
+    #
+    # They are declared here, concrete rather than abstract, because
+    # ``SharedStorage`` is a thin HTTP client with no local tables — making them
+    # abstract would stop it instantiating. The defaults below are the honest
+    # answer for a backend that stores none of this ("nothing is pinned",
+    # "no file has been trained"), which is what the ``hasattr`` probes already
+    # produced — only now it is declared, typed, and in one place.
+
+    async def pin_fibers(self, fiber_ids: list[str], pinned: bool = True) -> int:
+        """Pin or unpin fibers by ID. Returns the number of fibers updated.
+
+        Pinned fibers are permanent knowledge base content: decay, pruning and
+        compression all skip them.
+        """
+        return 0
+
+    async def get_pinned_neuron_ids(self) -> set[str]:
+        """Get every neuron ID belonging to a pinned fiber.
+
+        Consulted by decay (:mod:`~surreal_memory.engine.lifecycle`) and prune
+        (:mod:`~surreal_memory.engine.consolidation`) to skip pinned neurons. A
+        backend that returns an empty set here decays and prunes pinned memories
+        like any other.
+        """
+        return set()
+
+    async def list_pinned_fibers(self, limit: int = 50) -> list[dict[str, Any]]:
+        """List pinned fibers for the current brain, newest first."""
+        return []
+
+    # ========== Graph Statistics ==========
+
+    async def get_graph_density(self) -> float:
+        """Average synapses per neuron for the current brain, or 0.0 if empty.
+
+        Backs ``activation_strategy="auto"``: sparse graphs get classic BFS,
+        dense ones PPR. A backend returning 0.0 pins "auto" to classic forever.
+        """
+        return 0.0
+
+    # ========== Document Training Files ==========
+
+    async def upsert_training_file(
+        self,
+        *,
+        file_hash: str,
+        file_path: str,
+        file_size: int,
+        chunks_total: int = 0,
+        chunks_completed: int = 0,
+        status: str = "pending",
+        domain_tag: str = "",
+    ) -> str:
+        """Create or update a training file record, keyed by content hash.
+
+        Returns the record ID, or an empty string on a backend that does not
+        track training files.
+        """
+        return ""
+
+    async def get_training_file_by_hash(self, file_hash: str) -> dict[str, Any] | None:
+        """Look up a training file record by content hash.
+
+        Returns None when the file has not been trained — or on any backend that
+        does not track training files, which makes ``smem train`` re-encode the
+        whole corpus on every run.
+        """
+        return None
+
+    async def update_training_file_progress(
+        self, record_id: str, chunks_completed: int, status: str = "in_progress"
+    ) -> None:
+        """Update chunk progress for a training file, for resume support."""
+        return None
+
+    async def get_training_stats(self) -> dict[str, Any]:
+        """Training file counts for the current brain."""
+        return {
+            "total_files": 0,
+            "completed": 0,
+            "in_progress": 0,
+            "failed": 0,
+            "total_chunks": 0,
+        }

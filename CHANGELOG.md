@@ -5,6 +5,56 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — Pinned memories stop being deleted on the production backend
+
+### Pinning, training dedup and graph density only ever worked on SQLite
+
+Six storage methods lived on `SQLiteStorage` and were never declared on the
+`NeuralStorage` interface. Every caller reached for them through `hasattr` or a
+swallowed exception, so on SurrealDB — the production backend since 2.0.0 — they
+did nothing at all, and nothing reported it.
+
+The consequences were not cosmetic:
+
+- **Pinned memories were decayed and pruned.** `Fiber.pinned` round-tripped
+  fine, and compression, the tier engine and the typed-memory TTL sweep all
+  honoured it, but decay and prune resolve pinned neurons through
+  `get_pinned_neuron_ids()`. Without it they treated pinned fibers like any
+  other, deleting exactly the content `smem_train` documents as a permanent
+  knowledge base.
+- **`smem_pin` refused every action** — pin, unpin *and* list — answering
+  "Storage does not support pinning".
+- **`smem train` was not idempotent.** With no training-file tracking, each run
+  re-encoded the whole corpus and duplicated it.
+- **`activation_strategy="auto"` never left classic BFS**, because selecting PPR
+  or hybrid needs `get_graph_density()`.
+
+All of these are now declared on `NeuralStorage` and implemented on SurrealDB
+and the in-memory backend. Migration is automatic and additive: the `pinned`
+field was already in the SurrealDB schema, and the new `training_files` table is
+created by the idempotent `ensure_schema()` on next start, with no schema-version
+bump.
+
+### `smem_pin(action="list")` was broken on every backend
+
+The SQLite query selected `type` and `priority` from the `fibers` table, which
+has neither column, so the call raised `no such column: type` — on the one
+backend that implemented it at all. Both fields live on `typed_memories` and are
+now read from there. No test covered this path; the pin tests now run against
+every backend, as do the document-training tests.
+
+### Removed: retrieval calibration EMA
+
+The per-gate accuracy EMA and per-brain RRF retriever weights
+(`save_calibration_record`, `get_gate_ema_stats`, `get_retriever_weights` and
+their companions) are gone, along with `GateCalibration` and the two SQLite
+tables behind them. They were SQLite-only too, so no SurrealDB brain ever
+recorded a sample or had a gate decision or fusion weight adjusted by one.
+Sufficiency gates use their documented thresholds and RRF uses
+`DEFAULT_RETRIEVER_WEIGHTS` — precisely what every SurrealDB brain was already
+doing. `get_graph_density()` was kept and implemented, because it changes
+behaviour rather than reporting on it.
+
 ## [2.20.1] — A resolved model alias no longer points at a prior generation
 
 ### The reasoning-injection alias table pointed at a superseded model

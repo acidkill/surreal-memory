@@ -234,9 +234,6 @@ class DocTrainer:
 
     async def _is_file_already_trained(self, file_path: Path, tc: TrainingConfig) -> bool:
         """Check if a file has already been trained via content hash."""
-        if not hasattr(self._storage, "get_training_file_by_hash"):
-            return False
-
         try:
             from surreal_memory.utils.file_hash import compute_file_hash
 
@@ -253,9 +250,6 @@ class DocTrainer:
         self, file_path: Path, chunks_total: int, tc: TrainingConfig
     ) -> None:
         """Record a file as trained for future dedup."""
-        if not hasattr(self._storage, "upsert_training_file"):
-            return
-
         try:
             from surreal_memory.utils.file_hash import compute_file_hash
 
