@@ -227,7 +227,6 @@ async def main() -> None:
     print("\n" + "=" * 80)
     print("E2E OLLAMA bge-m3 RECALL — BASE QUERIES (6 EN)")
     print("=" * 80)
-    print(f"DB: {db_path}")
     print(f"Neurons: {len(all_neurons)} total, {emb_count} with embeddings")
     print(f"Provider: ollama / bge-m3 | Threshold: {brain_config.embedding_similarity_threshold}")
     print(f"Training time: {train_elapsed:.1f}s")
@@ -369,7 +368,6 @@ async def main() -> None:
     print(f"\nJSON results saved: {json_path}")
 
     await storage.close()
-    print(f"DB preserved at: {db_path}")
 
 
 if __name__ == "__main__":

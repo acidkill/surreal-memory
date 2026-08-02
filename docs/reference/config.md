@@ -15,7 +15,7 @@ Keys that sit outside any `[section]`.
 | `data_dir` | `Path` | `~/.surrealmemory` |  |
 | `current_brain` | `str` | `default` |  |
 | `device_id` | `str` | `""` |  |
-| `storage_backend` | `str` | `sqlite` |  |
+| `storage_backend` | `str` | `surrealdb` |  |
 | `json_output` | `bool` | `false` |  |
 | `default_depth` | `int \| None` | `None` |  |
 | `default_max_tokens` | `int` | `500` |  |
@@ -366,7 +366,7 @@ places, the environment wins.
 | `SURREALDB_DB` | `src/surreal_memory/cli/commands/storage.py`, `src/surreal_memory/storage/surrealdb/connection.py` |
 | `SURREALDB_NS` | `src/surreal_memory/cli/commands/storage.py`, `src/surreal_memory/storage/surrealdb/connection.py` |
 | `SURREALDB_PASS` | `src/surreal_memory/storage/surrealdb/connection.py`, `src/surreal_memory/unified_config.py` |
-| `SURREALDB_URL` | `src/surreal_memory/cli/commands/storage.py`, `src/surreal_memory/storage/surrealdb/connection.py`, `src/surreal_memory/unified_config.py` |
+| `SURREALDB_URL` | `src/surreal_memory/cli/commands/storage.py`, `src/surreal_memory/storage/surrealdb/connection.py` |
 | `SURREALDB_USER` | `src/surreal_memory/storage/surrealdb/connection.py` |
 | `SURREAL_MEMORY_API_KEY` | `src/surreal_memory/unified_config.py` |
 | `SURREAL_MEMORY_BRAIN` | `src/surreal_memory/cli/_helpers.py`, `src/surreal_memory/cli/commands/brain.py`, `src/surreal_memory/unified_config.py` |
