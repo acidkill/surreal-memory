@@ -5,7 +5,7 @@ aggregation lives in ``engine.uncertainty_report`` (shared with the dashboard ro
 which must not import ``mcp``). Actions:
 - overview (default): counts + contradiction_rate + samples (engine.build_brain_uncertainty).
 - contradictions: delegates to the ConflictHandler list (mixins share ``self``).
-- drift: detected drift clusters (SQLite-only; empty on backends without it).
+- drift: detected drift clusters (not yet implemented on this backend; always empty).
 - expiring: memories expiring within N days, brain-wide.
 - low_evidence: memories with trust_score <= 0.4 (bounded scan; surfaces truncation).
 """

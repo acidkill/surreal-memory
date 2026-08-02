@@ -22,7 +22,7 @@ async def setup_surreal_memory(
     registry: Any,
     workspace: Path,
     brain_id: str = "nanobot",
-    db_filename: str = "neural.db",
+    db_filename: str | None = None,
 ) -> NMMemoryStore:
     """Initialize Surreal-Memory and register tools with Nanobot.
 
@@ -30,20 +30,21 @@ async def setup_surreal_memory(
         registry: Nanobot's ToolRegistry (any object with ``register(tool)``).
         workspace: Nanobot workspace directory.
         brain_id: Brain identifier (default: ``"nanobot"``).
-        db_filename: SQLite database filename (default: ``"neural.db"``).
+        db_filename: JSON storage filename (default: ``f"{brain_id}.json"``,
+            so PersistentStorage's own file-stem-as-brain-name creates the
+            requested brain rather than a mismatched default one).
 
     Returns:
         NMMemoryStore that can replace Nanobot's ``MemoryStore``.
     """
+    from surreal_memory.cli.storage import PersistentStorage
     from surreal_memory.core.brain import Brain
-    from surreal_memory.storage.sqlite_store import SQLiteStorage
 
     db_dir = workspace / "memory"
     db_dir.mkdir(parents=True, exist_ok=True)
-    db_path = db_dir / db_filename
+    db_path = db_dir / (db_filename or f"{brain_id}.json")
 
-    storage = SQLiteStorage(str(db_path))
-    await storage.initialize()
+    storage = await PersistentStorage.load(db_path)
 
     brain = await storage.get_brain(brain_id)
     if brain is None:

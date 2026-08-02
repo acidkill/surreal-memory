@@ -18,9 +18,7 @@ import json
 import logging
 import os
 import re
-import shutil
 import tomllib
-import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -1019,23 +1017,33 @@ def _sanitize_sync_id(value: str) -> str:
     return cleaned
 
 
-_VALID_STORAGE_BACKENDS = {"sqlite", "surrealdb", "memory"}
+_VALID_STORAGE_BACKENDS = {"surrealdb", "memory"}
 
-SQLITE_REMOVAL_NOTICE = (
-    "The SQLite storage backend is deprecated and will be REMOVED in 3.0.0. "
-    "Migrate now: run `smem export backup.json`, set "
-    "SURREAL_MEMORY_STORAGE=surrealdb, then `smem import backup.json`. "
-    "For a persistence-free install, set SURREAL_MEMORY_STORAGE=memory. "
-    "See docs/guides/migrating-to-3.0.md."
+SQLITE_REMOVED_ERROR = (
+    "The SQLite storage backend was removed in 3.0.0. Choose one:\n"
+    "  - Production: docker compose -f docker-compose.surrealdb.yml up -d, "
+    "then set SURREAL_MEMORY_STORAGE=surrealdb\n"
+    "  - Persistence-free trial: set SURREAL_MEMORY_STORAGE=memory\n"
+    "Migrating existing data: see docs/guides/migrating-to-3.0.md\n"
+    "Your existing SQLite brains at ~/.surrealmemory/brains/*.db are untouched — "
+    "installing a 2.x release restores full access to them."
 )
 
 
 def _validate_storage_backend(value: str) -> str:
-    """Validate and return storage backend, defaulting to sqlite."""
+    """Validate and return storage backend, defaulting to surrealdb.
+
+    ``"sqlite"`` is a hard error rather than a silent fallback: routing a
+    misconfigured install onto an unintended backend looks like data loss
+    (memories go missing because they were never written to the backend the
+    user expects), which is worse than failing loudly.
+    """
+    if value == "sqlite":
+        raise ValueError(SQLITE_REMOVED_ERROR)
     if value in _VALID_STORAGE_BACKENDS:
         return value
-    logger.warning("Unknown storage_backend '%s', falling back to 'sqlite'", value)
-    return "sqlite"
+    logger.warning("Unknown storage_backend '%s', falling back to 'surrealdb'", value)
+    return "surrealdb"
 
 
 @dataclass(frozen=True)
@@ -1776,8 +1784,8 @@ class UnifiedConfig:
     # Multi-device sync settings
     sync: SyncConfig = field(default_factory=SyncConfig)
 
-    # Storage backend: "sqlite" (default) or "surrealdb"
-    storage_backend: str = "sqlite"
+    # Storage backend: "surrealdb" (default) or "memory"
+    storage_backend: str = "surrealdb"
 
     # Tool memory auto-capture
     tool_memory: ToolMemoryConfig = field(default_factory=ToolMemoryConfig)
@@ -1849,7 +1857,7 @@ class UnifiedConfig:
                 # so a fresh process does not silently cache a sqlite singleton
                 # while env says surrealdb (active brain would then read empty).
                 storage_backend=_validate_storage_backend(
-                    os.environ.get("SURREAL_MEMORY_STORAGE") or "sqlite"
+                    os.environ.get("SURREAL_MEMORY_STORAGE") or "surrealdb"
                 ),
             )
             config.save()
@@ -1900,7 +1908,9 @@ class UnifiedConfig:
             sync=_load_sync_settings(sync_data),
             storage_backend=_validate_storage_backend(
                 os.environ.get("SURREAL_MEMORY_STORAGE")
-                or str(data.get("storage_backend") or sync_data.get("storage_backend") or "sqlite")
+                or str(
+                    data.get("storage_backend") or sync_data.get("storage_backend") or "surrealdb"
+                )
             ),
             response=ResponseConfig.from_dict(data.get("response", {})),
             budget=BudgetRetrievalConfig.from_dict(data.get("budget", {})),
@@ -2347,100 +2357,6 @@ def _read_current_brain_from_toml() -> str | None:
     return None
 
 
-_MIN_LEGACY_DB_BYTES = 8192  # skip empty-schema-only files
-
-
-def _migrate_legacy_db(config: UnifiedConfig, brain_name: str | None) -> None:
-    """Auto-migrate flat-layout default.db → brains/default.db.
-
-    Before the brains/ directory was introduced, Surreal-Memory stored its
-    database at ``~/.surrealmemory/default.db``.  The new layout puts each
-    brain in ``~/.surrealmemory/brains/<name>.db``.
-
-    This function copies the old file into the new location **once**, so
-    users upgrading from older versions keep their data.  The old file is
-    preserved as a backup.
-
-    Only the ``"default"`` brain is eligible — it was the only brain that
-    existed in the flat layout.
-    """
-    name = brain_name or config.current_brain
-    if name != "default":
-        return
-
-    old_path = config.data_dir / "default.db"
-    new_path = config.brains_dir / "default.db"
-
-    if new_path.exists():
-        return
-    if not old_path.is_file():
-        return
-    if old_path.stat().st_size < _MIN_LEGACY_DB_BYTES:
-        return
-
-    logger = logging.getLogger(__name__)
-    try:
-        new_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(old_path, new_path)
-
-        # Also copy WAL/SHM if present so SQLite sees a consistent state.
-        for suffix in ("-wal", "-shm"):
-            wal = old_path.with_name(old_path.name + suffix)
-            if wal.is_file():
-                shutil.copy2(wal, new_path.with_name(new_path.name + suffix))
-
-        logger.info(
-            "Migrated legacy database: %s → %s (%d bytes)",
-            old_path,
-            new_path,
-            new_path.stat().st_size,
-        )
-    except Exception:
-        logger.warning(
-            "Failed to migrate legacy database %s — data is still safe in the original location",
-            old_path,
-            exc_info=True,
-        )
-
-
-_sqlite_backend_warned = False
-
-
-def _warn_sqlite_backend() -> None:
-    """Emit a one-time warning when the active backend resolves to SQLite.
-
-    surreal-memory targets SurrealDB; SQLite is only an internal test fixture.
-    A common misconfiguration is leaving ``storage_backend = "sqlite"`` (the
-    default) while SurrealDB connection vars are set, which silently splits a
-    user's memories between a local SQLite brain and the SurrealDB the
-    dashboard reads — producing the "two brains" / dashboard-vs-CLI divergence.
-    Surface that loudly instead of failing silently.
-    """
-    global _sqlite_backend_warned
-    if _sqlite_backend_warned:
-        return
-    _sqlite_backend_warned = True
-    logger = logging.getLogger(__name__)
-    warnings.warn(SQLITE_REMOVAL_NOTICE, DeprecationWarning, stacklevel=3)
-    has_surreal_env = bool(os.environ.get("SURREALDB_URL") or os.environ.get("SURREALDB_PASS"))
-    if has_surreal_env:
-        logger.warning(
-            "storage_backend is 'sqlite' but SurrealDB connection env "
-            "(SURREALDB_URL/SURREALDB_PASS) is set. Memories will be written to a "
-            "LOCAL SQLite brain, NOT SurrealDB — this splits your data across two "
-            "stores (the dashboard reads SurrealDB). Set "
-            'SURREAL_MEMORY_STORAGE=surrealdb (or storage_backend = "surrealdb" '
-            "in config.toml) to use SurrealDB. %s",
-            SQLITE_REMOVAL_NOTICE,
-        )
-    else:
-        logger.warning(
-            "Using the SQLite storage backend (internal test fixture). For real "
-            "use set SURREAL_MEMORY_STORAGE=surrealdb. %s",
-            SQLITE_REMOVAL_NOTICE,
-        )
-
-
 _missing_surreal_pass_warned = False
 
 
@@ -2518,12 +2434,11 @@ async def get_shared_storage(brain_name: str | None = None) -> NeuralStorage:
     if config.storage_backend == "memory":
         return await _get_memory_storage(config, name)
 
-    # Default: SQLite — internal test fixture only, removed in 3.0.0. Production
-    # must set storage_backend = "surrealdb" explicitly. Warn loudly so a
-    # misconfigured install does not silently route memories into a local SQLite
-    # brain that then diverges from the SurrealDB the dashboard reads.
-    _warn_sqlite_backend()
-    return await _get_sqlite_storage(config, name, brain_name)
+    # Unreachable via normal config construction (_validate_storage_backend only
+    # ever produces "surrealdb"/"memory"), but a caller could bypass validation
+    # by constructing UnifiedConfig directly. Fail loudly rather than silently
+    # routing memories somewhere the caller didn't expect.
+    raise ValueError(SQLITE_REMOVED_ERROR)
 
 
 async def list_available_brains() -> list[str]:
@@ -2643,67 +2558,6 @@ async def _get_memory_storage(config: UnifiedConfig, name: str) -> NeuralStorage
             brain = Brain.create(name=name, config=brain_config, brain_id=name)
             await storage.save_brain(brain)
 
-        storage.set_brain(name)
-        _storage_cache[cache_key] = storage
-        return storage
-
-
-async def _get_sqlite_storage(
-    config: UnifiedConfig,
-    name: str,
-    brain_name: str | None,
-) -> NeuralStorage:
-    """Create or return cached SQLiteStorage (lock-protected against races)."""
-    lock = _get_storage_lock()
-    from surreal_memory.core.brain import Brain
-    from surreal_memory.storage.sqlite_store import SQLiteStorage
-
-    # Auto-migrate flat-layout DB → brains/ layout (one-time, non-blocking)
-    _migrate_legacy_db(config, brain_name)
-
-    db_path = config.get_brain_db_path(brain_name)
-    cache_key = str(db_path)
-
-    async with lock:
-        # Return cached storage if available and still open
-        if cache_key in _storage_cache:
-            cached = _storage_cache[cache_key]
-            if getattr(cached, "_conn", None) is not None:
-                cached.set_brain(name)
-                return cached
-
-        # Ensure directory exists
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Create and initialize storage
-        storage = SQLiteStorage(db_path)
-        try:
-            await storage.initialize()
-        except Exception:
-            await storage.close()
-            raise
-
-        # Create brain if it doesn't exist
-        # Try by id first (normal case: brain_id == name),
-        # then fallback to name lookup (handles brains with UUID ids from older versions)
-        brain = await storage.get_brain(name)
-        if brain is None:
-            brain = await storage.find_brain_by_name(name)
-
-        if brain is None:
-            from surreal_memory.core.brain import BrainConfig
-
-            brain_config = BrainConfig(
-                **config.brain.to_brain_config_kwargs(config.embedding, config.reranker)
-            )
-            brain = Brain.create(name=name, config=brain_config, brain_id=name)
-            await storage.save_brain(brain)
-        else:
-            await _migrate_brain_runtime_config(storage, brain, config)
-
-        # Match the cache-hit path above (which uses `name`): brain.id is a UUID
-        # for brains created by older versions, and binding the scope to it would
-        # split writes into a brain that lookups by name never see.
         storage.set_brain(name)
         _storage_cache[cache_key] = storage
         return storage

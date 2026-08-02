@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 class NMContext:
     """Shared context for all Nanobot integration components."""
 
-    storage: Any  # SQLiteStorage | InMemoryStorage
+    storage: Any  # PersistentStorage | InMemoryStorage
     brain: Brain
     config: BrainConfig
 

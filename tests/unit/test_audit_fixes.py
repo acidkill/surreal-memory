@@ -12,7 +12,6 @@ Coverage:
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -21,7 +20,6 @@ import pytest
 from surreal_memory.core.fiber import Fiber
 from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.storage.memory_store import InMemoryStorage
-from surreal_memory.storage.sqlite_store import SQLiteStorage
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -29,18 +27,13 @@ from surreal_memory.storage.sqlite_store import SQLiteStorage
 
 
 @pytest.fixture
-async def sqlite_storage(tmp_path: Path) -> SQLiteStorage:
-    store = SQLiteStorage(tmp_path / "test.db")
-    await store.initialize()
-    await store._ensure_conn().execute(
-        "INSERT OR IGNORE INTO brains (id, name, config, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-        ("test-brain", "test", "{}", "2026-01-01T00:00:00", "2026-01-01T00:00:00"),
-    )
-    await store._ensure_conn().commit()
+async def sqlite_storage() -> InMemoryStorage:
+    from surreal_memory.core.brain import Brain
+
+    store = InMemoryStorage()
+    brain = Brain.create(name="test", brain_id="test-brain")
+    await store.save_brain(brain)
     store.set_brain("test-brain")
-    # Disable read pool so find_* queries use the write connection and see
-    # all committed rows immediately (avoids WAL snapshot isolation in tests).
-    store._read_pool = None
     return store
 
 
@@ -76,7 +69,7 @@ def _make_fiber(
 
 
 async def _add_fiber_with_neuron(
-    storage: SQLiteStorage, anchor_id: str, **fiber_kwargs: Any
+    storage: InMemoryStorage, anchor_id: str, **fiber_kwargs: Any
 ) -> Fiber:
     """Insert an anchor neuron then add a fiber referencing it.
 
@@ -164,7 +157,7 @@ class TestNeuronsCreatedCounter:
 
     @pytest.mark.asyncio
     async def test_neurons_created_nonzero_for_used_with(
-        self, sqlite_storage: SQLiteStorage
+        self, sqlite_storage: InMemoryStorage
     ) -> None:
         """Two tools appearing together enough times should produce created neurons > 0."""
         from surreal_memory.engine.tool_memory import process_events
@@ -221,7 +214,7 @@ class TestNeuronsCreatedCounter:
         )
 
     @pytest.mark.asyncio
-    async def test_neurons_created_for_effective_for(self, sqlite_storage: SQLiteStorage) -> None:
+    async def test_neurons_created_for_effective_for(self, sqlite_storage: InMemoryStorage) -> None:
         """Tool + task_context appearing enough times should create 2 neurons."""
         from surreal_memory.engine.tool_memory import process_events
         from surreal_memory.unified_config import ToolMemoryConfig
@@ -246,7 +239,7 @@ class TestNeuronsCreatedCounter:
         assert result.neurons_created >= 2
 
     @pytest.mark.asyncio
-    async def test_second_run_reuses_neurons(self, sqlite_storage: SQLiteStorage) -> None:
+    async def test_second_run_reuses_neurons(self, sqlite_storage: InMemoryStorage) -> None:
         """Second process_events call should not create duplicate neurons."""
         from surreal_memory.engine.tool_memory import process_events
         from surreal_memory.unified_config import ToolMemoryConfig
@@ -349,29 +342,6 @@ class TestMetadataKeyFilter:
         assert fiber_with.id in result_ids
         assert fiber_without.id not in result_ids
 
-    @pytest.mark.asyncio
-    async def test_sqlite_dot_notation_finds_key(self, sqlite_storage: SQLiteStorage) -> None:
-        """SQLite json_extract with dot notation ($.key) works for simple keys.
-
-        This verifies the DB-level metadata_key query produces results.
-        Note: bracket notation ($["key"]) may fail on some SQLite builds;
-        this test uses the write connection directly to confirm dot notation works.
-        """
-        fiber = await _add_fiber_with_neuron(
-            sqlite_storage, "n-sql-1", metadata={"sql_key": "present"}
-        )
-        conn = sqlite_storage._ensure_conn()
-        async with conn.execute(
-            "SELECT id FROM fibers"
-            " WHERE brain_id = ?"
-            " AND json_extract(metadata, '$.sql_key') IS NOT NULL",
-            ("test-brain",),
-        ) as cur:
-            rows = await cur.fetchall()
-        assert any(row["id"] == fiber.id for row in rows), (
-            "dot notation json_extract should find the fiber with sql_key"
-        )
-
 
 # ---------------------------------------------------------------------------
 # 2.10.3: metadata_key filter must apply BEFORE limit (habits-empty regression)
@@ -387,7 +357,7 @@ class TestMetadataKeyFilterBeyondLimit:
 
     @pytest.mark.asyncio
     async def test_marked_fiber_found_despite_higher_salience_unmarked(
-        self, sqlite_storage: SQLiteStorage
+        self, sqlite_storage: InMemoryStorage
     ) -> None:
         # 14 high-salience fibers WITHOUT the marker fill the top of the salience
         # ordering; a first-`limit` slice would be entirely these.
@@ -573,7 +543,7 @@ class TestTagsFilterOrdering:
 
     @pytest.mark.asyncio
     async def test_tags_filter_returns_highest_salience_matches(
-        self, sqlite_storage: SQLiteStorage
+        self, sqlite_storage: InMemoryStorage
     ) -> None:
         """With limit=2, should return the 2 highest-salience fibers that have the tag."""
         # Insert 6 fibers: even indices have the tag, varying salience
@@ -597,7 +567,7 @@ class TestTagsFilterOrdering:
         assert result_saliences[1] == pytest.approx(0.2, abs=1e-6)
 
     @pytest.mark.asyncio
-    async def test_tags_filter_empty_when_no_match(self, sqlite_storage: SQLiteStorage) -> None:
+    async def test_tags_filter_empty_when_no_match(self, sqlite_storage: InMemoryStorage) -> None:
         """Tags filter with no matching fibers returns empty list."""
         for i in range(3):
             await _add_fiber_with_neuron(sqlite_storage, f"n-notag-{i}", tags={"other"})

@@ -12,7 +12,7 @@ from surreal_memory.engine.consolidation import (
 from surreal_memory.engine.diagnostics import DiagnosticsEngine
 from surreal_memory.engine.encoder import MemoryEncoder
 from surreal_memory.engine.retrieval import ReflexPipeline
-from surreal_memory.storage.sqlite_store import SQLiteStorage
+from surreal_memory.storage.memory_store import InMemoryStorage
 
 pytestmark = [pytest.mark.stress, pytest.mark.asyncio]
 
@@ -21,7 +21,7 @@ class TestFullSessionWorkflow:
     """Simulate a realistic Claude Code session with multiple MCP tools."""
 
     async def test_session_workflow_all_tools_succeed(
-        self, sqlite_storage: SQLiteStorage, encoder: MemoryEncoder
+        self, sqlite_storage: InMemoryStorage, encoder: MemoryEncoder
     ) -> None:
         brain = await sqlite_storage.get_brain(sqlite_storage._current_brain_id)  # type: ignore[arg-type]
         assert brain is not None
@@ -67,7 +67,7 @@ class TestConflictDetectionAndResolution:
     """Test full conflict lifecycle: detect → list → verify."""
 
     async def test_conflicting_memories_stored_correctly(
-        self, sqlite_storage: SQLiteStorage, encoder: MemoryEncoder
+        self, sqlite_storage: InMemoryStorage, encoder: MemoryEncoder
     ) -> None:
         # Store two potentially conflicting facts
         r1 = await encoder.encode("The primary database is PostgreSQL version 14")
@@ -107,7 +107,7 @@ class TestVersionControlWithConsolidation:
     """Test versioning captures consolidation changes."""
 
     async def test_version_diff_reflects_consolidation(
-        self, sqlite_storage: SQLiteStorage, encoder: MemoryEncoder
+        self, sqlite_storage: InMemoryStorage, encoder: MemoryEncoder
     ) -> None:
         brain_id = sqlite_storage._current_brain_id
         assert brain_id is not None
@@ -140,7 +140,7 @@ class TestTagValidation:
     """Test that invalid tags are handled gracefully."""
 
     async def test_encoding_with_various_tags(
-        self, sqlite_storage: SQLiteStorage, encoder: MemoryEncoder
+        self, sqlite_storage: InMemoryStorage, encoder: MemoryEncoder
     ) -> None:
         # Encode with valid tags
         result = await encoder.encode(
@@ -158,7 +158,7 @@ class TestTagValidation:
         assert len(all_tags) > 0
 
     async def test_empty_tags_accepted(
-        self, sqlite_storage: SQLiteStorage, encoder: MemoryEncoder
+        self, sqlite_storage: InMemoryStorage, encoder: MemoryEncoder
     ) -> None:
         result = await encoder.encode(
             "Simple memory without explicit tags",
@@ -173,7 +173,7 @@ class TestAutoCaptureWithRemember:
     """Test that auto-detected patterns don't conflict with manual encoding."""
 
     async def test_explicit_and_auto_detection_produce_distinct_fibers(
-        self, sqlite_storage: SQLiteStorage, encoder: MemoryEncoder
+        self, sqlite_storage: InMemoryStorage, encoder: MemoryEncoder
     ) -> None:
         brain_id = sqlite_storage._current_brain_id
         assert brain_id is not None

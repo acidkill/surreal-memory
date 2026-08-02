@@ -818,16 +818,39 @@ class InMemoryStorage(
             return True
         return False
 
-    # ========== Tool Events (stub for protocol compat) ==========
+    # ========== Tool Events ==========
 
     async def insert_tool_events(self, brain_id: str, events: list[dict[str, Any]]) -> int:
         """Store tool events in memory (append to action_events list)."""
-        self._action_events[brain_id].extend(events)
-        return len(events)
+        stamped = [
+            {**event, "id": event.get("id") or uuid4().hex, "processed": False} for event in events
+        ]
+        self._action_events[brain_id].extend(stamped)
+        return len(stamped)
 
     async def get_unprocessed_events(self, brain_id: str, limit: int = 200) -> list[dict[str, Any]]:
-        """Return unprocessed tool events (in-memory: always empty)."""
-        return []
+        """Return unprocessed tool events (oldest first), mirroring SurrealDB's shape."""
+        safe_limit = min(int(limit), 10000)
+        unprocessed = [
+            ev
+            for ev in self._action_events.get(brain_id, [])
+            if "tool_name" in ev and not ev.get("processed", False)
+        ]
+        unprocessed.sort(key=lambda e: str(e.get("created_at", "")))
+        return [
+            {
+                "id": ev.get("id", ""),
+                "tool_name": ev.get("tool_name", ""),
+                "server_name": ev.get("server_name", ""),
+                "args_summary": ev.get("args_summary", ""),
+                "success": bool(ev.get("success", True)),
+                "duration_ms": ev.get("duration_ms", 0),
+                "session_id": ev.get("session_id", ""),
+                "task_context": ev.get("task_context", ""),
+                "created_at": ev.get("created_at", ""),
+            }
+            for ev in unprocessed[:safe_limit]
+        ]
 
     async def get_tool_events_for_mining(
         self,
@@ -858,7 +881,11 @@ class InMemoryStorage(
         return out[: min(int(limit), 20000)]
 
     async def mark_events_processed(self, brain_id: str, event_ids: list[int]) -> None:
-        """Mark events as processed (no-op for in-memory storage)."""
+        """Mark tool events as processed by their id."""
+        wanted = {str(e) for e in event_ids}
+        for ev in self._action_events.get(brain_id, []):
+            if str(ev.get("id", "")) in wanted:
+                ev["processed"] = True
 
     # ========== Reasoning Traces (in-memory staging buffer) ==========
 

@@ -14,16 +14,7 @@ import pytest
 from surreal_memory.core.brain import Brain
 from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.storage.memory_store import InMemoryStorage
-from surreal_memory.storage.sqlite_schema import SCHEMA_VERSION
 from surreal_memory.utils.timeutils import utcnow
-
-# ── Schema ──────────────────────────────────────────────────────────
-
-
-class TestSchemaVersion:
-    def test_schema_version_is_33(self) -> None:
-        assert SCHEMA_VERSION == 40
-
 
 # ── Neuron dataclass ────────────────────────────────────────────────
 

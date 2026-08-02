@@ -49,7 +49,7 @@ async def _train_async(
     from surreal_memory.engine.doc_trainer import DocTrainer, TrainingConfig
 
     config = get_config()
-    storage = await get_storage(config, force_sqlite=True)
+    storage = await get_storage(config, force_unified=True)
 
     target = Path(path).resolve()
     cwd = Path.cwd().resolve()

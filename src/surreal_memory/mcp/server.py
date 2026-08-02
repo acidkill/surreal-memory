@@ -4,8 +4,9 @@ Exposes Surreal-Memory as tools via Model Context Protocol (MCP),
 allowing Claude Code, Cursor, AntiGravity and other MCP clients to
 store and recall memories.
 
-All tools share the same SQLite database at ~/.surrealmemory/brains/<brain>.db
-This enables seamless memory sharing between different AI tools.
+All tools share the same storage backend (SurrealDB, configured via
+~/.surrealmemory/config.toml). This enables seamless memory sharing between
+different AI tools.
 
 Usage:
     # Run directly
@@ -72,7 +73,7 @@ def _sanitize_surrogates(obj: Any) -> Any:
     """Remove lone surrogate characters from strings in tool arguments.
 
     On Windows, stdio pipes can introduce surrogate characters (U+D800-U+DFFF)
-    that cause UnicodeEncodeError when passed to UTF-8 encoders or SQLite.
+    that cause UnicodeEncodeError when passed to UTF-8 encoders.
     """
     if isinstance(obj, str):
         return obj.encode("utf-8", errors="surrogatepass").decode("utf-8", errors="replace")
@@ -114,7 +115,7 @@ class MCPServer(
 ):
     """MCP server that exposes Surreal-Memory tools.
 
-    Uses shared SQLite storage for cross-tool memory sharing.
+    Uses shared storage (SurrealDB) for cross-tool memory sharing.
     Configuration from ~/.surrealmemory/config.toml
 
     Handler mixins:
@@ -683,8 +684,8 @@ async def run_mcp_server() -> None:
         server.cancel_scheduled_consolidation()
         server.cancel_version_check()
 
-        # Close aiosqlite connection before event loop exits to prevent
-        # "Event loop is closed" noise from the background thread.
+        # Close the storage connection before the event loop exits to prevent
+        # "Event loop is closed" noise from background async cleanup.
         if server._storage is not None:
             await server._storage.close()
 

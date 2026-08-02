@@ -8,7 +8,7 @@ import pytest
 
 from surreal_memory.engine.encoder import MemoryEncoder
 from surreal_memory.mcp.server import MCPServer
-from surreal_memory.storage.sqlite_store import SQLiteStorage
+from surreal_memory.storage.memory_store import InMemoryStorage
 
 pytestmark = [pytest.mark.stress, pytest.mark.asyncio]
 
@@ -17,7 +17,7 @@ class TestEncodeFailureNoOrphans:
     """If encoding fails mid-way, verify no orphan data persists."""
 
     async def test_fiber_save_failure_leaves_no_orphans(
-        self, sqlite_storage: SQLiteStorage, encoder: MemoryEncoder
+        self, sqlite_storage: InMemoryStorage, encoder: MemoryEncoder
     ) -> None:
         stats_before = await sqlite_storage.get_stats(
             sqlite_storage._current_brain_id  # type: ignore[arg-type]
@@ -41,8 +41,8 @@ class TestEncodeFailureNoOrphans:
         finally:
             sqlite_storage.add_fiber = original_add_fiber  # type: ignore[assignment]
 
-        # Note: In SQLiteStorage, individual operations auto-commit
-        # (disable_auto_save is a no-op). So neurons created before
+        # Note: individual operations auto-commit
+        # (disable_auto_save is a base-class no-op). So neurons created before
         # add_fiber failure ARE persisted. This documents the behavior.
         stats_after = await sqlite_storage.get_stats(
             sqlite_storage._current_brain_id  # type: ignore[arg-type]
@@ -56,7 +56,7 @@ class TestTransplantBrainSwitchRecovery:
     """Verify brain context is restored after transplant failure."""
 
     async def test_brain_id_restored_on_transplant_failure(
-        self, sqlite_storage: SQLiteStorage
+        self, sqlite_storage: InMemoryStorage
     ) -> None:
         from surreal_memory.core.brain import Brain, BrainConfig
 
@@ -167,7 +167,7 @@ class TestConflictResolveAtomicity:
     """Document non-atomic conflict resolution behavior."""
 
     async def test_partial_update_on_synapse_failure(
-        self, sqlite_storage: SQLiteStorage, encoder: MemoryEncoder
+        self, sqlite_storage: InMemoryStorage, encoder: MemoryEncoder
     ) -> None:
         # Encode two memories to create some neurons
         r1 = await encoder.encode("We use PostgreSQL for the main database")

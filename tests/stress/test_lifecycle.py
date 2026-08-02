@@ -1,4 +1,4 @@
-"""Stress tests — full lifecycle workflows with real SQLiteStorage."""
+"""Stress tests — full lifecycle workflows."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from surreal_memory.engine.consolidation import (
 )
 from surreal_memory.engine.encoder import MemoryEncoder
 from surreal_memory.engine.retrieval import ReflexPipeline
-from surreal_memory.storage.sqlite_store import SQLiteStorage
+from surreal_memory.storage.memory_store import InMemoryStorage
 
 pytestmark = [pytest.mark.stress, pytest.mark.asyncio]
 
@@ -23,7 +23,7 @@ class TestRememberThenRecall:
     """Store memories, then query each to verify round-trip through real SQLite."""
 
     async def test_five_memories_all_retrievable(
-        self, sqlite_storage: SQLiteStorage, encoder: MemoryEncoder
+        self, sqlite_storage: InMemoryStorage, encoder: MemoryEncoder
     ) -> None:
         contents = [
             "PostgreSQL supports JSONB columns for semi-structured data",
@@ -52,7 +52,7 @@ class TestRememberThenRecall:
         assert found >= 3, f"Only {found}/5 memories retrievable by keyword"
 
     async def test_encoded_memory_creates_neurons_and_synapses(
-        self, sqlite_storage: SQLiteStorage, encoder: MemoryEncoder
+        self, sqlite_storage: InMemoryStorage, encoder: MemoryEncoder
     ) -> None:
         result = await encoder.encode(
             "Met Alice at the coffee shop to discuss API design",
@@ -73,7 +73,7 @@ class TestConsolidationPreservesRecall:
     """Verify consolidation doesn't destroy important memories."""
 
     async def test_recall_quality_survives_consolidation(
-        self, sqlite_storage: SQLiteStorage, encoder: MemoryEncoder
+        self, sqlite_storage: InMemoryStorage, encoder: MemoryEncoder
     ) -> None:
         # Encode 20 memories
         memories = [
@@ -141,7 +141,7 @@ class TestConsolidationPreservesRecall:
 class TestMultiTypeDecayRates:
     """Verify different memory types get different decay rates."""
 
-    async def test_type_specific_decay_rates(self, sqlite_storage: SQLiteStorage) -> None:
+    async def test_type_specific_decay_rates(self, sqlite_storage: InMemoryStorage) -> None:
         brain = await sqlite_storage.get_brain(sqlite_storage._current_brain_id)  # type: ignore[arg-type]
         assert brain is not None
         encoder = MemoryEncoder(storage=sqlite_storage, config=brain.config)
@@ -172,7 +172,7 @@ class TestMultiTypeDecayRates:
 class TestConflictAutoDetection:
     """Verify conflicting memories trigger conflict detection."""
 
-    async def test_contradictory_facts_detected(self, sqlite_storage: SQLiteStorage) -> None:
+    async def test_contradictory_facts_detected(self, sqlite_storage: InMemoryStorage) -> None:
         brain = await sqlite_storage.get_brain(sqlite_storage._current_brain_id)  # type: ignore[arg-type]
         assert brain is not None
         encoder = MemoryEncoder(storage=sqlite_storage, config=brain.config)
@@ -205,7 +205,7 @@ class TestConflictAutoDetection:
 class TestRelatedMemoryDiscovery:
     """Verify that encoding related content discovers connections."""
 
-    async def test_related_memories_found(self, sqlite_storage: SQLiteStorage) -> None:
+    async def test_related_memories_found(self, sqlite_storage: InMemoryStorage) -> None:
         brain = await sqlite_storage.get_brain(sqlite_storage._current_brain_id)  # type: ignore[arg-type]
         assert brain is not None
         encoder = MemoryEncoder(storage=sqlite_storage, config=brain.config)
@@ -229,7 +229,7 @@ class TestRelatedMemoryDiscovery:
 class TestTypedMemoryExpiry:
     """Verify typed memories with expiry get cleaned up by consolidation."""
 
-    async def test_expired_memory_cleaned_by_prune(self, sqlite_storage: SQLiteStorage) -> None:
+    async def test_expired_memory_cleaned_by_prune(self, sqlite_storage: InMemoryStorage) -> None:
         brain = await sqlite_storage.get_brain(sqlite_storage._current_brain_id)  # type: ignore[arg-type]
         assert brain is not None
         encoder = MemoryEncoder(storage=sqlite_storage, config=brain.config)
@@ -258,7 +258,9 @@ class TestTypedMemoryExpiry:
 class TestRememberReturnsRelated:
     """Verify _remember enriches response with related memories."""
 
-    async def test_encoding_produces_linkable_neurons(self, sqlite_storage: SQLiteStorage) -> None:
+    async def test_encoding_produces_linkable_neurons(
+        self, sqlite_storage: InMemoryStorage
+    ) -> None:
         brain = await sqlite_storage.get_brain(sqlite_storage._current_brain_id)  # type: ignore[arg-type]
         assert brain is not None
         encoder = MemoryEncoder(storage=sqlite_storage, config=brain.config)

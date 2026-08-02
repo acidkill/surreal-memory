@@ -99,39 +99,26 @@ NLP and parsing utilities:
 ### Storage Layer
 
 Pluggable storage backends implementing `NeuralStorage`. **SurrealDB is the production
-backend**; SQLite and InMemory are retained solely as test fixtures (see `ROADMAP.md` and
-the [Storage Selection](#storage-selection) note below).
+backend**; InMemoryStorage is retained as a test fixture. The SQLite backend was removed in
+3.0.0 (see `docs/guides/migrating-to-3.0.md`).
 
 - **SurrealDBStorage** (`storage/surrealdb/`) - Multi-model production backend: neurons as
   documents, synapses as native SurrealDB `RELATE` graph edges, HNSW vector search over
   embeddings — all in one SurrealDB instance
-- **SQLiteStorage** (`storage/sqlite_store.py` + mixins) - Persistent, single-process; test
-  fixture only. A parity pass (ROADMAP "A1: SurrealDB Backend Parity") tracks remaining gaps
-  between the SQLite and SurrealDB feature surfaces
 - **InMemoryStorage** (`storage/memory_store.py`) - NetworkX-based; test fixture only
 - **SharedStorage** (`storage/shared_store.py`) - HTTP client for a remote Surreal-Memory
   server (`BrainMode.SHARED`)
-- **HybridStorage** (`storage/factory.py`) - Offline-first: writes to local SQLite, syncs to
-  a remote server (`BrainMode.HYBRID`)
 
 #### Storage Selection
 
-There are two independent storage-selection mechanisms in the codebase — worth calling out
-explicitly since they don't compose:
-
-1. **`unified_config.get_shared_storage()`** (`src/surreal_memory/unified_config.py`) - the
-   real entry point used by the CLI, MCP server, and REST server. It branches on
-   `config.storage_backend` (`"surrealdb"` or `"sqlite"`, set via `SURREAL_MEMORY_STORAGE`
-   or `config.toml`) and returns either a cached `SurrealDBStorage` or `SQLiteStorage`.
-   `storage_backend` defaults to `"sqlite"` for backward compatibility, but production setups
-   must set it to `"surrealdb"` — the CLI (`smem doctor`) and dashboard warn loudly if
-   SurrealDB connection env vars are present while `storage_backend` is still `"sqlite"`,
-   since that silently splits memories across two stores.
-2. **`storage.factory.create_storage(BrainModeConfig, ...)`** - a lower-level Python API
-   keyed off `BrainMode` (`LOCAL` → SQLite/InMemory, `SHARED` → `SharedStorage` HTTP client,
-   `HYBRID` → `HybridStorage`). This path has no `SURREALDB` mode and never returns a
-   `SurrealDBStorage` — it predates the SurrealDB migration and is used directly only by the
-   lower-level Python API (see README "Python API" section), not by the CLI/MCP/server.
+**`unified_config.get_shared_storage()`** (`src/surreal_memory/unified_config.py`) is the
+entry point used by the CLI, MCP server, and REST server. It branches on
+`config.storage_backend` (`"surrealdb"` or `"memory"`, set via `SURREAL_MEMORY_STORAGE` or
+`config.toml`) and returns either a cached `SurrealDBStorage` or `InMemoryStorage`.
+`storage_backend` defaults to `"surrealdb"`; `"memory"` is opt-in for trying the tool without
+provisioning a database (non-persistent — everything is lost on exit). Any other value
+(including the removed `"sqlite"`) is a hard `ValueError` naming both valid options, rather
+than a silent fallback that would look like data loss.
 
 `SurrealDBStorage` is intentionally not re-exported from `storage/__init__.py` — import it
 directly from `surreal_memory.storage.surrealdb`.
@@ -145,8 +132,7 @@ Fundamental data structures (`src/surreal_memory/core/`):
 - **Fiber** - Signal pathway with conductivity
 - **Brain** / **BrainConfig** - Container with configuration
 - **TypedMemory** (`memory_types.py`) - Metadata layer for memories (type, priority, tier)
-- **BrainMode** / **SharedConfig** / **HybridConfig** (`brain_mode.py`) - `create_storage()`
-  mode toggle (see [Storage Selection](#storage-selection))
+- **BrainMode** / **SharedConfig** (`brain_mode.py`) - remote vs. local storage mode toggle
 - **Alert**, **Project**, **Source**, **ReviewSchedule** - Supporting entities for proactive
   alerts, project scoping, source-aware memory, and spaced-repetition review
 
@@ -343,11 +329,10 @@ own SurrealDB instance (or Docker Compose service).
     └── ...
 ```
 
-This local layout applies only when `storage_backend = "sqlite"` (or InMemory, which
-persists nothing). When `storage_backend = "surrealdb"` (the recommended production backend; the
-built-in default value is `"sqlite"`), brain
-data lives inside the SurrealDB instance itself — e.g. the `surrealdb_data` Docker volume
-used by `docker-compose.surrealdb.yml` — not under `~/.surrealmemory/brains/`.
+This local layout is a relic of the removed SQLite backend. With `storage_backend =
+"surrealdb"` (the default) brain data lives inside the SurrealDB instance itself — e.g. the
+`surrealdb_data` Docker volume used by `docker-compose.surrealdb.yml` — not under
+`~/.surrealmemory/brains/`. `storage_backend = "memory"` persists nothing at all.
 
 ## Module Organization
 
@@ -416,21 +401,6 @@ src/surreal_memory/
 │   │   ├── activity.py               # Change log, device registry, Merkle hash mixin
 │   │   ├── depth_priors.py           # Bayesian depth prior mixin
 │   │   └── tool_events.py            # Tool-call event logging mixin
-│   │
-│   ├── sqlite_store.py              # SQLiteStorage (core) — TEST FIXTURE
-│   ├── sqlite_schema.py             # Schema DDL and migrations (schema v38)
-│   ├── sqlite_row_mappers.py        # Row-to-object converters
-│   ├── sqlite_neurons.py / sqlite_synapses.py / sqlite_fibers.py   # Core CRUD mixins
-│   ├── sqlite_typed.py / sqlite_projects.py / sqlite_alerts.py     # Feature CRUD mixins
-│   ├── sqlite_brain_ops.py / sqlite_versioning.py / sqlite_reviews.py
-│   ├── sqlite_maturation.py / sqlite_cognitive.py / sqlite_compression.py
-│   ├── sqlite_depth_priors.py / sqlite_coactivation.py / sqlite_drift.py
-│   ├── sqlite_change_log.py / sqlite_sync_state.py / sqlite_devices.py / sqlite_merkle.py
-│   ├── sqlite_action_log.py / sqlite_graph_stats.py / sqlite_entity_refs.py
-│   ├── sqlite_sources.py / sqlite_sessions.py / sqlite_training_files.py
-│   ├── sqlite_tool_events.py
-│   ├── read_pool.py                 # Read-only connection pool for parallel WAL reads
-│   ├── neuron_cache.py               # TTL cache for repeated exact-match neuron lookups
 │   │
 │   ├── memory_store.py              # InMemoryStorage (core, NetworkX-based) — TEST FIXTURE
 │   ├── memory_brain_ops.py          # InMemory brain operations mixin

@@ -364,7 +364,7 @@ class TestCheckSurrealdbConnection:
     def test_skip_when_storage_is_not_surrealdb(self, monkeypatch):
         from surreal_memory.cli.doctor import _check_surrealdb_connection
 
-        monkeypatch.setenv("SURREAL_MEMORY_STORAGE", "sqlite")
+        monkeypatch.setenv("SURREAL_MEMORY_STORAGE", "memory")
         result = _check_surrealdb_connection()
         assert result["status"] == "skip"
 

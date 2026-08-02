@@ -343,7 +343,7 @@ class TestSetup:
         mock_registry = MagicMock()
         store = await setup_surreal_memory(mock_registry, workspace, brain_id="test-setup")
 
-        db_path = workspace / "memory" / "neural.db"
+        db_path = workspace / "memory" / "test-setup.json"
         assert db_path.exists()
         assert mock_registry.register.call_count == 4
 

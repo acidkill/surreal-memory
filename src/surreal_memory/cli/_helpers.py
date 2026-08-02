@@ -87,7 +87,7 @@ async def get_storage(
     brain_name: str | None = None,
     force_shared: bool = False,
     force_local: bool = False,
-    force_sqlite: bool = False,
+    force_unified: bool = False,
 ) -> PersistentStorage:
     """
     Get storage for current brain.
@@ -97,16 +97,16 @@ async def get_storage(
         brain_name: Brain name override (default: config.current_brain)
         force_shared: Override config to use remote shared mode
         force_local: Override config to use local JSON mode
-        force_sqlite: Override config to use local SQLite mode
+        force_unified: Override config to use the unified surrealdb/memory backend
 
     Returns:
-        Storage instance (local JSON, local SQLite, or remote shared)
+        Storage instance (local JSON, unified surrealdb/memory, or remote shared)
     """
     # Priority: explicit arg > env var > config file
     name = resolve_brain(brain_name, config)
 
     # Remote shared mode (via server)
-    use_shared = (config.is_shared_mode or force_shared) and not force_local and not force_sqlite
+    use_shared = (config.is_shared_mode or force_shared) and not force_local and not force_unified
     if use_shared:
         from surreal_memory.storage.shared_store import SharedStorage
 
@@ -120,13 +120,13 @@ async def get_storage(
         _active_storages.append(storage)
         return storage  # type: ignore[return-value]
 
-    # SQLite mode (unified config - shared file-based storage)
-    if config.use_sqlite or force_sqlite:
+    # Unified config mode (surrealdb/memory backend)
+    if config.use_unified_storage or force_unified:
         from surreal_memory.unified_config import get_shared_storage
 
-        sqlite_storage = await get_shared_storage(name)
-        _active_storages.append(sqlite_storage)
-        return sqlite_storage  # type: ignore[return-value]
+        unified_storage = await get_shared_storage(name)
+        _active_storages.append(unified_storage)
+        return unified_storage  # type: ignore[return-value]
 
     # Legacy JSON mode
     brain_path = config.get_brain_path(name)
@@ -135,7 +135,7 @@ async def get_storage(
 
 def get_brain_path_auto(config: CLIConfig, brain_name: str | None = None) -> Path:
     """Get brain file path, choosing .db or .json based on storage mode."""
-    if config.use_sqlite:
+    if config.use_unified_storage:
         return config.get_brain_db_path(brain_name)
     return config.get_brain_path(brain_name)
 

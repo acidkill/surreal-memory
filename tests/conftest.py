@@ -48,27 +48,16 @@ async def storage(brain: Brain) -> AsyncGenerator[InMemoryStorage, None]:
     yield store
 
 
-@pytest_asyncio.fixture(params=["sqlite", "memory"])
-async def pin_storage(request: pytest.FixtureRequest, tmp_path) -> AsyncGenerator[Any, None]:
-    """A brain-scoped store, once per persistent backend.
+@pytest_asyncio.fixture
+async def pin_storage() -> AsyncGenerator[Any, None]:
+    """A brain-scoped in-memory store for pinning / training-file contract tests.
 
-    Pinning and document-training tracking were implemented on SQLite and
-    nowhere else, and their tests only ever instantiated ``SQLiteStorage`` — so
-    the suite stayed green while both features were dead on the production
-    backend. Anything asserting a storage *contract* rather than SQLite
-    behaviour should take this fixture, so a backend that silently does nothing
-    fails instead of being skipped.
-
-    SurrealDB is absent here only because it needs a live server; it is covered
-    by the integration suite.
+    Pinning and document-training tracking are now declared on NeuralStorage
+    and implemented on both SurrealDB and InMemoryStorage (see PR #139).
+    SurrealDB coverage lives in the integration suite, which needs a live
+    server; this fixture covers the same contract on the in-process backend.
     """
-    if request.param == "sqlite":
-        from surreal_memory.storage.sqlite_store import SQLiteStorage
-
-        store: Any = SQLiteStorage(tmp_path / "pin_storage.db")
-        await store.initialize()
-    else:
-        store = InMemoryStorage()
+    store: Any = InMemoryStorage()
 
     brain = Brain.create(name="pin-test-brain")
     await store.save_brain(brain)

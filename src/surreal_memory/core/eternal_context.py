@@ -1,6 +1,6 @@
 """Async query layer over the neural graph for session continuity.
 
-Queries TypedMemory entries in SQLiteStorage to assemble context
+Queries TypedMemory entries in storage to assemble context
 injection strings. All persistence happens through the existing
 MemoryEncoder + TypedMemory pipeline, making eternal context
 data discoverable by spreading activation (ReflexPipeline).

@@ -1,1 +1,1 @@
-"""Stress tests — real-world workflow simulations with SQLiteStorage."""
+"""Stress tests — real-world workflow simulations."""

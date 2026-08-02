@@ -471,19 +471,18 @@ class TestSchemaCompare:
         assert "error" in result
 
 
-# ──────────────────── SQLite storage tests ────────────────────
+# ──────────────────── Storage integration tests ────────────────────
 
 
-class TestSQLiteSchemaHistory:
+class TestSchemaHistoryStorage:
     """Integration tests for get_schema_history."""
 
     @pytest.mark.asyncio
     async def test_history_chain(self, tmp_path: Any) -> None:
         from surreal_memory.core.brain import Brain
-        from surreal_memory.storage.sqlite_store import SQLiteStorage
+        from surreal_memory.storage.memory_store import InMemoryStorage
 
-        storage = SQLiteStorage(tmp_path / "test.db")
-        await storage.initialize()
+        storage = InMemoryStorage()
 
         brain = Brain.create(name="test-brain")
         await storage.save_brain(brain)
@@ -522,10 +521,9 @@ class TestSQLiteSchemaHistory:
     @pytest.mark.asyncio
     async def test_history_single(self, tmp_path: Any) -> None:
         from surreal_memory.core.brain import Brain
-        from surreal_memory.storage.sqlite_store import SQLiteStorage
+        from surreal_memory.storage.memory_store import InMemoryStorage
 
-        storage = SQLiteStorage(tmp_path / "test.db")
-        await storage.initialize()
+        storage = InMemoryStorage()
 
         brain = Brain.create(name="test-brain")
         await storage.save_brain(brain)
@@ -542,10 +540,9 @@ class TestSQLiteSchemaHistory:
     @pytest.mark.asyncio
     async def test_history_not_found(self, tmp_path: Any) -> None:
         from surreal_memory.core.brain import Brain
-        from surreal_memory.storage.sqlite_store import SQLiteStorage
+        from surreal_memory.storage.memory_store import InMemoryStorage
 
-        storage = SQLiteStorage(tmp_path / "test.db")
-        await storage.initialize()
+        storage = InMemoryStorage()
 
         brain = Brain.create(name="test-brain")
         await storage.save_brain(brain)
@@ -560,10 +557,9 @@ class TestSQLiteSchemaHistory:
     async def test_history_cycle_guard(self, tmp_path: Any) -> None:
         """Cycle in parent_schema_id chain should not loop forever."""
         from surreal_memory.core.brain import Brain
-        from surreal_memory.storage.sqlite_store import SQLiteStorage
+        from surreal_memory.storage.memory_store import InMemoryStorage
 
-        storage = SQLiteStorage(tmp_path / "test.db")
-        await storage.initialize()
+        storage = InMemoryStorage()
 
         brain = Brain.create(name="test-brain")
         await storage.save_brain(brain)
@@ -592,10 +588,9 @@ class TestSQLiteSchemaHistory:
     async def test_history_max_depth(self, tmp_path: Any) -> None:
         """Chain deeper than max_depth should be capped."""
         from surreal_memory.core.brain import Brain
-        from surreal_memory.storage.sqlite_store import SQLiteStorage
+        from surreal_memory.storage.memory_store import InMemoryStorage
 
-        storage = SQLiteStorage(tmp_path / "test.db")
-        await storage.initialize()
+        storage = InMemoryStorage()
 
         brain = Brain.create(name="test-brain")
         await storage.save_brain(brain)

@@ -9,7 +9,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from surreal_memory import __version__
-from surreal_memory.storage.sqlite_schema import SCHEMA_VERSION
+
+# The health endpoint reports whatever schema_version the active backend
+# computes; this is just a stand-in constant for the inline test app below,
+# not a claim about a specific backend's real schema version.
+SCHEMA_VERSION = 1
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -30,7 +34,8 @@ def _make_app_with_storage(storage: Any | None, startup_offset: float = 0.0) -> 
     from surreal_memory import __version__ as _version
     from surreal_memory.server.models import HealthResponse, ReadyResponse
     from surreal_memory.storage.base import NeuralStorage
-    from surreal_memory.storage.sqlite_schema import SCHEMA_VERSION as _SV
+
+    _sv = SCHEMA_VERSION
 
     app = FastAPI()
     app.state.storage = storage  # type: ignore[assignment]
@@ -48,7 +53,7 @@ def _make_app_with_storage(storage: Any | None, startup_offset: float = 0.0) -> 
             version=_version,
             brain_name=brain_name,
             uptime_seconds=round(uptime, 3),
-            schema_version=_SV,
+            schema_version=_sv,
         )
 
     @app.get("/ready", response_model=ReadyResponse)

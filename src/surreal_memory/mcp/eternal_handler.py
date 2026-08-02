@@ -184,7 +184,7 @@ class EternalHandler:
     def _fire_eternal_trigger(self, text: str) -> None:
         """Fire-and-forget: check auto-save triggers.
 
-        Data is already persisted in SQLite by _remember()/_recall().
+        Data is already persisted by _remember()/_recall().
         Triggers now only track message count and log events.
         """
         if not self.config.eternal.enabled:

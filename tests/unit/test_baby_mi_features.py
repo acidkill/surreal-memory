@@ -1,16 +1,13 @@
 """Tests for Baby Mi feedback features (v2.28.0).
 
 Covers:
-1. FK constraint fix in update_fiber
-2. SEMANTIC alternative path (rehearsal count + distinct windows)
-3. Bulk remember batch
-4. Auto-promote context→fact
-5. Trust score field
+1. SEMANTIC alternative path (rehearsal count + distinct windows)
+2. Bulk remember batch
+3. Trust score field
 """
 
 from __future__ import annotations
 
-import json
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
@@ -29,58 +26,7 @@ from surreal_memory.engine.memory_stages import (
     compute_stage_transition,
 )
 from surreal_memory.mcp.constants import MAX_BATCH_SIZE, MAX_BATCH_TOTAL_CHARS
-from surreal_memory.storage.sqlite_schema import SCHEMA_VERSION
 from surreal_memory.utils.timeutils import utcnow
-
-# ─────────────────── #1: FK Constraint Fix ───────────────────
-
-
-class TestFKConstraintFix:
-    """update_fiber should gracefully skip when fiber was deleted."""
-
-    @pytest.mark.asyncio
-    async def test_update_fiber_deleted_fiber_no_exception(self):
-        """update_fiber with rowcount=0 should return, not raise."""
-        from surreal_memory.storage.sqlite_fibers import SQLiteFiberMixin
-
-        mixin = SQLiteFiberMixin()
-
-        # Mock connection — UPDATE returns rowcount=0 (fiber gone)
-        mock_cursor = AsyncMock()
-        mock_cursor.rowcount = 0
-        mock_conn = AsyncMock()
-        mock_conn.execute = AsyncMock(return_value=mock_cursor)
-
-        mixin._ensure_conn = MagicMock(return_value=mock_conn)  # type: ignore[attr-defined]
-        mixin._get_brain_id = MagicMock(return_value="test-brain")  # type: ignore[attr-defined]
-
-        fiber = MagicMock()
-        fiber.id = "deleted-fiber"
-        fiber.neuron_ids = {"n1"}
-        fiber.synapse_ids = {"s1"}
-        fiber.anchor_neuron_id = "n1"
-        fiber.pathway = []
-        fiber.conductivity = 1.0
-        fiber.last_conducted = None
-        fiber.time_start = None
-        fiber.time_end = None
-        fiber.coherence = 0.0
-        fiber.salience = 0.0
-        fiber.frequency = 0
-        fiber.summary = None
-        fiber.tags = set()
-        fiber.auto_tags = set()
-        fiber.agent_tags = set()
-        fiber.metadata = {}
-        fiber.compression_tier = 0
-        fiber.pinned = False
-
-        # Should NOT raise ValueError
-        await mixin.update_fiber(fiber)
-
-        # Should NOT call commit (early return)
-        mock_conn.commit.assert_not_called()
-
 
 # ─────────────────── #2: SEMANTIC Alternative Path ───────────────────
 
@@ -284,82 +230,11 @@ class TestBulkRemember:
         assert result["results"][2]["status"] == "ok"
 
 
-# ─────────────────── #4: Auto-Promote Context→Fact ───────────────────
-
-
-class TestAutoPromote:
-    """Context memories with frequency >= 5 get promoted to fact."""
-
-    @pytest.mark.asyncio
-    async def test_promote_memory_type_stores_audit_trail(self):
-        """Promotion should set metadata.auto_promoted and promoted_from."""
-        from surreal_memory.storage.sqlite_typed import SQLiteTypedMemoryMixin
-
-        mixin = SQLiteTypedMemoryMixin()
-
-        # Mock connection
-        mock_cursor = AsyncMock()
-        mock_cursor.fetchone = AsyncMock(return_value=(json.dumps({}), "context"))
-
-        mock_update_cursor = AsyncMock()
-        mock_update_cursor.rowcount = 1
-
-        call_count = 0
-
-        async def mock_execute(sql, params=None):
-            nonlocal call_count
-            call_count += 1
-            if "SELECT" in sql:
-                return mock_cursor
-            return mock_update_cursor
-
-        mock_conn = AsyncMock()
-        mock_conn.execute = mock_execute
-        mock_conn.commit = AsyncMock()
-
-        mixin._ensure_conn = MagicMock(return_value=mock_conn)  # type: ignore[attr-defined]
-        mixin._get_brain_id = MagicMock(return_value="test-brain")  # type: ignore[attr-defined]
-
-        result = await mixin.promote_memory_type(
-            fiber_id="f1",
-            new_type=MemoryType.FACT,
-            new_expires_at=None,
-        )
-        assert result is True
-
-    @pytest.mark.asyncio
-    async def test_promote_skips_already_same_type(self):
-        """Should not promote if already the target type."""
-        from surreal_memory.storage.sqlite_typed import SQLiteTypedMemoryMixin
-
-        mixin = SQLiteTypedMemoryMixin()
-
-        mock_cursor = AsyncMock()
-        mock_cursor.fetchone = AsyncMock(
-            return_value=(json.dumps({}), "fact")  # Already fact
-        )
-
-        mock_conn = AsyncMock()
-        mock_conn.execute = AsyncMock(return_value=mock_cursor)
-
-        mixin._ensure_conn = MagicMock(return_value=mock_conn)  # type: ignore[attr-defined]
-        mixin._get_brain_id = MagicMock(return_value="test-brain")  # type: ignore[attr-defined]
-
-        result = await mixin.promote_memory_type(
-            fiber_id="f1",
-            new_type=MemoryType.FACT,
-        )
-        assert result is False
-
-
 # ─────────────────── #5: Trust Score ───────────────────
 
 
 class TestTrustScore:
     """Trust score field on TypedMemory."""
-
-    def test_schema_version_25(self):
-        assert SCHEMA_VERSION == 40
 
     def test_trust_score_field_on_typed_memory(self):
         tm = TypedMemory.create(

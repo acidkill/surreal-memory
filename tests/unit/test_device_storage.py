@@ -7,8 +7,8 @@ import pathlib
 import pytest_asyncio
 
 from surreal_memory.core.brain import Brain, BrainConfig
+from surreal_memory.core.sync_records import DeviceRecord
 from surreal_memory.storage.memory_store import InMemoryStorage
-from surreal_memory.storage.sqlite_devices import DeviceRecord
 
 # ── Fixture ───────────────────────────────────────────────────────────────────
 

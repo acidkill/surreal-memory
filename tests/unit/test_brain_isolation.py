@@ -21,7 +21,7 @@ class TestEnvVarBrainPinning:
         """SURREAL_MEMORY_BRAIN should be used directly, not written to config.current_brain."""
         mock_config = MagicMock()
         mock_config.current_brain = "original-brain"
-        mock_config.storage_backend = "sqlite"
+        mock_config.storage_backend = "memory"
         mock_config.get_brain_db_path.return_value = tmp_path / "env-brain.db"  # type: ignore[operator]
 
         mock_storage = AsyncMock()
@@ -31,10 +31,10 @@ class TestEnvVarBrainPinning:
             patch("surreal_memory.unified_config.get_config", return_value=mock_config),
             patch.dict(os.environ, {"SURREAL_MEMORY_BRAIN": "env-brain"}, clear=False),
             patch(
-                "surreal_memory.unified_config._get_sqlite_storage",
+                "surreal_memory.unified_config._get_memory_storage",
                 new_callable=AsyncMock,
                 return_value=mock_storage,
-            ) as mock_get_sqlite,
+            ) as mock_get_memory,
         ):
             from surreal_memory.unified_config import get_shared_storage
 
@@ -44,8 +44,8 @@ class TestEnvVarBrainPinning:
             assert mock_config.current_brain == "original-brain"
 
             # Storage factory must receive the env var brain name
-            mock_get_sqlite.assert_awaited_once()
-            call_args = mock_get_sqlite.call_args
+            mock_get_memory.assert_awaited_once()
+            call_args = mock_get_memory.call_args
             assert call_args[0][1] == "env-brain"  # name argument
 
     @pytest.mark.asyncio
@@ -53,7 +53,7 @@ class TestEnvVarBrainPinning:
         """Without env var, should read from config.toml (existing behavior)."""
         mock_config = MagicMock()
         mock_config.current_brain = "config-brain"
-        mock_config.storage_backend = "sqlite"
+        mock_config.storage_backend = "memory"
 
         mock_storage = AsyncMock()
 
@@ -65,10 +65,10 @@ class TestEnvVarBrainPinning:
                 return_value="disk-brain",
             ),
             patch(
-                "surreal_memory.unified_config._get_sqlite_storage",
+                "surreal_memory.unified_config._get_memory_storage",
                 new_callable=AsyncMock,
                 return_value=mock_storage,
-            ) as mock_get_sqlite,
+            ) as mock_get_memory,
         ):
             # Ensure env vars are NOT set
             os.environ.pop("SURREAL_MEMORY_BRAIN", None)
@@ -79,7 +79,7 @@ class TestEnvVarBrainPinning:
 
             # Config SHOULD be updated from disk (existing behavior)
             assert mock_config.current_brain == "disk-brain"
-            call_args = mock_get_sqlite.call_args
+            call_args = mock_get_memory.call_args
             assert call_args[0][1] == "disk-brain"
 
     @pytest.mark.asyncio
@@ -87,7 +87,7 @@ class TestEnvVarBrainPinning:
         """Explicit brain_name param should override env var and config."""
         mock_config = MagicMock()
         mock_config.current_brain = "config-brain"
-        mock_config.storage_backend = "sqlite"
+        mock_config.storage_backend = "memory"
 
         mock_storage = AsyncMock()
 
@@ -95,17 +95,17 @@ class TestEnvVarBrainPinning:
             patch("surreal_memory.unified_config.get_config", return_value=mock_config),
             patch.dict(os.environ, {"SURREAL_MEMORY_BRAIN": "env-brain"}, clear=False),
             patch(
-                "surreal_memory.unified_config._get_sqlite_storage",
+                "surreal_memory.unified_config._get_memory_storage",
                 new_callable=AsyncMock,
                 return_value=mock_storage,
-            ) as mock_get_sqlite,
+            ) as mock_get_memory,
         ):
             from surreal_memory.unified_config import get_shared_storage
 
             await get_shared_storage(brain_name="explicit-brain")
 
             # Explicit param wins
-            call_args = mock_get_sqlite.call_args
+            call_args = mock_get_memory.call_args
             assert call_args[0][1] == "explicit-brain"
             # Config untouched
             assert mock_config.current_brain == "config-brain"
@@ -115,29 +115,29 @@ class TestEnvVarBrainPinning:
         """Simulate two 'processes' with different env vars — config stays clean."""
         mock_config = MagicMock()
         mock_config.current_brain = "default"
-        mock_config.storage_backend = "sqlite"
+        mock_config.storage_backend = "memory"
 
         mock_storage = AsyncMock()
 
         with (
             patch("surreal_memory.unified_config.get_config", return_value=mock_config),
             patch(
-                "surreal_memory.unified_config._get_sqlite_storage",
+                "surreal_memory.unified_config._get_memory_storage",
                 new_callable=AsyncMock,
                 return_value=mock_storage,
-            ) as mock_get_sqlite,
+            ) as mock_get_memory,
         ):
             from surreal_memory.unified_config import get_shared_storage
 
             # Agent A
             with patch.dict(os.environ, {"SURREAL_MEMORY_BRAIN": "brain-a"}):
                 await get_shared_storage()
-                assert mock_get_sqlite.call_args[0][1] == "brain-a"
+                assert mock_get_memory.call_args[0][1] == "brain-a"
 
             # Agent B
             with patch.dict(os.environ, {"SURREAL_MEMORY_BRAIN": "brain-b"}):
                 await get_shared_storage()
-                assert mock_get_sqlite.call_args[0][1] == "brain-b"
+                assert mock_get_memory.call_args[0][1] == "brain-b"
 
             # Config never mutated by either
             assert mock_config.current_brain == "default"
@@ -152,7 +152,7 @@ class TestCLIEnvVarBrainPinning:
         mock_cli_config = MagicMock()
         mock_cli_config.current_brain = "config-brain"
         mock_cli_config.is_shared_mode = False
-        mock_cli_config.use_sqlite = True
+        mock_cli_config.use_unified_storage = True
 
         mock_storage = AsyncMock()
 
@@ -178,7 +178,7 @@ class TestCLIEnvVarBrainPinning:
         mock_cli_config = MagicMock()
         mock_cli_config.current_brain = "config-brain"
         mock_cli_config.is_shared_mode = False
-        mock_cli_config.use_sqlite = True
+        mock_cli_config.use_unified_storage = True
 
         mock_storage = AsyncMock()
 
@@ -204,7 +204,7 @@ class TestCLIEnvVarBrainPinning:
         mock_cli_config = MagicMock()
         mock_cli_config.current_brain = "config-brain"
         mock_cli_config.is_shared_mode = False
-        mock_cli_config.use_sqlite = True
+        mock_cli_config.use_unified_storage = True
 
         mock_storage = AsyncMock()
 

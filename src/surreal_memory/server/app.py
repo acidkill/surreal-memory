@@ -43,9 +43,7 @@ _GRAPH_CACHE = TTLCache()
 def _active_schema_version() -> int:
     """Return the schema version of the backend actually in use.
 
-    /health used to report the SQLite schema version unconditionally, so a
-    SurrealDB deployment advertised a version number from a store it never
-    touched.
+    The memory backend has no persistent schema to version.
     """
     from surreal_memory.unified_config import get_config
 
@@ -54,9 +52,7 @@ def _active_schema_version() -> int:
 
         return SURREAL_VERSION
 
-    from surreal_memory.storage.sqlite_schema import SCHEMA_VERSION as SQLITE_VERSION
-
-    return SQLITE_VERSION
+    return 0
 
 
 @asynccontextmanager

@@ -229,7 +229,7 @@ class EvolutionHandler:
         elif action == "clear":
             habits = await storage.find_fibers(metadata_key="_habit_pattern", limit=1000)
             cleared = 0
-            # Delete sequentially to avoid overwhelming SQLite with concurrent writes
+            # Delete sequentially to keep the write pattern simple and traceable
             for h in habits:
                 await storage.delete_fiber(h.id)
                 cleared += 1

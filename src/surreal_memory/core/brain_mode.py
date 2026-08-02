@@ -11,7 +11,7 @@ class BrainMode(StrEnum):
     """Brain storage mode."""
 
     LOCAL = "local"
-    """Store memories locally only (SQLite or in-memory)."""
+    """Store memories locally only, in-process."""
 
     SHARED = "shared"
     """Connect to remote Surreal-Memory server for real-time sharing."""

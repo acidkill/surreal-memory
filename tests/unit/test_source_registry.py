@@ -94,35 +94,10 @@ class TestSourceOfSynapseType:
         assert SynapseType.SOURCE_OF.value == "source_of"
 
 
-# ──────────────────── Schema migration v23 ────────────────────
-
-
-class TestSchemaMigrationV23:
-    """Verify schema version and migration SQL."""
-
-    def test_schema_version_is_25(self) -> None:
-        from surreal_memory.storage.sqlite_schema import SCHEMA_VERSION
-
-        assert SCHEMA_VERSION == 40
-
-    def test_migration_22_23_exists(self) -> None:
-        from surreal_memory.storage.sqlite_schema import MIGRATIONS
-
-        assert (22, 23) in MIGRATIONS
-        stmts = MIGRATIONS[(22, 23)]
-        assert len(stmts) >= 1
-        assert "sources" in stmts[0].lower()
-
-    def test_full_schema_has_sources_table(self) -> None:
-        from surreal_memory.storage.sqlite_schema import SCHEMA
-
-        assert "CREATE TABLE IF NOT EXISTS sources" in SCHEMA
-
-
 # ──────────────────── SQLite storage mixin ────────────────────
 
 
-class TestSQLiteSourcesMixin:
+class TestSourcesStorage:
     """Test source CRUD via InMemoryStorage."""
 
     @pytest.fixture

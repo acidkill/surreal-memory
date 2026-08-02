@@ -216,8 +216,8 @@ class CLIConfig:
         return list(set(json_brains + db_brains))
 
     @property
-    def use_sqlite(self) -> bool:
-        """Check if SQLite storage should be used (unified mode)."""
+    def use_unified_storage(self) -> bool:
+        """Check if the unified config system (surrealdb/memory backend) should be used."""
         return use_unified_config()
 
     def get_brain_db_path(self, brain_name: str | None = None) -> Path:

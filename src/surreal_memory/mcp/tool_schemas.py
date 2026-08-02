@@ -1010,7 +1010,7 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
         "contradictions, low-evidence (low trust) facts, superseded facts, soon-expiring memories, and drift. "
         "Separate from smem_conflicts (which is CRUD). Read-only. Note: low_evidence/superseded sample the "
         "most-recent ~200 typed memories (see response 'scan.typed_scan_truncated'); contradiction count is "
-        "capped. Drift is available on SQLite backends only.",
+        "capped. Drift is not yet implemented on this backend.",
         "inputSchema": {
             "type": "object",
             "properties": {

@@ -45,7 +45,7 @@ class TestBrainIdProperty:
         assert storage.brain_id == storage.current_brain_id  # both "x"
 
 
-class TestSQLiteStorageBrainId:
+class TestInMemoryStorageBrainId:
     """Verify InMemoryStorage brain_id property."""
 
     @pytest.fixture
@@ -67,40 +67,40 @@ class TestSQLiteStorageBrainId:
 class TestHelpersForceFlags:
     """Verify _helpers.py get_storage logic precedence."""
 
-    def test_force_sqlite_overrides_shared_mode(self) -> None:
-        """force_sqlite=True must prevent shared mode even when is_shared_mode=True."""
+    def test_force_unified_overrides_shared_mode(self) -> None:
+        """force_unified=True must prevent shared mode even when is_shared_mode=True."""
         # This tests the logic expression, not full storage creation
         is_shared_mode = True
         force_shared = False
         force_local = False
-        force_sqlite = True
+        force_unified = True
 
-        use_shared = (is_shared_mode or force_shared) and not force_local and not force_sqlite
+        use_shared = (is_shared_mode or force_shared) and not force_local and not force_unified
         assert use_shared is False
 
     def test_force_shared_enables_shared_mode(self) -> None:
         is_shared_mode = False
         force_shared = True
         force_local = False
-        force_sqlite = False
+        force_unified = False
 
-        use_shared = (is_shared_mode or force_shared) and not force_local and not force_sqlite
+        use_shared = (is_shared_mode or force_shared) and not force_local and not force_unified
         assert use_shared is True
 
     def test_force_local_overrides_shared_mode(self) -> None:
         is_shared_mode = True
         force_shared = False
         force_local = True
-        force_sqlite = False
+        force_unified = False
 
-        use_shared = (is_shared_mode or force_shared) and not force_local and not force_sqlite
+        use_shared = (is_shared_mode or force_shared) and not force_local and not force_unified
         assert use_shared is False
 
     def test_default_no_shared(self) -> None:
         is_shared_mode = False
         force_shared = False
         force_local = False
-        force_sqlite = False
+        force_unified = False
 
-        use_shared = (is_shared_mode or force_shared) and not force_local and not force_sqlite
+        use_shared = (is_shared_mode or force_shared) and not force_local and not force_unified
         assert use_shared is False

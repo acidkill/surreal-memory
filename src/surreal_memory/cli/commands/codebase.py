@@ -36,7 +36,7 @@ async def _index_async(
     from surreal_memory.core.neuron import NeuronType
 
     config = get_config()
-    storage = await get_storage(config, force_sqlite=True)
+    storage = await get_storage(config, force_unified=True)
 
     if status:
         indexed_files = await storage.find_neurons(

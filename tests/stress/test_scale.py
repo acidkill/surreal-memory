@@ -11,7 +11,7 @@ from surreal_memory.engine.consolidation import (
 from surreal_memory.engine.diagnostics import DiagnosticsEngine
 from surreal_memory.engine.encoder import MemoryEncoder
 from surreal_memory.engine.retrieval import ReflexPipeline
-from surreal_memory.storage.sqlite_store import SQLiteStorage
+from surreal_memory.storage.memory_store import InMemoryStorage
 
 pytestmark = [pytest.mark.stress, pytest.mark.asyncio]
 
@@ -92,7 +92,7 @@ class TestBulkEncode:
     """Verify encoding 150 memories succeeds without errors."""
 
     async def test_150_memories_no_errors(
-        self, sqlite_storage: SQLiteStorage, encoder: MemoryEncoder
+        self, sqlite_storage: InMemoryStorage, encoder: MemoryEncoder
     ) -> None:
         memories = _generate_memories(150)
 
@@ -114,7 +114,7 @@ class TestRecallPrecisionAtScale:
     """After 150 memories, verify targeted queries find correct content."""
 
     async def test_queries_find_targets(
-        self, sqlite_storage: SQLiteStorage, encoder: MemoryEncoder
+        self, sqlite_storage: InMemoryStorage, encoder: MemoryEncoder
     ) -> None:
         memories = _generate_memories(150)
 
@@ -146,7 +146,7 @@ class TestHealthAtScale:
     """Run diagnostics on a 150-memory brain."""
 
     async def test_health_metrics_sane(
-        self, sqlite_storage: SQLiteStorage, encoder: MemoryEncoder
+        self, sqlite_storage: InMemoryStorage, encoder: MemoryEncoder
     ) -> None:
         memories = _generate_memories(150)
         for content in memories:
@@ -182,7 +182,7 @@ class TestConsolidationAtScale:
     """Run full consolidation on a 200-memory brain."""
 
     async def test_consolidation_completes(
-        self, sqlite_storage: SQLiteStorage, encoder: MemoryEncoder
+        self, sqlite_storage: InMemoryStorage, encoder: MemoryEncoder
     ) -> None:
         memories = _generate_memories(200)
         for content in memories:
@@ -209,7 +209,7 @@ class TestStatsAccuracy:
     """Verify stats counts match actual SQL data."""
 
     async def test_stats_match_reality(
-        self, sqlite_storage: SQLiteStorage, encoder: MemoryEncoder
+        self, sqlite_storage: InMemoryStorage, encoder: MemoryEncoder
     ) -> None:
         for i in range(25):
             await encoder.encode(f"Memory number {i}: test content about topic {i}")

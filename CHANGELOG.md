@@ -5,7 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — Pinned memories stop being deleted on the production backend
+## [3.0.0] — 2026-08-02 — The SQLite storage backend is removed
+
+### Breaking: `storage_backend = "sqlite"` is now a hard error
+
+SurrealDB has been the production backend since 2.0.0; SQLite was kept only as
+an internal test fixture, deprecated since 2.21.0. All 31 `storage/sqlite_*.py`
+modules, `storage/factory.py` (`HybridStorage`, `create_storage`),
+`storage/read_pool.py` and `storage/neuron_cache.py` — roughly 10,200 lines —
+are deleted. `InMemoryStorage` (opt in with `SURREAL_MEMORY_STORAGE=memory`)
+is now the only non-SurrealDB backend, and now implements the full
+`NeuralStorage` interface (previously 64 of 172 methods were inherited
+`NotImplementedError` stubs, tolerable only because SQLite covered the gap in
+tests).
+
+Setting `storage_backend = "sqlite"` (via `config.toml` or
+`SURREAL_MEMORY_STORAGE`) now raises immediately with the two supported
+alternatives and a link to the migration guide, instead of silently falling
+back to something else — a silent fallback here would look exactly like data
+loss. **Existing SQLite brains at `~/.surrealmemory/brains/*.db` are never
+read, written or deleted by 3.0.0** — installing a 2.x release restores full
+access to them at any time. See `docs/guides/migrating-to-3.0.md` to move a
+brain to SurrealDB.
 
 ### Pinning, training dedup and graph density only ever worked on SQLite
 

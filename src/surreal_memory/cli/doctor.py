@@ -342,22 +342,11 @@ def _check_storage_backend() -> dict[str, Any]:
     if backend == "surrealdb":
         return {"name": "Storage backend", "status": OK, "detail": "surrealdb"}
 
-    if backend == "memory":
-        return {
-            "name": "Storage backend",
-            "status": WARN,
-            "detail": "memory — nothing is persisted; every memory is lost on exit",
-            "fix": "Set SURREAL_MEMORY_STORAGE=surrealdb for a durable store",
-        }
-
     return {
         "name": "Storage backend",
         "status": WARN,
-        "detail": "sqlite — deprecated, removed in 3.0.0",
-        "fix": (
-            "Migrate: smem export backup.json → set SURREAL_MEMORY_STORAGE=surrealdb "
-            "→ smem import backup.json (see docs/guides/migrating-to-3.0.md)"
-        ),
+        "detail": "memory — nothing is persisted; every memory is lost on exit",
+        "fix": "Set SURREAL_MEMORY_STORAGE=surrealdb for a durable store",
     }
 
 
@@ -377,6 +366,12 @@ def _check_brain() -> dict[str, Any]:
                 "name": "Brain database",
                 "status": SKIP,
                 "detail": "surrealdb backend — brain lives in SurrealDB, not a local .db file",
+            }
+        if config.storage_backend == "memory":
+            return {
+                "name": "Brain database",
+                "status": SKIP,
+                "detail": "memory backend — non-persistent, no database file to check",
             }
     except Exception:
         brain_name = "default"
@@ -508,59 +503,19 @@ def _check_embedding_provider() -> dict[str, Any]:
 def _check_schema_version() -> dict[str, Any]:
     """Check database schema version."""
     try:
-        from surreal_memory.unified_config import get_config, get_surrealmemory_dir
+        from surreal_memory.unified_config import get_config
 
         config = get_config(reload=True)
         if config.storage_backend == "surrealdb":
             return {
                 "name": "Schema version",
                 "status": SKIP,
-                "detail": "surrealdb backend — schema managed by SurrealDB, not SQLite",
-            }
-        brain_name = config.current_brain
-        db_path = get_surrealmemory_dir() / "brains" / f"{brain_name}.db"
-
-        if not db_path.exists() or db_path.stat().st_size == 0:
-            return {
-                "name": "Schema version",
-                "status": SKIP,
-                "detail": "empty database (schema created on first use)",
-            }
-
-        async def _get_version() -> int:
-            import aiosqlite
-
-            async with aiosqlite.connect(str(db_path)) as db:
-                # NM stores schema version in schema_version table, not PRAGMA
-                try:
-                    cursor = await db.execute("SELECT version FROM schema_version LIMIT 1")
-                    row = await cursor.fetchone()
-                    return row[0] if row else 0
-                except Exception:
-                    # Table may not exist in very old databases
-                    return 0
-
-        version = run_async(_get_version())
-
-        from surreal_memory.storage.sqlite_schema import SCHEMA_VERSION as CURRENT_VERSION
-
-        if version == CURRENT_VERSION:
-            return {
-                "name": "Schema version",
-                "status": OK,
-                "detail": f"v{version} (current)",
-            }
-        if version < CURRENT_VERSION:
-            return {
-                "name": "Schema version",
-                "status": WARN,
-                "detail": f"v{version} (latest: v{CURRENT_VERSION})",
-                "fix": "Schema will auto-migrate on next use",
+                "detail": "surrealdb backend — schema managed by SurrealDB migrations",
             }
         return {
             "name": "Schema version",
-            "status": WARN,
-            "detail": f"v{version} (newer than expected v{CURRENT_VERSION})",
+            "status": SKIP,
+            "detail": "memory backend — non-persistent, no schema to version",
         }
     except Exception:
         return {

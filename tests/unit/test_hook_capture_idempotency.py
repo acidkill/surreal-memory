@@ -5,7 +5,7 @@ CHECKPOINTS/F1: the Stop and PreCompact hooks re-encode a session summary
 (or fragment) every time they are invoked for the same session, even when
 the effectively-captured text has not changed since the previous call.
 
-Every test here runs against a real, isolated SQLite brain (a fresh tmp_path
+Every test here runs against a real, isolated in-memory brain (a fresh tmp_path
 HOME) -- never the shared prod brain. Each test uses a unique brain name and
 session id to avoid cross-test collisions in unified_config's process-wide
 _config / _storage_cache singletons.
@@ -49,18 +49,18 @@ _TEXT_TRIVIAL = "abcd efgh ijk\nlmno pqrs tuv\nwxyz abcd efg\nhijk lmno pqr"
 def _isolate_storage_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Never let the developer's real environment decide a test's outcome.
 
-    These tests assert on a throwaway SQLite brain under a tmp_path HOME. Two
+    These tests assert on a throwaway in-memory brain under a tmp_path HOME. Two
     variables from a normal dev shell (``set -a; . ./.env``) silently move that
     target, so the suite passed in CI -- where nothing is exported -- and failed
     for anyone with a configured environment:
 
     * ``SURREAL_MEMORY_STORAGE=surrealdb`` -- UnifiedConfig.load() reads this
       directly and it outranks config.toml, so ``get_shared_storage()`` returns
-      the *live* SurrealDB instead of the fixture's SQLite brain. The unique
+      the *live* SurrealDB instead of the fixture's in-memory brain. The unique
       "idem*" brain does not exist there, so ``capture_text()`` short-circuits
       on ``{"error": "No brain configured", "saved": 0}`` and nearly every
-      assertion fails as ``assert 0 == 1``. Pinned to "sqlite" rather than
-      deleted: this file's whole contract is the SQLite fixture backend.
+      assertion fails as ``assert 0 == 1``. Pinned to "memory" rather than
+      deleted: this file's whole contract is an isolated fixture backend.
     * ``SURREAL_MEMORY_DIR`` -- resolves the data dir ahead of ``Path.home()``
       in both UnifiedConfig and ``capture_state._state_path()``, so config.toml
       and capture_state.json are read from the developer's real directory
@@ -76,7 +76,7 @@ def _isolate_storage_env(monkeypatch: pytest.MonkeyPatch) -> None:
     autouse fixtures before same-scope non-autouse ones, so the pin is in place
     before any ``get_config(reload=True)`` below.
     """
-    monkeypatch.setenv("SURREAL_MEMORY_STORAGE", "sqlite")
+    monkeypatch.setenv("SURREAL_MEMORY_STORAGE", "memory")
     monkeypatch.delenv("SURREAL_MEMORY_DIR", raising=False)
     monkeypatch.delenv("SURREALDB_URL", raising=False)
     monkeypatch.delenv("SURREALDB_PASS", raising=False)
@@ -86,7 +86,7 @@ def _isolate_storage_env(monkeypatch: pytest.MonkeyPatch) -> None:
 async def isolated_brain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     """Point unified_config at a throwaway HOME with a unique brain+session.
 
-    No teardown: the SQLite brain lives under this fixture's own tmp_path HOME,
+    No teardown: the in-memory brain lives under this fixture's own tmp_path HOME,
     which pytest discards on its own.
     """
     monkeypatch.setenv("HOME", str(tmp_path))

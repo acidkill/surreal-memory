@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from surreal_memory.engine.encoder import MemoryEncoder
-from surreal_memory.storage.sqlite_store import SQLiteStorage
+from surreal_memory.storage.memory_store import InMemoryStorage
 
 pytestmark = [pytest.mark.stress, pytest.mark.asyncio]
 
@@ -16,7 +16,7 @@ class TestOrphanRatioHeuristic:
     """Document: health_pulse orphan heuristic assumes 5 neurons/fiber."""
 
     async def test_heuristic_accuracy_with_real_encoding(
-        self, sqlite_storage: SQLiteStorage, encoder: MemoryEncoder
+        self, sqlite_storage: InMemoryStorage, encoder: MemoryEncoder
     ) -> None:
         brain_id = sqlite_storage._current_brain_id
         assert brain_id is not None
@@ -49,9 +49,9 @@ class TestOrphanRatioHeuristic:
 
 
 class TestAutoSaveNesting:
-    """Document: disable_auto_save/enable_auto_save are no-ops on SQLiteStorage."""
+    """Document: disable_auto_save/enable_auto_save are base-class no-ops."""
 
-    async def test_disable_enable_are_idempotent(self, sqlite_storage: SQLiteStorage) -> None:
+    async def test_disable_enable_are_idempotent(self, sqlite_storage: InMemoryStorage) -> None:
         # Call disable twice
         sqlite_storage.disable_auto_save()
         sqlite_storage.disable_auto_save()
@@ -79,7 +79,7 @@ class TestPassiveCaptureFailure:
     """Document: passive capture failures are swallowed at debug level."""
 
     async def test_encoding_succeeds_despite_analysis_failure(
-        self, sqlite_storage: SQLiteStorage, encoder: MemoryEncoder
+        self, sqlite_storage: InMemoryStorage, encoder: MemoryEncoder
     ) -> None:
         # Even if something in the extraction pipeline has issues,
         # the encoder should still produce a fiber
@@ -169,7 +169,7 @@ class TestPassiveCaptureFailure:
 class TestHabitsTruncation:
     """Document: habits fetch is capped at 1000 fibers."""
 
-    async def test_habit_cap_documented(self, sqlite_storage: SQLiteStorage) -> None:
+    async def test_habit_cap_documented(self, sqlite_storage: InMemoryStorage) -> None:
         # We can't easily create 1001 habit fibers without the full
         # habit-learning pipeline, but we can verify the constant exists.
         # The real test is that get_fibers(limit=1000) is called in

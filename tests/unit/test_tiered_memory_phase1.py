@@ -157,33 +157,16 @@ class TestTypedMemoryTier:
         assert extended.tier == "hot"
 
 
-# ── Schema migration (v36 → v37) ─────────────────────────
+# ── Tiered CRUD ───────────────────────────────────────────
 
 
-class TestSchemaMigration:
-    def test_migration_exists(self) -> None:
-        from surreal_memory.storage.sqlite_schema import MIGRATIONS, SCHEMA_VERSION
-
-        assert SCHEMA_VERSION == 40
-        assert (36, 37) in MIGRATIONS
-        assert (37, 38) in MIGRATIONS
-        stmts = MIGRATIONS[(36, 37)]
-        assert any("tier" in s for s in stmts)
-        assert any("idx_typed_memories_tier" in s for s in stmts)
-
-
-# ── SQLite CRUD with tier ────────────────────────────────
-
-
-class TestSqliteTierCrud:
+class TestTierCrud:
     @pytest.fixture
     async def storage(self, tmp_path):
         from surreal_memory.core.brain import Brain, BrainConfig
-        from surreal_memory.storage.sqlite_store import SQLiteStorage
+        from surreal_memory.storage.memory_store import InMemoryStorage
 
-        db_path = tmp_path / "test.db"
-        storage = SQLiteStorage(db_path)
-        await storage.initialize()
+        storage = InMemoryStorage()
         brain = Brain.create(name="tier-test", config=BrainConfig())
         await storage.save_brain(brain)
         storage.set_brain(brain.id)
@@ -287,30 +270,3 @@ class TestSqliteTierCrud:
         assert result is not None
         assert result.tier == "hot"
         assert result.memory_type == MemoryType.BOUNDARY
-
-    async def test_migration_creates_tier_column(self, storage) -> None:
-        """Integration: verify tier column exists + default after migration."""
-        conn = storage._conn
-        async with conn.execute("PRAGMA table_info(typed_memories)") as cursor:
-            columns = await cursor.fetchall()
-            col_names = [c[1] for c in columns]
-            assert "tier" in col_names
-
-    async def test_migration_default_tier_warm(self, storage) -> None:
-        """Rows inserted without explicit tier get 'warm' from DB default."""
-        conn = storage._conn
-        await self._add_fiber(storage)
-        # Insert directly via SQL without tier to test DB default
-        await conn.execute(
-            "INSERT INTO typed_memories "
-            "(fiber_id, brain_id, memory_type, priority, provenance, created_at) "
-            "VALUES (?, ?, ?, ?, ?, datetime('now'))",
-            ("f1", storage.brain_id, "fact", 5, "test"),
-        )
-        await conn.commit()
-        async with conn.execute(
-            "SELECT tier FROM typed_memories WHERE fiber_id = ?", ("f1",)
-        ) as cursor:
-            row = await cursor.fetchone()
-            assert row is not None
-            assert row[0] == "warm"

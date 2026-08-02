@@ -22,9 +22,9 @@ from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.core.synapse import Direction, Synapse, SynapseType
 
 if TYPE_CHECKING:
-    # Storage is typed as Any because tool_memory functions accept
-    # SQLiteStorage (which mixes in SQLiteToolEventsMixin) — the base
-    # NeuralStorage protocol doesn't declare tool-event methods.
+    # Storage is typed as Any because tool_memory functions accept concrete
+    # backend classes with tool-event methods — neither backend declares
+    # them on the base NeuralStorage protocol.
     from typing import Protocol
 
     from surreal_memory.unified_config import ToolMemoryConfig

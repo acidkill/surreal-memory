@@ -60,10 +60,9 @@ class TestPinnedDecayBypass:
 
     async def test_pinned_neurons_skip_decay(self, decay_manager, old_time, tmp_path):
         """Pinned neurons should not have their activation reduced."""
-        from surreal_memory.storage.sqlite_store import SQLiteStorage
+        from surreal_memory.storage.memory_store import InMemoryStorage
 
-        storage = SQLiteStorage(tmp_path / "test.db")
-        await storage.initialize()
+        storage = InMemoryStorage()
 
         # Create brain
         from surreal_memory.core.brain import Brain
@@ -107,10 +106,9 @@ class TestPinnedDecayBypass:
 
     async def test_unpinned_neurons_still_decay(self, decay_manager, old_time, tmp_path):
         """Non-pinned neurons should decay normally."""
-        from surreal_memory.storage.sqlite_store import SQLiteStorage
+        from surreal_memory.storage.memory_store import InMemoryStorage
 
-        storage = SQLiteStorage(tmp_path / "test.db")
-        await storage.initialize()
+        storage = InMemoryStorage()
 
         from surreal_memory.core.brain import Brain
 
@@ -155,10 +153,9 @@ class TestPinnedCompressionBypass:
     async def test_pinned_fiber_skips_compression(self, tmp_path):
         """Pinned fiber should remain at tier 0."""
         from surreal_memory.engine.compression import CompressionEngine
-        from surreal_memory.storage.sqlite_store import SQLiteStorage
+        from surreal_memory.storage.memory_store import InMemoryStorage
 
-        storage = SQLiteStorage(tmp_path / "test.db")
-        await storage.initialize()
+        storage = InMemoryStorage()
 
         from surreal_memory.core.brain import Brain
 
@@ -203,10 +200,9 @@ class TestPinnedPruneBypass:
             ConsolidationEngine,
             ConsolidationStrategy,
         )
-        from surreal_memory.storage.sqlite_store import SQLiteStorage
+        from surreal_memory.storage.memory_store import InMemoryStorage
 
-        storage = SQLiteStorage(tmp_path / "test.db")
-        await storage.initialize()
+        storage = InMemoryStorage()
 
         from surreal_memory.core.brain import Brain
 

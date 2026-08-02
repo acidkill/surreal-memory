@@ -14,8 +14,9 @@ smem doctor
 ```
 
 The **Storage backend** check reports which backend resolves. If it says
-`sqlite — deprecated, removed in 3.0.0`, this guide is for you. If it says
-`surrealdb`, you are already migrated and 3.0.0 changes nothing for you.
+`could not resolve backend: The SQLite storage backend was removed in 3.0.0...`,
+this guide is for you. If it says `surrealdb`, you are already migrated and
+3.0.0 changes nothing for you.
 
 Anything that sets `SURREAL_MEMORY_STORAGE=surrealdb` — the Docker compose
 files, `smem setup`, and the MCP configs written by `smem mcp-config` — is
@@ -125,7 +126,8 @@ you want to bring it back with you.
 ## Troubleshooting
 
 **`smem` reports the backend was removed.** You are on 3.0.0 with
-`storage_backend = "sqlite"` still configured. Set
+`storage_backend = "sqlite"` still configured — every command that touches
+storage fails with the same message, `smem doctor` included. Set
 `SURREAL_MEMORY_STORAGE=surrealdb` (or `memory`), or downgrade to 2.x to reach
 your existing `.db` file.
 

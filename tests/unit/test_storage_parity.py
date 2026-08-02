@@ -1,16 +1,17 @@
 """Every storage backend must implement the whole NeuralStorage interface.
 
 Six methods — pin/unpin, pinned-neuron lookup, graph density and the
-document-training file tracking — used to live on ``SQLiteStorage`` alone, and
-were never declared on ``NeuralStorage``. Every caller reached for them through
-``hasattr`` and silently did nothing when they were missing, so on SurrealDB
-(the production backend since 2.0.0) decay and prune deleted pinned memories,
-``smem_pin`` refused every action, ``smem train`` re-encoded its whole corpus on
-each run, and ``activation_strategy="auto"`` never left classic BFS. Nothing
-failed, because nothing checked.
+document-training file tracking — used to live on the old SQLite backend
+alone, and were never declared on ``NeuralStorage``. Every caller reached for
+them through ``hasattr`` and silently did nothing when they were missing, so
+on SurrealDB (the production backend since 2.0.0) decay and prune deleted
+pinned memories, ``smem_pin`` refused every action, ``smem train`` re-encoded
+its whole corpus on each run, and ``activation_strategy="auto"`` never left
+classic BFS. Nothing failed, because nothing checked.
 
 These tests are the check. Adding a capability to one backend and forgetting the
-others now fails here instead of going dark in production.
+others now fails here instead of going dark in production. SQLite is gone as of
+3.0.0; the same protection now compares the two remaining backends directly.
 """
 
 from __future__ import annotations
@@ -20,7 +21,6 @@ import inspect
 from surreal_memory.storage.base import NeuralStorage
 from surreal_memory.storage.memory_store import InMemoryStorage
 from surreal_memory.storage.shared_store import SharedStorage
-from surreal_memory.storage.sqlite_store import SQLiteStorage
 from surreal_memory.storage.surrealdb.store import SurrealDBStorage
 
 # The capabilities this module exists to protect. Each must resolve to a real
@@ -39,7 +39,7 @@ _CONTRACT = (
 
 # SharedStorage is a thin HTTP client against a remote server, with no local
 # tables to keep any of this in; it inherits the interface's no-op fallbacks.
-_PERSISTENT_BACKENDS = (SQLiteStorage, SurrealDBStorage, InMemoryStorage)
+_PERSISTENT_BACKENDS = (SurrealDBStorage, InMemoryStorage)
 _ALL_BACKENDS = (*_PERSISTENT_BACKENDS, SharedStorage)
 
 
@@ -52,7 +52,7 @@ def _public_methods(cls: type) -> set[str]:
 
 
 def test_contract_is_declared_on_the_interface() -> None:
-    """The whole point: these are interface methods, not SQLite trivia."""
+    """The whole point: these are interface methods, not one-backend trivia."""
     missing = set(_CONTRACT) - _public_methods(NeuralStorage)
     assert not missing, f"not declared on NeuralStorage: {sorted(missing)}"
 
@@ -77,60 +77,67 @@ def test_every_backend_implements_the_full_interface() -> None:
         assert not missing, f"{backend.__name__} is missing: {sorted(missing)}"
 
 
-# Methods still reachable on SQLite alone. Each has live callers that do NOT
-# guard with hasattr, so unlike the pinning/training gap this module was written
-# for, they raise AttributeError on SurrealDB rather than degrading quietly —
-# a different failure mode needing its own investigation, tracked separately.
+# Methods reachable on exactly one of the two persistent backends, undeclared
+# on NeuralStorage. Each either has a caller that guards with try/except
+# (degrades quietly — a real but non-crashing gap, tracked separately) or is a
+# backend-specific internal/optimization with no cross-backend caller at all.
 # This list is a ratchet: it may shrink, never grow.
-_KNOWN_SQLITE_ONLY = frozenset(
+_KNOWN_ASYMMETRIC_ONLY = frozenset(
     {
-        # Drift clustering
-        "get_drift_clusters",
-        "save_drift_cluster",
-        "resolve_drift_cluster",
-        # Session summaries
-        "get_recent_session_summaries",
-        "save_session_summary",
-        # Sync cursors
-        "get_sync_state",
-        "save_sync_state",
-        # Tag co-occurrence
-        "get_tag_cooccurrence",
-        "get_tag_fiber_counts",
-        "record_tag_cooccurrence",
-        # SurrealDB implements only the batched get_depth_priors_batch.
+        # InMemoryStorage-only: a thin convenience wrapper around the batched
+        # get_depth_priors_batch, which SurrealDB implements instead.
         "get_depth_priors",
+        # SurrealDB-only: connection lifecycle / batch-optimization / stats
+        # internals with no direct InMemoryStorage equivalent needed.
+        "cap_tool_events",
+        "count_activated_neuron_states",
+        "delete_neurons_batch",
+        "delete_synapses_batch",
+        "find_neurons_by_embedding",
+        "find_neurons_by_ids",
+        "get_connected_neuron_ids",
+        "get_edges_for_neurons",
+        "get_synapse_degrees",
+        "get_tool_stats",
+        "get_tool_stats_by_period",
+        "initialize",
+        "list_brain_names",
+        "prune_old_events",
+        "update_neuron_embeddings",
     }
 )
 
 
-def test_sqlite_exposes_no_new_undeclared_capability() -> None:
-    """Nothing NEW may become reachable on SQLite alone.
+def test_no_new_undeclared_asymmetric_capability() -> None:
+    """Nothing NEW may become reachable on exactly one persistent backend.
 
-    A method on SQLiteStorage that the interface does not declare is precisely
-    the shape of the original bug: callers can only reach it via ``hasattr`` or
-    a swallowed exception, and it dies outright with the SQLite backend in
-    3.0.0. Anything genuinely SQLite-specific belongs behind a leading
-    underscore.
+    A method that exists on SurrealDB or InMemoryStorage but not both, and
+    isn't declared on NeuralStorage, is precisely the shape of the original
+    bug: callers can only reach it via ``hasattr`` or a swallowed exception on
+    whichever backend lacks it. Anything genuinely backend-specific belongs
+    behind a leading underscore.
     """
-    undeclared = _public_methods(SQLiteStorage) - _public_methods(NeuralStorage)
-    surreal = _public_methods(SurrealDBStorage)
+    declared = _public_methods(NeuralStorage)
+    surreal = _public_methods(SurrealDBStorage) - declared
+    memory = _public_methods(InMemoryStorage) - declared
 
-    orphaned = {name for name in undeclared if name not in surreal}
-    assert not (orphaned - _KNOWN_SQLITE_ONLY), (
-        "these exist on SQLite but on neither the NeuralStorage interface nor "
-        "SurrealDB, so they go dark when SQLite is removed in 3.0.0: "
-        f"{sorted(orphaned - _KNOWN_SQLITE_ONLY)}"
+    asymmetric = surreal.symmetric_difference(memory)
+    unexpected = asymmetric - _KNOWN_ASYMMETRIC_ONLY
+    assert not unexpected, (
+        "these exist on exactly one persistent backend and aren't declared on "
+        f"NeuralStorage: {sorted(unexpected)}"
     )
 
 
-def test_known_sqlite_only_list_has_no_stale_entries() -> None:
-    """Keep the ratchet honest — an implemented method must leave the list."""
-    undeclared = _public_methods(SQLiteStorage) - _public_methods(NeuralStorage)
-    surreal = _public_methods(SurrealDBStorage)
-    orphaned = {name for name in undeclared if name not in surreal}
+def test_known_asymmetric_list_has_no_stale_entries() -> None:
+    """Keep the ratchet honest — a method both backends now share must leave the list."""
+    declared = _public_methods(NeuralStorage)
+    surreal = _public_methods(SurrealDBStorage) - declared
+    memory = _public_methods(InMemoryStorage) - declared
+    asymmetric = surreal.symmetric_difference(memory)
 
-    assert not (_KNOWN_SQLITE_ONLY - orphaned), (
-        "these are listed as SQLite-only but no longer are — drop them from "
-        f"_KNOWN_SQLITE_ONLY: {sorted(_KNOWN_SQLITE_ONLY - orphaned)}"
+    stale = _KNOWN_ASYMMETRIC_ONLY - asymmetric
+    assert not stale, (
+        "these are listed as single-backend-only but no longer are — drop "
+        f"them from _KNOWN_ASYMMETRIC_ONLY: {sorted(stale)}"
     )

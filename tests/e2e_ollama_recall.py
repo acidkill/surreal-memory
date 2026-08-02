@@ -161,11 +161,9 @@ async def main() -> None:
     logger.info("  Temp dir: %s", tmp_dir)
 
     from surreal_memory.core.brain import Brain, BrainConfig
-    from surreal_memory.storage.sqlite_store import SQLiteStorage
+    from surreal_memory.storage.memory_store import InMemoryStorage
 
-    db_path = Path(tmp_dir) / "test_brain.db"
-    storage = SQLiteStorage(db_path)
-    await storage.initialize()
+    storage = InMemoryStorage()
 
     brain_config = BrainConfig(
         embedding_enabled=True,

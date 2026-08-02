@@ -21,7 +21,7 @@ Note: All clients share a single MCPServer instance. This means:
     - Passive capture rate limit (3/60s) is shared across all clients
     - Eternal context message counter is shared
     These are acceptable tradeoffs for multi-agent setups on the same
-    brain, and match the behavior of sharing a single SQLite database.
+    brain, and match the behavior of sharing a single storage backend.
 """
 
 from __future__ import annotations

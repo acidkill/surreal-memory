@@ -9,7 +9,7 @@ import pytest
 from surreal_memory.engine.encoder import MemoryEncoder
 from surreal_memory.engine.retrieval import ReflexPipeline
 from surreal_memory.mcp.maintenance_handler import MaintenanceHandler
-from surreal_memory.storage.sqlite_store import SQLiteStorage
+from surreal_memory.storage.memory_store import InMemoryStorage
 
 pytestmark = [pytest.mark.stress, pytest.mark.asyncio]
 
@@ -18,7 +18,7 @@ class TestConcurrentEncodes:
     """Verify multiple concurrent encode() calls don't corrupt data."""
 
     async def test_10_parallel_encodes(
-        self, sqlite_storage: SQLiteStorage, encoder: MemoryEncoder
+        self, sqlite_storage: InMemoryStorage, encoder: MemoryEncoder
     ) -> None:
         contents = [f"Concurrent memory #{i}: unique content about topic {i}" for i in range(10)]
 
@@ -44,7 +44,7 @@ class TestConcurrentReadWrite:
     """Verify simultaneous encode + recall don't conflict."""
 
     async def test_encode_and_recall_simultaneously(
-        self, sqlite_storage: SQLiteStorage, encoder: MemoryEncoder
+        self, sqlite_storage: InMemoryStorage, encoder: MemoryEncoder
     ) -> None:
         # Pre-populate some data
         for i in range(5):

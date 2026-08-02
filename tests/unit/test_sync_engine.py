@@ -9,8 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 from surreal_memory.core.fiber import Fiber
 from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.core.synapse import Direction, Synapse, SynapseType
-from surreal_memory.storage.sqlite_change_log import ChangeEntry
-from surreal_memory.storage.sqlite_devices import DeviceRecord
+from surreal_memory.core.sync_records import ChangeEntry, DeviceRecord
 from surreal_memory.sync.protocol import (
     ConflictStrategy,
     SyncChange,
