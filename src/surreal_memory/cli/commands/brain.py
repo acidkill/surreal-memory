@@ -18,8 +18,25 @@ from surreal_memory.cli._helpers import (
 )
 from surreal_memory.safety.freshness import analyze_freshness
 from surreal_memory.safety.sensitive import check_sensitive_content
+from surreal_memory.unified_config import list_available_brains
 
 brain_app = typer.Typer(help="Brain management commands")
+
+
+def _list_brains() -> list[str]:
+    """Sync wrapper around list_available_brains for non-async commands.
+
+    CLIConfig.list_brains only globs local *.json/*.db fixture files, so it
+    never sees brains that live in SurrealDB (the only production backend
+    since v2.0.0) — every brain command using it reported "no brains found"
+    on a healthy SurrealDB install. list_available_brains queries the active
+    backend directly.
+    """
+
+    async def _list() -> list[str]:
+        return await list_available_brains()
+
+    return run_async(_list())
 
 
 @brain_app.command("list")
@@ -35,7 +52,7 @@ def brain_list(
     import os
 
     config = get_config()
-    brains = config.list_brains()
+    brains = _list_brains()
     # Effective brain: env var overrides config (matches CLI get_storage resolution)
     env_brain = os.environ.get("SURREAL_MEMORY_BRAIN")
     current = resolve_brain(None, config)
@@ -77,7 +94,7 @@ def brain_use(
 
     config = get_config()
 
-    if name not in config.list_brains():
+    if name not in _list_brains():
         typer.secho(
             f"Brain '{name}' not found. Create it with: smem brain create {name}",
             fg=typer.colors.RED,
@@ -115,7 +132,7 @@ def brain_create(
     async def _create() -> None:
         config = get_config()
 
-        if name in config.list_brains():
+        if name in await list_available_brains():
             typer.secho(f"Brain '{name}' already exists.", fg=typer.colors.RED)
             raise typer.Exit(1)
 
@@ -306,7 +323,7 @@ def brain_import(
         config = get_config()
         brain_name = resolve_brain(name, config, default=data.get("brain_name", "imported"))
 
-        if brain_name in config.list_brains():
+        if brain_name in await list_available_brains():
             typer.secho(
                 f"Brain '{brain_name}' already exists. Use --name to specify different name.",
                 fg=typer.colors.RED,
@@ -356,7 +373,7 @@ def brain_delete(
     """
     config = get_config()
 
-    if name not in config.list_brains():
+    if name not in _list_brains():
         typer.secho(f"Brain '{name}' not found.", fg=typer.colors.RED)
         raise typer.Exit(1)
 
@@ -373,6 +390,18 @@ def brain_delete(
             return
 
     brain_path = get_brain_path_auto(config, name)
+    if not brain_path.exists():
+        # Brain lives only in SurrealDB (no local fixture file to unlink).
+        # There is no delete_brain() on the storage interface yet, so this
+        # cannot be completed programmatically — say so instead of either
+        # crashing on the missing file or silently reporting fake success.
+        typer.secho(
+            f"Brain '{name}' is stored in SurrealDB — deleting it isn't "
+            "supported yet. Remove its rows directly in SurrealDB, or run "
+            f"`smem brain export --name {name}` to back it up first.",
+            fg=typer.colors.RED,
+        )
+        raise typer.Exit(1)
     brain_path.unlink()
     typer.secho(f"Deleted brain: {name}", fg=typer.colors.GREEN)
 

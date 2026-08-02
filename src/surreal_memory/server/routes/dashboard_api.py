@@ -331,10 +331,10 @@ async def switch_brain(
     Updates config.toml (persistent) AND app.state.storage so that
     all endpoints immediately use the new brain's DB without restart.
     """
-    from surreal_memory.unified_config import get_config, get_shared_storage
+    from surreal_memory.unified_config import get_config, get_shared_storage, list_available_brains
 
     cfg = get_config()
-    available = cfg.list_brains()
+    available = await list_available_brains()
     if request.brain_name not in available:
         raise HTTPException(
             status_code=404,
@@ -816,10 +816,10 @@ class BrainFilesResponse(BaseModel):
 )
 async def get_brain_files() -> BrainFilesResponse:
     """Get file path and size information for all brain databases."""
-    from surreal_memory.unified_config import get_config
+    from surreal_memory.unified_config import get_config, list_available_brains
 
     cfg = get_config()
-    brain_names = cfg.list_brains()
+    brain_names = await list_available_brains()
     active_name = cfg.current_brain
     brains_dir = Path(cfg.get_brain_db_path("_probe_")).parent
 

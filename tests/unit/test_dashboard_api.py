@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -307,3 +307,79 @@ class TestStorageStatusEndpoint:
         assert data["url"] == "http://surrealdb:8000"
         assert data["namespace"] == "myns"
         assert data["database"] == "mydb"
+
+
+class TestBrainListingUsesActiveBackend:
+    """switch_brain and get_brain_files must see SurrealDB-only brains.
+
+    Both previously enumerated brains via cfg.list_brains(), which only globs
+    local *.json/*.db fixture files — so a brain that only exists in
+    SurrealDB (the only production backend since v2.0.0) was invisible to
+    both endpoints: switching to it 404'd, and it never appeared in the
+    Settings "Brain Files" panel.
+    """
+
+    def test_switch_brain_accepts_surrealdb_only_brain(self, client: TestClient) -> None:
+        cfg = MagicMock()
+        cfg.switch_brain = MagicMock()
+        new_storage = AsyncMock()
+
+        with (
+            patch("surreal_memory.unified_config.get_config", return_value=cfg),
+            patch(
+                "surreal_memory.unified_config.list_available_brains",
+                new=AsyncMock(return_value=["surrealdb-only-brain"]),
+            ),
+            patch(
+                "surreal_memory.unified_config.get_shared_storage",
+                new=AsyncMock(return_value=new_storage),
+            ),
+        ):
+            resp = client.post(
+                "/api/dashboard/brains/switch", json={"brain_name": "surrealdb-only-brain"}
+            )
+
+        assert resp.status_code == 200, resp.text
+        cfg.switch_brain.assert_called_once_with("surrealdb-only-brain")
+
+    def test_switch_brain_404s_for_truly_missing_brain(self, client: TestClient) -> None:
+        cfg = MagicMock()
+        with (
+            patch("surreal_memory.unified_config.get_config", return_value=cfg),
+            patch(
+                "surreal_memory.unified_config.list_available_brains",
+                new=AsyncMock(return_value=["some-other-brain"]),
+            ),
+        ):
+            resp = client.post("/api/dashboard/brains/switch", json={"brain_name": "nonexistent"})
+
+        assert resp.status_code == 404
+
+    def test_brain_files_lists_surrealdb_only_brain_with_zero_size(
+        self, client: TestClient
+    ) -> None:
+        """A SurrealDB-only brain has no local file, so it must show up with
+        size 0 rather than being omitted entirely."""
+        cfg = MagicMock()
+        cfg.current_brain = "surrealdb-only-brain"
+        fake_path = MagicMock()
+        fake_path.parent = "/fake/brains"
+        fake_path.exists.return_value = False
+        cfg.get_brain_db_path = MagicMock(return_value=fake_path)
+
+        with (
+            patch("surreal_memory.unified_config.get_config", return_value=cfg),
+            patch(
+                "surreal_memory.unified_config.list_available_brains",
+                new=AsyncMock(return_value=["surrealdb-only-brain"]),
+            ),
+        ):
+            resp = client.get("/api/dashboard/brain-files")
+
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        names = [b["name"] for b in data["brains"]]
+        assert "surrealdb-only-brain" in names
+        entry = next(b for b in data["brains"] if b["name"] == "surrealdb-only-brain")
+        assert entry["size_bytes"] == 0
+        assert entry["is_active"] is True

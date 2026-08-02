@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.2] — 2026-08-02 — `smem brain` and the dashboard see brains that live only in SurrealDB
+
+### Fixed
+
+Two separate, same-named `list_brains()` methods existed with no relation to
+each other: `UnifiedConfig.list_brains()` and `CLIConfig.list_brains()` both
+only glob local `*.db`/`*.json` fixture files — they never query SurrealDB,
+the only production backend since v2.0.0. Five `smem brain` subcommands
+(`list`, `use`, `create`, `import`, `delete`) and two dashboard endpoints
+(`POST /brains/switch`, `GET /brain-files`) called one of these instead of
+the correct `unified_config.list_available_brains()`, which queries the
+active backend directly. Net effect on a SurrealDB-backed install: `smem
+brain list` and the dashboard's brain-files panel always reported zero
+brains, and switching to a brain via the dashboard 404'd even though the
+same dashboard's `/brains` endpoint listed it correctly.
+
+All five CLI call sites and both dashboard endpoints now route through
+`list_available_brains()`. `smem brain delete` also gained a guard: a brain
+that exists only in SurrealDB has no local file to delete, so attempting to
+delete one now reports a clear "not supported yet" message instead of
+crashing with an unhandled `FileNotFoundError` — deleting SurrealDB-backed
+brains programmatically is not yet implemented.
+
 ## [3.0.1] — 2026-08-02 — `smem doctor` no longer carries dead SQLite-era checks
 
 ### Fixed
