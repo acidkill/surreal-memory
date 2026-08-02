@@ -89,7 +89,18 @@ class SurrealDBTrainingFilesMixin:
             )
             return record_id
 
-        record_id = str(uuid4())
+        # ``uuid4().hex``, not ``str(uuid4())``: a dash-form uuid is not a legal
+        # SurrealDB record name, so ``_to_surreal_id`` folds every '-' to '_' —
+        # and that underscore form is what a later SELECT reports as the row's
+        # id. Returning the dash form here meant the id a caller got back from
+        # ``upsert_training_file`` never equalled the id
+        # ``get_training_file_by_hash`` reported for the very same row, so the
+        # second upsert of a file looked like a different record. Minting the id
+        # already inside ``[A-Za-z0-9_]`` makes ``_to_surreal_id`` a no-op on it,
+        # so one id identifies one row on the way in and on the way out. Rows
+        # written by earlier versions already carry the underscore form, which is
+        # likewise unchanged by ``_to_surreal_id`` and keeps resolving.
+        record_id = uuid4().hex
         await self._ensure_conn().insert(
             "training_files",
             {
@@ -175,6 +186,13 @@ def _row_to_record(row: dict[str, Any]) -> dict[str, Any]:
     if rid is not None:
         text = f"{rid.table_name}:{rid.id}" if hasattr(rid, "table_name") else str(rid)
         row["id"] = text.split(":", 1)[1] if ":" in text else text
+    # SurrealDB stores NONE by dropping the field, so an untrained row comes back
+    # from ``SELECT *`` with no ``trained_at`` key at all — ``option<datetime>``
+    # in the schema permits the absence, it does not materialise a null. Callers
+    # subscript the key (``record["trained_at"]`` to test "finished yet?"), which
+    # raised KeyError. Every other column carries a schema DEFAULT, so this is
+    # the one field that can go missing.
+    row.setdefault("trained_at", None)
     for key in ("created_at", "trained_at"):
         val = row.get(key)
         if isinstance(val, datetime):

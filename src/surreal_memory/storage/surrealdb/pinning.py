@@ -110,17 +110,25 @@ class SurrealDBPinningMixin:
     async def get_pinned_neuron_ids(self) -> set[str]:
         """Get every neuron ID belonging to a pinned fiber in the current brain."""
         brain_id = self._get_brain_id()
+        # Deliberately NOT ``SELECT VALUE neuron_ids``. That projects the arrays
+        # themselves, so the driver returns a list of lists
+        # (``[['n1', 'n2'], ['n3']]``) — and ``_query`` unwraps any result whose
+        # first element is a list, collapsing it to the FIRST pinned fiber's
+        # array alone. The loop below then walked that array's id *strings*, so
+        # ``get_pinned_neuron_ids`` handed decay and prune a set of single
+        # characters, which matches no neuron id: every pinned neuron was still
+        # decayed to zero and pruned, exactly the loss this mixin exists to stop.
+        # Projecting the field keeps every row a dict, which ``_query`` passes
+        # through untouched.
         rows = await self._query(
-            "SELECT VALUE neuron_ids FROM fiber WHERE brain_id = $brain_id AND pinned = true",
+            "SELECT neuron_ids FROM fiber WHERE brain_id = $brain_id AND pinned = true",
             brain_id=brain_id,
         )
 
         result: set[str] = set()
         for row in rows:
-            # ``SELECT VALUE neuron_ids`` yields the arrays themselves; a fiber
-            # written before the field existed can still surface as NONE.
-            if row:
-                result.update(str(nid) for nid in row)
+            # A fiber written before the field existed can still surface as NONE.
+            result.update(str(nid) for nid in row.get("neuron_ids") or ())
         return result
 
     async def list_pinned_fibers(self, limit: int = 50) -> list[dict[str, Any]]:
