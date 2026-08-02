@@ -52,8 +52,7 @@ def watch(
             }
 
         if action == "status":
-            db = storage._db  # type: ignore[attr-defined]
-            tracker = WatchStateTracker(db)
+            tracker = WatchStateTracker(storage)
             stats = await tracker.get_stats()
             return {"action": "status", **stats}
 
@@ -63,8 +62,7 @@ def watch(
         path = Path(directory).resolve()
 
         # Create watcher
-        db = storage._db  # type: ignore[attr-defined]
-        tracker = WatchStateTracker(db)
+        tracker = WatchStateTracker(storage)
         trainer = DocTrainer(storage, brain.config)
 
         if action == "start":

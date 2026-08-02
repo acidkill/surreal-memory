@@ -83,6 +83,10 @@ _DEFAULT_EXCLUDE: frozenset[str] = frozenset(
         "dist",
         ".next",
         "vendor",
+        # Claude Code tooling directory. Its worktrees/ subdirectory holds
+        # full nested checkouts of the same repo (one per agent session), so
+        # without this a single `smem index` walks the source tree N+1 times.
+        ".claude",
     }
 )
 

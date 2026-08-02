@@ -280,6 +280,34 @@ class TestCodebaseEncoder:
         assert not any("c.cpython" in s for s in indexed_files)
 
     @pytest.mark.asyncio
+    async def test_index_directory_skips_claude_worktrees(self, tmp_path: Path) -> None:
+        """.claude/worktrees holds full nested checkouts of the same repo (one
+        per Claude Code agent session) — without excluding .claude, a single
+        `smem index` walks the source tree once per worktree."""
+        from surreal_memory.engine.codebase_encoder import CodebaseEncoder
+
+        (tmp_path / "a.py").write_text("x = 1", encoding="utf-8")
+
+        nested_worktree = tmp_path / ".claude" / "worktrees" / "some-session" / "src"
+        nested_worktree.mkdir(parents=True)
+        (nested_worktree / "a.py").write_text("x = 1  # duplicate copy", encoding="utf-8")
+
+        mock_storage = AsyncMock()
+        mock_config = MagicMock()
+
+        encoder = CodebaseEncoder(mock_storage, mock_config)
+        results = await encoder.index_directory(tmp_path)
+
+        indexed_files = [r.fiber.summary for r in results]
+        assert len(results) == 1
+        assert any("a.py" in s for s in indexed_files)
+        assert not any(
+            ".claude" in str(n.metadata.get("file_path", ""))
+            for r in results
+            for n in r.neurons_created
+        )
+
+    @pytest.mark.asyncio
     async def test_index_file_metadata(self, sample_file: Path) -> None:
         """Neurons have file_path, line_start, signature metadata."""
         from surreal_memory.engine.codebase_encoder import CodebaseEncoder

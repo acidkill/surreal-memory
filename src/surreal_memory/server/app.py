@@ -138,8 +138,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             if brain is None:
                 _logger.warning("File watcher skipped: no brain context set")
             else:
-                db = storage._db  # type: ignore[attr-defined]
-                state_tracker = WatchStateTracker(db)
+                state_tracker = WatchStateTracker(storage)
                 await state_tracker.initialize()
                 trainer = DocTrainer(storage, brain.config)
                 watch_cfg = WatchConfig(
@@ -285,8 +284,7 @@ async def _reindex_loop(
                 _logger.debug("Re-index skipped: brain not found")
                 continue
 
-            db = storage._db  # type: ignore[attr-defined]
-            tracker = WatchStateTracker(db)
+            tracker = WatchStateTracker(storage)
             trainer = DocTrainer(storage, brain.config)
 
             for path_str in maint.reindex_paths:

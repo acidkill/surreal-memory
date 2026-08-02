@@ -214,9 +214,16 @@ class WatchHandler:
         from surreal_memory.engine.file_watcher import FileWatcher, WatchConfig
         from surreal_memory.engine.watch_state import WatchStateTracker
 
-        db = storage._db  # Access underlying aiosqlite connection
-        state_tracker = WatchStateTracker(db)
-        brain_config = await storage.get_brain_config()
+        state_tracker = WatchStateTracker(storage)
+        # storage.get_brain_config() never existed on any backend — masked by
+        # the storage._db crash above until that was fixed. Every other call
+        # site (cli/commands/watch.py, server/app.py) fetches the Brain and
+        # reads its .config; do the same here instead of guessing at a
+        # storage-level shortcut that was never implemented.
+        from surreal_memory.core.brain import BrainConfig
+
+        brain = await storage.get_brain(storage.brain_id or "")
+        brain_config = brain.config if brain else BrainConfig()
         trainer = DocTrainer(storage, brain_config)
 
         watcher_config = config or WatchConfig()

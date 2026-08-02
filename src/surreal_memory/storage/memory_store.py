@@ -35,6 +35,7 @@ from surreal_memory.storage.memory_lifecycle_ops import InMemoryLifecycleMixin
 from surreal_memory.storage.memory_pinning import InMemoryPinningMixin
 from surreal_memory.storage.memory_reviews import InMemoryReviewsMixin
 from surreal_memory.storage.memory_sync_ops import InMemorySyncMixin
+from surreal_memory.storage.memory_watch_state import InMemoryWatchStateMixin
 from surreal_memory.utils.timeutils import utcnow
 
 
@@ -46,6 +47,7 @@ class InMemoryStorage(
     InMemoryKnowledgeMixin,
     InMemorySyncMixin,
     InMemoryLifecycleMixin,
+    InMemoryWatchStateMixin,
     NeuralStorage,
 ):
     """NetworkX-based in-memory storage for development and testing.
@@ -62,6 +64,7 @@ class InMemoryStorage(
         self._typed_memories: dict[str, dict[str, TypedMemory]] = defaultdict(dict)
         self._projects: dict[str, dict[str, Project]] = defaultdict(dict)
         self._training_files: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
+        self._watch_files: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
         self._brains: dict[str, Brain] = {}
         self._co_activations: dict[str, list[dict[str, Any]]] = defaultdict(list)
         self._action_events: dict[str, list[dict[str, Any]]] = defaultdict(list)

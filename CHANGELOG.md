@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.3] — 2026-08-03 — `smem watch` no longer crashes on SurrealDB; `smem index` no longer indexes itself 24x over
+
+### Fixed
+
+- **`smem watch` / `smem_watch` / the server's background reindex loop crashed on every backend (issue #138).** `WatchStateTracker` reached into a private `SQLiteStorage` attribute (`storage._db`, a raw `aiosqlite.Connection`) at five call sites. No other backend — including SurrealDB, the only production backend since v2.0.0 — ever had that attribute, so every entry point raised `AttributeError`. Moved file-watch state behind the `NeuralStorage` interface (`watch_should_process`/`watch_mark_processed`/`watch_mark_deleted`/`watch_list_files`/`watch_get_stats`, implemented on both `SurrealDBStorage` — new `watch_state` table — and `InMemoryStorage`), matching the same pattern used for pinning and training-file tracking. `WatchStateTracker` is now a thin facade over the storage interface; all five call sites (`mcp/watch_handler.py`, `cli/commands/watch.py` ×2, `server/app.py` ×2) construct it with the active storage instead of a raw connection.
+- **A second, previously-masked bug in the same code path**: `WatchHandler._get_or_create_watcher` called `storage.get_brain_config()`, a method that never existed on any storage backend, ever — it was masked by the `storage._db` crash happening first. Fixed to fetch the `Brain` and read `.config`, matching every other call site.
+- **`smem index` walked the same repository up to 24 times over** when run from a directory containing Claude Code's `.claude/worktrees/` (one full nested checkout per agent session). `_DEFAULT_EXCLUDE` in `engine/codebase_encoder.py` excluded `.git`, `.venv`, `node_modules`, and similar tooling directories, but not `.claude` — added it.
+
 ## [3.0.2] — 2026-08-02 — `smem brain` and the dashboard see brains that live only in SurrealDB
 
 ### Fixed

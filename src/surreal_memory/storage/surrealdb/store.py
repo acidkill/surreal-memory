@@ -46,6 +46,7 @@ from surreal_memory.storage.surrealdb.typed_memory import (
     _row_to_typed_memory,
 )
 from surreal_memory.storage.surrealdb.versions import SurrealDBVersionsMixin
+from surreal_memory.storage.surrealdb.watch_state import SurrealDBWatchStateMixin
 from surreal_memory.utils.geo import GeoFilter, fiber_within
 from surreal_memory.utils.timeutils import utcnow
 
@@ -88,6 +89,7 @@ _BRAIN_SCOPED_TABLES: tuple[str, ...] = (
     "tool_events",
     "training_files",
     "typed_memory",
+    "watch_state",
 )
 
 
@@ -454,6 +456,7 @@ class SurrealDBStorage(
     SurrealDBToolEventsMixin,
     SurrealDBPinningMixin,
     SurrealDBTrainingFilesMixin,
+    SurrealDBWatchStateMixin,
     NeuralStorage,
 ):
     """SurrealDB-backed storage for Surreal-Memory.

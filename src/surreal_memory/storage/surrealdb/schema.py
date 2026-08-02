@@ -473,6 +473,22 @@ DEFINE FIELD created_at       ON training_files TYPE datetime DEFAULT time::now(
 DEFINE INDEX idx_tfile_brain  ON training_files FIELDS brain_id;
 DEFINE INDEX idx_tfile_hash   ON training_files FIELDS brain_id, file_hash UNIQUE;
 DEFINE INDEX idx_tfile_status ON training_files FIELDS brain_id, status;
+
+-- `smem watch` file-ingestion state (mtime + simhash dedup). Purely additive,
+-- same reasoning as training_files above: ships in SCHEMA_SQL, not behind a
+-- SCHEMA_VERSION bump, so existing databases pick it up on their next start.
+DEFINE TABLE watch_state SCHEMAFULL;
+DEFINE FIELD id            ON watch_state TYPE string;
+DEFINE FIELD brain_id      ON watch_state TYPE string;
+DEFINE FIELD file_path     ON watch_state TYPE string;
+DEFINE FIELD mtime         ON watch_state TYPE float DEFAULT 0.0;
+DEFINE FIELD simhash       ON watch_state TYPE int DEFAULT 0;
+DEFINE FIELD neuron_count  ON watch_state TYPE int DEFAULT 0;
+DEFINE FIELD last_ingested ON watch_state TYPE datetime DEFAULT time::now();
+DEFINE FIELD status        ON watch_state TYPE string DEFAULT 'active';
+DEFINE INDEX idx_wstate_brain      ON watch_state FIELDS brain_id;
+DEFINE INDEX idx_wstate_path       ON watch_state FIELDS brain_id, file_path UNIQUE;
+DEFINE INDEX idx_wstate_status     ON watch_state FIELDS brain_id, status;
 """
 
 

@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from surreal_memory.core.retrieval_trace import RetrievalTrace
     from surreal_memory.core.review_schedule import ReviewSchedule
     from surreal_memory.core.synapse import Synapse, SynapseType
+    from surreal_memory.core.watch_record import WatchedFile
     from surreal_memory.engine.brain_versioning import BrainVersion
     from surreal_memory.engine.memory_stages import MaturationRecord, MemoryStage
     from surreal_memory.utils.geo import GeoFilter
@@ -2173,3 +2174,41 @@ class NeuralStorage(ABC):
             "failed": 0,
             "total_chunks": 0,
         }
+
+    # ========== File Watching (`smem watch`) ==========
+    #
+    # WatchStateTracker used to reach into a private SQLiteStorage attribute
+    # (storage._db, a raw aiosqlite.Connection) directly. No other backend ever
+    # had that attribute, so every entry point — the MCP smem_watch tool, `smem
+    # watch`, and the server's background watcher — raised AttributeError on
+    # SurrealDB (issue #138). These five methods move file-watch state behind
+    # the storage interface, consistent with pinning/training_files. The
+    # default here always reprocesses (never persists watch state), which is
+    # safe — just unoptimized — for any backend that does not override it.
+
+    async def watch_should_process(self, file_path: str, mtime: float, content_hash: int) -> bool:
+        """True if file_path needs (re-)ingestion.
+
+        Default always returns True (no persisted watch state, so every file
+        looks new). Persistent backends override this to skip files whose
+        mtime is unchanged or whose content is a near-duplicate by simhash.
+        """
+        return True
+
+    async def watch_mark_processed(
+        self, file_path: str, mtime: float, content_hash: int, neuron_count: int
+    ) -> None:
+        """Record that file_path was successfully ingested. Default no-op."""
+        return None
+
+    async def watch_mark_deleted(self, file_path: str) -> None:
+        """Soft-delete a watched file's record. Default no-op."""
+        return None
+
+    async def watch_list_files(self, status: str | None = None) -> list[WatchedFile]:
+        """List tracked files, optionally filtered by status. Default: none tracked."""
+        return []
+
+    async def watch_get_stats(self) -> dict[str, Any]:
+        """Aggregate watch-state stats for the current brain."""
+        return {"total_files": 0, "total_neurons": 0, "by_status": {}}

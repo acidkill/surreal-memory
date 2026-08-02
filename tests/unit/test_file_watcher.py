@@ -7,30 +7,27 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
-import aiosqlite
 import pytest
 
 from surreal_memory.engine.watch_state import WatchStateTracker
+from surreal_memory.storage.memory_store import InMemoryStorage
 
 # ── WatchStateTracker tests ──────────────────────────
+#
+# WatchStateTracker used to reach into a private SQLiteStorage attribute
+# (storage._db, a raw aiosqlite.Connection) directly. No other backend ever
+# had that attribute, so every entry point raised AttributeError on SurrealDB
+# (issue #138). It is now a thin facade over NeuralStorage.watch_* — these
+# tests drive it through InMemoryStorage, which implements the same contract
+# SurrealDBStorage does.
 
 
 class TestWatchStateTracker:
     @pytest.fixture
     async def tracker(self) -> Any:
-        db = await aiosqlite.connect(":memory:")
-        tracker = WatchStateTracker(db)
-        await tracker.initialize()
-        yield tracker
-        await db.close()
-
-    @pytest.mark.asyncio
-    async def test_initialize_creates_table(self, tracker: WatchStateTracker) -> None:
-        cursor = await tracker._db.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='watch_state'"
-        )
-        row = await cursor.fetchone()
-        assert row is not None
+        storage = InMemoryStorage()
+        storage.set_brain("test-brain")
+        return WatchStateTracker(storage)
 
     @pytest.mark.asyncio
     async def test_should_process_new_file(self, tracker: WatchStateTracker) -> None:
@@ -39,7 +36,7 @@ class TestWatchStateTracker:
             path = Path(f.name)
 
         try:
-            assert await tracker.should_process(path) is True
+            assert await tracker.should_process_with_simhash(path, 12345) is True
         finally:
             path.unlink(missing_ok=True)
 
@@ -52,7 +49,7 @@ class TestWatchStateTracker:
         try:
             mtime = path.stat().st_mtime
             await tracker.mark_processed(path, mtime, 12345, 3)
-            assert await tracker.should_process(path) is False
+            assert await tracker.should_process_with_simhash(path, 12345) is False
         finally:
             path.unlink(missing_ok=True)
 
@@ -293,3 +290,39 @@ class TestWatchHandler:
     async def test_start_missing_directories(self, handler: Any) -> None:
         result = await handler._watch({"action": "start"})
         assert "error" in result
+
+    @pytest.mark.asyncio
+    async def test_status_action_against_real_storage_does_not_crash(self) -> None:
+        """Regression for issue #138: `smem_watch(action="status")` against a
+        real (non-mocked) storage backend used to raise AttributeError from
+        `storage._db`, silently caught by _watch's broad except and turned
+        into {"error": "File watcher operation failed"}. This exercises the
+        real _get_or_create_watcher -> WatchStateTracker(storage) path end to
+        end against InMemoryStorage, which — like SurrealDBStorage and unlike
+        the old SQLiteStorage — has no `_db` attribute at all.
+        """
+        from surreal_memory.core.brain import Brain, BrainConfig
+        from surreal_memory.mcp.watch_handler import WatchHandler
+        from surreal_memory.storage.memory_store import InMemoryStorage
+
+        storage = InMemoryStorage()
+        brain = Brain.create(name="watch-test", config=BrainConfig(), owner_id="test")
+        await storage.save_brain(brain)
+        storage.set_brain(brain.id)
+
+        class RealStorageHandler(WatchHandler):
+            def __init__(self) -> None:
+                self._storage = storage
+                self.config = MagicMock()
+                self._file_watcher = None
+
+            async def get_storage(self) -> Any:
+                return self._storage
+
+        handler = RealStorageHandler()
+        result = await handler._watch({"action": "status"})
+
+        assert "error" not in result
+        assert result["action"] == "status"
+        assert result["total_files"] == 0
+        assert result["total_neurons"] == 0
