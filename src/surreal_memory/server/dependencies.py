@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from functools import lru_cache
 from typing import Annotated
 
@@ -121,3 +123,35 @@ async def get_brain(
     # took effect server-side: storage.brain_id was already the UUID.
     storage.set_brain(brain.name)
     return brain
+
+
+@asynccontextmanager
+async def storage_for_scope(storage: NeuralStorage, scope: str) -> AsyncIterator[NeuralStorage]:
+    """Yield a storage whose implicitly-bound brain IS ``scope``, without mutating ``storage``.
+
+    Several handlers filter on whatever brain the *shared, process-wide*
+    storage instance is bound to rather than taking an explicit brain_id.
+    Calling ``storage.set_brain(scope)`` on that shared instance to answer one
+    request works until something else reads or mutates the same instance
+    concurrently -- a request for a different brain, or a background
+    maintenance loop reading ``storage.brain_id`` -- and inherits whichever
+    brain last won the race.
+
+    The common case (the shared instance is already bound to ``scope``) costs
+    nothing and reuses it. Otherwise an isolated storage is opened on the
+    scope and closed afterward: only SurrealDB hands out a private instance to
+    close; the other backends return the shared one, which must not be closed
+    out from under concurrent callers.
+    """
+    if storage.brain_id == scope:
+        yield storage
+        return
+
+    from surreal_memory.unified_config import create_isolated_storage, get_config
+
+    scoped = await create_isolated_storage(scope)
+    try:
+        yield scoped
+    finally:
+        if get_config().storage_backend == "surrealdb":
+            await scoped.close()

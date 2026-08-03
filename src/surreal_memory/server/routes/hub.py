@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from surreal_memory.core.brain import Brain, BrainConfig
-from surreal_memory.server.dependencies import get_storage, require_local_request
+from surreal_memory.server.dependencies import get_storage, require_local_request, storage_for_scope
 from surreal_memory.storage.base import NeuralStorage
 from surreal_memory.sync.protocol import (
     ConflictStrategy,
@@ -266,9 +266,9 @@ async def hub_status(
     _validate_brain_id(brain_id)
 
     try:
-        storage.set_brain(brain_id)
-        stats = await storage.get_change_log_stats()
-        devices_list = await storage.list_devices()
+        async with storage_for_scope(storage, brain_id) as scoped:
+            stats = await scoped.get_change_log_stats()
+            devices_list = await scoped.list_devices()
     except Exception:
         logger.error("Failed to get hub status for brain %s", brain_id, exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to retrieve status")
@@ -293,8 +293,8 @@ async def list_devices(
     _validate_brain_id(brain_id)
 
     try:
-        storage.set_brain(brain_id)
-        devices_list = await storage.list_devices()
+        async with storage_for_scope(storage, brain_id) as scoped:
+            devices_list = await scoped.list_devices()
     except Exception:
         logger.error("Failed to list devices for brain %s", brain_id, exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to retrieve devices")
