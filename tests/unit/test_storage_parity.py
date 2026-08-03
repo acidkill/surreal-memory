@@ -98,8 +98,6 @@ _KNOWN_ASYMMETRIC_ONLY = frozenset(
         "get_connected_neuron_ids",
         "get_edges_for_neurons",
         "get_synapse_degrees",
-        "get_tool_stats",
-        "get_tool_stats_by_period",
         "initialize",
         "list_brain_names",
         "prune_old_events",

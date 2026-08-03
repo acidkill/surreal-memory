@@ -302,12 +302,10 @@ class LifecycleHandler:
             return {"error": "days and limit must be integers"}
 
         if action == "summary":
-            result: dict[str, Any] = await storage.get_tool_stats(brain.id)  # type: ignore[attr-defined]
+            result: dict[str, Any] = await storage.get_tool_stats(brain.id, days=days)
             return result
         elif action == "daily":
-            daily = await storage.get_tool_stats_by_period(  # type: ignore[attr-defined]
-                brain.id, days=days, limit=limit
-            )
+            daily = await storage.get_tool_stats_by_period(brain.id, days=days, limit=limit)
             return {"daily": daily, "days": days}
         else:
             return {"error": f"Unknown action: {action}"}

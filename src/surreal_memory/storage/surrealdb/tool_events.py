@@ -202,23 +202,37 @@ class SurrealDBToolEventsMixin:
         )
         return len(ids)
 
-    async def get_tool_stats(self, brain_id: str) -> dict[str, Any]:
-        """Tool usage statistics: total_events, success_rate, top_tools."""
+    async def get_tool_stats(self, brain_id: str, days: int = 30) -> dict[str, Any]:
+        """Tool usage statistics: total_events, success_rate, top_tools.
+
+        ``days`` filters the whole summary, not just the daily series — before
+        this, the caller-facing filter matched the per-day chart but the
+        summary above it was always all-time, so three different date ranges
+        rendered a byte-identical summary.
+        """
+        safe_days = min(max(int(days), 1), 365)
+        cutoff = utcnow() - timedelta(days=safe_days)
         total_rows = await self._query(
-            "SELECT count() AS c FROM tool_events WHERE brain_id = $bid GROUP ALL",
+            "SELECT count() AS c FROM tool_events"
+            " WHERE brain_id = $bid AND created_at >= $cutoff GROUP ALL",
             bid=brain_id,
+            cutoff=cutoff,
         )
         total = int(total_rows[0]["c"]) if total_rows else 0
         ok_rows = await self._query(
-            "SELECT count() AS c FROM tool_events WHERE brain_id = $bid AND success = true GROUP ALL",
+            "SELECT count() AS c FROM tool_events"
+            " WHERE brain_id = $bid AND created_at >= $cutoff AND success = true GROUP ALL",
             bid=brain_id,
+            cutoff=cutoff,
         )
         successes = int(ok_rows[0]["c"]) if ok_rows else 0
         grouped = await self._query(
             "SELECT tool_name, server_name, count() AS cnt,"
             " math::mean(duration_ms) AS avg_ms FROM tool_events"
-            " WHERE brain_id = $bid GROUP BY tool_name, server_name",
+            " WHERE brain_id = $bid AND created_at >= $cutoff"
+            " GROUP BY tool_name, server_name",
             bid=brain_id,
+            cutoff=cutoff,
         )
         # Per-tool success counts. `math::sum(success)` does NOT coerce a bool to
         # 1/0 on SurrealDB (it returns 0), so count the success=true rows per
@@ -226,8 +240,10 @@ class SurrealDBToolEventsMixin:
         # web UI renders "NaN%" / "NaNs" for every tool row.
         ok_grouped = await self._query(
             "SELECT tool_name, server_name, count() AS ok FROM tool_events"
-            " WHERE brain_id = $bid AND success = true GROUP BY tool_name, server_name",
+            " WHERE brain_id = $bid AND created_at >= $cutoff AND success = true"
+            " GROUP BY tool_name, server_name",
             bid=brain_id,
+            cutoff=cutoff,
         )
         ok_by_key = {
             (r.get("tool_name", ""), r.get("server_name", "")): int(r.get("ok", 0) or 0)

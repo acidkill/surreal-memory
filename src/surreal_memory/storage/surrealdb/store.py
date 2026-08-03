@@ -686,6 +686,22 @@ class SurrealDBStorage(
             return result[0] if isinstance(result[0], list) else result
         return []
 
+    async def _query_values(self, sql: str, **params: Any) -> list[Any]:
+        """Execute a ``SELECT VALUE ...`` query and return the flat per-row value list.
+
+        ``_query`` is typed ``list[dict[str, Any]]``, which understates what it
+        actually returns for ``SELECT VALUE``: each element is the selected
+        field's raw value (a record id, a scalar, or -- if the field is
+        array-typed -- itself a list), never a row dict. mypy stays quiet about
+        every ``SELECT VALUE`` call site that (mis)treats the result as rows
+        precisely because that mismatched annotation makes it look like one;
+        that silence is the mechanism behind #143's bug (a `SELECT VALUE
+        <array-field>` result iterated character-by-character). Give
+        ``SELECT VALUE`` call sites an honestly-typed entry point instead of
+        re-litigating the row-vs-value distinction at each one.
+        """
+        return await self._query(sql, **params)
+
     async def _reconnect(self) -> None:
         """Re-establish the SurrealDB connection after a token expiry / 401.
 
@@ -2822,7 +2838,7 @@ class SurrealDBStorage(
         bid = brain_id or self._get_brain_id()
 
         async def _endpoints(field: str) -> list[Any]:
-            return await self._query(
+            return await self._query_values(
                 f"SELECT VALUE {field} FROM synapse WHERE brain_id = $bid GROUP BY {field}",
                 bid=bid,
             )

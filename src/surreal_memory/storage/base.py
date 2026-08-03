@@ -1297,6 +1297,27 @@ class NeuralStorage(ABC):
         """
         return []
 
+    async def get_tool_stats(self, brain_id: str, days: int = 30) -> dict[str, Any]:
+        """Tool usage statistics: total_events, success_rate, top_tools.
+
+        Default: no tool-event storage → an empty summary. Backends that
+        buffer tool events (SurrealDB, in-memory) override this.
+        """
+        return {"total_events": 0, "success_rate": 0, "top_tools": []}
+
+    async def get_tool_stats_by_period(
+        self,
+        brain_id: str,
+        days: int = 30,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Tool usage stats aggregated by day.
+
+        Default: no tool-event storage → an empty series. Backends that
+        buffer tool events (SurrealDB, in-memory) override this.
+        """
+        return []
+
     # ---- Reasoning traces (staging buffer; graceful no-op defaults) ----
 
     async def insert_reasoning_traces(

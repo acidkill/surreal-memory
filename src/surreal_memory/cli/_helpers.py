@@ -54,10 +54,10 @@ def run_async(coro: Coroutine[Any, Any, T]) -> T:
     Replaces bare ``asyncio.run()`` to ensure aiosqlite connections are
     closed *before* the event loop is torn down.
     """
-    from surreal_memory.utils.sandbox import ensure_aiosqlite_or_exit_cli
+    from surreal_memory.utils.sandbox import ensure_sqlite_or_exit_cli
 
     try:
-        ensure_aiosqlite_or_exit_cli()
+        ensure_sqlite_or_exit_cli()
     except BaseException:
         coro.close()
         raise
