@@ -472,6 +472,7 @@ smem index [OPTIONS]
 | `--ext / -e` | text | No | — | File extensions to index (e.g. .py) |
 | `--status / -s` | boolean | No | `False` | Show indexing status instead of scanning |
 | `--json / -j` | boolean | No | `False` | Output as JSON |
+| `--force` | boolean | No | `False` | Wipe the existing code index and re-index every file, ignoring change tracking |
 
 ### `smem import`
 
