@@ -14,6 +14,7 @@ dist/
 downloads/
 eggs/
 .eggs/
+.goal/
 lib/
 lib64/
 parts/
@@ -111,6 +112,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+.env.bak
 
 # Spyder project settings
 .spyderproject
@@ -248,3 +250,6 @@ tool_events.jsonl
 
 # Internal QA/run evidence (scratch — local reference only, never ships publicly)
 qa/
+
+# signle backups
+.env.bak.pre-ws-transport_20260803_141252
