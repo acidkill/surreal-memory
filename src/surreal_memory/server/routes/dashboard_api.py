@@ -1199,7 +1199,15 @@ async def test_embedding_connection() -> dict[str, Any]:
         elif provider_name == "openai":
             from surreal_memory.engine.embedding.openai_embedding import OpenAIEmbedding
 
-            provider = OpenAIEmbedding(model=model_name)
+            # Pass the configured endpoint explicitly. With base_url unset the
+            # SDK silently adopts an ambient OPENAI_BASE_URL, so this "test your
+            # connection" button would report success against whatever unrelated
+            # proxy the server's environment happens to export, not the endpoint
+            # the operator actually configured.
+            provider = OpenAIEmbedding(
+                model=model_name,
+                base_url=emb.resolved_endpoint() or None,
+            )
         elif provider_name == "openrouter":
             from surreal_memory.engine.embedding.openrouter_embedding import OpenRouterEmbedding
 

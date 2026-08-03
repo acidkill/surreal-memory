@@ -144,3 +144,75 @@ class TestReindexAsync:
                 brain="", dry_run=False, all_neurons=False, batch_size=1, json_output=False
             )
         assert storage.update_neuron_embeddings.await_count == 2
+
+
+class TestFailureReporting:
+    """A run that embeds nothing must say WHY, stop early, and exit non-zero.
+
+    The pre-fix behaviour printed one identical low-information line per batch
+    ("batch N-M failed (skipped)"), ground through every remaining neuron
+    repeating the same error, and exited 0 — so the real cause (an HTTP 400
+    naming the wrong host) was invisible and any caller recorded a clean run.
+    """
+
+    @pytest.mark.asyncio
+    async def test_real_error_is_reported_once(self, capsys: pytest.CaptureFixture[str]) -> None:
+        storage = _make_storage([_neuron(f"n{i}") for i in range(8)])
+        provider = MagicMock()
+        provider.embed_batch = AsyncMock(side_effect=RuntimeError("Unknown Model 'bge-m3'"))
+        p1, p2, p3, p4 = _patches(storage, provider)
+        import typer
+
+        with p1, p2, p3, p4, pytest.raises(typer.Exit):
+            await _reindex_async(
+                brain="", dry_run=False, all_neurons=False, batch_size=1, json_output=False
+            )
+
+        err = capsys.readouterr().err
+        assert "Unknown Model 'bge-m3'" in err, "the real exception was swallowed"
+        assert err.count("Unknown Model") == 1, "the error was repeated per batch"
+
+    @pytest.mark.asyncio
+    async def test_aborts_early_when_nothing_succeeds(self) -> None:
+        """Stop after a few consecutive failures instead of retrying thousands."""
+        storage = _make_storage([_neuron(f"n{i}") for i in range(50)])
+        provider = MagicMock()
+        provider.embed_batch = AsyncMock(side_effect=RuntimeError("endpoint refused"))
+        p1, p2, p3, p4 = _patches(storage, provider)
+        import typer
+
+        with p1, p2, p3, p4, pytest.raises(typer.Exit):
+            await _reindex_async(
+                brain="", dry_run=False, all_neurons=False, batch_size=1, json_output=False
+            )
+
+        assert provider.embed_batch.await_count <= 5, (
+            f"kept going for {provider.embed_batch.await_count} batches with nothing embedded"
+        )
+
+    @pytest.mark.asyncio
+    async def test_total_failure_exits_non_zero(self) -> None:
+        storage = _make_storage([_neuron("a")])
+        provider = MagicMock()
+        provider.embed_batch = AsyncMock(side_effect=RuntimeError("boom"))
+        p1, p2, p3, p4 = _patches(storage, provider)
+        import typer
+
+        with p1, p2, p3, p4, pytest.raises(typer.Exit) as exc:
+            await _reindex_async(
+                brain="", dry_run=False, all_neurons=False, batch_size=64, json_output=False
+            )
+        assert exc.value.exit_code == 1
+
+    @pytest.mark.asyncio
+    async def test_partial_success_still_exits_zero(self) -> None:
+        """Some progress is not a failed run — only a total wash-out exits 1."""
+        storage = _make_storage([_neuron("a"), _neuron("b")])
+        provider = MagicMock()
+        provider.embed_batch = AsyncMock(side_effect=[[[1.0]], RuntimeError("later boom")])
+        p1, p2, p3, p4 = _patches(storage, provider)
+
+        with p1, p2, p3, p4:
+            await _reindex_async(
+                brain="", dry_run=False, all_neurons=False, batch_size=1, json_output=False
+            )

@@ -276,7 +276,13 @@ async def _embedding_dedup(
             # (loopback) endpoint qualifies; remote/cloud bases are skipped below.
             from surreal_memory.engine.embedding.openai_embedding import OpenAIEmbedding
 
-            embed_provider = OpenAIEmbedding(model=model_name)
+            # Hand over the endpoint that was just checked for loopback. Letting
+            # the constructor re-resolve it would defeat this gate: it reads only
+            # SURREAL_MEMORY_EMBEDDING_ENDPOINT, so an endpoint configured in
+            # config.toml passes the check here and the client is then built
+            # against whatever OPENAI_BASE_URL happens to be — i.e. exactly the
+            # remote host this branch exists to exclude.
+            embed_provider = OpenAIEmbedding(model=model_name, base_url=endpoint)
         else:
             # Stop hook runs in a fresh, uncached process on every session save.
             # Never load a heavy local model (sentence-transformers pulls in torch

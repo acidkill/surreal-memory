@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any
 
 from surreal_memory.engine.embedding.provider import EmbeddingProvider
 from surreal_memory.engine.embedding.retry import call_with_retry
+
+logger = logging.getLogger(__name__)
+
+# Passed explicitly rather than letting the SDK resolve it, so an ambient
+# OPENAI_BASE_URL meant for some other tool can never capture this client.
+_OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1"
 
 # Known dimensions per model
 _MODEL_DIMENSIONS: dict[str, int] = {
@@ -74,10 +81,27 @@ class OpenAIEmbedding(EmbeddingProvider):
                     "openai is required for OpenAIEmbedding. Install it with: pip install openai"
                 ) from exc
 
-            client_kwargs: dict[str, Any] = {"api_key": self._api_key}
-            if self._base_url:
-                client_kwargs["base_url"] = self._base_url
-            self._client = AsyncOpenAI(**client_kwargs)
+            # ALWAYS pass an explicit base_url. Omitting it (or passing None)
+            # makes the SDK fall back to the ambient OPENAI_BASE_URL env var —
+            # the ecosystem-standard knob for pointing *some other* tool at a
+            # proxy (Z.AI, LiteLLM, a corporate gateway). Inheriting it silently
+            # ships this brain's memory text to a host the user never configured
+            # for embeddings, and it surfaces only as a baffling 400/401 from a
+            # vendor that has never heard of the configured model. Opting in
+            # stays explicit: [embedding] endpoint in config.toml, or
+            # SURREAL_MEMORY_EMBEDDING_ENDPOINT.
+            if not self._base_url and os.environ.get("OPENAI_BASE_URL", "").strip():
+                logger.warning(
+                    "OPENAI_BASE_URL is set but no surreal-memory embedding endpoint is "
+                    "configured, so it is being ignored and %s used instead. To send "
+                    "embeddings elsewhere, set [embedding] endpoint in config.toml or "
+                    "SURREAL_MEMORY_EMBEDDING_ENDPOINT.",
+                    _OPENAI_DEFAULT_BASE_URL,
+                )
+            self._client = AsyncOpenAI(
+                api_key=self._api_key,
+                base_url=self._base_url or _OPENAI_DEFAULT_BASE_URL,
+            )
 
         return self._client
 

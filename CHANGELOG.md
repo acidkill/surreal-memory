@@ -5,6 +5,54 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.0] — 2026-08-03 — reasoning mining sees every profile; embeddings stop inheriting a stranger's endpoint
+
+### Added
+
+- **Reasoning mining can read more than one Claude-Code profile.** New
+  `[reasoning_training] extra_transcript_dirs` (also `SURREAL_MEMORY_REASONING_EXTRA_DIRS`,
+  comma-separated) lists additional profile roots to scan alongside the implicit
+  `~/.claude` — each entry is the directory that *holds* `projects/`, e.g. `~/.claude-ZAI`.
+  Running a second profile for a different vendor's models is common, and until now every
+  trace from that profile was invisible to mining no matter how `mining_models` was set.
+  Roots are de-duplicated, missing ones are skipped rather than fatal, and each file's
+  project attribution resolves against its own root.
+- **The injection map's target field is now a combobox.** It offers every detected model
+  while staying free-text, because targets are matched with `fnmatch` — a glob (`glm-*`)
+  and a model that has not appeared in any transcript yet both have to remain typable.
+  Targets are deliberately not filtered by `has_thinking_text`: that gate applies to
+  sources, and a target is the recipient.
+
+### Fixed
+
+- **Embedding requests silently inherited an ambient `OPENAI_BASE_URL`.** With no
+  surreal-memory endpoint configured, the OpenAI SDK fell back to that environment
+  variable — the ecosystem-standard knob for pointing *some other* tool at a proxy — so a
+  brain's memory text was sent to a host the operator never configured for embeddings,
+  failing later as a confusing error from a vendor that had never heard of the configured
+  model. `OpenAIEmbedding` now always passes an explicit `base_url`, defaulting to
+  `https://api.openai.com/v1`, and logs a warning when it ignores a set `OPENAI_BASE_URL`.
+- **The Stop hook's loopback privacy gate was defeated.** It resolved the endpoint from
+  config-or-env, checked it was loopback, and then built the provider *without passing it*
+  — so the constructor re-resolved from the environment alone and an endpoint configured in
+  `config.toml` cleared the gate while the client pointed elsewhere. The checked endpoint
+  is now handed to the provider. The dashboard's "test embedding connection" endpoint had
+  the same omission with no gate at all, and is fixed the same way.
+- **`smem reindex` hid the reason it failed and exited 0 anyway.** It printed one identical
+  `batch N-M failed (skipped)` line per batch, swallowing the actual exception, kept
+  grinding through every remaining neuron repeating the same failure, and reported success
+  to its caller. It now reports the real error once, aborts after a few consecutive
+  failures when nothing has been embedded, and exits non-zero when a run embeds nothing.
+
+### Changed
+
+- **BREAKING for one setup:** if you relied on `OPENAI_BASE_URL` alone to point
+  surreal-memory at a LiteLLM/vLLM/Azure/self-hosted OpenAI-compatible server, with
+  `provider = "openai"` and no endpoint in either `config.toml` or
+  `SURREAL_MEMORY_EMBEDDING_ENDPOINT`, embeddings will now go to `api.openai.com` instead.
+  Set `[embedding] endpoint` (or `SURREAL_MEMORY_EMBEDDING_ENDPOINT`) to restore the old
+  routing — the same one-key change the warning names.
+
 ## [3.1.0] — 2026-08-03 — `smem index`/`smem reindex` batch their writes and stop duplicating on re-run
 
 ### Added
