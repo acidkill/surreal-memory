@@ -757,14 +757,16 @@ async def test_reset_processed_matching_no_present_model_is_a_noop(tmp_path: Pat
 
 
 @pytest.fixture
-def _home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def home_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     return tmp_path
 
 
-def test_scan_reads_a_second_configured_profile_root(_home: Path, tmp_path: Path) -> None:
-    _write_transcript(_home / ".claude", [_assistant("primary profile reasoning")], slug="proj-a")
+def test_scan_reads_a_second_configured_profile_root(home_root: Path, tmp_path: Path) -> None:
+    _write_transcript(
+        home_root / ".claude", [_assistant("primary profile reasoning")], slug="proj-a"
+    )
     secondary = tmp_path / ".claude-OTHER"
     _write_transcript(
         secondary,
@@ -780,7 +782,7 @@ def test_scan_reads_a_second_configured_profile_root(_home: Path, tmp_path: Path
     assert by_model["glm-5.2"]["project"] == "proj-b"
 
 
-def test_second_profile_keeps_its_own_project_attribution(_home: Path, tmp_path: Path) -> None:
+def test_second_profile_keeps_its_own_project_attribution(home_root: Path, tmp_path: Path) -> None:
     """Each file's project must resolve against ITS OWN root.
 
     Flattening per-root discovery without carrying the owning projects_dir
@@ -789,7 +791,7 @@ def test_second_profile_keeps_its_own_project_attribution(_home: Path, tmp_path:
     project directory name, and the second adds one of its own.
     """
     secondary = tmp_path / ".claude-OTHER"
-    _write_transcript(_home / ".claude", [_assistant("aaaaaaaaaaaa", uuid="u1")], slug="shared")
+    _write_transcript(home_root / ".claude", [_assistant("aaaaaaaaaaaa", uuid="u1")], slug="shared")
     _write_transcript(
         secondary, [_assistant("bbbbbbbbbbbb", model="glm-5.2", uuid="u2")], slug="shared"
     )
@@ -805,9 +807,11 @@ def test_second_profile_keeps_its_own_project_attribution(_home: Path, tmp_path:
     assert sum(1 for t in traces if t["project"] == "shared") == 2
 
 
-def test_explicit_claude_dir_still_wins_over_configured_extras(_home: Path, tmp_path: Path) -> None:
+def test_explicit_claude_dir_still_wins_over_configured_extras(
+    home_root: Path, tmp_path: Path
+) -> None:
     """The claude_dir override means 'exactly this root' — extras stay out."""
-    primary = _home / ".claude"
+    primary = home_root / ".claude"
     secondary = tmp_path / ".claude-OTHER"
     _write_transcript(primary, [_assistant("primary only here", uuid="u1")])
     _write_transcript(secondary, [_assistant("must not appear at all", model="glm-5.2", uuid="u2")])
@@ -818,9 +822,9 @@ def test_explicit_claude_dir_still_wins_over_configured_extras(_home: Path, tmp_
     assert {t["model"] for t in traces} == {"claude-fable-5"}
 
 
-def test_missing_extra_root_is_skipped_not_fatal(_home: Path, tmp_path: Path) -> None:
+def test_missing_extra_root_is_skipped_not_fatal(home_root: Path, tmp_path: Path) -> None:
     """A profile configured on one machine and absent on another is normal."""
-    _write_transcript(_home / ".claude", [_assistant("still mined fine", uuid="u1")])
+    _write_transcript(home_root / ".claude", [_assistant("still mined fine", uuid="u1")])
 
     cfg = _cfg(extra_transcript_dirs=(str(tmp_path / "does-not-exist"),))
     traces = scan_transcripts(cfg, state_path=tmp_path / "state.json", now=_NOW)
@@ -828,9 +832,9 @@ def test_missing_extra_root_is_skipped_not_fatal(_home: Path, tmp_path: Path) ->
     assert len(traces) == 1
 
 
-def test_duplicate_root_is_not_scanned_twice(_home: Path, tmp_path: Path) -> None:
+def test_duplicate_root_is_not_scanned_twice(home_root: Path, tmp_path: Path) -> None:
     """Re-listing the implicit root must not double-count its traces."""
-    primary = _home / ".claude"
+    primary = home_root / ".claude"
     _write_transcript(primary, [_assistant("counted exactly once", uuid="u1")])
 
     cfg = _cfg(extra_transcript_dirs=(str(primary),))
@@ -839,15 +843,20 @@ def test_duplicate_root_is_not_scanned_twice(_home: Path, tmp_path: Path) -> Non
     assert len(traces) == 1
 
 
-def test_no_roots_at_all_returns_empty(_home: Path, tmp_path: Path) -> None:
-    """No ~/.claude/projects and no usable extras: empty, not a crash."""
+@pytest.mark.usefixtures("home_root")
+def test_no_roots_at_all_returns_empty(tmp_path: Path) -> None:
+    """No ~/.claude/projects and no usable extras: empty, not a crash.
+
+    Needs home_root only for its side effect (HOME pointed at the fixture), so
+    it is requested via usefixtures rather than taken as an unused parameter.
+    """
     assert scan_transcripts(_cfg(), state_path=tmp_path / "state.json", now=_NOW) == []
 
 
-async def test_ingest_stages_traces_from_every_profile(_home: Path, tmp_path: Path) -> None:
+async def test_ingest_stages_traces_from_every_profile(home_root: Path, tmp_path: Path) -> None:
     """The async ingest path must see the extra roots too, not just scan_transcripts."""
     secondary = tmp_path / ".claude-OTHER"
-    _write_transcript(_home / ".claude", [_assistant("primary reasoning text", uuid="u1")])
+    _write_transcript(home_root / ".claude", [_assistant("primary reasoning text", uuid="u1")])
     _write_transcript(
         secondary, [_assistant("second profile reasoning", model="glm-5.2", uuid="u2")]
     )
