@@ -51,7 +51,7 @@ def _get_rules_content() -> str:
     return """\
 # Surreal-Memory Integration
 
-This project uses [Surreal-Memory](https://github.com/nhadaututtheky/surreal-memory) \
+This project uses [Surreal-Memory](https://github.com/acidkill/surreal-memory) \
 for persistent AI memory across sessions.
 
 ## Session Start (MANDATORY)
