@@ -2220,10 +2220,62 @@ class SurrealDBStorage(
             synapse_stats["avg_weight"] = round(total_weight / total_count, 4)
         synapse_stats["total_reinforcements"] = total_reinforcements
 
+        # The remaining four fields mirror InMemoryStorage.get_enhanced_stats
+        # (storage/memory_store.py) so both backends report the same shape.
+        # Independent queries, run concurrently like get_stats does above.
+        today = utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        today_rows, hot_state_rows, oldest_rows, newest_rows = await asyncio.gather(
+            self._query(
+                "SELECT count() AS c FROM fiber "
+                "WHERE brain_id = $bid AND created_at >= $today GROUP ALL",
+                bid=brain_id,
+                today=today.isoformat(),
+            ),
+            self._query(
+                "SELECT * FROM neuron_state WHERE brain_id = $bid "
+                "ORDER BY access_frequency DESC LIMIT 10",
+                bid=brain_id,
+            ),
+            self._query(
+                "SELECT created_at FROM fiber WHERE brain_id = $bid "
+                "ORDER BY created_at ASC LIMIT 1",
+                bid=brain_id,
+            ),
+            self._query(
+                "SELECT created_at FROM fiber WHERE brain_id = $bid "
+                "ORDER BY created_at DESC LIMIT 1",
+                bid=brain_id,
+            ),
+        )
+        today_fibers_count = int(today_rows[0].get("c", 0)) if today_rows else 0
+
+        hot_states = [_row_to_neuron_state(r) for r in hot_state_rows]
+        hot_neurons_map = await self.get_neurons_batch([s.neuron_id for s in hot_states])
+        hot_neurons: list[dict[str, Any]] = []
+        for state in hot_states:
+            neuron = hot_neurons_map.get(state.neuron_id)
+            if neuron:
+                hot_neurons.append(
+                    {
+                        "neuron_id": state.neuron_id,
+                        "content": neuron.content,
+                        "type": neuron.type.value,
+                        "activation_level": state.activation_level,
+                        "access_frequency": state.access_frequency,
+                    }
+                )
+
+        oldest_dt = _parse_datetime(oldest_rows[0].get("created_at")) if oldest_rows else None
+        newest_dt = _parse_datetime(newest_rows[0].get("created_at")) if newest_rows else None
+
         return {
             **stats,
-            "neuron_types": type_counts,
+            "neuron_type_breakdown": type_counts,
             "synapse_stats": synapse_stats,
+            "today_fibers_count": today_fibers_count,
+            "hot_neurons": hot_neurons,
+            "oldest_memory": oldest_dt.isoformat() if oldest_dt else None,
+            "newest_memory": newest_dt.isoformat() if newest_dt else None,
         }
 
     # ================================================================

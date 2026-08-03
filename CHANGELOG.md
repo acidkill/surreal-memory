@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.2] — 2026-08-06 — `smem info` and the dashboard stop reporting five fields as always-empty on SurrealDB
+
+### Fixed
+
+- **`SurrealDBStorage.get_enhanced_stats()` never computed five of the fields its callers
+  read** (`cli/commands/info.py`, `server/routes/brain.py`) — `today_fibers_count`,
+  `newest_memory`, `oldest_memory`, `hot_neurons`, `neuron_type_breakdown`. Every caller reads
+  them through `.get(key, default)`, so on SurrealDB — the only backend that ships — the answer
+  was always 0/null/empty, indistinguishable from a genuinely empty brain. All five are now
+  computed, matching `InMemoryStorage.get_enhanced_stats()`.
+- **A second, separable bug in the same function**: the backend computed the neuron type
+  breakdown under the key `neuron_types`; every caller read `neuron_type_breakdown`. The names
+  never matched, so the result — the single most expensive query in the function, by its own
+  code comment (~2.6s on a 64k-neuron brain) — was discarded on arrival every time. Renamed.
+
 ## [3.3.1] — 2026-08-06 — `smem doctor --fix` stops claiming a config section it can't create
 
 ### Fixed
