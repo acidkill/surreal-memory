@@ -3,7 +3,7 @@
 
 Last updated: **2026-03-16**
 
-> **⚠️ Historical figures.** These benchmarks were measured on the legacy **SQLite** backend (`SQLiteStorage`) and old upstream version numbering (e.g. "v4.7.0"). Surreal-Memory has been **SurrealDB-only since v2.0.0** (schema v40, v2.7.x); SQLite is now a test fixture only. A re-run on the SurrealDB backend is pending — the numbers below reflect the algorithmic approach, not the current production backend.
+> **⚠️ Historical figures.** These benchmarks were measured on the legacy **SQLite** backend (`SQLiteStorage`) and old upstream version numbering (e.g. "v4.7.0"). Surreal-Memory has been **SurrealDB-only since v2.0.0**, and v3.0.0 removed the SQLite backend outright — the class these numbers were produced with no longer exists. A re-run on the SurrealDB backend is pending; the numbers below reflect the algorithmic approach, not the current production backend.
 
 
 ## Surreal-Memory vs Mem0 — Competitive Benchmark
@@ -238,6 +238,11 @@ Last updated: **2026-03-04 02:24**
 
 
 Real SQLiteStorage benchmarks with diverse memory types on Windows 11.
+
+> **No longer reproducible.** The generator (`benchmarks/stress_at_scale.py`) was
+> removed in v3.3.0: it measured `SQLiteStorage`, a backend v3.0.0 deleted, so it
+> could not be run against anything that ships. The section is kept as a record of
+> what was measured, not as a claim about the current engine.
 
 
 ### Encode Throughput

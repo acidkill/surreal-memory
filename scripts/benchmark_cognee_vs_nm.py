@@ -9,10 +9,14 @@ Tests:
   6. Conversation   — store 10-turn chat, then recall context
 
 Run (requires Python 3.12 venv with cognee installed):
-    .venv-cognee/Scripts/python.exe scripts/benchmark_cognee_vs_nm.py
+    SURREALDB_URL=ws://localhost:8001/rpc \
+        .venv-cognee/Scripts/python.exe scripts/benchmark_cognee_vs_nm.py
 
 Env vars:
     DASHSCOPE_API_KEY   Alibaba Cloud / DashScope Coding Plan key
+    SURREALDB_URL       Required. Surreal-Memory's production backend since
+                        v2.0.0; this benchmark no longer falls back to SQLite,
+                        which v3.0.0 removed outright.
 """
 
 from __future__ import annotations
@@ -22,9 +26,9 @@ import json
 import logging
 import os
 import sys
-import tempfile
 import time
 import traceback
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -269,11 +273,11 @@ def best_similarity(query: str, candidates: list[str]) -> float:
 # ---------------------------------------------------------------------------
 
 
-async def nm_setup(db_path: Path) -> tuple[Any, Any, Any]:
+async def nm_setup(brain_id: str) -> tuple[Any, Any, Any]:
     from surreal_memory.core.brain import Brain, BrainConfig
     from surreal_memory.engine.encoder import MemoryEncoder
     from surreal_memory.engine.retrieval import ReflexPipeline
-    from surreal_memory.storage.sqlite_store import SQLiteStorage
+    from surreal_memory.storage.surrealdb.store import SurrealDBStorage
 
     config = BrainConfig(
         max_context_tokens=3000,
@@ -281,10 +285,10 @@ async def nm_setup(db_path: Path) -> tuple[Any, Any, Any]:
         graph_expansion_enabled=True,
         activation_strategy="classic",
     )
-    storage = SQLiteStorage(db_path)
+    storage = SurrealDBStorage(url=os.environ["SURREALDB_URL"])
     await storage.initialize()
 
-    brain = Brain.create(name="benchmark_brain", config=config, brain_id="benchmark_brain")
+    brain = Brain.create(name=brain_id, config=config, brain_id=brain_id)
     await storage.save_brain(brain)
     storage.set_brain(brain.id)
 
@@ -292,6 +296,22 @@ async def nm_setup(db_path: Path) -> tuple[Any, Any, Any]:
     pipeline = ReflexPipeline(storage=storage, config=config)
 
     return storage, encoder, pipeline
+
+
+async def nm_teardown(storage: Any, brain_id: str) -> None:
+    """Delete only this run's own brain, by its exact id, never ``default``.
+
+    Re-fetch the real RecordID via SELECT rather than reconstructing one from
+    the string id -- a hand-built ``type::record('brain', $bid)`` can look
+    like it succeeded (no error) while silently matching zero rows.
+    """
+    await storage.clear(brain_id)
+    rows = await storage._query(
+        "SELECT id FROM brain WHERE id = type::record('brain', $bid)", bid=brain_id
+    )
+    for row in rows:
+        await storage._query("DELETE $rid", rid=row["id"])
+    await storage.close()
 
 
 async def nm_store_memory(encoder: Any, content: str) -> None:
@@ -813,17 +833,22 @@ async def main() -> None:
     print(f"  Test memories : {len(MEMORIES_50)}")
     print(f"  Recall queries: {len(QUERIES_20)}")
 
+    surrealdb_url = os.environ.get("SURREALDB_URL")
+    if not surrealdb_url:
+        print("SURREALDB_URL is not set.")
+        print("Start SurrealDB and set it, e.g.")
+        print("    docker compose -f docker-compose.surrealdb.yml up -d")
+        print("    SURREALDB_URL=ws://localhost:8001/rpc python scripts/benchmark_cognee_vs_nm.py")
+        sys.exit(1)
+
     suite = BenchmarkSuite()
 
-    # Temp dirs
-    tmp_dir = Path(tempfile.mkdtemp(prefix="smem_bench_cognee_"))
-    nm_db = tmp_dir / "nm_benchmark.db"
-    print(f"  Temp dir      : {tmp_dir}")
+    nm_brain_id = f"bench-cognee-{uuid.uuid4().hex[:8]}"
 
     # Setup NM
     print("\n  Setting up Surreal-Memory...")
     try:
-        nm_storage, nm_encoder, nm_pipeline = await nm_setup(nm_db)
+        nm_storage, nm_encoder, nm_pipeline = await nm_setup(nm_brain_id)
         print("  NM ready.")
     except Exception as e:
         print(f"  FATAL: Surreal-Memory setup failed: {e}")
@@ -850,7 +875,7 @@ async def main() -> None:
 
         await bench_conversation(suite, cognee_ok, nm_encoder, nm_pipeline)
     finally:
-        await nm_storage.close()
+        await nm_teardown(nm_storage, nm_brain_id)
 
     # Report
     print_report(suite)
