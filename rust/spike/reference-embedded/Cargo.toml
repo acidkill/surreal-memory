@@ -1,0 +1,21 @@
+# Reference in-process implementation.
+#
+# This package is intentionally NOT part of the rust/spike workspace and is
+# not compiled by the offline spike (the `surrealdb` crate is unavailable in
+# this air-gapped environment). It is the intended in-process SurrealDB
+# embedding using the official `surrealdb` Rust crate, for compilation in an
+# environment with network access to crates.io.
+[package]
+name = "smem-rust-spike-embedded"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+surrealdb = { version = "2", features = ["kv-surrealkv"] }
+rmcp = { version = "1", features = ["server", "transport-io", "macros"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+schemars = "1"
+anyhow = "1"
+thiserror = "2"
