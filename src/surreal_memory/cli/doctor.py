@@ -58,7 +58,7 @@ _CHECK_TIERS: dict[str, str] = {
     "Checkout version": TIER_DEV,
 }
 
-QUICKSTART_URL = "https://github.com/acidkill/surreal-memory/blob/main/docs/getting-started/quickstart.md"
+QUICKSTART_URL = "https://acidkill.github.io/surreal-memory/guides/quickstart/"
 
 
 def run_doctor(
