@@ -623,7 +623,7 @@ Surreal-Memory is lightweight — it won't slow down your editor.
 
 **3 tools you need. 55 the agent handles automatically.**
 
-58 tools are available, but most users only interact with three:
+57 tools are available, but most users only interact with three:
 
 ### Essential (You Use These)
 
@@ -683,7 +683,6 @@ These tools fire automatically via MCP instructions and hooks — you don't need
 | `smem_evolution` | Brain evolution metrics (maturation, plasticity) |
 | `smem_narrative` | Generate timeline/topic/causal narratives |
 | `smem_review` | Spaced repetition reviews (Leitner box system) |
-| `smem_drift` | Detect and manage semantic drift in tags |
 
 ### Admin (Maintenance)
 
@@ -729,7 +728,7 @@ come from each tool's own schema.
 
 ## Tool Tiers
 
-By default all 58 tools are exposed on every API turn. If you want to reduce token overhead, configure a **tool tier** in `~/.surrealmemory/config.toml`:
+By default all 57 tools are exposed on every API turn. If you want to reduce token overhead, configure a **tool tier** in `~/.surrealmemory/config.toml`:
 
 ```toml
 [tool_tier]
@@ -754,7 +753,7 @@ smem config tier full         # reset to full
 
 - **minimal** — `remember`, `recall`, `context`, `recap`
 - **standard** — minimal + `todo`, `session`, `auto`, `eternal`
-- **full** — all 58 tools
+- **full** — all 57 tools
 
 > Hidden tools remain callable — only the schema listing changes. If the AI model already knows a tool name, it can still call it even when the tool is not exposed in `tools/list`.
 

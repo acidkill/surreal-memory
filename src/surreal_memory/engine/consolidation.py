@@ -51,7 +51,6 @@ class ConsolidationStrategy(StrEnum):
     PROCESS_REASONING_TRACES = "process_reasoning_traces"
     LEARN_REASONING = "learn_reasoning"
     ESSENCE_BACKFILL = "essence_backfill"
-    DETECT_DRIFT = "detect_drift"
     REPLAY = "replay"  # Hippocampal replay: LTP/LTD on recent fibers
     SCHEMA = "schema"  # Schema assimilation: bottom-up knowledge organization
     INTERFERENCE = "interference"  # Interference forgetting: memory competition
@@ -326,7 +325,6 @@ class ConsolidationEngine:
         frozenset(
             {
                 ConsolidationStrategy.SEMANTIC_LINK,
-                ConsolidationStrategy.DETECT_DRIFT,
             }
         ),
     )
@@ -375,7 +373,6 @@ class ConsolidationEngine:
                 report, dry_run
             ),
             ConsolidationStrategy.LEARN_REASONING: lambda: self._learn_reasoning(report, dry_run),
-            ConsolidationStrategy.DETECT_DRIFT: lambda: self._detect_drift(report, dry_run),
             ConsolidationStrategy.ESSENCE_BACKFILL: lambda: self._essence_backfill(report, dry_run),
             ConsolidationStrategy.REPLAY: lambda: self._replay(report, dry_run),
             ConsolidationStrategy.SCHEMA: lambda: self._schema(report, dry_run),
@@ -2274,28 +2271,3 @@ class ConsolidationEngine:
                 result.patterns_learned,
                 result.traces_processed,
             )
-
-    async def _detect_drift(self, report: ConsolidationReport, dry_run: bool) -> None:
-        """Run semantic drift detection to find tag synonyms/aliases."""
-        _logger = logging.getLogger(__name__)
-        if dry_run:
-            _logger.debug("DETECT_DRIFT skipped: dry_run mode")
-            return
-
-        try:
-            from surreal_memory.engine.drift_detection import run_drift_detection
-
-            result = await run_drift_detection(self._storage)
-            summary: dict[str, Any] = result.get("summary", {})  # type: ignore[assignment]
-            total = summary.get("total_clusters", 0)
-            if total > 0:
-                _logger.debug(
-                    "DETECT_DRIFT: found %d clusters (%d merge, %d alias, %d review)",
-                    total,
-                    summary.get("merge_suggestions", 0),
-                    summary.get("alias_suggestions", 0),
-                    summary.get("review_suggestions", 0),
-                )
-                report.extra["drift_clusters"] = total
-        except Exception:
-            _logger.debug("DETECT_DRIFT failed (non-critical)", exc_info=True)
