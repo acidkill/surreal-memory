@@ -7,6 +7,8 @@ words surviving as concepts), not synthetic hopes.
 
 from __future__ import annotations
 
+import pytest
+
 from surreal_memory.extraction.keywords import (
     STOP_WORDS_EN,
     STOP_WORDS_PL,
@@ -137,3 +139,77 @@ class TestAsciiCollisionExclusions:
         # for Vietnamese ("ai"/"em"). Guard against reintroducing it.
         assert "ci" not in STOP_WORDS_PL
         assert "ci" in _unigrams("Fixed CI lint failure, CI now passes cleanly")
+
+
+class TestAcronymPreservation:
+    """ma/na/co/sa: the acronym survives, the Polish function word does not (#64).
+
+    Straight removal from STOP_WORDS_PL was rejected — N/A and S.A. don't
+    actually collide (punctuation fragments them below min_length before the
+    stop-word check ever runs), and the Polish function word is far more
+    common than the bare acronym. The fix instead preserves a token that was
+    ALL-CAPS in the source even though its lowercased form is a stop word.
+    """
+
+    @pytest.mark.parametrize(
+        ("acronym", "stopword", "sentence_template"),
+        [
+            ("MA", "ma", "Stan {} oznacza Massachusetts w bazie"),
+            ("NA", "na", "Wynik testu {} wskazuje brak danych"),
+            ("SA", "sa", "Jednostka {} odpowiada za wdrozenie"),
+            ("CO", "co", "Czujnik {} wykryl usterke w systemie"),
+        ],
+    )
+    def test_both_directions_per_word(
+        self, acronym: str, stopword: str, sentence_template: str
+    ) -> None:
+        """The maintainer's required pin: MA survives, ma does not (and so on)."""
+        assert acronym in _unigrams(sentence_template.format(acronym))
+        assert stopword not in _unigrams(sentence_template.format(acronym))
+        # And the plain lowercase function word, used as itself, stays filtered.
+        assert stopword not in _unigrams(f"Ona {stopword} nowy komputer w biurze")
+
+    @pytest.mark.parametrize("word", ["Ma", "Na", "Sa", "Co"])
+    def test_sentence_initial_capitalization_is_not_rescued(self, word: str) -> None:
+        """Tight rule: only a token ALL-CAPS in the source is rescued — a
+        sentence-initial capital must stay filtered like any other stop word."""
+        unigrams = _unigrams(f"{word} to jest bardzo wazna sprawa dzisiaj")
+        assert word not in unigrams
+        assert word.lower() not in unigrams
+
+    def test_na_slash_a_still_does_not_collide(self) -> None:
+        """Unaffected by this fix: punctuation still fragments N/A below
+        min_length, so this never reaches the stop-word check either way."""
+        unigrams = _unigrams("Pole N/A w formularzu jest puste")
+        assert "na" not in unigrams
+        assert "NA" not in unigrams
+
+    def test_s_dot_a_dot_still_does_not_collide(self) -> None:
+        unigrams = _unigrams("Firma Orlen S.A. podpisala umowe dzisiaj")
+        assert "sa" not in unigrams
+        assert "SA" not in unigrams
+
+    def test_shouted_text_does_not_leak_every_stop_word(self) -> None:
+        """The risk a naive "ALL-CAPS survives" rule would introduce: fully
+        uppercase text (a shouted note, a heading) has no acronyms to rescue,
+        only every word incidentally uppercase. Rescue must not fire here."""
+        unigrams = _unigrams("RAPORT JEST NA BIURKU I MA BYC GOTOWY DO PONIEDZIALKU")
+        for stopword in ("jest", "na", "i", "ma", "byc", "do"):
+            assert stopword not in unigrams, f"'{stopword}' leaked in shouted text"
+            assert stopword.upper() not in unigrams, f"'{stopword.upper()}' leaked in shouted text"
+
+    def test_shouted_english_text_does_not_leak_either(self) -> None:
+        unigrams = _unigrams(
+            "THIS IS THE MOST IMPORTANT THING TO DO IF IT IS NOT DONE", language="en"
+        )
+        for stopword in ("this", "is", "the", "to", "do", "if", "not"):
+            assert stopword not in unigrams
+            assert stopword.upper() not in unigrams
+        assert "important" in unigrams
+        assert "done" in unigrams
+
+    def test_a_sparse_acronym_amid_normal_text_is_not_treated_as_shouting(self) -> None:
+        """Sanity check on the caps-ratio guard's threshold: normal prose with
+        one acronym must not accidentally trip the shouted-text guard."""
+        unigrams = _unigrams("Czujnik CO wykryl usterke this morning w systemie")
+        assert "CO" in unigrams

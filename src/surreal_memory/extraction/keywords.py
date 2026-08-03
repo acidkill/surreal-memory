@@ -591,6 +591,14 @@ class WeightedKeyword:
     weight: float
 
 
+#: Above this fraction of all-caps tokens, a text is shouted text or a
+#: heading, not prose with a sparse acronym in it -- acronym rescue (below)
+#: is skipped so a fully-uppercase note doesn't let every stop word back in.
+#: Measured: genuine acronym usage sits at ~0.17-0.20 of tokens; fully-caps
+#: text sits at ~1.0. Wide margin on both sides.
+_MAX_ACRONYM_CAPS_RATIO = 0.6
+
+
 def extract_weighted_keywords(
     text: str,
     min_length: int = 2,
@@ -603,6 +611,14 @@ def extract_weighted_keywords(
     - Position: earlier words score higher (1.0 → 0.5 linear decay)
     - Bi-grams: adjacent non-stop-word pairs get averaged weight * 1.2 boost
 
+    An ALL-CAPS token (e.g. ``MA``) survives even when its lowercased form is
+    a stop word (Polish ``ma``, "has"): punctuation already prevents the
+    collisions that motivated removing such words from the stop list
+    (``N/A`` and ``S.A.`` tokenize as two short fragments, not ``na``/``sa``),
+    so only the bare uppercase form actually collides, and only that form
+    is rescued. Every other token is unaffected — still lowercased, still
+    filtered exactly as before.
+
     Args:
         text: The text to extract from
         min_length: Minimum word length for unigrams
@@ -613,12 +629,31 @@ def extract_weighted_keywords(
     """
     stop_words = _get_stop_words(language, text)
 
-    words: list[str] = []
+    # Tokenize the ORIGINAL text (not lowercased): _CLAUSE_BOUNDARY and the
+    # word regex below only match punctuation/letter classes, so this yields
+    # the identical clause/word boundaries as before -- only each token's own
+    # casing is preserved for the acronym check that follows.
+    raw_tokens: list[str] = []
     clause_of: list[int] = []
-    for clause_idx, clause in enumerate(_CLAUSE_BOUNDARY.split(text.lower())):
+    for clause_idx, clause in enumerate(_CLAUSE_BOUNDARY.split(text)):
         for w in re.findall(r"\b[a-zA-ZÀ-ỹ]+(?:_[a-zA-ZÀ-ỹ]+)*\b", clause):
-            words.append(w)
+            raw_tokens.append(w)
             clause_of.append(clause_idx)
+
+    caps_ratio = sum(1 for w in raw_tokens if w.isupper()) / len(raw_tokens) if raw_tokens else 0.0
+    rescue_acronyms = caps_ratio < _MAX_ACRONYM_CAPS_RATIO
+
+    words: list[str] = []
+    for w in raw_tokens:
+        lower = w.lower()
+        is_stop_word = lower.replace("_", " ") in stop_words or lower in stop_words
+        # Tight rule: the WHOLE token must be uppercase in the source, not
+        # just capitalized -- str.isupper() already rejects "Ma"/"Na"
+        # (sentence-initial capitalization), which must stay filtered.
+        if is_stop_word and rescue_acronyms and w.isupper() and len(w.replace("_", "")) >= 2:
+            words.append(w)
+        else:
+            words.append(lower)
 
     # Filter to content words with original position and clause id
     filtered: list[tuple[str, int, int]] = [
