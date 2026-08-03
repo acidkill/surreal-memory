@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.0] — 2026-08-03 — `smem index`/`smem reindex` batch their writes and stop duplicating on re-run
+
+### Added
+
+- **`smem index --force`** — wipes the existing code index and rebuilds it from scratch, ignoring change tracking. The explicit escape hatch for the new incremental-skip behaviour below.
+
+### Fixed
+
+- **`smem index` duplicated every neuron/synapse/fiber on every re-run.** `CodebaseEncoder` never hashed or compared file content, so re-indexing an unchanged tree recreated it wholesale with fresh IDs. It now tracks each file's mtime and a content simhash on the file's own neuron: unchanged files are skipped entirely, a touched-but-content-identical file is skipped via the simhash comparison, and a genuinely changed file has its previous neurons/synapses/fiber removed before being rebuilt.
+- **`[embedding] endpoint` in `config.toml` was silently dead.** `_create_provider` never called `EmbeddingSettings.resolved_endpoint()`, so the `openai` and `ollama` providers only ever picked up an endpoint from the `SURREAL_MEMORY_EMBEDDING_ENDPOINT` environment variable — the config field had no effect on the canonical embedding path (`smem_remember`, `smem reindex`, the doc trainer). Both providers now receive the resolved endpoint, and the provider cache key includes it so editing the endpoint returns a freshly built provider instead of one pointed at the old address.
+
+### Performance
+
+- **`smem index`'s directory walk stopped materializing the whole tree before filtering it.** It used to `sorted(directory.rglob("*"))` over the entire tree — including excluded directories like `.git`, `.venv`, and nested `.claude/worktrees` checkouts — and only rejected them file-by-file afterward, with a `resolve()` syscall on every single path before the extension/exclude filters ran. It now walks with `os.walk`, pruning excluded directory names in place so they're never descended into, and only resolves paths that already passed the extension filter.
+- **Codebase indexing batches its database writes.** Every file used to cost 3 sequential round-trips per neuron (entity + activation state + change-log row), 2 per synapse, and 2 per fiber. `CodebaseEncoder` now builds every file's neurons/synapses/fiber in memory across the whole directory and flushes them in a handful of multi-statement writes at the end (new `add_neurons_batch`/`add_fibers_batch` on `NeuralStorage`, with a sequential fallback for backends that don't override them). `add_synapses_batch`'s own change-log write was also fixed to log in one bulk insert instead of looping per synapse — a "batch" writer that still cost N round-trips for its own bookkeeping.
+- **`smem reindex` writes embedding vectors in one round-trip per batch instead of one per neuron**, via the existing `update_neuron_embeddings` batch writer (now promoted to a `NeuralStorage` interface method with a sequential fallback, replacing an ad hoc `getattr` check).
+
+### Changed
+
+- **Embeddings for code symbols are computed from more than just the symbol's name.** A code neuron's `content` doubles as its dedup/identity key (`Klasa.metoda`), which left almost nothing for the embedding provider to work with. `Neuron.embedding_text()` composes `content` with the symbol's `signature`/`docstring` from its metadata when present, and both `smem reindex` and inline post-encode embedding now use it — `content` itself, and dedup, are unaffected.
+
 ## [3.0.3] — 2026-08-03 — `smem watch` no longer crashes on SurrealDB; `smem index` no longer indexes itself 24x over
 
 ### Fixed

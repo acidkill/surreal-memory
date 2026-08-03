@@ -144,7 +144,8 @@ def _auto_detect_provider() -> tuple[str, str]:
 
 
 # Module-level singleton cache — avoids reloading models per tool call (#100)
-_provider_cache: dict[tuple[str, str], Any] = {}
+# Keyed by (provider, model, endpoint) — see _create_provider's cache_key.
+_provider_cache: dict[tuple[str, str, str], Any] = {}
 
 
 def _effective_embedding(config: BrainConfig) -> tuple[bool, str, str]:
@@ -170,6 +171,29 @@ def _effective_embedding(config: BrainConfig) -> tuple[bool, str, str]:
         )
 
 
+def _effective_embedding_endpoint() -> str:
+    """Resolve the EFFECTIVE embedding endpoint (config.toml + env override).
+
+    Mirrors ``_effective_embedding``'s "effective config wins" pattern —
+    ``EmbeddingSettings.resolved_endpoint()`` prefers ``[embedding] endpoint``
+    in config.toml over ``SURREAL_MEMORY_EMBEDDING_ENDPOINT``. Without this,
+    ``_create_provider`` never read the config value at all: it constructed
+    ``OpenAIEmbedding(model=model_name)`` with no ``base_url``, so the config
+    field was silently dead — only the env var ever reached the provider.
+    Returns "" if the unified config cannot be loaded; callers already fall
+    back to reading the env var themselves in that case (see
+    ``OpenAIEmbedding.__init__``), so failing open to "no override" reproduces
+    the exact pre-existing behaviour.
+    """
+    try:
+        from surreal_memory.unified_config import get_config
+
+        return get_config().embedding.resolved_endpoint()
+    except Exception:
+        logger.debug("Could not load unified embedding config for endpoint", exc_info=True)
+        return ""
+
+
 def _create_provider(config: BrainConfig, task_type: str = "RETRIEVAL_QUERY") -> Any:
     """Create or retrieve a cached embedding provider from BrainConfig.
 
@@ -191,7 +215,11 @@ def _create_provider(config: BrainConfig, task_type: str = "RETRIEVAL_QUERY") ->
         provider_name, model_name = _auto_detect_provider()
         logger.info("Auto-detected embedding provider: %s (model: %s)", provider_name, model_name)
 
-    cache_key = (provider_name, model_name)
+    endpoint = _effective_embedding_endpoint()
+    # Endpoint rides in the cache key too: changing [embedding] endpoint in
+    # config.toml (or the env override) must return a freshly built provider
+    # pointed at the new address, not a provider cached under the old one.
+    cache_key = (provider_name, model_name, endpoint)
     if cache_key in _provider_cache:
         return _provider_cache[cache_key]
 
@@ -205,7 +233,7 @@ def _create_provider(config: BrainConfig, task_type: str = "RETRIEVAL_QUERY") ->
     elif provider_name == "openai":
         from surreal_memory.engine.embedding.openai_embedding import OpenAIEmbedding
 
-        provider = OpenAIEmbedding(model=model_name)
+        provider = OpenAIEmbedding(model=model_name, base_url=endpoint or None)
     elif provider_name == "openrouter":
         from surreal_memory.engine.embedding.openrouter_embedding import OpenRouterEmbedding
 
@@ -217,7 +245,7 @@ def _create_provider(config: BrainConfig, task_type: str = "RETRIEVAL_QUERY") ->
     elif provider_name == "ollama":
         from surreal_memory.engine.embedding.ollama_embedding import OllamaEmbedding
 
-        provider = OllamaEmbedding(model=model_name)
+        provider = OllamaEmbedding(model=model_name, **({"base_url": endpoint} if endpoint else {}))
     elif provider_name in ("bge_m3", "bge-m3"):
         from surreal_memory.engine.embedding.bge_m3_embedding import BGEM3Embedding
 

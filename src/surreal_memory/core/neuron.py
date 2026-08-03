@@ -88,6 +88,29 @@ class Neuron:
             ephemeral=ephemeral,
         )
 
+    def embedding_text(self) -> str:
+        """Text to feed the embedding provider — richer than `content` alone.
+
+        `content` doubles as this neuron's identity (dedup via
+        `has_neuron_by_content_hash`, exact-match lookups via
+        `find_neurons_exact_batch`) so it has to stay a short, stable key. Code
+        symbols in particular store their signature and docstring in
+        `metadata` (see `CodebaseEncoder._build_file_result`), not in
+        `content` — embedding just `content` (e.g. ``"MyClass.my_method"``)
+        gives semantic search almost nothing to match against. This composes
+        a richer string from `signature`/`docstring` when present, and
+        degrades to plain `content` when they are not, so every other neuron
+        type embeds exactly as before.
+        """
+        parts = [self.content]
+        signature = self.metadata.get("signature")
+        if signature:
+            parts.append(str(signature))
+        docstring = self.metadata.get("docstring")
+        if docstring:
+            parts.append(str(docstring))
+        return "\n".join(parts)
+
     def with_metadata(self, **kwargs: Any) -> Neuron:
         """
         Create a new Neuron with updated metadata.

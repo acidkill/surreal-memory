@@ -150,7 +150,7 @@ async def _reindex_async(
     failed = 0
     for start in range(0, to_embed, batch_size):
         batch = candidates[start : start + batch_size]
-        texts = [n.content for n in batch]
+        texts = [n.embedding_text() for n in batch]
         try:
             vectors = await provider.embed_batch(texts)
         except Exception:
@@ -159,12 +159,15 @@ async def _reindex_async(
                 typer.echo(f"  batch {start}-{start + len(batch)} failed (skipped)", err=True)
             continue
 
-        for neuron, vector in zip(batch, vectors, strict=True):
-            try:
-                await storage.update_neuron(neuron.with_metadata(_embedding=vector))
-                embedded += 1
-            except Exception:
-                failed += 1
+        pairs = [(neuron.id, vector) for neuron, vector in zip(batch, vectors, strict=True)]
+        try:
+            await storage.update_neuron_embeddings(pairs)
+            embedded += len(pairs)
+        except Exception:
+            failed += len(pairs)
+            if not json_output:
+                typer.echo(f"  batch {start}-{start + len(batch)} write failed (skipped)", err=True)
+            continue
 
         if not json_output:
             typer.echo(f"  embedded {min(start + batch_size, to_embed)}/{to_embed}")

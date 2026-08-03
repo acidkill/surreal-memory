@@ -533,7 +533,7 @@ class MemoryEncoder:
             # near this budget; anything that is pays with a slightly later vector
             # instead of a lost write. `smem reindex` back-fills.
             budget = _inline_embed_timeout()
-            embed = provider.embed_batch([n.content for n in candidates])
+            embed = provider.embed_batch([n.embedding_text() for n in candidates])
             vectors = await (asyncio.wait_for(embed, timeout=budget) if budget else embed)
         except TimeoutError:
             logger.warning(
@@ -547,16 +547,15 @@ class MemoryEncoder:
             logger.debug("Inline embedding skipped (provider unavailable)", exc_info=True)
             return
 
-        # Prefer a single batched write when the backend offers one (SurrealDB):
-        # inline embedding otherwise costs one round-trip per created neuron.
+        # Prefer a single batched write (SurrealDB collapses this into one
+        # multi-statement UPDATE per chunk): inline embedding otherwise costs
+        # one round-trip per created neuron.
         pairs = [(n.id, list(v)) for n, v in zip(candidates, vectors, strict=False)]
-        batch_update = getattr(self._storage, "update_neuron_embeddings", None)
-        if batch_update is not None:
-            try:
-                await batch_update(pairs)
-                return
-            except Exception:
-                logger.debug("Batch inline embed update failed; falling back", exc_info=True)
+        try:
+            await self._storage.update_neuron_embeddings(pairs)
+            return
+        except Exception:
+            logger.debug("Batch inline embed update failed; falling back", exc_info=True)
         for neuron, vector in zip(candidates, vectors, strict=False):
             try:
                 await self._storage.update_neuron(neuron.with_metadata(_embedding=list(vector)))

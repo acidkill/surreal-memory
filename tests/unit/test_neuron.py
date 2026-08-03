@@ -67,6 +67,48 @@ class TestNeuron:
             neuron = Neuron.create(type=neuron_type, content=f"test_{neuron_type}")
             assert neuron.type == neuron_type
 
+    def test_embedding_text_plain_content_unaffected(self) -> None:
+        """A neuron with no signature/docstring embeds exactly as before —
+        every non-code memory neuron must be unaffected by this method."""
+        neuron = Neuron.create(type=NeuronType.ENTITY, content="Alice")
+        assert neuron.embedding_text() == "Alice"
+
+    def test_embedding_text_includes_signature_and_docstring(self) -> None:
+        """A code-symbol neuron composes content + signature + docstring —
+        content alone (e.g. 'MyClass.my_method') is too sparse to embed well."""
+        neuron = Neuron.create(
+            type=NeuronType.ACTION,
+            content="MyClass.my_method",
+            metadata={
+                "signature": "def my_method(self, x: int) -> str",
+                "docstring": "Convert x to its string form.",
+            },
+        )
+        text = neuron.embedding_text()
+        assert "MyClass.my_method" in text
+        assert "def my_method(self, x: int) -> str" in text
+        assert "Convert x to its string form." in text
+
+    def test_embedding_text_signature_only(self) -> None:
+        """A symbol with a signature but no docstring still enriches the text."""
+        neuron = Neuron.create(
+            type=NeuronType.ACTION,
+            content="greet",
+            metadata={"signature": "def greet(name: str) -> str"},
+        )
+        text = neuron.embedding_text()
+        assert text == "greet\ndef greet(name: str) -> str"
+
+    def test_embedding_text_does_not_mutate_content(self) -> None:
+        """content stays the dedup/identity key regardless of embedding_text()."""
+        neuron = Neuron.create(
+            type=NeuronType.CONCEPT,
+            content="Widget",
+            metadata={"docstring": "A UI widget."},
+        )
+        neuron.embedding_text()
+        assert neuron.content == "Widget"
+
 
 class TestNeuronState:
     """Tests for NeuronState class."""

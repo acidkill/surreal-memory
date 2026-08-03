@@ -103,7 +103,6 @@ _KNOWN_ASYMMETRIC_ONLY = frozenset(
         "initialize",
         "list_brain_names",
         "prune_old_events",
-        "update_neuron_embeddings",
     }
 )
 

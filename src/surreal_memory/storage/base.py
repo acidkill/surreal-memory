@@ -72,6 +72,23 @@ class NeuralStorage(ABC):
         """
         ...
 
+    async def add_neurons_batch(self, neurons: list[Neuron], *, record_change: bool = True) -> int:
+        """Add many neurons. Default falls back to sequential add_neuron.
+
+        Backends should override for batch efficiency (bulk codebase indexing
+        issues thousands of neuron inserts per run). ``record_change=False``
+        is accepted for symmetry with ``add_synapses_batch`` but the default
+        fallback has no separate change-log step to skip.
+        """
+        count = 0
+        for neuron in neurons:
+            try:
+                await self.add_neuron(neuron)
+                count += 1
+            except Exception:
+                pass
+        return count
+
     @abstractmethod
     async def get_neuron(self, neuron_id: str) -> Neuron | None:
         """
@@ -207,6 +224,19 @@ class NeuralStorage(ABC):
             True if deleted, False if not found
         """
         ...
+
+    async def update_neuron_embeddings(self, pairs: list[tuple[str, list[float]]]) -> None:
+        """Write embedding vectors for many neurons.
+
+        Default falls back to sequential fetch + `update_neuron` per pair.
+        Backends should override for batch efficiency — `smem reindex` and
+        inline post-encode embedding both call this for every neuron they
+        embed, so a per-neuron round-trip scales linearly with brain size.
+        """
+        for neuron_id, vector in pairs:
+            neuron = await self.get_neuron(neuron_id)
+            if neuron is not None:
+                await self.update_neuron(neuron.with_metadata(_embedding=list(vector)))
 
     # ========== Neuron State Operations ==========
 
@@ -506,6 +536,23 @@ class NeuralStorage(ABC):
             ValueError: If fiber with same ID exists
         """
         ...
+
+    async def add_fibers_batch(self, fibers: list[Fiber], *, record_change: bool = True) -> int:
+        """Add many fibers. Default falls back to sequential add_fiber.
+
+        Backends should override for batch efficiency (bulk codebase indexing
+        issues one fiber insert per file). ``record_change=False`` is accepted
+        for symmetry with ``add_synapses_batch``/``add_neurons_batch`` but the
+        default fallback has no separate change-log step to skip.
+        """
+        count = 0
+        for fiber in fibers:
+            try:
+                await self.add_fiber(fiber)
+                count += 1
+            except Exception:
+                pass
+        return count
 
     @abstractmethod
     async def get_fiber(self, fiber_id: str) -> Fiber | None:

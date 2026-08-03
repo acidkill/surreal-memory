@@ -762,6 +762,65 @@ class SurrealDBStorage(
 
         return neuron.id
 
+    async def add_neurons_batch(self, neurons: list[Neuron], *, record_change: bool = True) -> int:
+        """Insert many neurons in a handful of round-trips instead of 3*N.
+
+        ``add_neuron`` costs 3 sequential round-trips per neuron: the ``neuron``
+        insert, its ``neuron_state`` row, and its own ``change_log`` insert. The
+        SDK's ``insert()`` accepts a LIST and emits one ``INSERT INTO <table>
+        $data`` for the whole list (already relied on by
+        ``_record_changes_bulk``), so this collapses N calls into
+        ``ceil(N / _BATCH_WRITE_CHUNK)`` per table. Bulk codebase indexing is
+        the primary caller — one directory scan issues thousands of these.
+        """
+        if not neurons:
+            return 0
+        brain_id = self._get_brain_id()
+        conn = self._ensure_conn()
+
+        neuron_rows: list[dict[str, Any]] = []
+        state_rows: list[dict[str, Any]] = []
+        for neuron in neurons:
+            sid = _to_surreal_id(neuron.id)
+            meta = dict(neuron.metadata)
+            embedding_vec = meta.pop("_embedding", None)
+            row: dict[str, Any] = {
+                "id": sid,
+                "brain_id": brain_id,
+                "type": neuron.type.value,
+                "content": neuron.content,
+                "content_hash": neuron.content_hash,
+                "metadata": meta,
+                "ephemeral": neuron.ephemeral,
+                "created_at": neuron.created_at,
+                "updated_at": utcnow(),
+            }
+            if embedding_vec is not None:
+                row["embedding_vec"] = list(embedding_vec)
+            neuron_rows.append(row)
+            state_rows.append(
+                {
+                    "id": f"state_{sid}",
+                    "neuron_id": neuron.id,
+                    "brain_id": brain_id,
+                    "activation_level": 0.0,
+                    "access_frequency": 0,
+                    "created_at": neuron.created_at,
+                }
+            )
+
+        for chunk in _chunked(neuron_rows):
+            await conn.insert("neuron", chunk)
+        for chunk in _chunked(state_rows):
+            try:
+                await conn.insert("neuron_state", chunk)
+            except Exception:
+                pass
+
+        if record_change:
+            await self._record_changes_bulk("neuron", "insert", neurons)
+        return len(neurons)
+
     async def get_neuron(self, neuron_id: str) -> Neuron | None:
         # Scope to the current brain: a bare record select would let a caller
         # read another brain's neuron by id. The record is still pinned in FROM.
@@ -1197,9 +1256,13 @@ class SurrealDBStorage(
         ``add_synapse`` is the #2 round-trip cost during doc-training (~70+/chunk);
         this collapses N of them into one. ``record_change=False`` (used by bulk
         training against a brain that does not delta-sync) additionally skips the
-        per-synapse ``change_log`` insert — the #1 op count. Returns the count
-        inserted (best-effort; a statement-level failure is logged, not raised,
-        matching ``add_synapse`` semantics on the RELATION table).
+        change-log entirely. When ``record_change=True`` the log rows are written
+        via ``_record_changes_bulk`` — ONE bulk insert, not one per synapse (that
+        loop was the change-log ~64%-of-wall-clock cost documented on
+        ``update_synapses_batch``, reintroduced here despite the "batch" name
+        until fixed). Returns the count inserted (best-effort; a
+        statement-level failure is logged, not raised, matching ``add_synapse``
+        semantics on the RELATION table).
         """
         from surrealdb import RecordID
 
@@ -1228,8 +1291,7 @@ class SurrealDBStorage(
         except Exception:
             logger.debug("add_synapses_batch multi-statement failed; partial", exc_info=True)
         if record_change:
-            for syn in synapses:
-                await self._record_change_internal("synapse", syn.id, "insert", syn)
+            await self._record_changes_bulk("synapse", "insert", synapses)
         return len(synapses)
 
     async def get_synapse(self, synapse_id: str) -> Synapse | None:
@@ -1595,6 +1657,58 @@ class SurrealDBStorage(
         await conn.insert("fiber", record_data)
         await self._record_change_internal("fiber", fiber.id, "insert")
         return fiber.id
+
+    async def add_fibers_batch(self, fibers: list[Fiber], *, record_change: bool = True) -> int:
+        """Insert many fibers in a handful of round-trips instead of one apiece.
+
+        Same shape as ``add_neurons_batch``: the SDK's ``insert()`` accepts a
+        LIST and emits one ``INSERT INTO fiber $data`` for the whole chunk.
+        Bulk codebase indexing is the primary caller — one fiber per file.
+        """
+        if not fibers:
+            return 0
+        brain_id = self._get_brain_id()
+        conn = self._ensure_conn()
+
+        rows: list[dict[str, Any]] = []
+        for fiber in fibers:
+            fid = _to_surreal_id(fiber.id)
+            row: dict[str, Any] = {
+                "id": fid,
+                "brain_id": brain_id,
+                "neuron_ids": list(fiber.neuron_ids),
+                "synapse_ids": list(fiber.synapse_ids),
+                "anchor_neuron_id": fiber.anchor_neuron_id,
+                "pathway": fiber.pathway,
+                "conductivity": fiber.conductivity,
+                "coherence": fiber.coherence,
+                "salience": fiber.salience,
+                "frequency": fiber.frequency,
+                "summary": fiber.summary,
+                "essence": fiber.essence,
+                "auto_tags": list(fiber.auto_tags),
+                "agent_tags": list(fiber.agent_tags),
+                "metadata": dict(fiber.metadata),
+                "compression_tier": fiber.compression_tier,
+                "pinned": fiber.pinned,
+                "created_at": fiber.created_at,
+            }
+            if fiber.last_conducted:
+                row["last_conducted"] = fiber.last_conducted
+            if fiber.time_start:
+                row["time_start"] = fiber.time_start
+            if fiber.time_end:
+                row["time_end"] = fiber.time_end
+            if fiber.last_ghost_shown_at:
+                row["last_ghost_shown_at"] = fiber.last_ghost_shown_at
+            rows.append(row)
+
+        for chunk in _chunked(rows):
+            await conn.insert("fiber", chunk)
+
+        if record_change:
+            await self._record_changes_bulk("fiber", "insert", fibers)
+        return len(fibers)
 
     async def get_fiber(self, fiber_id: str) -> Fiber | None:
         brain_id = self._get_brain_id()

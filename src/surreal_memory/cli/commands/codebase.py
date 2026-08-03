@@ -21,9 +21,16 @@ def index(
         bool, typer.Option("--status", "-s", help="Show indexing status instead of scanning")
     ] = False,
     json_output: Annotated[bool, typer.Option("--json", "-j", help="Output as JSON")] = False,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="Wipe the existing code index and re-index every file, ignoring change tracking",
+        ),
+    ] = False,
 ) -> None:
     """Index a codebase into neural memory for code-aware recall."""
-    run_async(_index_async(path, extensions, status, json_output))
+    run_async(_index_async(path, extensions, status, json_output, force))
 
 
 async def _index_async(
@@ -31,6 +38,7 @@ async def _index_async(
     extensions: list[str] | None,
     status: bool,
     json_output: bool,
+    force: bool = False,
 ) -> None:
     """Async implementation of the index command."""
     from surreal_memory.core.neuron import NeuronType
@@ -81,7 +89,7 @@ async def _index_async(
     storage.disable_auto_save()
 
     typer.echo(f"Indexing {directory} ({', '.join(sorted(exts))})...")
-    results = await encoder.index_directory(directory, extensions=exts)
+    results = await encoder.index_directory(directory, extensions=exts, force=force)
     await storage.batch_save()
 
     total_neurons = sum(len(r.neurons_created) for r in results)

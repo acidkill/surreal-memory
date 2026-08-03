@@ -21,6 +21,7 @@ Synapse mapping:
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -29,6 +30,7 @@ from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.core.synapse import Synapse, SynapseType
 from surreal_memory.engine.encoder import EncodingResult
 from surreal_memory.extraction.codebase import CodeSymbolType, get_extractor
+from surreal_memory.utils.simhash import is_near_duplicate, simhash
 
 logger = logging.getLogger(__name__)
 
@@ -98,19 +100,21 @@ class CodebaseEncoder:
         self._storage = storage
         self._config = config
 
-    async def index_file(
+    def _build_file_result(
         self,
         file_path: Path,
+        *,
+        mtime: float | None = None,
+        content_simhash: int | None = None,
         tags: set[str] | None = None,
     ) -> EncodingResult:
-        """Index a single source file into neural graph.
+        """Parse a file and build its neurons/synapses/fiber WITHOUT persisting them.
 
-        Args:
-            file_path: Path to the source file.
-            tags: Optional tags for the fiber.
-
-        Returns:
-            EncodingResult with created neurons, synapses, and fiber.
+        Pure CPU + a single blocking read (via the extractor) — no storage I/O,
+        so many files can be built up-front and flushed together in one batch.
+        `mtime`/`content_simhash`, when given, ride along on the file neuron's
+        metadata so a later `index_directory` run can tell whether this file
+        changed without re-reading every file up front.
         """
         extractor = get_extractor(file_path.suffix)
         symbols, relationships = extractor.extract_file(file_path)
@@ -119,15 +123,20 @@ class CodebaseEncoder:
         synapses_created: list[Synapse] = []
 
         # 1. Create file neuron (SPATIAL)
+        file_metadata: dict[str, Any] = {
+            "indexed": True,
+            "symbol_count": len(symbols),
+        }
+        if mtime is not None:
+            file_metadata["mtime"] = mtime
+        if content_simhash is not None:
+            file_metadata["content_simhash"] = content_simhash
+
         file_neuron = Neuron.create(
             type=NeuronType.SPATIAL,
             content=str(file_path),
-            metadata={
-                "indexed": True,
-                "symbol_count": len(symbols),
-            },
+            metadata=file_metadata,
         )
-        await self._storage.add_neuron(file_neuron)
         neurons_created.append(file_neuron)
 
         # 2. Create symbol neurons
@@ -157,7 +166,6 @@ class CodebaseEncoder:
                 content=sym_key,
                 metadata=metadata,
             )
-            await self._storage.add_neuron(neuron)
             neurons_created.append(neuron)
             symbol_id_map[sym_key] = neuron.id
 
@@ -180,7 +188,6 @@ class CodebaseEncoder:
                 type=synapse_type,
                 weight=weight,
             )
-            await self._storage.add_synapse(synapse)
             synapses_created.append(synapse)
 
         # 4. Create co-occurrence synapses (capped to avoid O(n²) explosion)
@@ -195,7 +202,6 @@ class CodebaseEncoder:
                         type=SynapseType.CO_OCCURS,
                         weight=0.5,
                     )
-                    await self._storage.add_synapse(synapse)
                     synapses_created.append(synapse)
 
         # 5. Bundle into fiber
@@ -209,7 +215,6 @@ class CodebaseEncoder:
             summary=f"Code index: {file_path.name}",
             tags=(tags or set()) | {"code_index"},
         )
-        await self._storage.add_fiber(fiber)
 
         return EncodingResult(
             fiber=fiber,
@@ -218,45 +223,187 @@ class CodebaseEncoder:
             synapses_created=synapses_created,
         )
 
+    async def index_file(
+        self,
+        file_path: Path,
+        tags: set[str] | None = None,
+    ) -> EncodingResult:
+        """Index a single source file into neural graph, persisting immediately.
+
+        For indexing a whole directory, prefer `index_directory`: it batches
+        writes across every file into a handful of round-trips instead of one
+        set of round-trips per file.
+
+        Args:
+            file_path: Path to the source file.
+            tags: Optional tags for the fiber.
+
+        Returns:
+            EncodingResult with created neurons, synapses, and fiber.
+        """
+        result = self._build_file_result(file_path, tags=tags)
+        await self._storage.add_neurons_batch(result.neurons_created)
+        await self._storage.add_synapses_batch(result.synapses_created)
+        await self._storage.add_fibers_batch([result.fiber])
+        return result
+
+    def _collect_candidate_files(
+        self,
+        directory: Path,
+        exts: set[str],
+        excludes: set[str],
+    ) -> list[Path]:
+        """Walk `directory`, pruning excluded subdirectories in place.
+
+        `os.walk` with the `dirnames[:]` filter below never descends into an
+        excluded directory at all (`.git`, `node_modules`, N nested
+        `.claude/worktrees` checkouts, ...) — unlike the previous
+        `sorted(directory.rglob("*"))`, which materialized and `resolve()`d
+        every path in the WHOLE tree before any filter ran (measured: 33s of a
+        75s index run on this repo's own ~384k-path tree). `followlinks=True`
+        matches `rglob`'s traversal on Python < 3.13 (the oldest version this
+        package supports), so the symlink-escape check in `index_directory`
+        still has something to guard against.
+        """
+        candidates: list[Path] = []
+        for dirpath, dirnames, filenames in os.walk(directory, followlinks=True):
+            dirnames[:] = [d for d in dirnames if d not in excludes]
+            base = Path(dirpath)
+            for filename in filenames:
+                file_path = base / filename
+                if file_path.suffix in exts:
+                    candidates.append(file_path)
+        return candidates
+
+    async def _delete_previous_index(self, old_file_neuron: Neuron) -> None:
+        """Remove a changed file's stale neurons/synapses/fiber before rebuilding.
+
+        Sequential deletes, deliberately: SurrealDB raises a hard write
+        conflict under concurrent deletes to the same tables (see
+        `SurrealDBStorage.delete_neurons_batch`'s docstring) — this only ever
+        touches one file's worth of entities per call, so sequential is cheap.
+        """
+        old_fibers = await self._storage.find_fibers(contains_neuron=old_file_neuron.id, limit=1)
+        if not old_fibers:
+            return
+        old_fiber = old_fibers[0]
+        for nid in old_fiber.neuron_ids:
+            await self._storage.delete_neuron(nid)
+        for sid in old_fiber.synapse_ids:
+            await self._storage.delete_synapse(sid)
+        await self._storage.delete_fiber(old_fiber.id)
+
+    async def _clear_code_index(self) -> None:
+        """Wipe every existing `code_index` fiber and its members (for `force=True`)."""
+        while True:
+            batch = await self._storage.find_fibers(tags={"code_index"}, limit=2000)
+            if not batch:
+                return
+            for fiber in batch:
+                for nid in fiber.neuron_ids:
+                    await self._storage.delete_neuron(nid)
+                for sid in fiber.synapse_ids:
+                    await self._storage.delete_synapse(sid)
+                await self._storage.delete_fiber(fiber.id)
+
     async def index_directory(
         self,
         directory: Path,
         extensions: set[str] | None = None,
         exclude_patterns: set[str] | None = None,
         tags: set[str] | None = None,
+        *,
+        force: bool = False,
     ) -> list[EncodingResult]:
         """Index all matching files in a directory recursively.
+
+        Unchanged files (same mtime, or a touched-but-content-identical file,
+        detected by simhash) are skipped entirely: previously every run
+        re-indexed and duplicated every neuron/synapse/fiber for every file,
+        every time. Writes are batched across the whole directory rather than
+        issued per file.
 
         Args:
             directory: Root directory to scan.
             extensions: File extensions to index. Defaults to common source extensions.
             exclude_patterns: Directory names to skip.
             tags: Optional tags for all created fibers.
+            force: Wipe the existing code index first and re-index every
+                matching file, ignoring change tracking.
 
         Returns:
-            List of EncodingResult, one per indexed file.
+            List of EncodingResult, one per (re-)indexed file.
         """
         exts = extensions if extensions is not None else set(_DEFAULT_EXTENSIONS)
         excludes = exclude_patterns if exclude_patterns is not None else set(_DEFAULT_EXCLUDE)
 
+        if force:
+            await self._clear_code_index()
+
         resolved_base = directory.resolve()
+        candidates = sorted(self._collect_candidate_files(directory, exts, excludes))
+
+        existing_by_path: dict[str, Neuron] = {}
+        if not force and candidates:
+            existing_by_path = await self._storage.find_neurons_exact_batch(
+                [str(p) for p in candidates], type=NeuronType.SPATIAL
+            )
+
+        all_neurons: list[Neuron] = []
+        all_synapses: list[Synapse] = []
+        all_fibers: list[Fiber] = []
         results: list[EncodingResult] = []
-        for file_path in sorted(directory.rglob("*")):
+
+        for file_path in candidates:
             if not file_path.is_file():
                 continue
             # Validate resolved path stays within base directory (symlink escape prevention)
             if not file_path.resolve().is_relative_to(resolved_base):
                 continue
-            if file_path.suffix not in exts:
-                continue
-            if any(p in file_path.parts for p in excludes):
-                continue
+
+            old_neuron = existing_by_path.get(str(file_path))
+            mtime = file_path.stat().st_mtime
+            content_simhash: int | None = None
+
+            if old_neuron is not None:
+                old_mtime = old_neuron.metadata.get("mtime")
+                if old_mtime is not None and mtime <= float(old_mtime):
+                    continue  # unchanged: same or older mtime than last index
+
+                try:
+                    content = file_path.read_text(encoding="utf-8", errors="replace")
+                    content_simhash = simhash(content)
+                except OSError:
+                    content_simhash = None
+
+                old_simhash = old_neuron.metadata.get("content_simhash")
+                if (
+                    content_simhash is not None
+                    and old_simhash is not None
+                    and is_near_duplicate(content_simhash, int(old_simhash))
+                ):
+                    continue  # mtime touched, content unchanged
+
+                await self._delete_previous_index(old_neuron)
 
             try:
-                result = await self.index_file(file_path, tags=tags)
-                results.append(result)
+                result = self._build_file_result(
+                    file_path,
+                    mtime=mtime,
+                    content_simhash=content_simhash,
+                    tags=tags,
+                )
             except (SyntaxError, UnicodeDecodeError):
                 logger.debug("Skipping %s due to parse/decode error", file_path, exc_info=True)
                 continue
+
+            results.append(result)
+            all_neurons.extend(result.neurons_created)
+            all_synapses.extend(result.synapses_created)
+            all_fibers.append(result.fiber)
+
+        await self._storage.add_neurons_batch(all_neurons)
+        await self._storage.add_synapses_batch(all_synapses)
+        await self._storage.add_fibers_batch(all_fibers)
 
         return results

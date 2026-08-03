@@ -37,7 +37,7 @@ def _make_storage(neurons: list[Neuron]) -> MagicMock:
         return neurons[offset : offset + limit]
 
     storage.find_neurons = AsyncMock(side_effect=_find)
-    storage.update_neuron = AsyncMock()
+    storage.update_neuron_embeddings = AsyncMock()
     return storage
 
 
@@ -83,7 +83,7 @@ class TestReindexAsync:
             await _reindex_async(
                 brain="", dry_run=True, all_neurons=False, batch_size=64, json_output=False
             )
-        storage.update_neuron.assert_not_called()
+        storage.update_neuron_embeddings.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_embeds_only_missing(self) -> None:
@@ -95,8 +95,12 @@ class TestReindexAsync:
             await _reindex_async(
                 brain="", dry_run=False, all_neurons=False, batch_size=64, json_output=False
             )
-        # Only the two unembedded neurons get updated.
-        assert storage.update_neuron.await_count == 2
+        # Both unembedded neurons land in ONE update_neuron_embeddings call —
+        # not two update_neuron round-trips.
+        storage.update_neuron_embeddings.assert_awaited_once()
+        pairs = storage.update_neuron_embeddings.await_args.args[0]
+        assert len(pairs) == 2
+        assert {p[1][0] for p in pairs} == {1.0, 2.0}
         provider.embed_batch.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -109,7 +113,8 @@ class TestReindexAsync:
             await _reindex_async(
                 brain="", dry_run=False, all_neurons=True, batch_size=64, json_output=False
             )
-        assert storage.update_neuron.await_count == 2
+        storage.update_neuron_embeddings.assert_awaited_once()
+        assert len(storage.update_neuron_embeddings.await_args.args[0]) == 2
 
     @pytest.mark.asyncio
     async def test_disabled_effective_config_exits(self) -> None:
@@ -122,18 +127,20 @@ class TestReindexAsync:
             await _reindex_async(
                 brain="", dry_run=False, all_neurons=False, batch_size=64, json_output=False
             )
-        storage.update_neuron.assert_not_called()
+        storage.update_neuron_embeddings.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_fail_soft_per_neuron(self) -> None:
+    async def test_fail_soft_per_batch(self) -> None:
+        """A write failure for one embedding batch must not abort the run —
+        with batched writes the fail-soft unit is a batch, not a neuron."""
         storage = _make_storage([_neuron("a"), _neuron("b")])
-        storage.update_neuron = AsyncMock(side_effect=[None, RuntimeError("db error")])
+        storage.update_neuron_embeddings = AsyncMock(side_effect=[None, RuntimeError("db error")])
         provider = MagicMock()
-        provider.embed_batch = AsyncMock(return_value=[[1.0], [2.0]])
+        provider.embed_batch = AsyncMock(return_value=[[1.0]])
         p1, p2, p3, p4 = _patches(storage, provider)
-        # Must not raise despite the second update failing.
+        # batch_size=1 forces two separate write batches for the two neurons.
         with p1, p2, p3, p4:
             await _reindex_async(
-                brain="", dry_run=False, all_neurons=False, batch_size=64, json_output=False
+                brain="", dry_run=False, all_neurons=False, batch_size=1, json_output=False
             )
-        assert storage.update_neuron.await_count == 2
+        assert storage.update_neuron_embeddings.await_count == 2

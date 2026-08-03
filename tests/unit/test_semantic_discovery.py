@@ -360,6 +360,10 @@ class TestProviderCache:
                 return_value=(True, "sentence_transformer", "test-model"),
             ),
             patch(
+                "surreal_memory.engine.semantic_discovery._effective_embedding_endpoint",
+                return_value="",
+            ),
+            patch(
                 "surreal_memory.engine.embedding.sentence_transformer.SentenceTransformerEmbedding",
             ) as mock_st,
         ):
@@ -396,6 +400,10 @@ class TestProviderCache:
                 side_effect=_effective,
             ),
             patch(
+                "surreal_memory.engine.semantic_discovery._effective_embedding_endpoint",
+                return_value="",
+            ),
+            patch(
                 "surreal_memory.engine.embedding.sentence_transformer.SentenceTransformerEmbedding",
                 side_effect=lambda **kw: MagicMock(name=f"ST({kw})"),
             ) as mock_st,
@@ -428,6 +436,10 @@ class TestProviderCache:
                 return_value=(True, "gemini", "gemini-embedding-001"),
             ),
             patch(
+                "surreal_memory.engine.semantic_discovery._effective_embedding_endpoint",
+                return_value="",
+            ),
+            patch(
                 "surreal_memory.engine.embedding.gemini_embedding.GeminiEmbedding",
             ) as mock_gemini,
             patch(
@@ -437,6 +449,136 @@ class TestProviderCache:
             _create_provider(stale)
             mock_gemini.assert_called_once()
             mock_st.assert_not_called()
+
+        _provider_cache.clear()
+
+    def test_openai_provider_receives_configured_endpoint(self) -> None:
+        """The previously-dead [embedding] endpoint config field must now
+        reach OpenAIEmbedding as base_url (fix for #6 in the index-perf plan:
+        _create_provider never called resolved_endpoint())."""
+        from surreal_memory.engine.semantic_discovery import _create_provider
+
+        config = BrainConfig(embedding_provider="openai", embedding_model="text-embed")
+        with (
+            patch(
+                "surreal_memory.engine.semantic_discovery._effective_embedding",
+                return_value=(True, "openai", "text-embed"),
+            ),
+            patch(
+                "surreal_memory.engine.semantic_discovery._effective_embedding_endpoint",
+                return_value="http://127.0.0.1:11435/v1",
+            ),
+            patch(
+                "surreal_memory.engine.embedding.openai_embedding.OpenAIEmbedding",
+            ) as mock_openai,
+        ):
+            _create_provider(config)
+            mock_openai.assert_called_once_with(
+                model="text-embed", base_url="http://127.0.0.1:11435/v1"
+            )
+
+        _provider_cache.clear()
+
+    def test_openai_provider_no_endpoint_configured(self) -> None:
+        """No config/env endpoint set → base_url=None (provider falls back to
+        its own env check), NOT an empty string."""
+        from surreal_memory.engine.semantic_discovery import _create_provider
+
+        config = BrainConfig(embedding_provider="openai", embedding_model="text-embed")
+        with (
+            patch(
+                "surreal_memory.engine.semantic_discovery._effective_embedding",
+                return_value=(True, "openai", "text-embed"),
+            ),
+            patch(
+                "surreal_memory.engine.semantic_discovery._effective_embedding_endpoint",
+                return_value="",
+            ),
+            patch(
+                "surreal_memory.engine.embedding.openai_embedding.OpenAIEmbedding",
+            ) as mock_openai,
+        ):
+            _create_provider(config)
+            mock_openai.assert_called_once_with(model="text-embed", base_url=None)
+
+        _provider_cache.clear()
+
+    def test_ollama_provider_receives_configured_endpoint(self) -> None:
+        from surreal_memory.engine.semantic_discovery import _create_provider
+
+        config = BrainConfig(embedding_provider="ollama", embedding_model="nomic-embed-text")
+        with (
+            patch(
+                "surreal_memory.engine.semantic_discovery._effective_embedding",
+                return_value=(True, "ollama", "nomic-embed-text"),
+            ),
+            patch(
+                "surreal_memory.engine.semantic_discovery._effective_embedding_endpoint",
+                return_value="http://127.0.0.1:11434",
+            ),
+            patch(
+                "surreal_memory.engine.embedding.ollama_embedding.OllamaEmbedding",
+            ) as mock_ollama,
+        ):
+            _create_provider(config)
+            mock_ollama.assert_called_once_with(
+                model="nomic-embed-text", base_url="http://127.0.0.1:11434"
+            )
+
+        _provider_cache.clear()
+
+    def test_ollama_provider_no_endpoint_uses_default(self) -> None:
+        """No configured endpoint → base_url kwarg is omitted entirely, so
+        OllamaEmbedding's own module-level default (OLLAMA_BASE_URL) applies —
+        its constructor requires a str, never None."""
+        from surreal_memory.engine.semantic_discovery import _create_provider
+
+        config = BrainConfig(embedding_provider="ollama", embedding_model="nomic-embed-text")
+        with (
+            patch(
+                "surreal_memory.engine.semantic_discovery._effective_embedding",
+                return_value=(True, "ollama", "nomic-embed-text"),
+            ),
+            patch(
+                "surreal_memory.engine.semantic_discovery._effective_embedding_endpoint",
+                return_value="",
+            ),
+            patch(
+                "surreal_memory.engine.embedding.ollama_embedding.OllamaEmbedding",
+            ) as mock_ollama,
+        ):
+            _create_provider(config)
+            mock_ollama.assert_called_once_with(model="nomic-embed-text")
+
+        _provider_cache.clear()
+
+    def test_cache_keys_by_endpoint_too(self) -> None:
+        """Same provider/model, different endpoint → different cache entry,
+        so editing [embedding] endpoint doesn't return a stale provider."""
+        from unittest.mock import MagicMock
+
+        from surreal_memory.engine.semantic_discovery import _create_provider
+
+        config = BrainConfig(embedding_provider="openai", embedding_model="text-embed")
+        endpoints = iter(["http://host-a/v1", "http://host-b/v1"])
+        with (
+            patch(
+                "surreal_memory.engine.semantic_discovery._effective_embedding",
+                return_value=(True, "openai", "text-embed"),
+            ),
+            patch(
+                "surreal_memory.engine.semantic_discovery._effective_embedding_endpoint",
+                side_effect=lambda: next(endpoints),
+            ),
+            patch(
+                "surreal_memory.engine.embedding.openai_embedding.OpenAIEmbedding",
+                side_effect=lambda **kw: MagicMock(name=f"openai({kw})"),
+            ) as mock_openai,
+        ):
+            p1 = _create_provider(config)
+            p2 = _create_provider(config)
+            assert p1 is not p2
+            assert mock_openai.call_count == 2
 
         _provider_cache.clear()
 

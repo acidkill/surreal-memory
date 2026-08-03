@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from surreal_memory.core.fiber import Fiber
 from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.core.synapse import Synapse, SynapseType
 from surreal_memory.engine.pipeline_steps import _persist_synapses
@@ -97,6 +98,8 @@ def _make_storage_spy() -> Any:
     s._skip_change_log = False
     s._query = AsyncMock(return_value=[])
     s._record_change_internal = AsyncMock(return_value=None)
+    s._record_changes_bulk = AsyncMock(return_value=None)
+    s._conn = AsyncMock()  # backs _ensure_conn() for add_neurons_batch/add_fibers_batch
     return s
 
 
@@ -119,16 +122,148 @@ def test_add_synapses_batch_single_query_multi_statement():
     assert sql.rstrip().endswith(";")
 
 
-def test_add_synapses_batch_record_change_default_logs_each():
+def test_add_synapses_batch_record_change_default_logs_via_bulk():
+    """record_change=True must log via ONE _record_changes_bulk call, not N
+    _record_change_internal calls — the per-synapse change-log loop was
+    ~64% of a batched update's wall clock (see _record_changes_bulk's
+    docstring); a "batch" writer reintroducing that loop defeats its own name.
+    """
     s = _make_storage_spy()
-    asyncio.run(s.add_synapses_batch([_syn(0), _syn(1)]))  # record_change defaults True
-    assert s._record_change_internal.await_count == 2
+    syns = [_syn(0), _syn(1)]
+    asyncio.run(s.add_synapses_batch(syns))  # record_change defaults True
+    assert s._record_change_internal.await_count == 0
+    assert s._record_changes_bulk.await_count == 1
+    args = s._record_changes_bulk.await_args.args
+    assert args[0] == "synapse"
+    assert args[1] == "insert"
+    assert list(args[2]) == syns
+
+
+def test_add_synapses_batch_record_change_false_skips_log():
+    s = _make_storage_spy()
+    asyncio.run(s.add_synapses_batch([_syn(0)], record_change=False))
+    assert s._record_changes_bulk.await_count == 0
 
 
 def test_add_synapses_batch_empty_noop():
     s = _make_storage_spy()
     assert asyncio.run(s.add_synapses_batch([])) == 0
     assert s._query.await_count == 0
+
+
+# ---------------------------- neuron batch ----------------------------
+
+
+def _neuron(n: int) -> Neuron:
+    return Neuron(id=f"n{n}", type=NeuronType.CONCEPT, content=f"content-{n}", created_at=utcnow())
+
+
+def test_add_neurons_batch_single_insert_call_per_table():
+    """N neurons must cost ONE conn.insert("neuron", [...]) and ONE
+    conn.insert("neuron_state", [...]) — not 3*N round-trips."""
+    s = _make_storage_spy()
+    neurons = [_neuron(i) for i in range(4)]
+    added = asyncio.run(s.add_neurons_batch(neurons))
+    assert added == 4
+    assert s._conn.insert.await_count == 2  # one for "neuron", one for "neuron_state"
+    tables_called = {call.args[0] for call in s._conn.insert.await_args_list}
+    assert tables_called == {"neuron", "neuron_state"}
+    neuron_call = next(c for c in s._conn.insert.await_args_list if c.args[0] == "neuron")
+    assert len(neuron_call.args[1]) == 4
+
+
+def test_add_neurons_batch_logs_via_bulk_change_log():
+    s = _make_storage_spy()
+    neurons = [_neuron(0), _neuron(1)]
+    asyncio.run(s.add_neurons_batch(neurons))
+    assert s._record_changes_bulk.await_count == 1
+    args = s._record_changes_bulk.await_args.args
+    assert args[0] == "neuron"
+    assert args[1] == "insert"
+    assert list(args[2]) == neurons
+
+
+def test_add_neurons_batch_record_change_false_skips_log():
+    s = _make_storage_spy()
+    asyncio.run(s.add_neurons_batch([_neuron(0)], record_change=False))
+    assert s._record_changes_bulk.await_count == 0
+
+
+def test_add_neurons_batch_empty_noop():
+    s = _make_storage_spy()
+    assert asyncio.run(s.add_neurons_batch([])) == 0
+    assert s._conn.insert.await_count == 0
+
+
+# ---------------------------- fiber batch ----------------------------
+
+
+def _fiber(n: int) -> Fiber:
+    return Fiber.create(
+        neuron_ids={f"n{n}"},
+        synapse_ids=set(),
+        anchor_neuron_id=f"n{n}",
+        summary=f"fiber-{n}",
+    )
+
+
+def test_add_fibers_batch_single_insert_call():
+    s = _make_storage_spy()
+    fibers = [_fiber(i) for i in range(3)]
+    added = asyncio.run(s.add_fibers_batch(fibers))
+    assert added == 3
+    assert s._conn.insert.await_count == 1
+    call = s._conn.insert.await_args
+    assert call.args[0] == "fiber"
+    assert len(call.args[1]) == 3
+
+
+def test_add_fibers_batch_logs_via_bulk_change_log():
+    s = _make_storage_spy()
+    fibers = [_fiber(0)]
+    asyncio.run(s.add_fibers_batch(fibers))
+    assert s._record_changes_bulk.await_count == 1
+    args = s._record_changes_bulk.await_args.args
+    assert args[0] == "fiber"
+    assert args[1] == "insert"
+    assert list(args[2]) == fibers
+
+
+def test_add_fibers_batch_empty_noop():
+    s = _make_storage_spy()
+    assert asyncio.run(s.add_fibers_batch([])) == 0
+    assert s._conn.insert.await_count == 0
+
+
+# ---------------------------- base-class fallbacks ----------------------------
+
+
+def test_base_add_neurons_batch_fallback_is_sequential():
+    """The base default must fall back to sequential add_neuron for backends
+    that do not override (keeps non-SurrealDB backends correct)."""
+    from types import SimpleNamespace
+
+    from surreal_memory.storage.base import NeuralStorage
+
+    calls: list[str] = []
+    fake = SimpleNamespace(add_neuron=AsyncMock(side_effect=lambda n: calls.append(n.id) or n.id))
+    neurons = [_neuron(i) for i in range(3)]
+    added = asyncio.run(NeuralStorage.add_neurons_batch(fake, neurons))
+    assert added == 3
+    assert len(calls) == 3
+
+
+def test_base_add_fibers_batch_fallback_is_sequential():
+    from types import SimpleNamespace
+
+    from surreal_memory.storage.base import NeuralStorage
+
+    calls: list[str] = []
+    fake = SimpleNamespace(add_fiber=AsyncMock(side_effect=lambda f: calls.append(f.id) or f.id))
+    fibers = [_fiber(i) for i in range(3)]
+    added = asyncio.run(NeuralStorage.add_fibers_batch(fake, fibers))
+    assert added == 3
+    assert len(calls) == 3
 
 
 # ---------------------------- _persist_synapses helper ----------------------------

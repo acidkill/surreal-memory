@@ -267,6 +267,7 @@ class TestCodebaseEncoder:
         (cache / "c.cpython-312.py").write_text("z = 3", encoding="utf-8")
 
         mock_storage = AsyncMock()
+        mock_storage.find_neurons_exact_batch.return_value = {}
         mock_config = MagicMock()
 
         encoder = CodebaseEncoder(mock_storage, mock_config)
@@ -293,6 +294,7 @@ class TestCodebaseEncoder:
         (nested_worktree / "a.py").write_text("x = 1  # duplicate copy", encoding="utf-8")
 
         mock_storage = AsyncMock()
+        mock_storage.find_neurons_exact_batch.return_value = {}
         mock_config = MagicMock()
 
         encoder = CodebaseEncoder(mock_storage, mock_config)
@@ -345,6 +347,194 @@ class TestCodebaseEncoder:
         # Fiber should reference all neurons and synapses
         assert len(result.fiber.neuron_ids) == len(result.neurons_created)
         assert len(result.fiber.synapse_ids) == len(result.synapses_created)
+
+    @pytest.mark.asyncio
+    async def test_index_directory_prunes_excluded_dirs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Excluded directories are pruned during the walk itself (dirnames[:]
+        filtering), not discovered-then-discarded after a full-tree walk —
+        os.walk must never even descend into them."""
+        import os as os_module
+
+        from surreal_memory.engine import codebase_encoder as codebase_encoder_module
+        from surreal_memory.engine.codebase_encoder import CodebaseEncoder
+
+        (tmp_path / "a.py").write_text("x = 1", encoding="utf-8")
+        excluded = tmp_path / "node_modules" / "deep" / "nested"
+        excluded.mkdir(parents=True)
+        (excluded / "b.py").write_text("y = 2", encoding="utf-8")
+
+        real_walk = os_module.walk
+        visited_dirs: list[str] = []
+
+        def spy_walk(top: Path, **kwargs: object) -> object:
+            for dirpath, dirnames, filenames in real_walk(top, **kwargs):
+                visited_dirs.append(str(dirpath))
+                yield dirpath, dirnames, filenames
+
+        monkeypatch.setattr(codebase_encoder_module.os, "walk", spy_walk)
+
+        mock_storage = AsyncMock()
+        mock_storage.find_neurons_exact_batch.return_value = {}
+        mock_config = MagicMock()
+        encoder = CodebaseEncoder(mock_storage, mock_config)
+        await encoder.index_directory(tmp_path)
+
+        assert not any("node_modules" in d for d in visited_dirs)
+
+    @pytest.mark.asyncio
+    async def test_index_directory_deterministic_order(self, tmp_path: Path) -> None:
+        """Results are sorted by path regardless of filesystem creation order."""
+        from surreal_memory.engine.codebase_encoder import CodebaseEncoder
+
+        # Create in reverse-alphabetical order
+        (tmp_path / "z.py").write_text("z = 1", encoding="utf-8")
+        (tmp_path / "m.py").write_text("m = 1", encoding="utf-8")
+        (tmp_path / "a.py").write_text("a = 1", encoding="utf-8")
+
+        mock_storage = AsyncMock()
+        mock_storage.find_neurons_exact_batch.return_value = {}
+        mock_config = MagicMock()
+        encoder = CodebaseEncoder(mock_storage, mock_config)
+        results = await encoder.index_directory(tmp_path)
+
+        file_order = [r.fiber.anchor_neuron_id and r.neurons_created[0].content for r in results]
+        assert file_order == sorted(file_order)
+
+    @pytest.mark.asyncio
+    async def test_index_directory_symlink_escape_rejected(self, tmp_path: Path) -> None:
+        """A symlink inside the indexed directory pointing outside it must be
+        rejected — resolve()-based containment check must survive the
+        os.walk-based traversal introduced to replace rglob()."""
+        from surreal_memory.engine.codebase_encoder import CodebaseEncoder
+
+        base = tmp_path / "repo"
+        base.mkdir()
+        (base / "a.py").write_text("x = 1", encoding="utf-8")
+
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        secret = outside / "secret.py"
+        secret.write_text("SECRET = 1", encoding="utf-8")
+
+        link = base / "escape.py"
+        link.symlink_to(secret)
+
+        mock_storage = AsyncMock()
+        mock_storage.find_neurons_exact_batch.return_value = {}
+        mock_config = MagicMock()
+        encoder = CodebaseEncoder(mock_storage, mock_config)
+        results = await encoder.index_directory(base)
+
+        indexed_files = [r.fiber.summary for r in results]
+        assert len(results) == 1
+        assert any("a.py" in s for s in indexed_files)
+        assert not any("escape.py" in s or "secret.py" in s for s in indexed_files)
+
+    @pytest.mark.asyncio
+    async def test_index_directory_no_duplication_on_rerun(self, tmp_path: Path) -> None:
+        """Re-running index_directory on an unchanged tree creates zero new
+        neurons/synapses/fibers — the pre-fix behaviour re-indexed (and
+        duplicated) every file on every run."""
+        from surreal_memory.core.brain import Brain
+        from surreal_memory.core.neuron import NeuronType
+        from surreal_memory.engine.codebase_encoder import CodebaseEncoder
+        from surreal_memory.storage.memory_store import InMemoryStorage
+
+        (tmp_path / "a.py").write_text("def foo(): pass", encoding="utf-8")
+        (tmp_path / "b.py").write_text("def bar(): pass", encoding="utf-8")
+
+        storage = InMemoryStorage()
+        brain = Brain.create(name="idx-test", brain_id="idx-test-brain")
+        await storage.save_brain(brain)
+        storage.set_brain(brain.id)
+
+        encoder = CodebaseEncoder(storage, brain.config)
+        first = await encoder.index_directory(tmp_path)
+        assert len(first) == 2
+
+        neurons_after_first = await storage.find_neurons(type=NeuronType.SPATIAL, limit=1000)
+        assert len(neurons_after_first) == 2
+
+        second = await encoder.index_directory(tmp_path)
+        assert second == []
+
+        neurons_after_second = await storage.find_neurons(type=NeuronType.SPATIAL, limit=1000)
+        assert len(neurons_after_second) == 2
+
+    @pytest.mark.asyncio
+    async def test_index_directory_reindexes_only_changed_file(self, tmp_path: Path) -> None:
+        """Only the modified file is rebuilt; the untouched file's neuron is
+        left completely alone (same id, same content)."""
+        import os as os_module
+        import time
+
+        from surreal_memory.core.brain import Brain
+        from surreal_memory.core.neuron import NeuronType
+        from surreal_memory.engine.codebase_encoder import CodebaseEncoder
+        from surreal_memory.storage.memory_store import InMemoryStorage
+
+        file_a = tmp_path / "a.py"
+        file_b = tmp_path / "b.py"
+        file_a.write_text("def foo(): pass", encoding="utf-8")
+        file_b.write_text("def bar(): pass", encoding="utf-8")
+
+        storage = InMemoryStorage()
+        brain = Brain.create(name="idx-test-2", brain_id="idx-test-brain-2")
+        await storage.save_brain(brain)
+        storage.set_brain(brain.id)
+
+        encoder = CodebaseEncoder(storage, brain.config)
+        await encoder.index_directory(tmp_path)
+
+        neurons_before = await storage.find_neurons(type=NeuronType.SPATIAL, limit=1000)
+        b_neuron_id_before = next(n.id for n in neurons_before if n.content == str(file_b))
+
+        # Bump mtime comfortably forward — filesystem mtime resolution can be
+        # coarse enough that two writes in the same test tick look identical.
+        file_a.write_text("def foo(): return 42", encoding="utf-8")
+        future = time.time() + 5
+        os_module.utime(file_a, (future, future))
+
+        second = await encoder.index_directory(tmp_path)
+
+        assert len(second) == 1
+        assert second[0].neurons_created[0].content == str(file_a)
+
+        neurons_after = await storage.find_neurons(type=NeuronType.SPATIAL, limit=1000)
+        assert len(neurons_after) == 2
+        b_neuron_after = next(n for n in neurons_after if n.content == str(file_b))
+        assert b_neuron_after.id == b_neuron_id_before
+
+    @pytest.mark.asyncio
+    async def test_index_directory_force_wipes_and_rebuilds(self, tmp_path: Path) -> None:
+        """force=True clears the existing code index first, then rebuilds from
+        scratch — the previous file's neuron id must NOT survive."""
+        from surreal_memory.core.brain import Brain
+        from surreal_memory.core.neuron import NeuronType
+        from surreal_memory.engine.codebase_encoder import CodebaseEncoder
+        from surreal_memory.storage.memory_store import InMemoryStorage
+
+        (tmp_path / "a.py").write_text("def foo(): pass", encoding="utf-8")
+
+        storage = InMemoryStorage()
+        brain = Brain.create(name="idx-test-3", brain_id="idx-test-brain-3")
+        await storage.save_brain(brain)
+        storage.set_brain(brain.id)
+
+        encoder = CodebaseEncoder(storage, brain.config)
+        first = await encoder.index_directory(tmp_path)
+        first_id = first[0].neurons_created[0].id
+
+        second = await encoder.index_directory(tmp_path, force=True)
+
+        assert len(second) == 1
+        assert second[0].neurons_created[0].id != first_id
+
+        neurons_after = await storage.find_neurons(type=NeuronType.SPATIAL, limit=1000)
+        assert len(neurons_after) == 1
+        assert neurons_after[0].id != first_id
 
 
 class TestRegexExtractor:
