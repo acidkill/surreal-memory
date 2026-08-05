@@ -117,6 +117,13 @@ Before concluding, the host was searched exhaustively for the crate + its closur
 - Network: `cargo add surrealdb --offline` -> "could not be found in registry
   index"; crates.io and github blocked (proxy CONNECT 403 / curl 000).
 
+- Independent re-verification (subagent, separate turn, same sandbox):
+  proxy returns `HTTP/1.1 403 Forbidden` with header
+  `X-Proxy-Error: blocked-by-allowlist` for crates.io, index.crates.io, and
+  static.crates.io; `/usr/lib/cargo` and `/usr/share/cargo` are empty; only
+  the `surreal` CLI binary (yay) is present, not Rust source. Same blocker
+  reproduced in three independent checks (two direct, one subagent).
+
 Conclusion: the `surrealdb` crate and its transitive closure are unobtainable
 in this sandbox, so the literal in-process embedding (IMPLEMENT step 1,
 `Surreal::new::<SurrealKv>(...)`) cannot be compiled here by any approach.
