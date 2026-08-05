@@ -63,6 +63,13 @@ impl SmemServer {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // In-process embedding (context7-verified for surrealdb crate v2):
+    // canonical v2 API is `engine::any::connect("surrealkv://<dir>")`, which
+    // routes by URL scheme to the SurrealKV engine (cargo feature
+    // `kv-surrealkv`). The goal's `Surreal::new::<SurrealKv>(path)` is the
+    // v1.x typed-engine form; v2 unified every backend behind `connect`.
+    // Embedded engines (memory, surrealkv, rocksdb) need no root signin by
+    // default. Use a fresh dir each run so the seed is deterministic.
     let db: Surreal<surrealdb::engine::any::Any> = connect("surrealkv://./spike.db").await?;
     db.use_ns(NS).use_db(DB).await?;
     db.query(SEED_SQL).await?;
