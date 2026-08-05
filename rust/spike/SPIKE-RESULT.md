@@ -100,6 +100,29 @@ SELECT ->synapse->neuron->synapse->neuron.id AS two_hop FROM neuron:a;
    cached and the network is blocked; this was an explicit stretch bonus, not
    a blocker. The spike uses static 4-dim vectors to exercise the HNSW path.
 
+## Exhaustive search for the `surrealdb` crate (why in-process is impossible here)
+
+Before concluding, the host was searched exhaustively for the crate + its closure:
+- cargo registry cache + src: no `surreal*` crate (surrealdb, surrealkv, store,
+  rebalanced) — the dependency closure is absent.
+- cargo-git checkouts: only `cosmic-protocols`; no surrealdb.
+- `~/.cargo/config{,.toml}` / `/etc/cargo`: no source replacement or mirror.
+- Filesystem grep for `^name = "surrealdb"` in Cargo.toml across
+  /home /opt /srv /usr/local/src: no Rust crate source (only Python `uv.lock`
+  mentions of the PyPI `surrealdb` wheel).
+- uv wheel/archive cache: no `.rs` / `Cargo.toml` under surrealdb paths (the
+  PyPI wheel ships a compiled extension, not crate source).
+- yay cache: only `surrealdb-bin` (precompiled CLI release, no source).
+- loopback ports: no local crates mirror.
+- Network: `cargo add surrealdb --offline` -> "could not be found in registry
+  index"; crates.io and github blocked (proxy CONNECT 403 / curl 000).
+
+Conclusion: the `surrealdb` crate and its transitive closure are unobtainable
+in this sandbox, so the literal in-process embedding (IMPLEMENT step 1,
+`Surreal::new::<SurrealKv>(...)`) cannot be compiled here by any approach.
+The `reference-embedded/` artifact is the deliverable for a networked host.
+This is an environmental hard-blocker, not a task that more code can resolve.
+
 ## Reproduce (offline-capable host)
 
 ```bash
