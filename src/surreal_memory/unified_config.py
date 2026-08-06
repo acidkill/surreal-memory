@@ -1775,7 +1775,7 @@ class UnifiedConfig:
     # check and save() stay in lockstep, so a section reported "missing" is
     # always one that --fix (which calls save()) can actually create. save()
     # validates its emitted headers against this tuple and raises on drift.
-    SECTION_NAMES: tuple[str, ...] = (
+    SECTION_NAMES: ClassVar[tuple[str, ...]] = (
         "brain",
         "embedding",
         "auto",
