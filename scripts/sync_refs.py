@@ -76,10 +76,6 @@ HISTORICAL_LINE_MARKERS = (
     "| v1.0",  # ROADMAP "What We've Built" rows carry their own Version column
     # (also catches "| v1.0-v2.29" — the substring match covers the ranged form)
     "| v2.0 |",
-    # There are TWO schema counters — sqlite_schema.py (the truth this script
-    # reads) and surrealdb/schema.py. A line that says which backend it means
-    # is not stale just because the other backend's number differs.
-    "SurrealDB schema v",
 )
 
 
@@ -149,15 +145,17 @@ def derive_truth() -> TruthValues:
     except (subprocess.TimeoutExpired, FileNotFoundError):
         truth.errors.append("pytest collection failed or timed out")
 
-    # 3. Schema version — read from sqlite_schema.py
-    schema_py = ROOT / "src" / "surreal_memory" / "storage" / "sqlite_schema.py"
+    # 3. Schema version — read from storage/surrealdb/schema.py.
+    # #141 removed the SQLite backend (storage/sqlite_schema.py went with it),
+    # so SurrealDB's schema is the only one left to version.
+    schema_py = ROOT / "src" / "surreal_memory" / "storage" / "surrealdb" / "schema.py"
     if schema_py.exists():
         text = schema_py.read_text(encoding="utf-8")
-        m = re.search(r"SCHEMA_VERSION\s*=\s*(\d+)", text)
+        m = re.search(r"^SCHEMA_VERSION\s*=\s*(\d+)", text, re.MULTILINE)
         if m:
             truth.schema_version = int(m.group(1))
     else:
-        truth.errors.append("sqlite_schema.py not found")
+        truth.errors.append("storage/surrealdb/schema.py not found")
 
     # 4. Version — from pyproject.toml
     pyproject = ROOT / "pyproject.toml"

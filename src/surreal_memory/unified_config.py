@@ -2472,7 +2472,7 @@ async def get_shared_storage(brain_name: str | None = None) -> NeuralStorage:
     across CLI, MCP, and other tools. Storage instances are cached
     to avoid connection leaks.
 
-    Respects config.storage_backend: "sqlite" (default) or "surrealdb".
+    Respects config.storage_backend: "surrealdb" (default) or "memory".
 
     Args:
         brain_name: Brain name, or use config's current_brain if None

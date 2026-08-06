@@ -205,6 +205,23 @@ class TestVersionGate:
         assert problems == []
 
 
+class TestSchemaVersionTruth:
+    """`derive_truth()` pointed at `storage/sqlite_schema.py`, which #141
+    deleted along with the SQLite backend. Every run since has reported
+    `schema_version=0` and warned `sqlite_schema.py not found` — silently
+    exempting every "schema vN" doc claim from ever being checked."""
+
+    def test_reads_the_surrealdb_schema_module_that_actually_exists(self) -> None:
+        from surreal_memory.storage.surrealdb.schema import SCHEMA_VERSION
+
+        truth = sync_refs.derive_truth()
+
+        assert truth.schema_version == SCHEMA_VERSION
+        assert truth.schema_version > 0
+        assert "storage/surrealdb/schema.py not found" not in truth.errors
+        assert "sqlite_schema.py not found" not in truth.errors
+
+
 class TestScannerStaysInsideTheRepo:
     """`sync_refs` walks *.md from the repo root; vendored trees are not ours."""
 

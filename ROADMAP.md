@@ -5,11 +5,11 @@
 
 **Current state**: v3.3.1 — 57 MCP tools, 6900+ tests, neuroscience engine (10 brain-inspired algorithms), tiered memory loading (HOT/WARM/COLD).
 
-**Storage**: SurrealDB is the recommended backend and the one the project is built around —
-SurrealDB schema v9. SQLite and InMemory are not test-only fixtures; they are real, selectable
-backends, and `storage_backend` still defaults to `sqlite` (SQLite schema v40) for installs that
-have not pointed at a SurrealDB instance. Earlier revisions of this line conflated the two schema
-numbers and called SQLite a fixture; both claims contradicted the code.
+**Storage**: SurrealDB is the only persistent backend — schema v9 — and `storage_backend`
+defaults to it. `#141` removed the SQLite backend entirely; selecting `storage_backend = "sqlite"`
+is now a hard `ValueError`, not a fallback. InMemory remains, opt-in only, for trying the tool
+without running a database — it has no schema to version. Earlier revisions of this line described
+SQLite as still selectable with its own schema number; that stopped being true when `#141` merged.
 **Architecture**: Spreading activation reflex engine, biological memory model, MCP standard.
 **Community**: Thanks to [WebBrain](https://github.com/webbrain-one) for the project's first
 outside contribution — a full Spanish translation, `README.es-ES.md` (#127).
