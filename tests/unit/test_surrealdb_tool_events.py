@@ -24,6 +24,7 @@ class _ToolEventsStore(SurrealDBToolEventsMixin):
         self._ok_grouped = ok_grouped or []
         self.updates: list[dict[str, Any]] = []
         self.inserts: list[dict[str, Any]] = []
+        self.captured_cutoffs: list[Any] = []
 
     def _ensure_conn(self) -> Any:
         store = self
@@ -38,6 +39,8 @@ class _ToolEventsStore(SurrealDBToolEventsMixin):
         return "default"
 
     async def _query(self, sql: str, **params: Any) -> list[dict[str, Any]]:
+        if "cutoff" in params:
+            self.captured_cutoffs.append(params["cutoff"])
         if sql.startswith("UPDATE tool_events SET processed = true"):
             self.updates.append(params)
             return []
@@ -45,7 +48,7 @@ class _ToolEventsStore(SurrealDBToolEventsMixin):
             return self._unprocessed
         if "AND success = true GROUP ALL" in sql:
             return [{"c": self._ok}]
-        if "count() AS c FROM tool_events WHERE brain_id = $bid GROUP ALL" in sql:
+        if "count() AS c FROM tool_events" in sql and "success" not in sql:
             return [{"c": self._total}]
         # Per-tool success counts (check before the generic grouped route).
         if "AND success = true" in sql and "GROUP BY tool_name, server_name" in sql:
@@ -136,3 +139,41 @@ async def test_get_tool_stats_no_success_rows_is_zero_not_nan() -> None:
     assert tool["success_rate"] == 0.0
     assert tool["avg_duration_ms"] == 0
     assert isinstance(tool["success_rate"], float)
+
+
+async def test_get_tool_stats_passes_days_as_a_cutoff_to_every_query() -> None:
+    """`days` must filter the summary, not just the daily series.
+
+    Before this, `get_tool_stats` took no `days` at all, so the dashboard's
+    days=7/30/90 filter changed the per-day chart but left the summary above
+    it byte-identical -- a working-looking filter that filtered nothing.
+    """
+    store = _ToolEventsStore(total=1, ok=1)
+
+    await store.get_tool_stats("default", days=7)
+
+    # All 4 queries (total, ok, grouped, ok_grouped) must carry the same cutoff.
+    assert len(store.captured_cutoffs) == 4
+    assert len(set(store.captured_cutoffs)) == 1
+
+
+async def test_get_tool_stats_default_days_is_30() -> None:
+    store = _ToolEventsStore(total=1, ok=1)
+
+    await store.get_tool_stats("default")
+
+    assert len(store.captured_cutoffs) == 4
+
+
+async def test_get_tool_stats_clamps_days_to_one_year() -> None:
+    """Matches get_tool_stats_by_period's existing clamp -- an operator-supplied
+    `days` should not silently become an unbounded full-table scan."""
+    store_small = _ToolEventsStore(total=1, ok=1)
+    store_large = _ToolEventsStore(total=1, ok=1)
+
+    await store_small.get_tool_stats("default", days=1)
+    await store_large.get_tool_stats("default", days=999_999)
+
+    # The clamp caps at 365 days, so an absurd `days` produces the same
+    # earliest-allowed cutoff as 365 would -- not an even-earlier one.
+    assert store_small.captured_cutoffs[0] > store_large.captured_cutoffs[0]

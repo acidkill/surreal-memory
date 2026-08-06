@@ -199,6 +199,67 @@ def _project_from_path(resolved: Path, projects_dir: Path) -> str:
     return rel.parts[0]
 
 
+def _resolve_transcript_roots(
+    config: ReasoningTrainingConfig,
+    claude_dir: Path | None,
+) -> list[Path]:
+    """Profile roots to scan, in order: the primary one first, then extras.
+
+    ``claude_dir`` (the explicit-override seam used by tests and callers that
+    already know the root) wins outright and suppresses the configured extras,
+    so an override still means "scan exactly this and nothing else".
+
+    Otherwise the implicit ``~/.claude`` leads and
+    ``config.extra_transcript_dirs`` follows. Order is load-bearing: discovery
+    is per-root, so on a trace_hash tie the first root wins, and keeping the
+    primary first preserves the attribution of everything already mined.
+    Non-existent roots are dropped here rather than failing the scan — a
+    profile configured on one machine and absent on another is normal. Roots
+    are de-duplicated after resolution, so listing ``~/.claude`` again as an
+    extra cannot make its traces be scanned (or counted) twice.
+    """
+    if claude_dir is not None:
+        resolved = claude_dir.resolve()
+        return [resolved] if (resolved / "projects").is_dir() else []
+
+    roots: list[Path] = [(Path.home() / ".claude").resolve()]
+    for raw in config.extra_transcript_dirs:
+        try:
+            roots.append(Path(raw).expanduser().resolve())
+        except (OSError, RuntimeError):
+            logger.warning("Skipping unusable reasoning transcript dir: %s", raw)
+
+    seen: set[Path] = set()
+    unique: list[Path] = []
+    for root in roots:
+        if root in seen:
+            continue
+        seen.add(root)
+        if (root / "projects").is_dir():
+            unique.append(root)
+    return unique
+
+
+def _discover_all_transcripts(roots: list[Path]) -> list[tuple[Path, str]]:
+    """Discover transcripts across every profile root.
+
+    Returns ``(resolved_path, project)`` pairs. The project name is resolved
+    HERE, while the owning root is still known — flattening per-root results
+    without it would attribute every file to whichever ``projects_dir`` the
+    caller happened to keep, silently mis-labelling one profile's traces as
+    the other's.
+
+    Scan-state keys are absolute resolved paths, so two roots cannot collide
+    there even when they hold identically named project directories.
+    """
+    discovered: list[tuple[Path, str]] = []
+    for root in roots:
+        projects_dir = root / "projects"
+        for _original, resolved in _discover_transcripts(projects_dir, root):
+            discovered.append((resolved, _project_from_path(resolved, projects_dir)))
+    return discovered
+
+
 def _discover_transcripts(projects_dir: Path, claude_root: Path) -> list[tuple[Path, Path]]:
     """Recursively discover transcript files under *projects_dir*.
 
@@ -308,7 +369,12 @@ def scan_transcripts(
     now: datetime | None = None,
     backfill: bool = False,
 ) -> list[dict[str, Any]]:
-    """Scan ``~/.claude/projects/**/*.jsonl`` for mineable reasoning traces.
+    """Scan every configured profile's ``projects/**/*.jsonl`` for mineable traces.
+
+    Roots come from ``_resolve_transcript_roots``: ``~/.claude`` plus
+    ``config.extra_transcript_dirs`` (a second Claude-Code profile — e.g. one
+    pointed at a different vendor's models — is otherwise invisible), or
+    exactly ``claude_dir`` when that override is given.
 
     Discovery is recursive (see ``_discover_transcripts``): it covers nested
     session transcripts and Task-tool subagent transcripts, not just the
@@ -330,9 +396,8 @@ def scan_transcripts(
     keeps the re-emission harmless and a later normal (``backfill=False``)
     scan again sees unchanged files and skips them cheaply.
     """
-    claude_root = (claude_dir or (Path.home() / ".claude")).resolve()
-    projects_dir = claude_root / "projects"
-    if not projects_dir.is_dir():
+    roots = _resolve_transcript_roots(config, claude_dir)
+    if not roots:
         return []
 
     now_ts = _now_ts(now)
@@ -345,7 +410,7 @@ def scan_transcripts(
     traces: list[dict[str, Any]] = []
     seen_hashes: set[str] = set()
 
-    for _jsonl, resolved in _discover_transcripts(projects_dir, claude_root):
+    for resolved, project in _discover_all_transcripts(roots):
         try:
             st = resolved.stat()
         except OSError:
@@ -356,7 +421,6 @@ def scan_transcripts(
         if skip:
             continue
 
-        project = _project_from_path(resolved, projects_dir)
         file_traces, line_count = _scan_file(
             resolved, config, seen_hashes, fallback_created, project, start_line=start_line
         )
@@ -554,8 +618,7 @@ async def ingest_reasoning_traces(
     """
     resolved_state = state_path or (config.data_dir / "reasoning_scan_state.json")
     rt = config.reasoning_training
-    claude_root = (claude_dir or (Path.home() / ".claude")).resolve()
-    projects_dir = claude_root / "projects"
+    roots = _resolve_transcript_roots(rt, claude_dir)
 
     prog = MiningProgress(phase=PHASE_SCANNING)
 
@@ -563,11 +626,11 @@ async def ingest_reasoning_traces(
         if progress is not None:
             progress(replace(prog))
 
-    if not projects_dir.is_dir():
+    if not roots:
         _emit()
         return ReasoningIngestResult()
 
-    discovered = _discover_transcripts(projects_dir, claude_root)
+    discovered = _discover_all_transcripts(roots)
     prog.files_total = len(discovered)
     _emit()
 
@@ -583,7 +646,7 @@ async def ingest_reasoning_traces(
 
     prog.phase = PHASE_INGESTING
     try:
-        for _jsonl, resolved in discovered:
+        for resolved, project in discovered:
             try:
                 st = resolved.stat()
             except OSError:
@@ -595,7 +658,6 @@ async def ingest_reasoning_traces(
             prev = state.get(key, {})
             skip, start_line = _plan_file_scan(st, prev, cutoff_ts, backfill=backfill)
             if not skip:
-                project = _project_from_path(resolved, projects_dir)
                 # The blocking file read runs off the event-loop thread and
                 # RETURNS its traces; the callback below is only ever invoked
                 # from this (event-loop) thread.

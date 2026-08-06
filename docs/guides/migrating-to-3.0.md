@@ -78,9 +78,9 @@ Compare `smem stats` against what the SQLite brain reported before the switch.
 | Carried | Not carried |
 |---|---|
 | Neurons, synapses, fibers | Document-training progress (the first `smem train` after migrating re-scans) |
-| Typed memories — type, priority, tags, trust score, expiry, tier, validity window, supersession | Drift clusters and tag co-occurrence counts |
-| Projects | Sync cursors and device registrations |
-| Brain configuration | Change-log history |
+| Typed memories — type, priority, tags, trust score, expiry, tier, validity window, supersession | Sync cursors and device registrations |
+| Projects | Change-log history |
+| Brain configuration | |
 | Pinned status of trained memories | |
 
 Everything in the right column is derived state: consolidation, recall and the
@@ -141,3 +141,11 @@ container was started with. `smem doctor --fix` writes a consistent set.
 **The dashboard and the CLI disagree.** One of them is still on the old backend.
 This is the failure the deprecation warning calls out: check `smem doctor` in
 the same environment as each process.
+
+**`/health` reports `schema_version` dropped from 40 to 9.** That is not a
+regression — `schema_version` is the *active backend's* schema version, and
+2.x always reported the SQLite constant `40` even on a SurrealDB install.
+SurrealDB's own schema is versioned separately and starts at a much lower
+number. If you monitor this field, watch `version` (the product release, e.g.
+`3.0.0`) for upgrades instead — `schema_version` moving is expected the moment
+the active backend changes.

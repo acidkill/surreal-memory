@@ -890,6 +890,86 @@ class InMemoryStorage(
             if str(ev.get("id", "")) in wanted:
                 ev["processed"] = True
 
+    def _tool_events_since(self, brain_id: str, days: int) -> list[dict[str, Any]]:
+        """Buffered tool events (those carrying tool_name) within the last N days."""
+        safe_days = min(max(int(days), 1), 365)
+        cutoff = utcnow() - timedelta(days=safe_days)
+        out = []
+        for ev in self._action_events.get(brain_id, []):
+            if "tool_name" not in ev:
+                continue
+            created = ev.get("created_at")
+            if isinstance(created, datetime) and created < cutoff:
+                continue
+            out.append(ev)
+        return out
+
+    async def get_tool_stats(self, brain_id: str, days: int = 30) -> dict[str, Any]:
+        """Tool usage statistics: total_events, success_rate, top_tools."""
+        events = self._tool_events_since(brain_id, days)
+        total = len(events)
+        successes = sum(1 for ev in events if ev.get("success", True))
+
+        grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for ev in events:
+            key = (str(ev.get("tool_name", "")), str(ev.get("server_name", "")))
+            grouped.setdefault(key, []).append(ev)
+
+        top_tools: list[dict[str, Any]] = []
+        for (name, server), group in grouped.items():
+            cnt = len(group)
+            ok = sum(1 for ev in group if ev.get("success", True))
+            durations = [float(ev.get("duration_ms", 0) or 0) for ev in group]
+            top_tools.append(
+                {
+                    "tool_name": name,
+                    "server_name": server,
+                    "count": cnt,
+                    "success_rate": round(ok / cnt, 2) if cnt > 0 else 0.0,
+                    "avg_duration_ms": round(sum(durations) / cnt) if cnt > 0 else 0,
+                }
+            )
+        top_tools.sort(key=lambda t: int(t["count"]), reverse=True)
+
+        return {
+            "total_events": total,
+            "success_rate": round(successes / total, 2) if total > 0 else 0,
+            "top_tools": top_tools[:20],
+        }
+
+    async def get_tool_stats_by_period(
+        self,
+        brain_id: str,
+        days: int = 30,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Tool usage stats aggregated by day."""
+        events = self._tool_events_since(brain_id, days)
+
+        grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for ev in events:
+            created = ev.get("created_at")
+            day = created.strftime("%Y-%m-%d") if isinstance(created, datetime) else str(created)
+            key = (day, str(ev.get("tool_name", "")))
+            grouped.setdefault(key, []).append(ev)
+
+        result = []
+        for (day, name), group in grouped.items():
+            cnt = len(group)
+            ok = sum(1 for ev in group if ev.get("success", True))
+            durations = [float(ev.get("duration_ms", 0) or 0) for ev in group]
+            result.append(
+                {
+                    "date": day,
+                    "tool_name": name,
+                    "count": cnt,
+                    "success_rate": round(ok / cnt, 2) if cnt > 0 else 0.0,
+                    "avg_duration_ms": round(sum(durations) / cnt) if cnt > 0 else 0,
+                }
+            )
+        result.sort(key=lambda r: (r["date"], r["count"]), reverse=True)
+        return result[: min(int(limit), 50)]
+
     # ========== Reasoning Traces (in-memory staging buffer) ==========
 
     async def insert_reasoning_traces(self, brain_id: str, traces: list[dict[str, Any]]) -> int:

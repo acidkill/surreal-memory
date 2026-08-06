@@ -826,25 +826,6 @@ class ReflexPipeline:
                 if top_topics:
                     result.metadata["session_topics"] = top_topics
                     result.metadata["session_query_count"] = session.query_count
-
-                # Periodic session summary persist
-                if session.needs_persist():
-                    try:
-                        summary = session.to_summary_dict()
-                        await self._storage.save_session_summary(  # type: ignore[attr-defined]
-                            session_id=session.session_id,
-                            topics=summary["topics"],
-                            topic_weights=summary["topic_weights"],
-                            top_entities=summary["top_entities"],
-                            query_count=summary["query_count"],
-                            avg_confidence=summary["avg_confidence"],
-                            avg_depth=summary["avg_depth"],
-                            started_at=utcnow().isoformat(),
-                            ended_at=utcnow().isoformat(),
-                        )
-                        session.mark_persisted()
-                    except Exception:
-                        logger.debug("Session summary persist failed (non-critical)", exc_info=True)
             except Exception:
                 logger.debug("Session recording failed (non-critical)", exc_info=True)
 

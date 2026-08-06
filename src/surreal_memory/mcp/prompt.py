@@ -334,10 +334,6 @@ smem_gaps(action="resolve", gap_id="g-1", resolved_by_neuron_id="n-42")
 
 # Cognitive Dashboard
 smem_cognitive(action="summary")   # Hot index: ranked active hypotheses + predictions
-
-# Tag Drift Detection
-smem_drift(action="detect")   # Find tag synonyms/aliases
-smem_drift(action="merge", cluster_id="...")   # Merge synonym tags
 ```
 
 ## Telegram Backup (smem_telegram_backup)

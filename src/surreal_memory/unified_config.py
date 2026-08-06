@@ -1167,6 +1167,16 @@ class ReasoningTrainingConfig:
     injection_enabled: bool = False  # opt-in: inject learned strategies into sessions
     # Glob patterns of source models to mine; () = all models with non-empty thinking.
     mining_models: tuple[str, ...] = ()
+    # Additional Claude-Code profile roots to mine, alongside the implicit
+    # ``~/.claude``. Each entry is a profile ROOT (the directory holding
+    # ``projects/``), not the projects dir itself — e.g. ``~/.claude-ZAI``.
+    # A second profile is how one machine runs a different vendor's models
+    # (Z.AI/GLM, a work account, ...); without this the miner only ever sees
+    # ``~/.claude`` and every trace from the other profile is invisible.
+    # ``~`` is expanded. Note two profiles can hold a directory of the same
+    # name under ``projects/`` — those traces share one ``project`` attribution
+    # but stay distinguishable by ``model``, and trace_hash dedup is unaffected.
+    extra_transcript_dirs: tuple[str, ...] = ()
     # target_glob -> source_model (one source per target in v1).
     injection_map: tuple[tuple[str, str], ...] = ()
     categories: tuple[str, ...] = _DEFAULT_REASONING_CATEGORIES
@@ -1218,6 +1228,7 @@ class ReasoningTrainingConfig:
             "mining_enabled": self.mining_enabled,
             "injection_enabled": self.injection_enabled,
             "mining_models": list(self.mining_models),
+            "extra_transcript_dirs": list(self.extra_transcript_dirs),
             "injection_map": dict(self.injection_map),
             "categories": list(self.categories),
             "min_trace_chars": self.min_trace_chars,
@@ -1253,6 +1264,17 @@ class ReasoningTrainingConfig:
             mining_models = tuple(str(m)[:128] for m in models_raw[:100] if str(m).strip())
         else:
             mining_models = ()
+
+        # Extra profile roots. Capped and length-limited like every other list
+        # here; validity of each path is the miner's problem (a configured
+        # profile that is not installed on this machine is skipped, not fatal).
+        dirs_raw = data.get("extra_transcript_dirs", [])
+        if isinstance(dirs_raw, (list, tuple)):
+            extra_transcript_dirs = tuple(
+                str(d).strip()[:4096] for d in dirs_raw[:20] if str(d).strip()
+            )
+        else:
+            extra_transcript_dirs = ()
 
         map_raw = data.get("injection_map", {})
         injection_pairs: list[tuple[str, str]] = []
@@ -1352,6 +1374,7 @@ class ReasoningTrainingConfig:
             mining_enabled=bool(data.get("mining_enabled", False)),
             injection_enabled=bool(data.get("injection_enabled", False)),
             mining_models=mining_models,
+            extra_transcript_dirs=extra_transcript_dirs,
             injection_map=tuple(injection_pairs),
             categories=categories,
             min_trace_chars=_int("min_trace_chars", 200, 0, 1_000_000),
@@ -1385,6 +1408,8 @@ def _load_reasoning_settings(data: dict[str, Any]) -> ReasoningTrainingConfig:
         SURREAL_MEMORY_REASONING_INJECTION     -> injection_enabled (truthy parse)
         SURREAL_MEMORY_REASONING_MODELS        -> mining_models (comma-separated globs)
         SURREAL_MEMORY_REASONING_INJECTION_MAP -> injection_map ("target=source,..." pairs)
+        SURREAL_MEMORY_REASONING_EXTRA_DIRS    -> extra_transcript_dirs (comma-separated
+                                                  profile roots, e.g. "~/.claude-ZAI")
     """
     base = ReasoningTrainingConfig.from_dict(data)
     overrides: dict[str, Any] = {}
@@ -1400,6 +1425,12 @@ def _load_reasoning_settings(data: dict[str, Any]) -> ReasoningTrainingConfig:
     env_models = os.environ.get("SURREAL_MEMORY_REASONING_MODELS")
     if env_models is not None and env_models.strip():
         overrides["mining_models"] = tuple(m.strip() for m in env_models.split(",") if m.strip())
+
+    env_dirs = os.environ.get("SURREAL_MEMORY_REASONING_EXTRA_DIRS")
+    if env_dirs is not None and env_dirs.strip():
+        overrides["extra_transcript_dirs"] = tuple(
+            d.strip() for d in env_dirs.split(",") if d.strip()
+        )
 
     env_map = os.environ.get("SURREAL_MEMORY_REASONING_INJECTION_MAP")
     if env_map is not None and env_map.strip():

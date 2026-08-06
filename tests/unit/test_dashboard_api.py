@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -383,3 +384,31 @@ class TestBrainListingUsesActiveBackend:
         entry = next(b for b in data["brains"] if b["name"] == "surrealdb-only-brain")
         assert entry["size_bytes"] == 0
         assert entry["is_active"] is True
+        # #154 finding 5: a brain with no on-disk file must not report a
+        # plausible-looking path to something that isn't there.
+        assert entry["path"] is None
+
+    def test_brain_files_reports_the_real_path_when_the_file_exists(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        """The positive case for the same fix: a brain that DOES have a file
+        on disk (SQLite-era, or any legacy leftover) still reports its path."""
+        real_path = tmp_path / "legacy-brain.db"
+        real_path.write_bytes(b"x" * 10)
+        cfg = MagicMock()
+        cfg.current_brain = "legacy-brain"
+        cfg.get_brain_db_path = MagicMock(return_value=str(real_path))
+
+        with (
+            patch("surreal_memory.unified_config.get_config", return_value=cfg),
+            patch(
+                "surreal_memory.unified_config.list_available_brains",
+                new=AsyncMock(return_value=["legacy-brain"]),
+            ),
+        ):
+            resp = client.get("/api/dashboard/brain-files")
+
+        assert resp.status_code == 200, resp.text
+        entry = next(b for b in resp.json()["brains"] if b["name"] == "legacy-brain")
+        assert entry["path"] == str(real_path)
+        assert entry["size_bytes"] == 10

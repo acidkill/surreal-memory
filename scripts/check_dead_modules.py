@@ -31,6 +31,7 @@ import re
 import sys
 import tomllib
 from pathlib import Path
+from typing import NamedTuple
 
 ROOT = Path(__file__).resolve().parent.parent
 PACKAGE = "surreal_memory"
@@ -67,9 +68,18 @@ def _scan_files() -> list[Path]:
     return files
 
 
-def _imports_in(path: Path, tree: ast.AST) -> set[str]:
-    """Every ``surreal_memory.*`` module path this file imports."""
-    found: set[str] = set()
+def _scan_imports(path: Path, tree: ast.AST) -> tuple[set[str], set[str]]:
+    """Split this file's ``surreal_memory`` imports by how certain they are.
+
+    The first set holds names that can only be modules: an ``import x.y``
+    target, or the ``x.y`` that ``from x.y import …`` reads from. Those are the
+    ones worth resolving against the tree. The second holds ``x.y.name`` built
+    from ``from``-import aliases, which may be a submodule *or* an ordinary
+    attribute — indistinguishable without executing the import, so only the
+    graph walk consumes them.
+    """
+    modules: set[str] = set()
+    attributes: set[str] = set()
 
     own_module = _module_name(path) if path.is_relative_to(SRC) else ""
     own_package = own_module.rsplit(".", 1)[0] if "." in own_module else PACKAGE
@@ -78,7 +88,7 @@ def _imports_in(path: Path, tree: ast.AST) -> set[str]:
         if isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.name.startswith(PACKAGE):
-                    found.add(alias.name)
+                    modules.add(alias.name)
         elif isinstance(node, ast.ImportFrom):
             if node.level:
                 parts = own_package.split(".")
@@ -88,11 +98,26 @@ def _imports_in(path: Path, tree: ast.AST) -> set[str]:
                 module = node.module or ""
             if not module.startswith(PACKAGE):
                 continue
-            found.add(module)
+            modules.add(module)
             # `from pkg import submodule` imports a module, not an attribute.
             for alias in node.names:
-                found.add(f"{module}.{alias.name}")
-    return found
+                attributes.add(f"{module}.{alias.name}")
+    return modules, attributes
+
+
+def _imports_in(path: Path, tree: ast.AST) -> set[str]:
+    """Every ``surreal_memory.*`` module path this file imports."""
+    modules, attributes = _scan_imports(path, tree)
+    return modules | attributes
+
+
+def _resolves(name: str) -> bool:
+    """Whether ``name`` is a module or package that exists in the source tree."""
+    parts = name.split(".")
+    if parts[0] != PACKAGE:
+        return True
+    candidate = SRC.joinpath(*parts)
+    return candidate.with_suffix(".py").is_file() or (candidate / "__init__.py").is_file()
 
 
 def _string_references(parsed: dict[Path, ast.AST]) -> set[str]:
@@ -119,7 +144,16 @@ def _console_script_modules() -> set[str]:
     return {str(target).split(":", 1)[0] for target in targets}
 
 
-def find_dead_modules() -> list[str]:
+class Report(NamedTuple):
+    """What one pass over the tree found."""
+
+    #: Modules nothing outside their own tests reaches.
+    dead: list[str]
+    #: Missing module -> the files whose `import` names it, repo-relative.
+    broken: dict[str, list[str]]
+
+
+def analyse() -> Report:
     modules = _all_modules()
 
     parsed: dict[Path, ast.AST] = {}
@@ -132,11 +166,23 @@ def find_dead_modules() -> list[str]:
     # Import graph over the package, plus the roots execution actually starts from.
     edges: dict[str, set[str]] = {}
     roots: set[str] = set(_console_script_modules()) | _string_references(parsed)
+    broken: dict[str, set[str]] = {}
 
     for path, tree in parsed.items():
         inside_package = path.is_relative_to(PACKAGE_ROOT)
         importer = _module_name(path) if inside_package else ""
-        targets = _imports_in(path, tree)
+        imported, attributes = _scan_imports(path, tree)
+        targets = imported | attributes
+
+        # Reachability is computed *from* these imports, so one that names a
+        # module the tree no longer has contributes nothing and says nothing:
+        # the graph walk simply never matches it. The file holding it cannot
+        # run either. Neither fact is visible in the dead-module list, so it
+        # gets its own channel.
+        for name in imported:
+            if not _resolves(name):
+                broken.setdefault(name, set()).add(str(path.relative_to(ROOT)))
+
         if inside_package:
             edges.setdefault(importer, set()).update(targets)
             if path.name in _EXEMPT_BASENAMES:
@@ -159,7 +205,14 @@ def find_dead_modules() -> list[str]:
         if package_init and package_init not in reachable:
             queue.append(package_init)
 
-    return sorted(name for name in modules if name not in reachable)
+    return Report(
+        dead=sorted(name for name in modules if name not in reachable),
+        broken={name: sorted(sources) for name, sources in sorted(broken.items())},
+    )
+
+
+def find_dead_modules() -> list[str]:
+    return analyse().dead
 
 
 def main() -> None:
@@ -167,17 +220,32 @@ def main() -> None:
     parser.add_argument("--strict", action="store_true", help="Exit 1 when anything is dead")
     args = parser.parse_args()
 
-    dead = find_dead_modules()
-    if not dead:
-        print("No unreachable modules.")
+    report = analyse()
+    if not report.dead and not report.broken:
+        print("No unreachable modules, no broken imports.")
         return
 
-    print(f"{len(dead)} module(s) reachable only from tests, if at all:")
-    for name in dead:
-        print(f"  {name}")
-    print()
-    print("Delete them, wire them up, or — if something reaches them by a name this")
-    print("check cannot see — make that reference visible.")
+    if report.broken:
+        print(f"{len(report.broken)} import(s) name a module that is not in the tree:")
+        for name, sources in report.broken.items():
+            print(f"  {name}")
+            for source in sources:
+                print(f"    imported by {source}")
+        print()
+        print("Reachability starts from these imports, so one that names a module")
+        print("which no longer exists contributes nothing — silently. The file")
+        print("holding it cannot run either. Fix the import or drop the file.")
+
+    if report.dead:
+        if report.broken:
+            print()
+        print(f"{len(report.dead)} module(s) reachable only from tests, if at all:")
+        for name in report.dead:
+            print(f"  {name}")
+        print()
+        print("Delete them, wire them up, or — if something reaches them by a name this")
+        print("check cannot see — make that reference visible.")
+
     sys.exit(1 if args.strict else 0)
 
 

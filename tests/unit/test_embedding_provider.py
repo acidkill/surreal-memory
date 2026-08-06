@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import math
+import sys
+import types
+import unittest.mock
 
 import pytest
 
 from surreal_memory.engine.embedding.config import EmbeddingConfig
+from surreal_memory.engine.embedding.openai_embedding import OpenAIEmbedding
+from surreal_memory.engine.embedding.openrouter_embedding import OpenRouterEmbedding
 from surreal_memory.engine.embedding.provider import EmbeddingProvider
 
 # ── Mock provider for testing ────────────────────────────────────
@@ -1101,3 +1106,83 @@ class TestOpenRouterEmbedding:
             assert provider._model == "openai/text-embedding-3-small"
 
         _provider_cache.clear()
+
+
+# ── ambient OPENAI_BASE_URL must never capture the client ─────────────────────
+#
+# OPENAI_BASE_URL is the ecosystem-standard knob for pointing some OTHER tool at
+# a proxy (Z.AI, LiteLLM, a corporate gateway). With base_url unset the OpenAI
+# SDK adopts it, which shipped this brain's memory text to a host the user never
+# configured for embeddings — surfacing only as a baffling 400 from a vendor
+# that had never heard of the configured model.
+
+
+class TestOpenAIBaseUrlIsolation:
+    """The openai SDK is an optional extra, so these drive a stub module and
+    assert on the base_url the provider HANDS the client, not on a live SDK."""
+
+    @staticmethod
+    def _captured_base_url(**kwargs: object) -> str:
+        """Build the provider against a stub SDK and return the base_url passed."""
+        captured: dict[str, object] = {}
+
+        class _StubAsyncOpenAI:
+            def __init__(self, **kw: object) -> None:
+                captured.update(kw)
+
+        stub = types.ModuleType("openai")
+        stub.AsyncOpenAI = _StubAsyncOpenAI  # type: ignore[attr-defined]
+        with unittest.mock.patch.dict(sys.modules, {"openai": stub}):
+            provider_cls = kwargs.pop("_cls", None) or OpenAIEmbedding
+            provider_cls(**kwargs)._ensure_client()  # type: ignore[operator]
+        return str(captured.get("base_url", "")).rstrip("/")
+
+    def test_ambient_openai_base_url_is_ignored(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://evil.example/v1")
+        monkeypatch.delenv("SURREAL_MEMORY_EMBEDDING_ENDPOINT", raising=False)
+
+        base = self._captured_base_url(model="text-embedding-3-small")
+
+        assert "evil.example" not in base
+        assert base == "https://api.openai.com/v1"
+
+    def test_configured_endpoint_still_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An explicitly configured endpoint is the whole point — keep honouring it."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://evil.example/v1")
+        monkeypatch.delenv("SURREAL_MEMORY_EMBEDDING_ENDPOINT", raising=False)
+
+        base = self._captured_base_url(model="bge-m3", base_url="http://127.0.0.1:11435/v1")
+
+        assert base == "http://127.0.0.1:11435/v1"
+
+    def test_surreal_endpoint_env_still_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The dedicated env var keeps working for env-only setups."""
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://evil.example/v1")
+        monkeypatch.setenv("SURREAL_MEMORY_EMBEDDING_ENDPOINT", "http://127.0.0.1:11435/v1")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        base = self._captured_base_url(model="bge-m3")
+
+        assert base == "http://127.0.0.1:11435/v1"
+
+    def test_plain_openai_user_is_unaffected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Only OPENAI_API_KEY set: resolves to real OpenAI, exactly as before."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        monkeypatch.delenv("SURREAL_MEMORY_EMBEDDING_ENDPOINT", raising=False)
+
+        base = self._captured_base_url(model="text-embedding-3-small")
+
+        assert base == "https://api.openai.com/v1"
+
+    def test_openrouter_subclass_keeps_its_own_base_url(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://evil.example/v1")
+
+        base = self._captured_base_url(_cls=OpenRouterEmbedding, model="text-embedding-3-small")
+
+        assert "openrouter.ai" in base

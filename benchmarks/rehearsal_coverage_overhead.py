@@ -11,15 +11,14 @@ Uses a real storage backend (not ``InMemoryStorage``) so the timing reflects
 actual ``get_maturation``/``save_maturation`` round trips, since that IS the
 added cost: each extra rehearsed fiber is one more read plus one more write.
 
-Backend: SurrealDB when ``SURREALDB_URL`` is set (matches this repo's
-live-test gating convention), falling back to a temporary SQLite file
-otherwise. This matters: SQLite's ``find_fibers`` goes through an indexed
-``fiber_neurons`` junction table, while the SurrealDB backend's equivalent
-query is an unindexed array-containment scan over ``fiber.neuron_ids`` (no
-index on that field, confirmed via an independent database-review pass on
-this run) -- an earlier SQLite-only run of this benchmark was measuring a
-different, faster query shape than what production actually pays. Prefer the
-SurrealDB path whenever a live instance is available.
+Backend: SurrealDB, required -- ``SURREALDB_URL`` must be set (matching this
+repo's live-test gating convention), and without it the benchmark exits
+instead of measuring something else. The old fallback to a temporary SQLite
+file was misleading before v3.0.0 deleted that backend: SQLite's
+``find_fibers`` went through an indexed ``fiber_neurons`` junction table,
+while the SurrealDB equivalent is an unindexed array-containment scan over
+``fiber.neuron_ids``. The fallback was measuring a different, faster query
+shape than production pays.
 
 Intentionally not a CI assertion (microbenchmark timing is too noisy for a
 hard threshold).
@@ -85,45 +84,40 @@ async def _run_against(storage: Any, brain_id: str) -> tuple[float, float]:
 
 async def _main() -> None:
     surrealdb_url = os.environ.get("SURREALDB_URL")
+    if not surrealdb_url:
+        print("SURREALDB_URL is not set.")
+        print()
+        print("This benchmark needs the production backend: the cost it measures is")
+        print("get_maturation/save_maturation round trips, which only a live engine")
+        print("charges honestly. Start SurrealDB and set SURREALDB_URL, e.g.")
+        print("    docker compose -f docker-compose.surrealdb.yml up -d")
+        print("    SURREALDB_URL=ws://localhost:8001/rpc python benchmarks/rehearsal_coverage_overhead.py")
+        raise SystemExit(1)
+
+    backend = "SurrealDB"
     brain_id = f"bench-rehearsal-{uuid4().hex[:8]}"
 
-    if surrealdb_url:
-        backend = "SurrealDB"
-        from surreal_memory.storage.surrealdb.store import SurrealDBStorage
+    from surreal_memory.storage.surrealdb.store import SurrealDBStorage
 
-        storage = SurrealDBStorage(url=surrealdb_url)
-        await storage.initialize()
-        try:
-            old_ms, new_ms = await _run_against(storage, brain_id)
-        finally:
-            # Cleanup discipline (project hard rule): delete only this run's
-            # own brain, by its exact id, never `default`. Re-fetch the real
-            # RecordID via SELECT rather than reconstructing one from the
-            # string id -- a hand-built `type::record('brain', $bid)` looked
-            # like it succeeded (no error) but silently matched zero rows,
-            # confirmed live: an earlier version of this script left its test
-            # brain orphaned this way even though the query "succeeded".
-            await storage.clear(brain_id)
-            rows = await storage._query(
-                "SELECT id FROM brain WHERE id = type::record('brain', $bid)", bid=brain_id
-            )
-            for row in rows:
-                await storage._query("DELETE $rid", rid=row["id"])
-            await storage.close()
-    else:
-        backend = (
-            "SQLite (SurrealDB not reachable -- set SURREALDB_URL for the production-accurate path)"
+    storage = SurrealDBStorage(url=surrealdb_url)
+    await storage.initialize()
+    try:
+        old_ms, new_ms = await _run_against(storage, brain_id)
+    finally:
+        # Cleanup discipline (project hard rule): delete only this run's
+        # own brain, by its exact id, never `default`. Re-fetch the real
+        # RecordID via SELECT rather than reconstructing one from the
+        # string id -- a hand-built `type::record('brain', $bid)` looked
+        # like it succeeded (no error) but silently matched zero rows,
+        # confirmed live: an earlier version of this script left its test
+        # brain orphaned this way even though the query "succeeded".
+        await storage.clear(brain_id)
+        rows = await storage._query(
+            "SELECT id FROM brain WHERE id = type::record('brain', $bid)", bid=brain_id
         )
-        from surreal_memory.storage.sqlite_store import SQLiteStorage
-
-        with tempfile.TemporaryDirectory() as tmp:
-            db_path = Path(tmp) / "bench.db"
-            storage = SQLiteStorage(db_path)
-            await storage.initialize()
-            try:
-                old_ms, new_ms = await _run_against(storage, brain_id)
-            finally:
-                await storage.close()
+        for row in rows:
+            await storage._query("DELETE $rid", rid=row["id"])
+        await storage.close()
 
     print(f"backend:                                  {backend}")
     print(f"reinforce() at limit=10 (old default):   {old_ms:8.2f} ms/call")

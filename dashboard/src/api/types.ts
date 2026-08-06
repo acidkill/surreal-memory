@@ -208,7 +208,9 @@ export interface GraphFiber {
 // GET /api/dashboard/brain-files
 export interface BrainFileInfo {
   name: string
-  path: string
+  // null when the backend has no on-disk file for this brain (e.g. a
+  // SurrealDB-only brain never had a SQLite-era .db file to point at).
+  path: string | null
   size_bytes: number
   is_active: boolean
 }

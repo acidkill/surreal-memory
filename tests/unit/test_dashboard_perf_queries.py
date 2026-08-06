@@ -211,6 +211,32 @@ class TestDiagnosticsAggregates:
         assert connected == {"a-1", "b-2"}
 
 
+# --------------------------------------------------------------------------- #
+# _query_values -- honest SELECT VALUE typing (#154 finding 3)
+# --------------------------------------------------------------------------- #
+class TestQueryValues:
+    async def test_flat_scalar_list(self):
+        """`in`/`out` are scalar record links -- one value per row."""
+        st, conn = _store_with_mock_conn()
+        conn.query = AsyncMock(return_value=[["neuron:a", "neuron:b"]])
+        values = await st._query_values("SELECT VALUE in FROM synapse")
+        assert values == ["neuron:a", "neuron:b"]
+
+    async def test_empty_result_is_empty_list(self):
+        st, conn = _store_with_mock_conn()
+        conn.query = AsyncMock(return_value=[[]])
+        assert await st._query_values("SELECT VALUE in FROM synapse") == []
+
+    async def test_a_row_whose_value_is_itself_an_array_is_not_collapsed(self):
+        """The #143 trap: SELECT VALUE on an array-typed field. One matching
+        row whose value is an array must come back as that one array, not be
+        confused for "these array elements are separate rows"."""
+        st, conn = _store_with_mock_conn()
+        conn.query = AsyncMock(return_value=[[["tag-a", "tag-b"]]])
+        values = await st._query_values("SELECT VALUE tags FROM neuron")
+        assert values == [["tag-a", "tag-b"]]
+
+
 class TestGetAllSynapsesProjection:
     async def test_include_metadata_false_omits_blob(self):
         st, conn = _store_with_mock_conn()

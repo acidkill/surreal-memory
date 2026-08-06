@@ -5,6 +5,140 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.0] — 2026-08-03 — a contributor's stop-word acronym fix, and a sweep of small honesty bugs
+
+### Added
+
+- **A CI job now runs the full test suite against a live SurrealDB.** Every prior job
+  either mocked the database or skipped whenever `SURREALDB_URL` was unset, so the only
+  production backend went untested in the pipeline — the exact gap `#143`'s bug walked
+  through (a query that returns plausible garbage instead of failing loudly). The job
+  starts the official image via a `docker run` step (GitHub Actions' `services:` cannot
+  pass the datastore/flags SurrealDB's entrypoint requires), waits for `/surreal isready`,
+  then runs the whole suite sequentially — no `-n auto`, since parallel workers sharing one
+  connection produce transaction-conflict errors unrelated to any real regression.
+
+### Fixed
+
+- **Polish stop words `ma`/`na`/`co`/`sa` swallowed the acronyms `MA`/`NA`/`CO`/`SA`.**
+  A contributor's audit (`#64`) showed the fix everyone assumed — removing the words from
+  the stop list — was wrong: `N/A` and `S.A.` never actually collide (punctuation
+  fragments them below the minimum word length before the stop-word check ever runs), so
+  removing the words would only trade real function-word noise for a niche acronym gain.
+  A token that is ALL-CAPS in the source now survives even when its lowercased form is a
+  stop word, gated by how much of the text is uppercase — a shouted note or an all-caps
+  heading has no acronym to rescue, only every word incidentally capitalized, and must not
+  have its stop-word filtering disabled wholesale.
+- **`check_dead_modules` passed silently while five files imported a module that no
+  longer exists.** Reachability is computed from each file's imports, so one naming a
+  module the tree no longer has (the SQLite backend, removed in `3.0.0`) contributed
+  nothing to the graph and produced no diagnostic — the guard reported `No unreachable
+  modules.` while five benchmark/script files could not run. It now resolves every import
+  against the tree and reports the ones that don't. The five files were fixed: one
+  (`stress_at_scale.py`) measured only the removed backend and is deleted; the other four
+  now require a live `SURREALDB_URL` instead of silently falling back to it.
+- **Two read-only endpoints in the sync hub could redirect scheduled maintenance onto
+  the wrong brain.** `GET /hub/status/{id}` and `GET /hub/devices/{id}` switched the
+  process-wide shared storage's active brain to answer a lookup, and the background
+  consolidation/decay loops read that same mutable state on their next tick — so a
+  read-only request for brain B could cause the next scheduled pass to run against B
+  instead of the brain the operator actually left active. Both endpoints now read through
+  an isolated, brain-scoped connection instead of mutating the shared one — the same
+  pattern already used for reasoning-training's read endpoints.
+- **The tool-stats `days` filter changed the daily chart but not the summary above it.**
+  `get_tool_stats` took no `days` argument, so its summary was always computed over all
+  time; switching the dashboard's range selector between 7/30/90 days produced a
+  byte-identical summary while the chart below it changed correctly. The summary now
+  respects the same window as the daily series, and the two storage methods behind it are
+  declared on the storage interface (with an in-memory implementation) instead of being
+  reachable only on the SurrealDB backend behind an unchecked attribute access.
+- **A `SELECT VALUE` query on an array-typed field could be read as if it were rows.**
+  The shared query helper's return type says it hands back row dictionaries, which is not
+  what a `SELECT VALUE` query returns — the field it selects for one matching row can
+  itself be an array, indistinguishable by shape alone from several separate scalar rows.
+  That mismatch is the mechanism behind a prior release's fixed bug (a result iterated
+  character by character). The one live call site reachable this way now goes through a
+  separate, honestly-typed helper instead of the row-shaped one.
+- **The Settings brain-files panel showed a plausible path to a file that was never
+  written.** A brain that exists only in SurrealDB has no on-disk database file, but the
+  panel built and returned a path for it regardless — worse when a stale file from an
+  older install happened to sit at that exact path for one brain while its neighbours
+  showed nothing. The path is now omitted rather than fabricated when the file does not
+  exist.
+
+### Removed
+
+- **The `smem_drift` tool and its underlying tag-drift detector.** Every call path into it
+  swallowed its own failures, so on the only shipped backend it always reported "clean" —
+  indistinguishable from a real analysis that found nothing, because the two things it
+  measures (tag co-occurrence, session summaries) were never implemented on that backend
+  and never had been, even before the SQLite backend's removal. Its `merge` action never
+  actually merged tags either. `TagNormalizer`'s own drift detection, which needs no
+  storage and already backs `smem doctor`'s tag-drift warnings, remains and covers the
+  same practical need. A small unrelated write path — recording tag co-occurrence for the
+  now-removed detector, and a periodic session-summary persist with the same swallowed
+  failure — is removed alongside it.
+- **A CLI sandbox-guard helper was renamed** from `ensure_aiosqlite_or_exit_cli` to
+  `ensure_sqlite_or_exit_cli`: it has only ever checked the stdlib `sqlite3` module, never
+  the optional `aiosqlite` package, and the name was misleading anyone reading the CLI
+  startup path. Internal-only; no public interface changed.
+
+### Changed
+
+- **BREAKING:** the `smem_drift` MCP tool is gone. If anything called it expecting a real
+  answer, that answer was never trustworthy on the SurrealDB backend to begin with — see
+  Removed, above.
+
+**Full diff**: https://github.com/acidkill/surreal-memory/compare/v3.2.0...v3.3.0
+
+## [3.2.0] — 2026-08-03 — reasoning mining sees every profile; embeddings stop inheriting a stranger's endpoint
+
+### Added
+
+- **Reasoning mining can read more than one Claude-Code profile.** New
+  `[reasoning_training] extra_transcript_dirs` (also `SURREAL_MEMORY_REASONING_EXTRA_DIRS`,
+  comma-separated) lists additional profile roots to scan alongside the implicit
+  `~/.claude` — each entry is the directory that *holds* `projects/`, e.g. `~/.claude-ZAI`.
+  Running a second profile for a different vendor's models is common, and until now every
+  trace from that profile was invisible to mining no matter how `mining_models` was set.
+  Roots are de-duplicated, missing ones are skipped rather than fatal, and each file's
+  project attribution resolves against its own root.
+- **The injection map's target field is now a combobox.** It offers every detected model
+  while staying free-text, because targets are matched with `fnmatch` — a glob (`glm-*`)
+  and a model that has not appeared in any transcript yet both have to remain typable.
+  Targets are deliberately not filtered by `has_thinking_text`: that gate applies to
+  sources, and a target is the recipient.
+
+### Fixed
+
+- **Embedding requests silently inherited an ambient `OPENAI_BASE_URL`.** With no
+  surreal-memory endpoint configured, the OpenAI SDK fell back to that environment
+  variable — the ecosystem-standard knob for pointing *some other* tool at a proxy — so a
+  brain's memory text was sent to a host the operator never configured for embeddings,
+  failing later as a confusing error from a vendor that had never heard of the configured
+  model. `OpenAIEmbedding` now always passes an explicit `base_url`, defaulting to
+  `https://api.openai.com/v1`, and logs a warning when it ignores a set `OPENAI_BASE_URL`.
+- **The Stop hook's loopback privacy gate was defeated.** It resolved the endpoint from
+  config-or-env, checked it was loopback, and then built the provider *without passing it*
+  — so the constructor re-resolved from the environment alone and an endpoint configured in
+  `config.toml` cleared the gate while the client pointed elsewhere. The checked endpoint
+  is now handed to the provider. The dashboard's "test embedding connection" endpoint had
+  the same omission with no gate at all, and is fixed the same way.
+- **`smem reindex` hid the reason it failed and exited 0 anyway.** It printed one identical
+  `batch N-M failed (skipped)` line per batch, swallowing the actual exception, kept
+  grinding through every remaining neuron repeating the same failure, and reported success
+  to its caller. It now reports the real error once, aborts after a few consecutive
+  failures when nothing has been embedded, and exits non-zero when a run embeds nothing.
+
+### Changed
+
+- **BREAKING for one setup:** if you relied on `OPENAI_BASE_URL` alone to point
+  surreal-memory at a LiteLLM/vLLM/Azure/self-hosted OpenAI-compatible server, with
+  `provider = "openai"` and no endpoint in either `config.toml` or
+  `SURREAL_MEMORY_EMBEDDING_ENDPOINT`, embeddings will now go to `api.openai.com` instead.
+  Set `[embedding] endpoint` (or `SURREAL_MEMORY_EMBEDDING_ENDPOINT`) to restore the old
+  routing — the same one-key change the warning names.
+
 ## [3.1.0] — 2026-08-03 — `smem index`/`smem reindex` batch their writes and stop duplicating on re-run
 
 ### Added

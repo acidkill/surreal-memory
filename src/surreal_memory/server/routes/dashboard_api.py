@@ -796,7 +796,14 @@ class BrainFileInfo(BaseModel):
     """Info about a single brain database file."""
 
     name: str
-    path: str
+    # None on the surrealdb backend for a brain that has no SQLite-era .db file
+    # on disk -- get_brain_db_path always returns *a* path (it is pure string
+    # construction, so it cannot fail), but that path names a file that was
+    # never written. Reporting it unconditionally showed a plausible-looking
+    # path to something that does not exist, worse when a stale file from an
+    # older install happened to sit at that same path for one brain but not
+    # its neighbours.
+    path: str | None = None
     size_bytes: int = 0
     is_active: bool = False
 
@@ -828,15 +835,16 @@ async def get_brain_files() -> BrainFilesResponse:
 
     for name in brain_names:
         db_path = Path(cfg.get_brain_db_path(name))
+        exists = db_path.exists()
         size = 0
-        if db_path.exists():
+        if exists:
             size = db_path.stat().st_size
             total_size += size
 
         brain_files.append(
             BrainFileInfo(
                 name=name,
-                path=str(db_path),
+                path=str(db_path) if exists else None,
                 size_bytes=size,
                 is_active=name == active_name,
             )
@@ -1199,7 +1207,15 @@ async def test_embedding_connection() -> dict[str, Any]:
         elif provider_name == "openai":
             from surreal_memory.engine.embedding.openai_embedding import OpenAIEmbedding
 
-            provider = OpenAIEmbedding(model=model_name)
+            # Pass the configured endpoint explicitly. With base_url unset the
+            # SDK silently adopts an ambient OPENAI_BASE_URL, so this "test your
+            # connection" button would report success against whatever unrelated
+            # proxy the server's environment happens to export, not the endpoint
+            # the operator actually configured.
+            provider = OpenAIEmbedding(
+                model=model_name,
+                base_url=emb.resolved_endpoint() or None,
+            )
         elif provider_name == "openrouter":
             from surreal_memory.engine.embedding.openrouter_embedding import OpenRouterEmbedding
 
@@ -1540,8 +1556,8 @@ async def tool_stats(
     if not brain:
         return {"summary": {"total_events": 0, "success_rate": 0, "top_tools": []}, "daily": []}
 
-    summary = await storage.get_tool_stats(brain.id)  # type: ignore[attr-defined]
-    daily = await storage.get_tool_stats_by_period(brain.id, days=days, limit=limit)  # type: ignore[attr-defined]
+    summary = await storage.get_tool_stats(brain.id, days=days)
+    daily = await storage.get_tool_stats_by_period(brain.id, days=days, limit=limit)
     return {"summary": summary, "daily": daily}
 
 

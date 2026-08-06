@@ -36,7 +36,6 @@ from surreal_memory.mcp.cognitive_handler import CognitiveHandler
 from surreal_memory.mcp.conflict_handler import ConflictHandler
 from surreal_memory.mcp.connection_handler import ConnectionHandler
 from surreal_memory.mcp.db_train_handler import DBTrainHandler
-from surreal_memory.mcp.drift_handler import DriftHandler
 from surreal_memory.mcp.eternal_handler import EternalHandler
 from surreal_memory.mcp.expiry_cleanup_handler import ExpiryCleanupHandler
 from surreal_memory.mcp.index_handler import IndexHandler
@@ -110,7 +109,6 @@ class MCPServer(
     SurfaceHandler,
     SyncToolHandler,
     TelegramHandler,
-    DriftHandler,
     ReasoningHandler,
 ):
     """MCP server that exposes Surreal-Memory tools.
@@ -140,7 +138,6 @@ class MCPServer(
         SyncToolHandler      — _sync, _sync_status, _sync_config (multi-device sync)
         TelegramHandler      — _telegram_backup (send brain to Telegram)
         SurfaceHandler       — _surface (knowledge surface generate/show)
-        DriftHandler         — _drift (semantic drift detection + resolution)
     """
 
     def __init__(self) -> None:
@@ -282,7 +279,6 @@ class MCPServer(
             "smem_edit": self._edit,
             "smem_forget": self._forget,
             "smem_consolidate": self._consolidate,
-            "smem_drift": self._drift,
             "smem_surface": self._surface,
             "smem_tool_stats": self._tool_stats,
             "smem_lifecycle": self._lifecycle,

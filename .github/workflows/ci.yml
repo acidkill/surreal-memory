@@ -138,6 +138,63 @@ jobs:
       - name: Run security rules
         run: ruff check src/ --select S --ignore S101,S110,S112,S311,S324
 
+  integration:
+    name: Integration (SurrealDB)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SURREALDB_URL: http://127.0.0.1:8001
+      SURREALDB_USER: root
+      SURREALDB_PASS: root
+      SURREALDB_NS: smem_ci
+      SURREALDB_DB: smem_ci
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # `services:` can't run this: the image's ENTRYPOINT is `/surreal` with no
+      # default CMD (no command == prints help and exits), and `services:` only
+      # accepts `options:` (docker-create flags), never a container command. A
+      # plain `docker run` step is the only way to pass the required `start …`
+      # arguments. Command mirrors docker-compose.surrealdb.yml, minus the
+      # persistence path: an in-memory datastore is enough for a run that's
+      # thrown away afterward and needs no root-owned named volume.
+      - name: Start SurrealDB
+        run: |
+          docker run -d --name surrealdb-ci -p 8001:8001 \
+            surrealdb/surrealdb:v3.2.0 \
+            start memory --user root --pass root --bind 0.0.0.0:8001 \
+            --allow-experimental gql --allow-eval-query
+
+      - name: Wait for SurrealDB to be ready
+        run: |
+          for _ in $(seq 1 30); do
+            if docker exec surrealdb-ci /surreal isready --endpoint http://localhost:8001; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "SurrealDB did not become ready in time"
+          docker logs surrealdb-ci
+          exit 1
+
+      - name: Install dependencies
+        run: pip install -e ".[dev,server,surrealdb]"
+
+      # No -n auto here: parallel workers hammering one shared SurrealDB
+      # connection produce connection resets under load unrelated to any real
+      # regression. Correctness, not speed, is the point of this job.
+      - name: Run tests against a live SurrealDB
+        run: pytest tests/ -v --timeout=120 -m "not stress"
+
+      - name: SurrealDB logs (on failure)
+        if: failure()
+        run: docker logs surrealdb-ci
+
   build:
     name: Build Package
     runs-on: ubuntu-latest

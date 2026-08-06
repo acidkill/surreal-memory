@@ -1718,13 +1718,6 @@ class BuildFiberStep:
 
         await storage.add_fiber(fiber)
 
-        # Record tag co-occurrence for drift detection
-        if ctx.merged_tags and len(ctx.merged_tags) >= 2:
-            try:
-                await storage.record_tag_cooccurrence(ctx.merged_tags)  # type: ignore[attr-defined]
-            except Exception:
-                logger.debug("Tag co-occurrence recording failed (non-critical)", exc_info=True)
-
         # Maturation tracking
         from surreal_memory.engine.memory_stages import MaturationRecord, MemoryStage
 

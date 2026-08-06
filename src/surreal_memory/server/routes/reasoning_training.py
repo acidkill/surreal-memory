@@ -19,8 +19,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 from dataclasses import replace as dc_replace
 from typing import Annotated, Any
 
@@ -37,7 +35,12 @@ from surreal_memory.engine.reasoning_progress import (
     PHASE_SCANNING,
     MiningProgress,
 )
-from surreal_memory.server.dependencies import get_brain, get_storage, require_local_request
+from surreal_memory.server.dependencies import (
+    get_brain,
+    get_storage,
+    require_local_request,
+    storage_for_scope,
+)
 from surreal_memory.server.models import ErrorResponse
 from surreal_memory.storage.base import NeuralStorage
 from surreal_memory.unified_config import MAX_PATTERN_TARGET
@@ -286,37 +289,6 @@ async def _fetch_pattern_fibers(storage: NeuralStorage) -> list[Any]:
     return await storage.find_fibers(metadata_key="_reasoning_pattern", limit=_PATTERN_FETCH_LIMIT)
 
 
-@asynccontextmanager
-async def _storage_for_scope(storage: NeuralStorage, scope: str) -> AsyncIterator[NeuralStorage]:
-    """Yield a storage whose implicitly-bound brain IS the request's scope.
-
-    Trace reads take an explicit ``brain_id``, but the fiber API does not:
-    ``find_fibers`` / ``get_fiber`` / ``delete_fiber`` filter on whatever brain
-    the storage instance is bound to, and the app's ``get_storage`` hands out
-    the process-wide instance bound at startup without rebinding it. A request
-    carrying an ``X-Brain-ID`` other than that one would therefore read traces
-    from one brain and patterns from another in a single response.
-
-    The common case (no header, or a header naming the bound brain) costs
-    nothing and reuses the shared instance. Otherwise an isolated storage is
-    opened on the scope and closed on the same terms as the mining job: only
-    SurrealDB hands out a private instance to close; the other backends return
-    the shared one, which must not be closed out from under concurrent requests.
-    """
-    if storage.brain_id == scope:
-        yield storage
-        return
-
-    from surreal_memory.unified_config import create_isolated_storage, get_config
-
-    scoped = await create_isolated_storage(scope)
-    try:
-        yield scoped
-    finally:
-        if get_config().storage_backend == "surrealdb":
-            await scoped.close()
-
-
 # ── GET /status ───────────────────────────────────────────────────────────────
 
 
@@ -334,7 +306,7 @@ async def get_status(
 
     stats = await storage.get_reasoning_stats(brain_id)
     by_model_traces: dict[str, Any] = stats.get("by_model", {})
-    async with _storage_for_scope(storage, brain_id) as scoped:
+    async with storage_for_scope(storage, brain_id) as scoped:
         fibers = await _fetch_pattern_fibers(scoped)
 
     # Per-model pattern counts and per-category coverage from one fiber fetch.
@@ -701,7 +673,7 @@ async def list_patterns(
     offset: int = Query(0, ge=0),
 ) -> PatternsListResponse:
     """List learned reasoning patterns (filter by source model / category)."""
-    async with _storage_for_scope(storage, _brain_scope(brain)) as scoped:
+    async with storage_for_scope(storage, _brain_scope(brain)) as scoped:
         fibers = await _fetch_pattern_fibers(scoped)
     summaries = [_to_summary(f) for f in fibers]
     if model:
@@ -726,7 +698,7 @@ async def get_pattern(
     brain: Annotated[Brain, Depends(get_brain)],
 ) -> PatternDetail:
     """Return one learned pattern with its full strategy/description."""
-    async with _storage_for_scope(storage, _brain_scope(brain)) as scoped:
+    async with storage_for_scope(storage, _brain_scope(brain)) as scoped:
         fiber = await scoped.get_fiber(pattern_id)
     if fiber is None or not _pattern_meta(fiber).get("_reasoning_pattern"):
         raise HTTPException(status_code=404, detail="Pattern not found")
@@ -756,7 +728,7 @@ async def delete_pattern(
     The pattern's private title-neuron is currently left as a harmless graph orphan
     (follow-up ticket); the shared reasoning_category neuron is kept by design.
     """
-    async with _storage_for_scope(storage, _brain_scope(brain)) as scoped:
+    async with storage_for_scope(storage, _brain_scope(brain)) as scoped:
         fiber = await scoped.get_fiber(pattern_id)
         if fiber is None or not _pattern_meta(fiber).get("_reasoning_pattern"):
             raise HTTPException(status_code=404, detail="Pattern not found")
@@ -785,7 +757,7 @@ async def delete_patterns_by_model(
     # Fetch AND delete on the same scoped storage: delete_fiber is brain-filtered
     # too, so deleting through a differently-bound storage would silently miss
     # every fiber it just listed.
-    async with _storage_for_scope(storage, _brain_scope(brain)) as scoped:
+    async with storage_for_scope(storage, _brain_scope(brain)) as scoped:
         fibers = await _fetch_pattern_fibers(scoped)
         victims = [f for f in fibers if _pattern_meta(f).get("_source_model") == model]
         for f in victims:

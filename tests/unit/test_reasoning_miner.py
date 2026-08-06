@@ -742,3 +742,136 @@ async def test_reset_processed_matching_no_present_model_is_a_noop(tmp_path: Pat
 
     assert await reset_processed_traces(storage, "b1", cfg) == 0
     assert await storage.get_unprocessed_reasoning_traces("b1") == []
+
+
+# ── multi-profile transcript roots ────────────────────────────────────────────
+#
+# One machine commonly runs Claude Code under more than one profile — a second
+# root (e.g. ~/.claude-ZAI) is how a different vendor's models get used. The
+# miner used to scan ~/.claude only, so every trace from the other profile was
+# invisible no matter what mining_models said.
+#
+# These tests point HOME at tmp_path so the implicit ~/.claude root IS the
+# fixture's primary profile; passing claude_dir would suppress the configured
+# extras entirely (that override is asserted separately below).
+
+
+@pytest.fixture
+def home_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    return tmp_path
+
+
+def test_scan_reads_a_second_configured_profile_root(home_root: Path, tmp_path: Path) -> None:
+    _write_transcript(
+        home_root / ".claude", [_assistant("primary profile reasoning")], slug="proj-a"
+    )
+    secondary = tmp_path / ".claude-OTHER"
+    _write_transcript(
+        secondary,
+        [_assistant("second profile reasoning here", model="glm-5.2", uuid="u2")],
+        slug="proj-b",
+    )
+
+    cfg = _cfg(extra_transcript_dirs=(str(secondary),))
+    traces = scan_transcripts(cfg, state_path=tmp_path / "state.json", now=_NOW)
+
+    by_model = {t["model"]: t for t in traces}
+    assert set(by_model) == {"claude-fable-5", "glm-5.2"}
+    assert by_model["glm-5.2"]["project"] == "proj-b"
+
+
+def test_second_profile_keeps_its_own_project_attribution(home_root: Path, tmp_path: Path) -> None:
+    """Each file's project must resolve against ITS OWN root.
+
+    Flattening per-root discovery without carrying the owning projects_dir
+    would attribute one profile's traces to the other's project name — the
+    exact failure this test exists to catch. Both roots deliberately share a
+    project directory name, and the second adds one of its own.
+    """
+    secondary = tmp_path / ".claude-OTHER"
+    _write_transcript(home_root / ".claude", [_assistant("aaaaaaaaaaaa", uuid="u1")], slug="shared")
+    _write_transcript(
+        secondary, [_assistant("bbbbbbbbbbbb", model="glm-5.2", uuid="u2")], slug="shared"
+    )
+    _write_transcript(
+        secondary, [_assistant("cccccccccccc", model="glm-5.2", uuid="u3")], slug="only-in-second"
+    )
+
+    cfg = _cfg(extra_transcript_dirs=(str(secondary),))
+    traces = scan_transcripts(cfg, state_path=tmp_path / "state.json", now=_NOW)
+
+    assert {t["project"] for t in traces} == {"shared", "only-in-second"}
+    # The same-named dir in one root must not shadow the other root's copy.
+    assert sum(1 for t in traces if t["project"] == "shared") == 2
+
+
+def test_explicit_claude_dir_still_wins_over_configured_extras(
+    home_root: Path, tmp_path: Path
+) -> None:
+    """The claude_dir override means 'exactly this root' — extras stay out."""
+    primary = home_root / ".claude"
+    secondary = tmp_path / ".claude-OTHER"
+    _write_transcript(primary, [_assistant("primary only here", uuid="u1")])
+    _write_transcript(secondary, [_assistant("must not appear at all", model="glm-5.2", uuid="u2")])
+
+    cfg = _cfg(extra_transcript_dirs=(str(secondary),))
+    traces = scan_transcripts(cfg, state_path=tmp_path / "state.json", claude_dir=primary, now=_NOW)
+
+    assert {t["model"] for t in traces} == {"claude-fable-5"}
+
+
+def test_missing_extra_root_is_skipped_not_fatal(home_root: Path, tmp_path: Path) -> None:
+    """A profile configured on one machine and absent on another is normal."""
+    _write_transcript(home_root / ".claude", [_assistant("still mined fine", uuid="u1")])
+
+    cfg = _cfg(extra_transcript_dirs=(str(tmp_path / "does-not-exist"),))
+    traces = scan_transcripts(cfg, state_path=tmp_path / "state.json", now=_NOW)
+
+    assert len(traces) == 1
+
+
+def test_duplicate_root_is_not_scanned_twice(home_root: Path, tmp_path: Path) -> None:
+    """Re-listing the implicit root must not double-count its traces."""
+    primary = home_root / ".claude"
+    _write_transcript(primary, [_assistant("counted exactly once", uuid="u1")])
+
+    cfg = _cfg(extra_transcript_dirs=(str(primary),))
+    traces = scan_transcripts(cfg, state_path=tmp_path / "state.json", now=_NOW)
+
+    assert len(traces) == 1
+
+
+@pytest.mark.usefixtures("home_root")
+def test_no_roots_at_all_returns_empty(tmp_path: Path) -> None:
+    """No ~/.claude/projects and no usable extras: empty, not a crash.
+
+    Needs home_root only for its side effect (HOME pointed at the fixture), so
+    it is requested via usefixtures rather than taken as an unused parameter.
+    """
+    assert scan_transcripts(_cfg(), state_path=tmp_path / "state.json", now=_NOW) == []
+
+
+async def test_ingest_stages_traces_from_every_profile(home_root: Path, tmp_path: Path) -> None:
+    """The async ingest path must see the extra roots too, not just scan_transcripts."""
+    secondary = tmp_path / ".claude-OTHER"
+    _write_transcript(home_root / ".claude", [_assistant("primary reasoning text", uuid="u1")])
+    _write_transcript(
+        secondary, [_assistant("second profile reasoning", model="glm-5.2", uuid="u2")]
+    )
+
+    storage = InMemoryStorage()
+    cfg = UnifiedConfig(
+        data_dir=tmp_path / ".surrealmemory",
+        current_brain="default",
+        reasoning_training=_cfg(extra_transcript_dirs=(str(secondary),)),
+    )
+
+    result = await ingest_reasoning_traces(
+        storage, "b1", cfg, state_path=tmp_path / "state.json", now=_NOW
+    )
+
+    assert result.traces_ingested == 2
+    staged = await storage.get_unprocessed_reasoning_traces("b1")
+    assert {t["model"] for t in staged} == {"claude-fable-5", "glm-5.2"}

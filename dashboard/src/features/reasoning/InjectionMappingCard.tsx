@@ -35,7 +35,6 @@ export function InjectionMappingCard({ status }: Props) {
   const injectionEnabled = status.config.injection_enabled
   // Source models must have thinking text (the backend rejects others with 422).
   const sourceModels = status.per_model.filter((m) => m.has_thinking_text).map((m) => m.model)
-
   const [pairs, setPairs] = useState<Pair[]>(() => makePairs(status.config.injection_map))
   const [dirty, setDirty] = useState(false)
 
@@ -48,6 +47,17 @@ export function InjectionMappingCard({ status }: Props) {
     setPairs(makePairs(status.config.injection_map))
     setDirty(false)
   }
+
+  // Targets are the RECIPIENTS of injected strategies, so the thinking-text gate
+  // does not apply to them — a model that emits no thinking of its own is a
+  // perfectly good recipient. detected_models is the wider union (traces in the
+  // DB ∪ configured mining models ∪ pattern sources ∪ existing map entries), so
+  // a model reachable only through config still shows up. Current targets are
+  // folded in so an already-saved value never vanishes from its own suggestions.
+  // Suggestions only: the field stays free-text for globs and unseen models.
+  const targetModels = Array.from(
+    new Set([...status.detected_models, ...pairs.map((p) => p.target).filter(Boolean)]),
+  ).sort()
 
   const toggleInjection = (enabled: boolean) => {
     updateConfig.mutate(
@@ -141,14 +151,26 @@ export function InjectionMappingCard({ status }: Props) {
                 ))}
               </select>
               <span className="text-muted-foreground">→</span>
+              {/* Combobox, not a plain select: the target is matched with fnmatch,
+                  so a glob ("glm-*") is a legitimate value, and a model that has
+                  never appeared in a transcript yet still has to be selectable.
+                  A datalist offers the discovered models without taking either
+                  away. Targets are NOT filtered by has_thinking_text — that gate
+                  applies to sources only; a target is the recipient. */}
               <input
                 type="text"
+                list={`targets-${p.id}`}
                 value={p.target}
                 onChange={(e) => setPair(p.id, { target: e.target.value })}
                 placeholder={t("reasoning.targetPlaceholder")}
                 className="w-40 rounded-md border border-border bg-background px-2 py-1.5 font-mono text-xs"
                 aria-label={t("reasoning.target")}
               />
+              <datalist id={`targets-${p.id}`}>
+                {targetModels.map((m) => (
+                  <option key={m} value={m} />
+                ))}
+              </datalist>
               <Button
                 variant="ghost"
                 size="icon"

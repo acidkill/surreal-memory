@@ -1,4 +1,8 @@
-"""E2E test: Train motorcycle manual PDF → Recall in English via Gemini embeddings."""
+"""E2E test: Train motorcycle manual PDF -> Recall in English via Gemini embeddings.
+
+Requires GEMINI_API_KEY and SURREALDB_URL. The SQLite fallback this script used
+to have was removed along with the SQLite backend in v3.0.0.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +11,7 @@ import logging
 import os
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 
 # Ensure src is importable
@@ -40,6 +45,12 @@ async def main() -> None:
         print("ERROR: Set GEMINI_API_KEY env var")
         sys.exit(1)
 
+    surrealdb_url = os.environ.get("SURREALDB_URL")
+    if not surrealdb_url:
+        print("ERROR: Set SURREALDB_URL env var (this script's SQLite fallback")
+        print("was removed along with the SQLite backend in v3.0.0)")
+        sys.exit(1)
+
     # --- Step 1: Extract PDF to markdown ---
     logger.info("Step 1: Extracting PDF → markdown")
     try:
@@ -60,10 +71,10 @@ async def main() -> None:
     logger.info("Step 2: Creating fresh brain with Gemini embeddings")
 
     from surreal_memory.core.brain import Brain, BrainConfig
-    from surreal_memory.storage.sqlite_store import SQLiteStorage
+    from surreal_memory.storage.surrealdb.store import SurrealDBStorage
 
-    db_path = Path(tmp_dir) / "test_brain.db"
-    storage = SQLiteStorage(db_path)
+    brain_id = f"e2e-gemini-{uuid.uuid4().hex[:8]}"
+    storage = SurrealDBStorage(url=surrealdb_url)
     await storage.initialize()
 
     brain_config = BrainConfig(
@@ -73,12 +84,12 @@ async def main() -> None:
         embedding_similarity_threshold=0.5,
         max_context_tokens=3000,
     )
-    brain = Brain.create(name="huskyAI", config=brain_config, brain_id="huskyAI")
+    brain = Brain.create(name=brain_id, config=brain_config, brain_id=brain_id)
     await storage.save_brain(brain)
     storage.set_brain(brain.id)
 
     # Verify brain config round-trip
-    loaded_brain = await storage.get_brain("huskyAI")
+    loaded_brain = await storage.get_brain(brain_id)
     assert loaded_brain is not None, "Brain not found after save!"
     logger.info("  embedding_enabled=%s (stored)", loaded_brain.config.embedding_enabled)
     logger.info("  embedding_provider=%s (stored)", loaded_brain.config.embedding_provider)
@@ -125,7 +136,7 @@ async def main() -> None:
     print("\n" + "=" * 80)
     print("E2E GEMINI RECALL RESULTS")
     print("=" * 80)
-    print(f"DB: {db_path}")
+    print(f"Brain: {brain_id}")
     print(f"Total neurons: {len(all_neurons)}, with embeddings: {emb_count}")
     print(f"Embedding provider: {brain_config.embedding_provider}")
     print(f"Similarity threshold: {brain_config.embedding_similarity_threshold}")
@@ -146,7 +157,17 @@ async def main() -> None:
     else:
         print("FAIL: All queries returned 0 results")
 
-    # Cleanup
+    # Cleanup discipline (project hard rule): delete only this run's own
+    # brain, by its exact id, never `default`. Re-fetch the real RecordID via
+    # SELECT rather than reconstructing one from the string id -- a hand-built
+    # `type::record('brain', $bid)` can look like it succeeded (no error)
+    # while silently matching zero rows.
+    await storage.clear(brain_id)
+    rows = await storage._query(
+        "SELECT id FROM brain WHERE id = type::record('brain', $bid)", bid=brain_id
+    )
+    for row in rows:
+        await storage._query("DELETE $rid", rid=row["id"])
     await storage.close()
     print(f"\nTemp dir preserved at: {tmp_dir}")
 
