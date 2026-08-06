@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.1] — 2026-08-06 — `smem doctor --fix` stops claiming a config section it can't create
+
+### Fixed
+
+- **`smem doctor --fix` reported 17/17 while the `Config freshness` warning returned on the next run.** `_check_config_freshness` expected a top-level `[conflict]` section that no `ConflictConfig` exists for and `UnifiedConfig.save()` never emits — the only `conflict` in the schema is `conflict_strategy`, a single key under `[sync]`. `_fix_config_freshness` then called `save()` (which rewrites `config.toml` with every real section but cannot create `[conflict]`), returned `OK` without re-reading the file, and `_auto_fix` trusted that return — so the doctor printed 17/17 on the handler's word while the persisted file still lacked the section the check was asking for.
+
+  `UnifiedConfig.SECTION_NAMES` is now the single source of truth for the sections `save()` writes: `save()` validates its emitted `[section]` headers against the tuple and raises `RuntimeError` on drift, the doctor's freshness check consumes `SECTION_NAMES` directly (so a section can never be flagged "missing" when `--fix` — which calls `save()` — cannot create it), and `_fix_config_freshness` re-reads `config.toml` after saving and returns `OK` only when the missing list is genuinely empty. The stale `conflict` entry is gone simply because `SECTION_NAMES` never listed it.
+
 ## [3.3.0] — 2026-08-03 — a contributor's stop-word acronym fix, and a sweep of small honesty bugs
 
 ### Added
