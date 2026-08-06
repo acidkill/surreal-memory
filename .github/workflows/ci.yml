@@ -7,6 +7,25 @@ on:
     branches: [main, master]
 
 jobs:
+  # Release 3.3.1 bumped pyproject.toml alone. Nothing here compared it to the
+  # other version-bearing files, so the skew only surfaced in the release
+  # workflow — after the tag existed, where the failure mode is a dead release
+  # instead of a red PR. This job runs the same gate the release runs, on every
+  # push and PR. It is stdlib-only and needs no install, so it costs ~10s.
+  versions:
+    name: Version Consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Check every version-bearing file agrees
+        run: python scripts/pre_ship.py --only versions
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
@@ -109,6 +128,12 @@ jobs:
       - name: Check REST reference is up-to-date
         run: python scripts/gen_api_docs.py --check
 
+      # Counts scattered through prose (tool count, test count, schema version)
+      # drift silently — nothing regenerates them. Exits non-zero on drift;
+      # `python scripts/sync_refs.py --fix` rewrites them.
+      - name: Check scattered references are up-to-date
+        run: python scripts/sync_refs.py
+
       # mkdocs is not a project dependency — the site is built from these
       # plugins only. Strict mode turns every dead link into a failure, which
       # is the point: it had silently broken and nothing was running it.
@@ -198,7 +223,7 @@ jobs:
   build:
     name: Build Package
     runs-on: ubuntu-latest
-    needs: [lint, typecheck, test]
+    needs: [versions, lint, typecheck, test]
     steps:
       - uses: actions/checkout@v4
 

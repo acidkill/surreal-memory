@@ -47,6 +47,23 @@ SKIP_DIRS = {
     # "correcting" those quotes would destroy the very thing they record.
     "qa",
     ".goal",
+    # Session handoff journal — gitignored, and its entries are timestamped
+    # records of what was true that day. "5645 tests" under a 2026-07-11
+    # heading is a fact about July, not drift to correct.
+    ".remember",
+    # Trees that are not ours to document. A worktree holds another branch's
+    # copy of this repo, and a virtualenv holds other projects' READMEs
+    # outright. Matched at any depth by _should_skip.
+    ".claude",
+    ".venv",
+    "venv",
+    "site-packages",
+    ".tox",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    "build",
+    "dist",
 }
 
 # Lines that legitimately carry a NUMBER THAT IS NOT OURS, or not ours *now*.
@@ -175,18 +192,18 @@ def derive_truth() -> TruthValues:
 
 def _should_skip(path: Path) -> bool:
     """Check if file should be skipped."""
-    rel = path.relative_to(ROOT).as_posix()
+    rel = path.relative_to(ROOT)
 
     # Skip historical files
-    if rel in SKIP_FILES:
+    if rel.as_posix() in SKIP_FILES:
         return True
 
-    # Skip non-shipped directories
-    for skip_dir in SKIP_DIRS:
-        if rel.startswith(skip_dir + "/") or rel == skip_dir:
-            return True
-
-    return False
+    # Match on path SEGMENTS, not on a leading prefix. The prefix check only
+    # caught these directories at the repo root, so `dashboard/node_modules/`
+    # and `.claude/worktrees/*/.venv/**/site-packages/` sailed through — a scan
+    # reported ~1136 findings in other projects' READMEs, and `--fix` would have
+    # rewritten files outside this repository.
+    return bool(SKIP_DIRS.intersection(rel.parts))
 
 
 def scan_stale_refs(truth: TruthValues) -> list[RefFinding]:

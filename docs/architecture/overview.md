@@ -53,7 +53,7 @@ multi-model (document + graph + vector) engine as the production storage backend
 Entry points for users and applications:
 
 - **CLI** - Command-line interface (`smem` commands)
-- **MCP Server** - Model Context Protocol for Claude integration (58 tools)
+- **MCP Server** - Model Context Protocol for Claude integration (57 tools)
 - **REST API** - FastAPI-based HTTP server, backs the web dashboard at `/ui`
 
 ### Engine Layer

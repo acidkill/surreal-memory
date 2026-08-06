@@ -127,7 +127,7 @@ Todo lo demás — sesiones, carga de contexto, seguimiento de hábitos, manteni
 
 ```
                     ┌──────────────────────────────┐
-                    │       MCP Server (58 tools)   │
+                    │       MCP Server (57 tools)   │
                     └──────────┬───────────────────┘
                                │
                     ┌──────────▼───────────────────┐

@@ -20,6 +20,7 @@ Usage:
 
 from __future__ import annotations
 
+import argparse
 import json
 import re
 import subprocess
@@ -62,60 +63,113 @@ def warn(name: str, detail: str = "") -> None:
 # ── 1. Version Consistency ──────────────────────────────────────
 
 
+NPM_PACKAGE_DIRS = (
+    "integrations/surrealmemory",
+    "integrations/surreal-memory-client",
+    "vscode-extension",
+)
+
+
+def _read_version(path: Path, pattern: str) -> str:
+    if not path.exists():
+        return "NOT_FOUND"
+    m = re.search(pattern, path.read_text(), re.MULTILINE)
+    return m.group(1) if m else "NOT_FOUND"
+
+
+def _lockfile_versions(path: Path) -> tuple[str, str]:
+    """A lockfile states the package version twice — at the root and under
+    `packages.""`. npm rewrites both, so both have to move together."""
+    if not path.exists():
+        return "NOT_FOUND", "NOT_FOUND"
+    try:
+        data = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return "UNPARSEABLE", "UNPARSEABLE"
+    return (
+        data.get("version", "NOT_FOUND"),
+        data.get("packages", {}).get("", {}).get("version", "NOT_FOUND"),
+    )
+
+
+def collect_versions(root: Path = ROOT) -> dict[str, str]:
+    """Every file carrying the release version, mapped to what it claims.
+
+    Keep this exhaustive. A file missing from here can go stale with no gate
+    noticing — which is exactly how 3.3.1 published nothing. Reads files
+    directly (stdlib only, no installed package), so a bare checkout can run it.
+    """
+    versions: dict[str, str] = {
+        "pyproject.toml": _read_version(root / "pyproject.toml", r'^version\s*=\s*"([^"]+)"'),
+        "src/surreal_memory/__init__.py": _read_version(
+            root / "src/surreal_memory/__init__.py", r'^__version__\s*=\s*"([^"]+)"'
+        ),
+        "tests/unit/test_health_fixes.py": _read_version(
+            root / "tests/unit/test_health_fixes.py", r'__version__\s*==\s*"([^"]+)"'
+        ),
+        ".claude-plugin/plugin.json": _read_version(
+            root / ".claude-plugin/plugin.json", r'"version"\s*:\s*"([^"]+)"'
+        ),
+    }
+
+    # marketplace.json carries it twice: catalogue metadata, then the plugin entry.
+    marketplace = root / ".claude-plugin/marketplace.json"
+    found = (
+        re.findall(r'"version"\s*:\s*"([^"]+)"', marketplace.read_text())
+        if marketplace.exists()
+        else []
+    )
+    versions[".claude-plugin/marketplace.json (metadata)"] = found[0] if found else "NOT_FOUND"
+    versions[".claude-plugin/marketplace.json (plugins)"] = (
+        found[1] if len(found) > 1 else "NOT_FOUND"
+    )
+
+    versions["integrations/surrealmemory/openclaw.plugin.json"] = _read_version(
+        root / "integrations/surrealmemory/openclaw.plugin.json", r'"version"\s*:\s*"([^"]+)"'
+    )
+
+    # npm manifests are not cosmetic: the publish jobs read these, so a stale
+    # one does not fail the gate — it tries to republish a taken version.
+    for pkg in NPM_PACKAGE_DIRS:
+        versions[f"{pkg}/package.json"] = _read_version(
+            root / pkg / "package.json", r'"version"\s*:\s*"([^"]+)"'
+        )
+        lock_root, lock_packages = _lockfile_versions(root / pkg / "package-lock.json")
+        versions[f"{pkg}/package-lock.json (root)"] = lock_root
+        versions[f'{pkg}/package-lock.json (packages."")'] = lock_packages
+
+    return versions
+
+
+def verify_versions(root: Path = ROOT, expected: str | None = None) -> tuple[bool, list[str]]:
+    """Confirm every version-bearing file agrees.
+
+    `expected` pins them to a release tag, which catches the case no
+    file-to-file comparison can: a tag ahead of a tree that is internally
+    consistent. Returns (ok, problems) so callers decide how to report.
+    """
+    versions = collect_versions(root)
+    canonical = (expected or versions["pyproject.toml"]).lstrip("v")
+    problems = [
+        f"{label}: {value} (expected {canonical})"
+        for label, value in versions.items()
+        if value != canonical
+    ]
+    return not problems, problems
+
+
 def check_versions() -> None:
     print("\n1. Version Consistency")
 
-    version_files: dict[str, str | None] = {
-        "pyproject.toml": None,
-        "src/surreal_memory/__init__.py": None,
-        ".claude-plugin/plugin.json": None,
-        ".claude-plugin/marketplace.json (metadata)": None,
-        ".claude-plugin/marketplace.json (plugins)": None,
-        "tests/unit/test_health_fixes.py": None,
-    }
+    versions = collect_versions()
+    canonical = versions["pyproject.toml"]
+    all_match, problems = verify_versions()
 
-    # pyproject.toml
-    text = (ROOT / "pyproject.toml").read_text()
-    m = re.search(r'^version\s*=\s*"([^"]+)"', text, re.MULTILINE)
-    canonical = m.group(1) if m else "NOT_FOUND"
-    version_files["pyproject.toml"] = canonical
-
-    # __init__.py
-    text = (ROOT / "src/surreal_memory/__init__.py").read_text()
-    m = re.search(r'__version__\s*=\s*"([^"]+)"', text)
-    version_files["src/surreal_memory/__init__.py"] = m.group(1) if m else "NOT_FOUND"
-
-    # plugin.json
-    text = (ROOT / ".claude-plugin/plugin.json").read_text()
-    m = re.search(r'"version"\s*:\s*"([^"]+)"', text)
-    version_files[".claude-plugin/plugin.json"] = m.group(1) if m else "NOT_FOUND"
-
-    # marketplace.json (2 occurrences)
-    text = (ROOT / ".claude-plugin/marketplace.json").read_text()
-    versions = re.findall(r'"version"\s*:\s*"([^"]+)"', text)
-    version_files[".claude-plugin/marketplace.json (metadata)"] = (
-        versions[0] if len(versions) > 0 else "NOT_FOUND"
-    )
-    version_files[".claude-plugin/marketplace.json (plugins)"] = (
-        versions[1] if len(versions) > 1 else "NOT_FOUND"
-    )
-
-    # test_health_fixes.py
-    text = (ROOT / "tests/unit/test_health_fixes.py").read_text()
-    m = re.search(r'__version__\s*==\s*"([^"]+)"', text)
-    version_files["tests/unit/test_health_fixes.py"] = m.group(1) if m else "NOT_FOUND"
-
-    # NOT checked: tests/unit/test_markdown_export.py. Its `"version"` field is the
-    # brain-snapshot schema version in a test fixture, not the package version, so
-    # matching it against the release version was a permanent false failure.
-
-    all_match = all(v == canonical for v in version_files.values())
-    check(f"All {len(version_files)} files match", all_match, f"Expected {canonical}")
+    check(f"All {len(versions)} files match", all_match, f"Expected {canonical}")
 
     if not all_match:
-        for path, ver in version_files.items():
-            status = "ok" if ver == canonical else f"MISMATCH: {ver}"
-            print(f"           {path}: {status}")
+        for problem in problems:
+            print(f"           MISMATCH: {problem}")
 
     # CHANGELOG has entry for this version
     changelog = (ROOT / "CHANGELOG.md").read_text()
@@ -422,15 +476,63 @@ def check_refs(fix: bool = False) -> None:
 # ── Main ────────────────────────────────────────────────────────
 
 
+def run_version_gate(expected: str | None = None) -> int:
+    """The gate CI and the release workflow share.
+
+    Prints GitHub Actions annotations so a skew shows up on the file list of a
+    pull request, not just in a log nobody opens.
+    """
+    ok, problems = verify_versions(expected=expected)
+    target = (expected or collect_versions()["pyproject.toml"]).lstrip("v")
+
+    if ok:
+        print(f"Every version-bearing file carries {target}.")
+        return 0
+
+    print(f"::error::Version skew — a release tagged v{target} would publish nothing.")
+    for problem in problems:
+        print(f"::error::{problem}")
+    print("\nBump every file to the same version (see CLAUDE.md 'Releases'), or run:")
+    print("  python scripts/pre_ship.py --only versions")
+    return 1
+
+
 def main() -> int:
-    fix = "--fix" in sys.argv
+    parser = argparse.ArgumentParser(
+        description="Pre-ship verification for surreal-memory.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--fix", action="store_true", help="Auto-fix what can be fixed (ruff, stale refs)"
+    )
+    parser.add_argument(
+        "--only",
+        choices=["versions"],
+        help=(
+            "Run a single gate and exit. `versions` is stdlib-only and needs no "
+            "installed package, so CI and the release workflow can call it on a "
+            "bare checkout in seconds."
+        ),
+    )
+    parser.add_argument(
+        "--expect",
+        metavar="VERSION",
+        help=(
+            "Require every file to carry this exact version (the release tag). "
+            "A leading 'v' is stripped, so both v3.3.1 and 3.3.1 work."
+        ),
+    )
+    args = parser.parse_args()
+
+    if args.only == "versions":
+        return run_version_gate(args.expect)
 
     print("=" * 60)
     print("  Surreal-Memory — Pre-Ship Verification")
     print("=" * 60)
 
     check_versions()
-    check_ruff(fix=fix)
+    check_ruff(fix=args.fix)
     check_mypy()
     check_imports()
     check_tests()
@@ -438,7 +540,7 @@ def main() -> int:
     check_cognitive()
     check_plugin()
     check_docs()
-    check_refs(fix=fix)
+    check_refs(fix=args.fix)
 
     print("\n" + "=" * 60)
     if failures:

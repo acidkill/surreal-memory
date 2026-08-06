@@ -186,10 +186,10 @@ Sync uses **Merkle delta** — only changes are transmitted. A brain with 100K n
 | Recall method | Keyword matching | Semantic similarity + graph traversal |
 | Consolidation | Keyword overlap | Embedding similarity via HNSW neighbours |
 | Compression | Text-level trimming | 5-tier vector lifecycle |
-| MCP tools | 58 tools | the same 58 tools |
+| MCP tools | 57 tools | the same 57 tools |
 | Setup | Built-in, zero config | Requires SurrealDB instance |
 
-All 58 MCP tools work with both backends. Switching does **not** move your data:
+All 57 MCP tools work with both backends. Switching does **not** move your data:
 the two backends are separate stores, so export from one and import into the
 other — see [Migrating to 3.0](migrating-to-3.0.md).
 

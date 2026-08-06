@@ -21,35 +21,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check tag matches source version
+      # Shares one implementation with the `Version Consistency` job in ci.yml,
+      # so this can only fail on something CI could not have known: a tag that
+      # disagrees with a tree that is internally consistent. The previous
+      # inline version compared the tag against pyproject.toml and __init__.py
+      # only — it never saw the npm manifests the publish jobs below read.
+      - name: Check tag matches every version-bearing file
         run: |
-          TAG="${GITHUB_REF#refs/tags/v}"
-          PYPROJECT=$(python3 -c "
-          import re, pathlib
-          text = pathlib.Path('pyproject.toml').read_text()
-          m = re.search(r'^version\s*=\s*\"([^\"]+)\"', text, re.M)
-          print(m.group(1))
-          ")
-          INIT=$(python3 -c "
-          import re, pathlib
-          text = pathlib.Path('src/surreal_memory/__init__.py').read_text()
-          m = re.search(r'^__version__\s*=\s*\"([^\"]+)\"', text, re.M)
-          print(m.group(1))
-          ")
-
-          echo "Tag version:        $TAG"
-          echo "pyproject.toml:     $PYPROJECT"
-          echo "__init__.py:        $INIT"
-
-          if [ "$TAG" != "$PYPROJECT" ]; then
-            echo "::error::Tag v$TAG does not match pyproject.toml version $PYPROJECT"
-            exit 1
-          fi
-          if [ "$TAG" != "$INIT" ]; then
-            echo "::error::Tag v$TAG does not match __init__.py version $INIT"
-            exit 1
-          fi
-          echo "Version $TAG is consistent across all sources."
+          TAG="${GITHUB_REF#refs/tags/}"
+          echo "Tag: $TAG"
+          python3 scripts/pre_ship.py --only versions --expect "$TAG"
 
   # ── Gate: run full CI before publishing ─────────────────────────
   ci:

@@ -3,7 +3,7 @@
 > Forward-looking vision. What's next, what's possible, where we're going.
 > ZERO LLM dependency — pure algorithmic, regex, graph-based.
 
-**Current state**: v2.20.0 — 58 MCP tools, 7,267 tests, neuroscience engine (10 brain-inspired algorithms), tiered memory loading (HOT/WARM/COLD).
+**Current state**: v3.3.1 — 57 MCP tools, 6900+ tests, neuroscience engine (10 brain-inspired algorithms), tiered memory loading (HOT/WARM/COLD).
 
 **Storage**: SurrealDB is the recommended backend and the one the project is built around —
 SurrealDB schema v9. SQLite and InMemory are not test-only fixtures; they are real, selectable

@@ -118,7 +118,7 @@ Deploy with the provided Worker template. No managed service dependency.
 
 | Interface | Description |
 |-----------|-------------|
-| **MCP Server** | 58 tools for Claude, GPT, and other agents. Recall, store, consolidate, query. |
+| **MCP Server** | 57 tools for Claude, GPT, and other agents. Recall, store, consolidate, query. |
 | **Web Dashboard** | Browser-based brain inspector. Visualize neurons, fibers, and graph topology. |
 | **VS Code Extension** | Inline memory panel. Recall context without leaving the editor. |
 | **CLI** | Full control from the terminal. `smem recall`, `smem remember`, `smem consolidate`, etc. |
@@ -160,7 +160,7 @@ Surreal-Memory vs. alternatives:
 
 ## MCP Tools
 
-58 tools registered automatically. Key tools by category:
+57 tools registered automatically. Key tools by category:
 
 **Recall:**
 - `smem_recall` -- query memories with configurable depth and confidence

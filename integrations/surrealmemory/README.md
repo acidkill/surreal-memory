@@ -54,7 +54,7 @@ Add to `~/.openclaw/openclaw.json`:
 
 **v1.7.0+**: The plugin dynamically fetches **all tools** from the MCP server at startup. Whatever version of `surreal-memory` you have installed, the plugin automatically exposes every tool it provides — no plugin update needed when new tools are added.
 
-With `surreal-memory>=4.6.0`, this includes **58 tools**:
+With `surreal-memory>=4.6.0`, this includes **57 tools**:
 
 | Category | Tools |
 |----------|-------|
