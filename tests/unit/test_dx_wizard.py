@@ -33,6 +33,24 @@ class TestDoctor:
             assert result["status"] == "fail"
             assert "Missing" in result["detail"]
 
+    def test_check_dependencies_does_not_require_aiosqlite(self) -> None:
+        """`aiosqlite` moved to the optional `sqlite-import` extra (#154.6) —
+        it powers `smem_train_db`'s SQLite dialect, not the SurrealDB backend
+        every install actually runs on. A bare install must not FAIL doctor
+        over a package it does not need."""
+        from surreal_memory.cli.doctor import _check_dependencies
+
+        def fail_only_aiosqlite(name: str) -> None:
+            if name == "aiosqlite":
+                raise ImportError(name)
+
+        with patch(
+            "surreal_memory.cli.doctor.importlib.import_module", side_effect=fail_only_aiosqlite
+        ):
+            result = _check_dependencies()
+
+        assert result["status"] == "ok"
+
     def test_check_embedding_disabled(self) -> None:
         from surreal_memory.cli.doctor import _check_embedding_provider
 

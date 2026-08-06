@@ -39,12 +39,18 @@ dependencies = [
 
     "typer>=0.9.0,<0.26",
     "aiohttp>=3.9.0",
-    "aiosqlite>=0.19.0",
     "rich>=13.0.0",
     "typing_extensions>=4.0",
 ]
 
 [project.optional-dependencies]
+# Only surreal_memory/engine/db_introspector.py imports this, lazily, for
+# `smem_train_db`'s SQLite dialect — reading an external .db file to mine
+# training signal from it. Not the project's own storage backend (SurrealDB
+# is), so it does not belong in the unconditional install.
+sqlite-import = [
+    "aiosqlite>=0.19.0",
+]
 server = [
     "fastapi>=0.100",
     "uvicorn[standard]>=0.23",
@@ -112,7 +118,7 @@ integration = [
     "surreal-memory[chromadb,mem0]",
 ]
 all = [
-    "surreal-memory[server,surrealdb,embeddings-gemini,nlp,integration,langchain]",
+    "surreal-memory[server,surrealdb,sqlite-import,embeddings-gemini,nlp,integration,langchain]",
 ]
 dev = [
     "pytest>=7.0",
@@ -125,6 +131,10 @@ dev = [
     "pytest-timeout>=2.2",
     "httpx>=0.24",
     "click>=8.0",
+    # The db_introspector and doctor test suites, plus conftest's autouse
+    # leak-guard fixture, import this unconditionally — not gated behind a
+    # skip. A dev install without it fails collection, not just those tests.
+    "aiosqlite>=0.19.0",
 ]
 docs = [
     "mkdocs>=1.5",

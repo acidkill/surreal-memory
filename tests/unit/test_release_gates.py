@@ -222,6 +222,39 @@ class TestSchemaVersionTruth:
         assert "sqlite_schema.py not found" not in truth.errors
 
 
+class TestAiosqliteIsOptional:
+    """#154.6: `aiosqlite` only powers `smem_train_db`'s SQLite dialect
+    (`engine/db_introspector.py`, a lazy, try/except-guarded import) — not the
+    SurrealDB backend every install actually runs on. It does not belong in
+    the unconditional install."""
+
+    def test_not_in_core_dependencies(self) -> None:
+        import tomllib
+
+        data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
+
+        assert not any("aiosqlite" in dep for dep in data["project"]["dependencies"])
+
+    def test_available_as_its_own_extra(self) -> None:
+        import tomllib
+
+        data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
+        extras = data["project"]["optional-dependencies"]
+
+        assert any("aiosqlite" in dep for dep in extras.get("sqlite-import", []))
+
+    def test_dev_extra_still_carries_it(self) -> None:
+        """conftest's autouse leak-guard fixture imports it unconditionally —
+        a dev install without it fails test collection, not just the tests
+        that exercise it."""
+        import tomllib
+
+        data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
+        extras = data["project"]["optional-dependencies"]
+
+        assert any("aiosqlite" in dep for dep in extras["dev"])
+
+
 class TestScannerStaysInsideTheRepo:
     """`sync_refs` walks *.md from the repo root; vendored trees are not ours."""
 

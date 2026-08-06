@@ -421,7 +421,7 @@ def _check_brain() -> dict[str, Any]:
 
 def _check_dependencies() -> dict[str, Any]:
     """Check core dependencies are importable."""
-    required = ["aiosqlite", "typer"]
+    required = ["typer"]
     missing = []
 
     for dep in required:
