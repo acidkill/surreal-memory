@@ -1739,6 +1739,36 @@ class UnifiedConfig:
     Brain location: ~/.surrealmemory/brains/<name>.db
     """
 
+    # Authoritative list of top-level TOML sections written by save(). Single
+    # source of truth consumed by `smem doctor`'s config-freshness check — the
+    # check and save() stay in lockstep, so a section reported "missing" is
+    # always one that --fix (which calls save()) can actually create. save()
+    # validates its emitted headers against this tuple and raises on drift.
+    SECTION_NAMES: tuple[str, ...] = (
+        "brain",
+        "embedding",
+        "auto",
+        "eternal",
+        "maintenance",
+        "safety",
+        "encryption",
+        "write_gate",
+        "dedup",
+        "tool_memory",
+        "mem0_sync",
+        "sync",
+        "telegram",
+        "license",
+        "reranker",
+        "tiers",
+        "watcher",
+        "tool_tier",
+        "response",
+        "trace",
+        "reasoning_training",
+        "cli",
+    )
+
     # Base directory for all Surreal-Memory data
     data_dir: Path = field(default_factory=get_surrealmemory_dir)
 
@@ -2190,6 +2220,26 @@ class UnifiedConfig:
 
         if self.default_depth is not None:
             lines.append(f"default_depth = {self.default_depth}")
+
+        # Single source of truth: assert the [section] headers produced above
+        # match SECTION_NAMES exactly. Keeps `smem doctor`'s freshness check
+        # (which consumes SECTION_NAMES) in lockstep with save() — adding or
+        # removing a section in one place but not the other raises here, in
+        # dev/CI, instead of surfacing as a user-facing warning that --fix can
+        # never satisfy. Dotted subtable headers (e.g. reasoning_training.x)
+        # collapse to their top-level section.
+        emitted_sections = {
+            line.split("]")[0][1:].split(".")[0]
+            for line in lines
+            if line.startswith("[") and not line.startswith("[[")
+        }
+        declared = set(self.SECTION_NAMES)
+        if emitted_sections != declared:
+            raise RuntimeError(
+                "UnifiedConfig.save() section drift: "
+                f"emitted but undeclared={sorted(emitted_sections - declared)}, "
+                f"declared but unemitted={sorted(declared - emitted_sections)}"
+            )
 
         # Atomic write: write to temp file, then rename
         content = "\n".join(lines) + "\n"

@@ -535,3 +535,90 @@ class TestFixMcpEnv:
         assert mock_claude.called
         assert mock_desktop.called
         assert result["status"] == "ok"
+
+
+class TestConfigFreshness:
+    """Config-freshness check and --fix honesty.
+
+    Regression coverage for the bug where `smem doctor --fix` reported 17/17
+    after calling save() but the warning returned on the next run, because the
+    check expected a `[conflict]` section that save() never emits. The fix makes
+    UnifiedConfig.SECTION_NAMES the single source of truth shared by both
+    save() and the check, and makes _fix_config_freshness verify on disk.
+    """
+
+    def test_save_then_check_freshness_passes(self, tmp_path: Path) -> None:
+        """A config round-tripped through save() must pass the freshness check.
+
+        Asserts the core invariant: expected_sections (SECTION_NAMES) is a
+        subset of the sections save() actually emits."""
+        from surreal_memory.cli.doctor import _check_config_freshness
+        from surreal_memory.unified_config import UnifiedConfig
+
+        config = UnifiedConfig(data_dir=tmp_path)
+        config.save()
+
+        with patch(
+            "surreal_memory.unified_config.get_surrealmemory_dir",
+            return_value=tmp_path,
+        ):
+            result = _check_config_freshness()
+
+        assert result["status"] == OK
+        assert result["detail"] == "all sections present"
+
+    def test_section_names_match_save_output(self, tmp_path: Path) -> None:
+        """SECTION_NAMES must equal the [section] headers save() writes.
+
+        Guards the single-source-of-truth invariant directly: adding a section
+        to save() without updating SECTION_NAMES (or vice versa) fails here."""
+        from surreal_memory.unified_config import UnifiedConfig
+
+        config = UnifiedConfig(data_dir=tmp_path)
+        config.save()
+
+        text = (tmp_path / "config.toml").read_text(encoding="utf-8")
+        emitted = {
+            line.split("]")[0][1:].split(".")[0]
+            for line in text.splitlines()
+            if line.startswith("[") and not line.startswith("[[")
+        }
+        assert emitted == set(UnifiedConfig.SECTION_NAMES)
+
+    def test_no_stale_conflict_entry(self) -> None:
+        """The stale `[conflict]` entry that caused the original bug must stay
+        out of SECTION_NAMES — there is no ConflictConfig and save() never
+        emits it."""
+        from surreal_memory.unified_config import UnifiedConfig
+
+        assert "conflict" not in UnifiedConfig.SECTION_NAMES
+
+    def test_fix_freshness_does_not_lie(self, tmp_path: Path) -> None:
+        """_fix_config_freshness must verify on disk, not trust save() blindly.
+
+        Previously it returned OK unconditionally after save(); a section save()
+        never emits was reported 'fixed' while the warning persisted on the next
+        doctor run. After fix, re-checking must agree with the fix's claim."""
+        from surreal_memory.cli.doctor import (
+            _check_config_freshness,
+            _fix_config_freshness,
+        )
+        from surreal_memory.unified_config import UnifiedConfig
+
+        # Start with a config.toml missing every section.
+        (tmp_path / "config.toml").write_text('version = "1.0"\n', encoding="utf-8")
+        config = UnifiedConfig(data_dir=tmp_path)
+
+        with (
+            patch("surreal_memory.unified_config.get_config", return_value=config),
+            patch(
+                "surreal_memory.unified_config.get_surrealmemory_dir",
+                return_value=tmp_path,
+            ),
+        ):
+            fix_result = _fix_config_freshness()
+            assert fix_result["status"] == OK
+            # The fix must be persisted, not merely claimed.
+            check_result = _check_config_freshness()
+
+        assert check_result["status"] == OK

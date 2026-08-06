@@ -840,19 +840,13 @@ def _check_config_freshness() -> dict[str, Any]:
             }
 
         raw = tomllib.loads(config_path.read_text(encoding="utf-8"))
-        expected_sections = [
-            "brain",
-            "embedding",
-            "auto",
-            "eternal",
-            "maintenance",
-            "conflict",
-            "safety",
-            "encryption",
-            "write_gate",
-            "dedup",
-            "tool_memory",
-        ]
+        # Single source of truth: the sections save() actually emits. Both this
+        # check and UnifiedConfig.save() consume UnifiedConfig.SECTION_NAMES, so
+        # a section can never be flagged "missing" when --fix (which calls
+        # save()) cannot create it.
+        from surreal_memory.unified_config import UnifiedConfig
+
+        expected_sections = UnifiedConfig.SECTION_NAMES
         missing = [s for s in expected_sections if s not in raw]
         if missing:
             return {
@@ -993,10 +987,33 @@ def _fix_embedding() -> dict[str, Any]:
 def _fix_config_freshness() -> dict[str, Any]:
     """Auto-fix: re-save config.toml to add missing sections with defaults."""
     try:
-        from surreal_memory.unified_config import get_config
+        import tomllib
+
+        from surreal_memory.unified_config import (
+            UnifiedConfig,
+            get_config,
+            get_surrealmemory_dir,
+        )
 
         config = get_config(reload=True)
         config.save()
+
+        # Verify on disk — never claim success on the handler's word alone.
+        # If save() did not emit a declared section, surface it honestly so the
+        # user is not told "17/17" while the warning silently persists on the
+        # next run.
+        config_path = get_surrealmemory_dir() / "config.toml"
+        raw = tomllib.loads(config_path.read_text(encoding="utf-8"))
+        missing = [s for s in UnifiedConfig.SECTION_NAMES if s not in raw]
+        if missing:
+            return {
+                "name": "Config freshness",
+                "status": WARN,
+                "detail": (f"auto-fix incomplete; save() did not emit: {', '.join(missing)}"),
+                "fix": (
+                    "Report this: a declared section is missing from UnifiedConfig.save() output"
+                ),
+            }
         return {
             "name": "Config freshness",
             "status": OK,
