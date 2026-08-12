@@ -345,17 +345,28 @@ class SurrealDBTypedMemoryMixin:
 
     async def delete_typed_memory(self, fiber_id: str) -> bool:
         brain_id = self._get_brain_id()
+        sid = _to_surreal_id(fiber_id)
 
+        # Gate on the sanitized record id rather than the dashed `fiber_id`
+        # field so BOTH id forms delete. Rows live at
+        # `typed_memory:{_to_surreal_id(fiber_id)}` while the field keeps the
+        # original dash uuid, and a Fiber loaded back from SurrealDB
+        # (find_fibers / get_fiber) carries the underscore form. Matching the
+        # field alone made `find_fibers() -> delete_typed_memory()` a silent
+        # no-op — it returned False, raised nothing, and left an orphan row
+        # behind even though the caller went on to delete the fiber. Folding is
+        # idempotent, so the dashed form still resolves; same lookup shape as
+        # get_typed_memory.
         rows = await self._query(
-            "SELECT id FROM typed_memory WHERE brain_id = $brain_id AND fiber_id = $fiber_id LIMIT 1",
+            "SELECT id FROM typed_memory WHERE brain_id = $brain_id "
+            "AND id = type::record('typed_memory', $sid) LIMIT 1",
             brain_id=brain_id,
-            fiber_id=fiber_id,
+            sid=sid,
         )
         if not rows:
             return False
 
         conn = self._ensure_conn()
-        sid = _to_surreal_id(fiber_id)
         await conn.delete(f"typed_memory:{sid}")
         return True
 

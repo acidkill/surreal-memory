@@ -45,6 +45,7 @@ LIVE_TEST_BRAIN_NAMES = frozenset(
         "snapshot-roundtrip-live",  # test_surrealdb_export_import_live.py
         "snapshot-roundtrip-live-target",  # test_surrealdb_export_import_live.py
         "pinned-expiry-test-9f3a1c",  # test_surrealdb_expiry_respects_pinned_live.py
+        "bug006-tm-delete-id-live",  # test_surrealdb_typed_memory_delete_id_live.py
     }
 )
 
