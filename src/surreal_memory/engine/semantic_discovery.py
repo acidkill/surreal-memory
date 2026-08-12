@@ -259,6 +259,49 @@ def _create_provider(config: BrainConfig, task_type: str = "RETRIEVAL_QUERY") ->
     return provider
 
 
+async def _select_candidates(
+    storage: NeuralStorage,
+    eligible: list[Neuron],
+    vectors: list[list[float]],
+) -> tuple[list[Neuron], list[list[float]]]:
+    """Choose which ``MAX_NEURONS_TO_LINK`` neurons this pass considers.
+
+    ``eligible`` always arrives longer than the cap here (the caller only
+    calls this when it is). Without this, the cut kept whichever prefix
+    ``find_neurons``'s pagination happened to return — the same ~26% of a
+    large brain, every single run, because scan order does not change
+    between runs. Sorting ascending by synapse degree and keeping the
+    least-connected neurons means each pass attacks a different, genuinely
+    under-connected part of the graph, so the connectivity gap actually
+    closes across repeated runs instead of the same neurons resaturating.
+
+    Capability probe, matching the pattern in ``server/app.py``'s graph
+    ranking step: ``get_synapse_degrees`` only exists on backends that can
+    answer it cheaply (SurrealDB, via a DB-side GROUP BY). Its absence, or
+    any failure while calling it, falls back to the prior first-N behavior —
+    this is a prioritisation improvement, not something a degraded backend
+    should ever fail a consolidation pass over.
+    """
+    get_degrees = getattr(storage, "get_synapse_degrees", None)
+    degree: dict[str, int] | None = None
+    if get_degrees is not None:
+        try:
+            degree = await get_degrees()
+        except Exception:
+            logger.debug(
+                "get_synapse_degrees failed; falling back to scan-order selection",
+                exc_info=True,
+            )
+            degree = None
+
+    if not degree:
+        return eligible[:MAX_NEURONS_TO_LINK], vectors[:MAX_NEURONS_TO_LINK]
+
+    order = sorted(range(len(eligible)), key=lambda idx: degree.get(eligible[idx].id, 0))
+    kept = order[:MAX_NEURONS_TO_LINK]
+    return [eligible[i] for i in kept], [vectors[i] for i in kept]
+
+
 async def discover_semantic_synapses(
     storage: NeuralStorage,
     config: BrainConfig,
@@ -306,10 +349,11 @@ async def discover_semantic_synapses(
     if len(eligible) < 2:
         return SemanticDiscoveryResult()
 
-    # Safety cap on very large brains.
+    # Safety cap on very large brains. Below the cap, ordering doesn't matter
+    # (everything is considered); above it, WHICH neurons get dropped decides
+    # whether repeated runs make progress or just resaturate the same slice.
     if len(eligible) > MAX_NEURONS_TO_LINK:
-        eligible = eligible[:MAX_NEURONS_TO_LINK]
-        vectors = vectors[:MAX_NEURONS_TO_LINK]
+        eligible, vectors = await _select_candidates(storage, eligible, vectors)
     neurons_embedded = len(vectors)
 
     # Existing pairs (any synapse type) so we never duplicate a connection.

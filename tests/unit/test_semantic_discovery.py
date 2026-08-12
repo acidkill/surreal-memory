@@ -700,6 +700,68 @@ class TestTruncationIsReported:
         assert result.truncated is True
 
 
+class TestCandidatePrioritisation:
+    """PLAN §B1: the cap used to keep whichever prefix find_neurons's
+    pagination returned — the same slice of a large brain every run. Sorting
+    ascending by synapse degree means each run attacks the least-connected
+    neurons instead.
+    """
+
+    async def test_least_connected_neurons_are_kept_over_the_cap(
+        self, storage: InMemoryStorage, brain: Brain
+    ) -> None:
+        # More eligible neurons than the cap, all mutually similar (threshold
+        # 0.0 accepts everything) so which ones get PICKED is what's tested,
+        # not similarity. n0 is deliberately well-connected; n1..n5 are not.
+        config = BrainConfig(
+            embedding_enabled=True,
+            semantic_discovery_similarity_threshold=0.0,
+            semantic_discovery_max_pairs=1000,
+        )
+        neuron_ids = [f"n{i}" for i in range(6)]
+        for i, nid in enumerate(neuron_ids):
+            await storage.add_neuron(_embedded(nid, [1.0 - i * 0.001, 0.0 + i * 0.001, 0.0]))
+
+        degrees = {"n0": 500}  # everyone else defaults to 0 via .get(id, 0)
+        storage.get_synapse_degrees = AsyncMock(return_value=degrees)  # type: ignore[attr-defined]
+
+        with patch("surreal_memory.engine.semantic_discovery.MAX_NEURONS_TO_LINK", 3):
+            result = await discover_semantic_synapses(storage, config)
+
+        assert result.neurons_embedded == 3
+        linked_ids = {s.source_id for s in result.synapses} | {s.target_id for s in result.synapses}
+        assert "n0" not in linked_ids, "the most-connected neuron must be dropped by the cap"
+
+    async def test_falls_back_to_scan_order_without_the_capability(
+        self, storage: InMemoryStorage, brain_config: BrainConfig
+    ) -> None:
+        """InMemoryStorage has no get_synapse_degrees — must not raise, must
+        still produce a result (today's behaviour)."""
+        assert not hasattr(storage, "get_synapse_degrees")
+        for i in range(6):
+            await storage.add_neuron(_embedded(f"n{i}", [1.0 - i * 0.001, i * 0.001, 0.0]))
+
+        with patch("surreal_memory.engine.semantic_discovery.MAX_NEURONS_TO_LINK", 3):
+            result = await discover_semantic_synapses(storage, brain_config)
+
+        assert result.neurons_embedded == 3
+
+    async def test_a_raising_degree_probe_falls_back_instead_of_failing(
+        self, storage: InMemoryStorage, brain_config: BrainConfig
+    ) -> None:
+        for i in range(6):
+            await storage.add_neuron(_embedded(f"n{i}", [1.0 - i * 0.001, i * 0.001, 0.0]))
+
+        storage.get_synapse_degrees = AsyncMock(  # type: ignore[attr-defined]
+            side_effect=RuntimeError("degree query failed")
+        )
+
+        with patch("surreal_memory.engine.semantic_discovery.MAX_NEURONS_TO_LINK", 3):
+            result = await discover_semantic_synapses(storage, brain_config)
+
+        assert result.neurons_embedded == 3
+
+
 class TestSnapshotIsPaged:
     async def test_existing_pairs_are_read_page_by_page(
         self, storage: InMemoryStorage, brain_config: BrainConfig
