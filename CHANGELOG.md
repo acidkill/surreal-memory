@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.4.0] — 2026-08-12 — dedup honesty, native drift detection, and a 3D graph
+
+### Added
+
+- **Native SurrealDB drift detection.** Tag-cooccurrence + Jaccard-similarity clustering —
+  removed from the codebase along with the SQLite backend, leaving `smem_uncertainty` and the
+  dashboard's Drift card silently reporting "0 clusters" indistinguishably from a real analysis
+  that found nothing — is back as a first-class SurrealDB feature. New `detect_drift`
+  consolidation strategy; the Drift card no longer claims the feature is "SQLite-only".
+- **3D force graph.** The Graph page moved from a flat 2D sigma.js layout to a 3D force-directed
+  graph (particle flow along links, click-to-focus on a neuron's neighbourhood with camera
+  fly-to). The node-count slider is bounded by what the API can actually return and its
+  annotation names the real brain total, not a sampled count.
+
+### Fixed
+
+- **Dedup consolidation reported "0 new alias links" identically for "already fully linked"
+  and "every attempt failed".** The report now distinguishes the two, with machine-readable
+  counters alongside the prose summary.
+- **Cloud Sync's Devices card always showed zero devices**, and the local machine never
+  self-registered — both were a silent `AttributeError` on fields `DeviceInfo` didn't carry,
+  swallowed by a bare `except`.
+- **`remember_batch` under-reported success**: a batch where every item failed validation was
+  still counted as a success at the top level, because failure was only detected via an
+  `"error"` key the handler never set. Also fixed: `trust_score`/`source_id`/`context` were
+  silently dropped from the persisted item; a non-string `content` field crashed the whole
+  batch instead of failing just that item.
+- **`auto_capture` only recognized English causal phrasing** and truncated captured text
+  mid-sentence rather than at the last sentence boundary.
+- **`semantic_discovery` always attacked the same ~26% of a large brain.** Candidate selection
+  read the first N neurons off a pagination order that never changes between runs; it now
+  prioritizes the least-connected neurons first, so repeated consolidation passes actually
+  reach the rest of the graph.
+
 ## [3.3.2] — 2026-08-06 — `smem info` and the dashboard stop reporting five fields as always-empty on SurrealDB
 
 ### Fixed
