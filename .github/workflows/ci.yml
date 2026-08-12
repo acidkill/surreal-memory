@@ -234,9 +234,13 @@ jobs:
           cache: "npm"
           cache-dependency-path: dashboard/package-lock.json
 
+      - name: Test dashboard
+        working-directory: dashboard
+        run: npm ci && npm run test
+
       - name: Build dashboard
         working-directory: dashboard
-        run: npm ci && npm run build
+        run: npm run build
 
       - name: Set up Python
         uses: actions/setup-python@v5
