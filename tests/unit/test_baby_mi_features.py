@@ -228,6 +228,119 @@ class TestBulkRemember:
         assert result["results"][0]["status"] == "ok"
         assert result["results"][1]["status"] == "error"
         assert result["results"][2]["status"] == "ok"
+        # Partial success stays a plain success — no "error" key.
+        assert "error" not in result
+
+    @pytest.mark.asyncio
+    async def test_batch_all_failed_reports_error(self):
+        """0/N saved must be distinguishable from success — the accounting bug
+        this run measured live: server.py only marks a tool_events row failed
+        via result.get("error"), so a 0/20 batch without this key logged as a
+        silent success."""
+        from surreal_memory.mcp.tool_handlers import ToolHandler
+
+        handler = MagicMock(spec=ToolHandler)
+        handler._remember_batch = ToolHandler._remember_batch.__get__(handler)
+        handler._remember = AsyncMock(return_value={"error": "bad content"})
+
+        result = await handler._remember_batch(
+            {"memories": [{"content": "a"}, {"content": "b"}, {"content": "c"}]}
+        )
+
+        assert result["saved"] == 0
+        assert result["failed"] == 3
+        assert result["success"] is False
+        assert "error" in result
+        assert "3" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_batch_pass_through_fields_reach_remember(self):
+        """trust_score/source_id/context were declared in the tool schema but
+        dropped by the allow-list; tier was passed through but undeclared in
+        the schema. Both directions fixed."""
+        from surreal_memory.mcp.tool_handlers import ToolHandler
+
+        handler = MagicMock(spec=ToolHandler)
+        handler._remember_batch = ToolHandler._remember_batch.__get__(handler)
+        handler._remember = AsyncMock(
+            return_value={"success": True, "fiber_id": "f1", "memory_type": "fact"}
+        )
+
+        item = {
+            "content": "note",
+            "trust_score": 0.7,
+            "source_id": "src-1",
+            "context": {"reason": "because"},
+            "tier": "hot",
+        }
+        await handler._remember_batch({"memories": [item]})
+
+        single_args = handler._remember.call_args.args[0]
+        assert single_args["trust_score"] == 0.7
+        assert single_args["source_id"] == "src-1"
+        assert single_args["context"] == {"reason": "because"}
+        assert single_args["tier"] == "hot"
+
+    @pytest.mark.asyncio
+    async def test_batch_non_string_content_is_a_per_item_error(self):
+        """A non-str content value used to reach an unguarded len() in the
+        total_chars sum and abort the WHOLE call with an uncaught TypeError —
+        one bad item taking down every other item in the batch."""
+        from surreal_memory.mcp.tool_handlers import ToolHandler
+
+        handler = MagicMock(spec=ToolHandler)
+        handler._remember_batch = ToolHandler._remember_batch.__get__(handler)
+        handler._remember = AsyncMock(
+            return_value={"success": True, "fiber_id": "f1", "memory_type": "fact"}
+        )
+
+        result = await handler._remember_batch(
+            {"memories": [{"content": "good"}, {"content": 12345}, {"content": "also good"}]}
+        )
+
+        assert result["total"] == 3
+        assert result["saved"] == 2
+        assert result["failed"] == 1
+        assert result["results"][1]["status"] == "error"
+        assert "string" in result["results"][1]["reason"]
+        # The two valid items were still attempted.
+        assert handler._remember.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_batch_total_chars_counts_context_not_just_content(self):
+        """security-reviewer finding (U4): context is merged into stored
+        content server-side, so a tiny "content" with a huge "context" dict
+        must not bypass the total_chars guard — context pass-through would
+        otherwise amplify a pre-existing gap 20x (MAX_BATCH_SIZE) via batch."""
+        from surreal_memory.mcp.tool_handlers import ToolHandler
+
+        handler = MagicMock(spec=ToolHandler)
+        handler._remember_batch = ToolHandler._remember_batch.__get__(handler)
+
+        big_context = {"note": "x" * 600_000}
+        result = await handler._remember_batch(
+            {"memories": [{"content": "tiny", "context": big_context}]}
+        )
+
+        assert "error" in result
+        assert "too large" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_batch_item_exception_carries_error_type_not_message(self):
+        """The pinned literal ("failed to store") and the ban on str(e) stay;
+        error_type is an additive, safe (class-name-only) diagnostic."""
+        from surreal_memory.mcp.tool_handlers import ToolHandler
+
+        handler = MagicMock(spec=ToolHandler)
+        handler._remember_batch = ToolHandler._remember_batch.__get__(handler)
+        handler._remember = AsyncMock(side_effect=ConnectionError("db unreachable: secret-ish"))
+
+        result = await handler._remember_batch({"memories": [{"content": "a"}]})
+
+        entry = result["results"][0]
+        assert entry["reason"] == "failed to store"
+        assert entry["error_type"] == "ConnectionError"
+        assert "secret-ish" not in str(entry)
 
 
 # ─────────────────── #5: Trust Score ───────────────────

@@ -1195,6 +1195,113 @@ class TestMCPProtocol:
         call_args = mock_call.call_args[0]
         assert call_args[1] == {"content": "some plain text"}
 
+    @staticmethod
+    def _storage_capturing_tool_events() -> AsyncMock:
+        """Mock storage whose insert_tool_events calls can be inspected."""
+        storage = AsyncMock()
+        storage.get_brain = AsyncMock(return_value=MagicMock(id="brain-1"))
+        storage.insert_tool_events = AsyncMock()
+        return storage
+
+    @pytest.mark.asyncio
+    async def test_timeout_records_a_diagnosable_reason(self, server: MCPServer) -> None:
+        """The real, live-measured dominant failure mode for smem_remember_batch:
+        every one of 12 real failures had duration_ms within 10ms of the 30s
+        timeout. Before this fix, task_context stayed "" — indistinguishable
+        from a validation reject or an auth failure."""
+        storage = self._storage_capturing_tool_events()
+
+        with (
+            patch.object(server, "get_storage", return_value=storage),
+            patch.object(server, "call_tool", new_callable=AsyncMock) as mock_call,
+        ):
+            mock_call.side_effect = TimeoutError()
+            message = {
+                "jsonrpc": "2.0",
+                "id": 10,
+                "method": "tools/call",
+                "params": {"name": "smem_remember_batch", "arguments": {"memories": []}},
+            }
+            response = await handle_message(server, message)
+
+        assert response["error"]["code"] == -32000
+        assert "timed out" in response["error"]["message"]
+        events = storage.insert_tool_events.call_args.args[1]
+        assert events[0]["success"] is False
+        assert "timed out" in events[0]["task_context"]
+
+    @pytest.mark.asyncio
+    async def test_storage_auth_error_records_its_own_safe_string(self, server: MCPServer) -> None:
+        from surreal_memory.storage.surrealdb.connection import StorageAuthError
+
+        storage = self._storage_capturing_tool_events()
+
+        with (
+            patch.object(server, "get_storage", return_value=storage),
+            patch.object(server, "call_tool", new_callable=AsyncMock) as mock_call,
+        ):
+            mock_call.side_effect = StorageAuthError("auth failed", hint="check SURREALDB_PASS")
+            message = {
+                "jsonrpc": "2.0",
+                "id": 11,
+                "method": "tools/call",
+                "params": {"name": "smem_recall", "arguments": {}},
+            }
+            response = await handle_message(server, message)
+
+        assert response["error"]["code"] == -32001
+        events = storage.insert_tool_events.call_args.args[1]
+        assert events[0]["task_context"] == response["error"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_unexpected_exception_records_class_name_never_message(
+        self, server: MCPServer
+    ) -> None:
+        """A generic exception's message can carry argument/content data, so
+        only the class name — never str(exc) — is safe to persist here."""
+        storage = self._storage_capturing_tool_events()
+
+        with (
+            patch.object(server, "get_storage", return_value=storage),
+            patch.object(server, "call_tool", new_callable=AsyncMock) as mock_call,
+        ):
+            mock_call.side_effect = ValueError("token=super-secret-value")
+            message = {
+                "jsonrpc": "2.0",
+                "id": 12,
+                "method": "tools/call",
+                "params": {"name": "smem_context", "arguments": {}},
+            }
+            await handle_message(server, message)
+
+        events = storage.insert_tool_events.call_args.args[1]
+        assert events[0]["task_context"] == "ValueError"
+        assert "super-secret-value" not in events[0]["task_context"]
+
+    @pytest.mark.asyncio
+    async def test_tool_reported_error_is_recorded_as_the_reason(self, server: MCPServer) -> None:
+        """The happy-path branch: a tool that completes but reports its own
+        error (e.g. remember_batch's new "All N item(s) failed") should have
+        that string land in task_context, not an empty field."""
+        storage = self._storage_capturing_tool_events()
+
+        with (
+            patch.object(server, "get_storage", return_value=storage),
+            patch.object(server, "call_tool", new_callable=AsyncMock) as mock_call,
+        ):
+            mock_call.return_value = {"error": "All 3 item(s) failed"}
+            message = {
+                "jsonrpc": "2.0",
+                "id": 13,
+                "method": "tools/call",
+                "params": {"name": "smem_remember_batch", "arguments": {"memories": []}},
+            }
+            await handle_message(server, message)
+
+        events = storage.insert_tool_events.call_args.args[1]
+        assert events[0]["success"] is False
+        assert events[0]["task_context"] == "All 3 item(s) failed"
+
     @pytest.mark.asyncio
     async def test_notifications_initialized(self, server: MCPServer) -> None:
         """Test MCP notifications/initialized message (no response expected)."""

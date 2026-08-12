@@ -314,8 +314,19 @@ async def _record_tool_event(
     start_time: Any,
     *,
     success: bool,
+    reason: str | None = None,
 ) -> None:
-    """Record a tool call event for analytics (fire-and-forget)."""
+    """Record a tool call event for analytics (fire-and-forget).
+
+    ``reason`` is a short, server-side-only diagnostic for a failure — never
+    shown to the client. It is what turns "success=False, task_context=''"
+    (indistinguishable from a validation reject, an auth failure, or a
+    30-second timeout) into something a human can actually read off
+    ``smem_tool_stats`` without grepping server logs. Callers passing an
+    exception's message (not just its class name) are responsible for having
+    already vetted that string as safe to persist — see the call sites in
+    this module for which branches use ``str(exc)`` versus ``type(exc).__name__``.
+    """
     if tool_name in _SKIP_EVENT_TOOLS:
         return
 
@@ -330,6 +341,8 @@ async def _record_tool_event(
         if val is not None:
             summary_parts.append(f"{key}={str(val)[:60]}")
     args_summary = ", ".join(summary_parts)[:200]
+
+    task_context = reason[:200] if (not success and reason) else ""
 
     try:
         storage = await server.get_storage()
@@ -348,7 +361,7 @@ async def _record_tool_event(
                     "success": success,
                     "duration_ms": duration_ms,
                     "session_id": "",
-                    "task_context": "",
+                    "task_context": task_context,
                     "created_at": utcnow().isoformat(),
                 }
             ],
@@ -476,9 +489,18 @@ async def handle_message(server: MCPServer, message: dict[str, Any]) -> dict[str
             except Exception:
                 logger.debug("Post-tool passive capture failed", exc_info=True)
 
-            # Record tool event for analytics (fire-and-forget)
+            # Record tool event for analytics (fire-and-forget). The tool's own
+            # error string (already client-facing via result["error"]) is safe
+            # to reuse as the server-side diagnostic reason.
             try:
-                await _record_tool_event(server, tool_name, tool_args, t0, success=success)
+                await _record_tool_event(
+                    server,
+                    tool_name,
+                    tool_args,
+                    t0,
+                    success=success,
+                    reason=result.get("error") if isinstance(result, dict) else None,
+                )
             except Exception:
                 logger.debug("Tool event recording failed", exc_info=True)
 
@@ -489,7 +511,14 @@ async def handle_message(server: MCPServer, message: dict[str, Any]) -> dict[str
             }
         except TimeoutError:
             try:
-                await _record_tool_event(server, tool_name, tool_args, t0, success=False)
+                await _record_tool_event(
+                    server,
+                    tool_name,
+                    tool_args,
+                    t0,
+                    success=False,
+                    reason=f"timed out after {_TOOL_CALL_TIMEOUT}s",
+                )
             except Exception:
                 logger.debug("Tool event recording failed", exc_info=True)
             return {
@@ -503,7 +532,12 @@ async def handle_message(server: MCPServer, message: dict[str, Any]) -> dict[str
         except StorageAuthError as exc:
             logger.error("Tool '%s' failed: SurrealDB auth error", tool_name)
             try:
-                await _record_tool_event(server, tool_name, tool_args, t0, success=False)
+                # Same string already returned to the client below (line with
+                # "error": {"code": -32001, ...}) — StorageAuthError.__str__ is
+                # already engineered not to leak credentials.
+                await _record_tool_event(
+                    server, tool_name, tool_args, t0, success=False, reason=str(exc)
+                )
             except Exception:
                 logger.debug("Tool event recording failed", exc_info=True)
             return {
@@ -511,10 +545,15 @@ async def handle_message(server: MCPServer, message: dict[str, Any]) -> dict[str
                 "id": msg_id,
                 "error": {"code": -32001, "message": str(exc)},
             }
-        except Exception:
+        except Exception as exc:
             logger.error("Tool '%s' raised an exception", tool_name, exc_info=True)
             try:
-                await _record_tool_event(server, tool_name, tool_args, t0, success=False)
+                # Class name only, never str(exc): an arbitrary exception
+                # message can carry argument/content data that must not land
+                # in a diagnostics field.
+                await _record_tool_event(
+                    server, tool_name, tool_args, t0, success=False, reason=type(exc).__name__
+                )
             except Exception:
                 logger.debug("Tool event recording failed", exc_info=True)
             return {

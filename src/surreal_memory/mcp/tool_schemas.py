@@ -292,9 +292,23 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
                                 "type": "string",
                                 "description": "Link to a registered source",
                             },
+                            "context": {
+                                "type": "object",
+                                "description": "Structured context dict merged into content "
+                                "server-side using type-specific templates. Same behavior as "
+                                "smem_remember's context field.",
+                                "additionalProperties": True,
+                            },
                             "ephemeral": {
                                 "type": "boolean",
                                 "description": "Session-scoped memory (auto-expires, never synced)",
+                            },
+                            "tier": {
+                                "type": "string",
+                                "enum": ["hot", "warm", "cold"],
+                                "description": "Memory tier: hot (always in context, slow decay), "
+                                "warm (default, semantic match), cold (explicit recall only, "
+                                "fast decay). Boundary type auto-promotes to hot.",
                             },
                             "location": {
                                 "type": "object",

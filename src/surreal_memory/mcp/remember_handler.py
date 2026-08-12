@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -719,8 +720,29 @@ class RememberHandler:
         if len(memories) == 0:
             return {"error": "memories array must not be empty"}
 
-        # Validate total content size to prevent memory pressure
-        total_chars = sum(len(m.get("content", "")) for m in memories if isinstance(m, dict))
+        # Validate total content size to prevent memory pressure. A non-str
+        # content value used to reach len() unguarded here and abort the whole
+        # call with a TypeError before any item was attempted — one bad item
+        # taking down all 20. Non-str items are excluded from the sum and
+        # caught explicitly below instead, as a per-item error.
+        #
+        # `context` is included here too: it is merged into the stored
+        # content server-side (merge_context), so an item with a tiny
+        # `content` and a huge `context` dict would otherwise bypass this
+        # guard entirely — a gap that was unreachable via batch before
+        # `context` pass-through was added, and would have amplified 20x
+        # (MAX_BATCH_SIZE) if left uncounted here.
+        def _item_chars(m: dict[str, Any]) -> int:
+            n = len(m["content"]) if isinstance(m.get("content"), str) else 0
+            context = m.get("context")
+            if isinstance(context, dict):
+                try:
+                    n += len(json.dumps(context))
+                except (TypeError, ValueError):
+                    pass
+            return n
+
+        total_chars = sum(_item_chars(m) for m in memories if isinstance(m, dict))
         if total_chars > MAX_BATCH_TOTAL_CHARS:
             return {
                 "error": f"Total content too large ({total_chars} chars). Max: {MAX_BATCH_TOTAL_CHARS}."
@@ -738,6 +760,13 @@ class RememberHandler:
                 failed += 1
                 continue
 
+            if "content" in item and not isinstance(item["content"], str):
+                results.append(
+                    {"index": idx, "status": "error", "reason": "content must be a string"}
+                )
+                failed += 1
+                continue
+
             # Build args for single _remember, preserving all supported fields
             single_args: dict[str, Any] = {}
             for key in (
@@ -748,6 +777,9 @@ class RememberHandler:
                 "expires_days",
                 "encrypted",
                 "event_at",
+                "trust_score",
+                "source_id",
+                "context",
                 "ephemeral",
                 "tier",
                 "location",
@@ -778,13 +810,27 @@ class RememberHandler:
                     failed += 1
             except Exception as e:
                 logger.error("Batch remember item %d failed: %s", idx, e)
-                results.append({"index": idx, "status": "error", "reason": "failed to store"})
+                results.append(
+                    {
+                        "index": idx,
+                        "status": "error",
+                        "reason": "failed to store",
+                        "error_type": type(e).__name__,
+                    }
+                )
                 failed += 1
 
-        return {
+        response: dict[str, Any] = {
             "success": saved > 0,
             "saved": saved,
             "failed": failed,
             "total": len(memories),
             "results": results,
         }
+        if saved == 0 and failed > 0:
+            # Partial success stays a plain success (saved > 0); this only
+            # fires when NOTHING was saved, which server.py's dispatcher reads
+            # via result.get("error") to mark the tool_events row failed —
+            # before this, a 0/20 batch logged as an indistinguishable success.
+            response["error"] = f"All {failed} item(s) failed"
+        return response
