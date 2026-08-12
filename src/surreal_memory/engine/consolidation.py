@@ -23,6 +23,7 @@ from surreal_memory.core.fiber import Fiber
 from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.core.synapse import Synapse, SynapseType
 from surreal_memory.engine.clustering import UnionFind
+from surreal_memory.storage.errors import is_duplicate_key_error
 from surreal_memory.utils.timeutils import ensure_naive_utc, utcnow
 
 if TYPE_CHECKING:
@@ -30,6 +31,12 @@ if TYPE_CHECKING:
     from surreal_memory.unified_config import TierConfig
 
 logger = logging.getLogger(__name__)
+
+# How many anchors one dedup pass compares pairwise. The loop is O(N^2), so the
+# cap is what keeps a large brain from spending minutes here — but it also means
+# the census only ever describes this many anchors, in scan order, which is why
+# the pass reports the total and flags the truncation instead of hiding it.
+_DEDUP_MAX_ANCHORS = 2000
 
 
 class ConsolidationStrategy(StrEnum):
@@ -90,25 +97,6 @@ class MergeDetail:
     reason: str
 
 
-def _is_duplicate_key_error(exc: BaseException) -> bool:
-    """True when ``exc`` means "a row with this primary key already exists".
-
-    Deterministic edge ids turn a concurrent double-write into a primary-key
-    collision, which is a benign outcome: the edge exists either way. Every
-    other failure is real and must not be reported as a skipped duplicate.
-
-    Matched by class name and message rather than by importing the backends,
-    so this stays true for SurrealDB (``AlreadyExistsError``: "Database record
-    `x` already exists") and SQLite (``IntegrityError``: "UNIQUE constraint
-    failed") without either driver becoming a hard dependency here.
-    """
-    name = type(exc).__name__
-    if name in {"AlreadyExistsError", "IntegrityError"}:
-        return True
-    text = str(exc).lower()
-    return "already exists" in text or "unique constraint" in text or "duplicate key" in text
-
-
 @dataclass
 class ConsolidationReport:
     """Report of consolidation operation results."""
@@ -139,6 +127,20 @@ class ConsolidationReport:
     duplicates, whether or not anything was done about them. Reporting only the
     census made a steady-state brain look like it was failing to do work every
     single run. This counter is the work.
+    """
+    alias_links_existing: int = 0
+    """Census pairs that already carried their ALIAS edge, so nothing was written.
+
+    Together with the failure counters in ``extra`` this closes the accounting:
+    for a single non-dry-run dedup pass over a fresh report,
+
+        duplicates_found == new_alias_links + alias_links_existing
+                            + alias_checks_failed + alias_writes_failed
+                            + alias_pairs_skipped_invalid
+
+    (the three ``extra`` keys are absent when zero). Without it, ``0 new links``
+    could mean "everything was already linked" or "every attempt failed", and
+    the report gave the reader no way to tell.
     """
     semantic_synapses_created: int = 0
     semantic_synapses_skipped: int = 0
@@ -183,6 +185,39 @@ class ConsolidationReport:
         parts = ", ".join(f"{key}: {count}" for key, count in transitions.items() if count)
         return f" ({parts})" if parts else ""
 
+    def _alias_link_line(self) -> str:
+        """Render the dedup counters so "nothing to do" cannot read like "all broken".
+
+        The old line printed the census and the created count only, so a brain
+        whose duplicates were all already linked and a brain whose every write
+        was being suppressed both rendered as ``(new alias links: 0)``.
+        """
+        if self.dry_run:
+            line = f"{self.duplicates_found} pairs (census only; links not checked in dry run)"
+        else:
+            line = (
+                f"{self.duplicates_found} pairs (census), "
+                f"{self.new_alias_links} new links, "
+                f"{self.alias_links_existing} already linked"
+            )
+            problems = []
+            checks_failed = int(self.extra.get("alias_checks_failed", 0))
+            writes_failed = int(self.extra.get("alias_writes_failed", 0))
+            skipped = int(self.extra.get("alias_pairs_skipped_invalid", 0))
+            if checks_failed:
+                problems.append(f"{checks_failed} checks FAILED (state unknown)")
+            if writes_failed:
+                problems.append(f"{writes_failed} writes FAILED")
+            if skipped:
+                problems.append(f"{skipped} pairs skipped as invalid")
+            if problems:
+                line += f" [{', '.join(problems)}]"
+        if self.extra.get("dedup_anchors_truncated"):
+            total = self.extra.get("dedup_anchors_total")
+            scanned = self.extra.get("dedup_anchors_scanned")
+            line += f" [census truncated at anchor cap: {scanned} of {total} anchors compared]"
+        return line
+
     def summary(self) -> str:
         """Generate human-readable summary."""
         mode = " (dry run)" if self.dry_run else ""
@@ -200,8 +235,7 @@ class ConsolidationReport:
             f"  Habits learned: {self.habits_learned}",
             f"  Query patterns learned: {self.query_patterns_learned}",
             f"  Action events pruned: {self.action_events_pruned}",
-            f"  Duplicate anchors (census): {self.duplicates_found}"
-            f" (new alias links: {self.new_alias_links})",
+            f"  Duplicate anchors: {self._alias_link_line()}",
             f"  Semantic synapses: {self._semantic_synapse_line()}",
             f"  Memories promoted (type): {self.memories_promoted}",
             f"  Stages advanced: {self.stages_advanced}{self._stage_transitions_suffix()}",
@@ -1812,7 +1846,11 @@ class ConsolidationEngine:
         """
         import logging
 
-        from surreal_memory.engine.dedup.alias_edges import AliasEdgeLedger, ensure_alias_edge
+        from surreal_memory.engine.dedup.alias_edges import (
+            AliasEdgeLedger,
+            AliasLinkOutcome,
+            ensure_alias_edge,
+        )
         from surreal_memory.utils.simhash import is_near_duplicate
 
         logger = logging.getLogger(__name__)
@@ -1838,13 +1876,31 @@ class ConsolidationEngine:
             if len(batch) < batch_size:
                 break
 
-        if len(anchors) < 2:
+        # Report the census *input*, always. Without it the pair count reads as
+        # "duplicates in this brain" when past the cap it only ever means
+        # "duplicates among the first _DEDUP_MAX_ANCHORS anchors, in scan order".
+        anchors_total = len(anchors)
+        report.extra["dedup_anchors_total"] = anchors_total
+
+        if anchors_total < 2:
+            report.extra["dedup_anchors_scanned"] = anchors_total
             return
 
         # Cap anchors to prevent O(N^2) blowup (N=2000 → 2M comparisons)
-        max_anchors = 2000
-        if len(anchors) > max_anchors:
-            anchors = anchors[:max_anchors]
+        if anchors_total > _DEDUP_MAX_ANCHORS:
+            anchors = anchors[:_DEDUP_MAX_ANCHORS]
+            report.extra["dedup_anchors_truncated"] = True
+            # INFO, not WARNING: on a brain that has simply outgrown the cap this
+            # is a steady state, and every run would raise the same alarm until
+            # operators learned to ignore dedup warnings — burying the real
+            # failures below. The report field and the summary line carry it.
+            logger.info(
+                "Dedup census truncated: %d anchors present, only the first %d are compared. "
+                "The reported duplicate count covers that prefix, not the whole brain.",
+                anchors_total,
+                _DEDUP_MAX_ANCHORS,
+            )
+        report.extra["dedup_anchors_scanned"] = len(anchors)
 
         # This pass re-derives the *same* duplicate pairs on every run, so without
         # a memory of what already exists it re-inserts its whole alias edge set
@@ -1858,10 +1914,30 @@ class ConsolidationEngine:
                 # Per-pair checks are slower but still correct. Treating a failed
                 # preload as "nothing exists" is what re-opens the growth bug, so
                 # never substitute an empty ledger here.
-                logger.debug("Alias edge preload failed; falling back to per-pair checks")
+                report.extra["alias_ledger_load_failed"] = True
+                logger.warning(
+                    "Alias edge preload failed; falling back to per-pair checks", exc_info=True
+                )
+            else:
+                report.extra["alias_ledger_pairs"] = len(ledger)
+                report.extra["alias_ledger_complete"] = ledger.is_complete
+                if not ledger.is_complete:
+                    # Also INFO: a brain whose alias slice exceeds the scan limit
+                    # falls back to per-pair checks by design. Correct, just slower.
+                    logger.info(
+                        "Alias ledger is partial (%d pairs loaded); unknown pairs fall back to "
+                        "per-pair existence checks",
+                        len(ledger),
+                    )
 
         # Group duplicates by SimHash proximity
         seen: set[str] = set()
+        created_links = 0
+        existing_links = 0
+        checks_failed = 0
+        writes_failed = 0
+        skipped_invalid = 0
+        first_failure: BaseException | None = None
         for i, anchor_a in enumerate(anchors):
             if anchor_a.id in seen:
                 continue
@@ -1887,17 +1963,61 @@ class ConsolidationEngine:
                     # ALIAS synapse from newer to older (canonical). The edge id
                     # is derived from the pair, so a second run re-writes the
                     # same row instead of adding another one for the same fact.
-                    # ensure_alias_edge returns None when the edge already
-                    # existed, which is exactly the signal that separates the
-                    # census from the work actually done this run.
-                    created = await ensure_alias_edge(
+                    # The outcome separates the census from the work actually
+                    # done — and, just as importantly, from the work that could
+                    # not be done because the backend refused to answer.
+                    result = await ensure_alias_edge(
                         self._storage,
                         anchor_b.id,
                         anchor_a.id,
                         ledger=ledger,
                     )
-                    if created is not None:
-                        report.new_alias_links += 1
+                    if result.outcome is AliasLinkOutcome.CREATED:
+                        created_links += 1
+                    elif result.outcome in (
+                        AliasLinkOutcome.ALREADY_EXISTS,
+                        AliasLinkOutcome.EXISTS_RACE,
+                    ):
+                        # A lost write race means the edge is there, which is the
+                        # goal. Counting it as a failure would invent an incident.
+                        existing_links += 1
+                    elif result.outcome is AliasLinkOutcome.CHECK_FAILED:
+                        checks_failed += 1
+                        first_failure = first_failure or result.error
+                    elif result.outcome is AliasLinkOutcome.WRITE_FAILED:
+                        writes_failed += 1
+                        first_failure = first_failure or result.error
+                    else:
+                        skipped_invalid += 1
+
+        if dry_run:
+            return
+
+        report.new_alias_links += created_links
+        report.alias_links_existing += existing_links
+        # Failure keys appear only when something failed, so a healthy report
+        # stays free of zero-valued noise (same rule as semantic_link_failures).
+        for key, value in (
+            ("alias_checks_failed", checks_failed),
+            ("alias_writes_failed", writes_failed),
+            ("alias_pairs_skipped_invalid", skipped_invalid),
+        ):
+            if value:
+                report.extra[key] = int(report.extra.get(key, 0)) + value
+
+        if checks_failed or writes_failed:
+            # One WARNING for the whole pass, with one traceback: an outage
+            # produces the same root cause once per pair, and printing it that
+            # many times hides rather than reveals it.
+            logger.warning(
+                "Dedup alias linking degraded: %d existence checks failed (state unknown, "
+                "writes skipped) and %d writes failed out of %d duplicate pairs. "
+                "First failure below.",
+                checks_failed,
+                writes_failed,
+                report.duplicates_found,
+                exc_info=first_failure,
+            )
 
     async def _semantic_link(
         self,
@@ -1951,7 +2071,7 @@ class ConsolidationEngine:
                 # else -- a dropped connection, a malformed row -- is a real
                 # failure, and folding it into "skipped (existing)" would be
                 # exactly the dishonest counter this release exists to remove.
-                if _is_duplicate_key_error(exc):
+                if is_duplicate_key_error(exc):
                     report.semantic_synapses_skipped += 1
                     logger.debug("Semantic synapse already exists, skipping")
                 else:

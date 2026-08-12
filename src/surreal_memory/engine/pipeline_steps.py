@@ -859,14 +859,32 @@ class CreateAnchorStep:
             # cost a round-trip on every dedup hit in the encode path. Worse, a
             # probe that *fails* fails closed (skips the write), which here would
             # strand the alias neuron with no link to its canonical anchor.
-            alias_synapse = await ensure_alias_edge(
+            #
+            # The outcome is not counted here the way the consolidation pass
+            # counts it: this path handles exactly one pair, and an empty ledger
+            # means the only reachable outcomes are CREATED and WRITE_FAILED —
+            # the latter already logs a WARNING with the traceback inside the
+            # helper. Only a written edge belongs in ctx.synapses_created.
+            alias_result = await ensure_alias_edge(
                 storage,
                 alias_neuron.id,
                 anchor_neuron.id,
                 ledger=AliasEdgeLedger(),
             )
-            if alias_synapse is not None:
-                ctx.synapses_created.append(alias_synapse)
+            if alias_result.synapse is not None:
+                ctx.synapses_created.append(alias_result.synapse)
+            elif alias_result.failed:
+                # One pair per call, so one line per event: no aggregation to do
+                # here, and a silently unlinked alias neuron is exactly the kind
+                # of orphan that only shows up months later as a broken recall.
+                logger.warning(
+                    "Alias edge for deduplicated anchor %s -> %s was not written (%s); "
+                    "the alias neuron is stranded until the next dedup pass",
+                    alias_neuron.id,
+                    anchor_neuron.id,
+                    alias_result.outcome,
+                    exc_info=alias_result.error,
+                )
 
             ctx.anchor_neuron = alias_neuron
         else:

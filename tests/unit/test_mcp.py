@@ -847,6 +847,51 @@ class TestMCPToolCalls:
         assert result["dry_run"] is True
 
     @pytest.mark.asyncio
+    async def test_consolidate_exposes_raw_dedup_counters(self, server: MCPServer) -> None:
+        """The dedup counters must be machine-readable, not only inside the prose summary.
+
+        A client asking "did dedup do nothing because there was nothing to do, or
+        because every attempt failed?" should not have to parse ``summary``.
+        """
+        from surreal_memory.engine.consolidation import ConsolidationReport
+
+        report = ConsolidationReport(duplicates_found=3, new_alias_links=1, alias_links_existing=1)
+        report.extra["alias_checks_failed"] = 1
+        report.extra["dedup_anchors_truncated"] = True
+        # Belongs to another strategy: the MCP contract must not widen every
+        # time some unrelated pass grows an `extra` key.
+        report.extra["timed_out_strategies"] = ["prune"]
+
+        mock_storage = AsyncMock()
+        mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
+        mock_storage.get_brain = AsyncMock(
+            return_value=MagicMock(id="test-brain", name="test", config=MagicMock())
+        )
+
+        mock_delta = MagicMock()
+        mock_delta.to_dict.return_value = {"before": {}, "after": {}, "delta": {}}
+        mock_delta.report = report
+
+        with (
+            patch.object(server, "get_storage", return_value=mock_storage),
+            patch(
+                "surreal_memory.engine.consolidation_delta.run_with_delta",
+                new_callable=AsyncMock,
+                return_value=mock_delta,
+            ),
+        ):
+            result = await server.call_tool("smem_consolidate", {"strategy": "dedup"})
+
+        assert result["report"] == {
+            "duplicates_found": 3,
+            "new_alias_links": 1,
+            "alias_links_existing": 1,
+            "extra": {"alias_checks_failed": 1, "dedup_anchors_truncated": True},
+        }
+        assert "1 checks FAILED (state unknown)" in result["summary"]
+
+    @pytest.mark.asyncio
     async def test_consolidate_invalid_strategy(self, server: MCPServer) -> None:
         """Test smem_consolidate with invalid strategy returns error."""
         mock_storage = AsyncMock()

@@ -9,6 +9,8 @@ OFF by default -- enable via DedupConfig(enabled=True).
 from surreal_memory.engine.dedup.alias_edges import (
     ALIAS_EDGE_WEIGHT,
     AliasEdgeLedger,
+    AliasLinkOutcome,
+    AliasLinkResult,
     alias_edge_id,
     ensure_alias_edge,
 )
@@ -18,6 +20,8 @@ from surreal_memory.engine.dedup.pipeline import DedupPipeline, DedupResult
 __all__ = [
     "ALIAS_EDGE_WEIGHT",
     "AliasEdgeLedger",
+    "AliasLinkOutcome",
+    "AliasLinkResult",
     "DedupConfig",
     "DedupPipeline",
     "DedupResult",

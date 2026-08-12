@@ -7,16 +7,19 @@ backing only 2,375 distinct (source, target) pairs, because the old
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 
 import pytest
 
 from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.core.synapse import Synapse, SynapseType
+from surreal_memory.engine import consolidation
 from surreal_memory.engine.consolidation import ConsolidationEngine, ConsolidationReport
 from surreal_memory.engine.dedup.alias_edges import (
     ALIAS_EDGE_WEIGHT,
     AliasEdgeLedger,
+    AliasLinkOutcome,
     alias_edge_id,
     ensure_alias_edge,
 )
@@ -36,6 +39,7 @@ class FakeStorage:
         self.synapses: list[Synapse] = list(synapses or [])
         self.get_calls: list[dict] = []
         self.fail_reads = False
+        self.fail_writes = False
 
     async def get_synapses(
         self,
@@ -58,6 +62,9 @@ class FakeStorage:
         return hits[:limit] if limit is not None else hits
 
     async def add_synapse(self, synapse: Synapse) -> str:
+        if self.fail_writes:
+            # Not a duplicate-key error: a dropped connection, a malformed row.
+            raise RuntimeError("storage unavailable")
         if any(s.id == synapse.id for s in self.synapses):
             raise ValueError(f"Synapse {synapse.id} already exists")
         self.synapses.append(synapse)
@@ -91,8 +98,12 @@ class TestEnsureAliasEdgeSingleShot:
     async def test_creates_edge_when_absent(self) -> None:
         storage = FakeStorage()
 
-        created = await ensure_alias_edge(storage, "dup-1", "canon-1")
+        result = await ensure_alias_edge(storage, "dup-1", "canon-1")
 
+        assert result.outcome is AliasLinkOutcome.CREATED
+        assert result.created is True
+        assert result.failed is False
+        created = result.synapse
         assert created is not None
         assert created.type is SynapseType.ALIAS
         assert created.source_id == "dup-1"
@@ -108,8 +119,9 @@ class TestEnsureAliasEdgeSingleShot:
         first = await ensure_alias_edge(storage, "dup-1", "canon-1")
         second = await ensure_alias_edge(storage, "dup-1", "canon-1")
 
-        assert first is not None
-        assert second is None
+        assert first.outcome is AliasLinkOutcome.CREATED
+        assert second.outcome is AliasLinkOutcome.ALREADY_EXISTS
+        assert second.synapse is None
         assert len(storage.synapses) == 1
 
     @pytest.mark.asyncio
@@ -131,7 +143,8 @@ class TestEnsureAliasEdgeSingleShot:
 
         result = await ensure_alias_edge(storage, "dup-1", "canon-1")
 
-        assert result is None
+        assert result.outcome is AliasLinkOutcome.ALREADY_EXISTS
+        assert result.synapse is None
         assert len(storage.synapses) == 1
 
     @pytest.mark.asyncio
@@ -146,9 +159,9 @@ class TestEnsureAliasEdgeSingleShot:
         )
         storage = FakeStorage([other])
 
-        created = await ensure_alias_edge(storage, "dup-1", "canon-1")
+        result = await ensure_alias_edge(storage, "dup-1", "canon-1")
 
-        assert created is not None
+        assert result.outcome is AliasLinkOutcome.CREATED
         assert storage.get_calls[0]["type"] is SynapseType.ALIAS
 
     @pytest.mark.asyncio
@@ -169,7 +182,8 @@ class TestEnsureAliasEdgeGuards:
 
         result = await ensure_alias_edge(storage, "dup-1", "dup-1")
 
-        assert result is None
+        assert result.outcome is AliasLinkOutcome.SKIPPED_INVALID
+        assert result.synapse is None
         assert storage.synapses == []
 
     @pytest.mark.parametrize(("source", "target"), [("", "canon-1"), ("dup-1", "")])
@@ -177,20 +191,72 @@ class TestEnsureAliasEdgeGuards:
     async def test_empty_endpoint_is_rejected(self, source: str, target: str) -> None:
         storage = FakeStorage()
 
-        assert await ensure_alias_edge(storage, source, target) is None
+        result = await ensure_alias_edge(storage, source, target)
+
+        assert result.outcome is AliasLinkOutcome.SKIPPED_INVALID
         assert storage.synapses == []
 
     @pytest.mark.asyncio
     async def test_read_failure_skips_the_write(self) -> None:
         # Failing open would resurrect unbounded growth; a skipped edge is
-        # recoverable on the next dedup pass, a duplicate row is not.
+        # recoverable on the next dedup pass, a duplicate row is not. What
+        # changed is that the skip is now reported instead of looking like
+        # "already linked".
         storage = FakeStorage()
         storage.fail_reads = True
 
         result = await ensure_alias_edge(storage, "dup-1", "canon-1")
 
-        assert result is None
+        assert result.outcome is AliasLinkOutcome.CHECK_FAILED
+        assert result.failed is True
+        assert result.synapse is None
         assert storage.synapses == []
+
+    @pytest.mark.asyncio
+    async def test_partial_ledger_miss_that_cannot_be_verified_is_check_failed(self) -> None:
+        # A partial ledger cannot prove absence, so the pair falls back to the
+        # per-pair probe — and when that probe raises, the state is unknown.
+        storage = FakeStorage()
+        storage.fail_reads = True
+        ledger = AliasEdgeLedger(complete=False)
+
+        result = await ensure_alias_edge(storage, "dup-1", "canon-1", ledger=ledger)
+
+        assert result.outcome is AliasLinkOutcome.CHECK_FAILED
+        assert storage.synapses == []
+        assert not ledger.has("dup-1", "canon-1")
+
+    @pytest.mark.asyncio
+    async def test_write_failure_is_reported_not_swallowed(self) -> None:
+        # A dropped connection is not "already exists". Folding it into the
+        # existing-edge count is the dishonesty this release removes.
+        storage = FakeStorage()
+        storage.fail_writes = True
+
+        result = await ensure_alias_edge(storage, "dup-1", "canon-1")
+
+        assert result.outcome is AliasLinkOutcome.WRITE_FAILED
+        assert result.failed is True
+        assert result.synapse is None
+        assert storage.synapses == []
+
+    @pytest.mark.asyncio
+    async def test_failures_carry_the_exception_for_the_caller(self) -> None:
+        # The helper logs failures at DEBUG and hands the exception up, so a
+        # caller looping over thousands of pairs can report one traceback for
+        # one root cause instead of one per pair.
+        reads = FakeStorage()
+        reads.fail_reads = True
+        writes = FakeStorage()
+        writes.fail_writes = True
+
+        check_failed = await ensure_alias_edge(reads, "dup-1", "canon-1")
+        write_failed = await ensure_alias_edge(writes, "dup-1", "canon-1")
+        ok = await ensure_alias_edge(FakeStorage(), "dup-1", "canon-1")
+
+        assert isinstance(check_failed.error, RuntimeError)
+        assert isinstance(write_failed.error, RuntimeError)
+        assert ok.error is None
 
     @pytest.mark.asyncio
     async def test_primary_key_collision_is_not_raised(self) -> None:
@@ -208,8 +274,12 @@ class TestEnsureAliasEdgeGuards:
 
         result = await ensure_alias_edge(storage, "dup-1", "canon-1", ledger=ledger)
 
-        assert result is None
+        assert result.outcome is AliasLinkOutcome.EXISTS_RACE
+        assert result.failed is False
+        assert result.synapse is None
         assert len(storage.synapses) == 1
+        # The edge exists now, so the rest of this run must not probe for it.
+        assert ledger.has("dup-1", "canon-1")
 
 
 class TestAliasEdgeLedger:
@@ -261,8 +331,8 @@ class TestAliasEdgeLedger:
         first = await ensure_alias_edge(storage, "dup-1", "canon-1", ledger=ledger)
         second = await ensure_alias_edge(storage, "dup-1", "canon-1", ledger=ledger)
 
-        assert first is not None
-        assert second is None
+        assert first.outcome is AliasLinkOutcome.CREATED
+        assert second.outcome is AliasLinkOutcome.ALREADY_EXISTS
         assert len(storage.synapses) == 1
 
     @pytest.mark.asyncio
@@ -445,3 +515,251 @@ class TestCreateAnchorStepCallSite:
         await CreateAnchorStep().execute(ctx, storage, None)
 
         assert storage.get_calls == []
+
+    @pytest.mark.asyncio
+    async def test_failed_alias_write_is_logged_and_does_not_break_encode(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # Encoding must survive a failed alias edge — but not silently, or the
+        # alias neuron is stranded with no link to its canonical anchor.
+        ctx = self._context()
+        ctx.effective_metadata["_dedup_reused_anchor"] = _anchor("deployment notes")
+        storage = FakeEncodeStorage()
+        storage.fail_writes = True
+
+        with caplog.at_level(logging.WARNING):
+            result = await CreateAnchorStep().execute(ctx, storage, None)
+
+        assert result.anchor_neuron is not None
+        assert ctx.synapses_created == []
+        assert storage.synapses == []
+        assert any("stranded" in record.message for record in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Report accounting
+#
+# Until this release the dedup line printed a census and a created count, and
+# every non-creation collapsed into the same silence: already linked, probe
+# blew up, write blew up. These tests pin the distinction.
+# ---------------------------------------------------------------------------
+
+
+def _invariant_holds(report: ConsolidationReport) -> bool:
+    """duplicates_found must be fully explained by the outcome counters."""
+    return report.duplicates_found == (
+        report.new_alias_links
+        + report.alias_links_existing
+        + int(report.extra.get("alias_checks_failed", 0))
+        + int(report.extra.get("alias_writes_failed", 0))
+        + int(report.extra.get("alias_pairs_skipped_invalid", 0))
+    )
+
+
+class NoLedgerStorage(FakeAnchorStorage):
+    """Anchor storage whose alias slice always reads empty.
+
+    Lets a test drive the write path with an empty-but-complete ledger, which
+    is how a lost write race is reproduced: the pair looks absent, then
+    ``add_synapse`` reports it is already there.
+    """
+
+    async def get_synapses(self, *args: object, **kwargs: object) -> list[Synapse]:
+        await super().get_synapses(*args, **kwargs)  # type: ignore[arg-type]
+        return []
+
+
+class RaceLosingStorage(NoLedgerStorage):
+    async def add_synapse(self, synapse: Synapse) -> str:
+        raise ValueError(f"Synapse {synapse.id} already exists")
+
+
+class TestDedupReportAccounting:
+    @pytest.mark.asyncio
+    async def test_a_new_duplicate_pair_is_reported_as_work_done(self) -> None:
+        # The regression this whole unit exists for: a census of 1 with a link
+        # actually written must NOT print "new alias links: 0".
+        storage = FakeAnchorStorage([_anchor("deployment notes"), _anchor("deployment notes copy")])
+        report = ConsolidationReport()
+
+        await ConsolidationEngine(storage)._dedup(report, dry_run=False)
+
+        assert report.duplicates_found == 1
+        assert report.new_alias_links == 1
+        assert report.alias_links_existing == 0
+        assert "alias_checks_failed" not in report.extra
+        assert "alias_writes_failed" not in report.extra
+        assert _invariant_holds(report)
+
+    @pytest.mark.asyncio
+    async def test_an_already_linked_pair_counts_as_existing_not_as_work(self) -> None:
+        canonical = _anchor("deployment notes")
+        duplicate = _anchor("deployment notes copy")
+        storage = FakeAnchorStorage([canonical, duplicate], [_alias(duplicate.id, canonical.id)])
+        report = ConsolidationReport()
+
+        await ConsolidationEngine(storage)._dedup(report, dry_run=False)
+
+        assert report.duplicates_found == 1
+        assert report.new_alias_links == 0
+        assert report.alias_links_existing == 1
+        assert _invariant_holds(report)
+
+    @pytest.mark.asyncio
+    async def test_a_lost_write_race_counts_as_existing_never_as_failure(self) -> None:
+        storage = RaceLosingStorage([_anchor("a"), _anchor("b")])
+        report = ConsolidationReport()
+
+        await ConsolidationEngine(storage)._dedup(report, dry_run=False)
+
+        assert report.duplicates_found == 1
+        assert report.new_alias_links == 0
+        assert report.alias_links_existing == 1
+        assert "alias_writes_failed" not in report.extra
+        assert _invariant_holds(report)
+
+    @pytest.mark.asyncio
+    async def test_unreadable_backend_is_counted_not_hidden(self) -> None:
+        # Ledger preload fails, then every per-pair probe fails. Before this
+        # release that produced "0 new alias links" and no other trace.
+        storage = FakeAnchorStorage([_anchor("a"), _anchor("b"), _anchor("c")])
+        storage.fail_reads = True
+        report = ConsolidationReport()
+
+        await ConsolidationEngine(storage)._dedup(report, dry_run=False)
+
+        assert report.duplicates_found == 2
+        assert report.new_alias_links == 0
+        assert report.alias_links_existing == 0
+        assert report.extra["alias_checks_failed"] == 2
+        assert report.extra["alias_ledger_load_failed"] is True
+        assert storage.synapses == []
+        assert _invariant_holds(report)
+
+    @pytest.mark.asyncio
+    async def test_failed_writes_are_counted_not_hidden(self) -> None:
+        storage = FakeAnchorStorage([_anchor("a"), _anchor("b")])
+        storage.fail_writes = True
+        report = ConsolidationReport()
+
+        await ConsolidationEngine(storage)._dedup(report, dry_run=False)
+
+        assert report.duplicates_found == 1
+        assert report.new_alias_links == 0
+        assert report.extra["alias_writes_failed"] == 1
+        assert storage.synapses == []
+        assert _invariant_holds(report)
+
+    @pytest.mark.asyncio
+    async def test_ledger_state_is_reported(self) -> None:
+        storage = FakeAnchorStorage([_anchor("a"), _anchor("b")])
+        report = ConsolidationReport()
+
+        await ConsolidationEngine(storage)._dedup(report, dry_run=False)
+
+        assert report.extra["alias_ledger_complete"] is True
+        assert report.extra["alias_ledger_pairs"] == 0
+        assert "alias_ledger_load_failed" not in report.extra
+
+    @pytest.mark.asyncio
+    async def test_anchor_census_reports_its_input(self) -> None:
+        storage = FakeAnchorStorage([_anchor("a"), _anchor("b"), _anchor("c")])
+        report = ConsolidationReport()
+
+        await ConsolidationEngine(storage)._dedup(report, dry_run=False)
+
+        assert report.extra["dedup_anchors_total"] == 3
+        assert report.extra["dedup_anchors_scanned"] == 3
+        assert "dedup_anchors_truncated" not in report.extra
+
+    @pytest.mark.asyncio
+    async def test_truncated_census_says_so(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A silent cap turns "duplicates in my brain" into "duplicates among the
+        # first N anchors in scan order" without telling anyone.
+        monkeypatch.setattr(consolidation, "_DEDUP_MAX_ANCHORS", 5)
+        storage = FakeAnchorStorage([_anchor(f"note {i}") for i in range(7)])
+        report = ConsolidationReport()
+
+        await ConsolidationEngine(storage)._dedup(report, dry_run=False)
+
+        assert report.extra["dedup_anchors_total"] == 7
+        assert report.extra["dedup_anchors_scanned"] == 5
+        assert report.extra["dedup_anchors_truncated"] is True
+        assert report.duplicates_found == 4
+        assert "census truncated at anchor cap" in report.summary()
+
+    @pytest.mark.asyncio
+    async def test_routine_truncation_does_not_raise_a_warning(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # Outgrowing the cap is a steady state for a big brain. Warning about it
+        # every run trains operators to ignore dedup warnings, which buries the
+        # failures this unit exists to surface.
+        monkeypatch.setattr(consolidation, "_DEDUP_MAX_ANCHORS", 5)
+        storage = FakeAnchorStorage([_anchor(f"note {i}") for i in range(7)])
+
+        with caplog.at_level(logging.INFO):
+            await ConsolidationEngine(storage)._dedup(ConsolidationReport(), dry_run=False)
+
+        assert any("census truncated" in r.message for r in caplog.records)
+        assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+    @pytest.mark.asyncio
+    async def test_a_degraded_pass_warns_once_not_once_per_pair(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # One root cause (backend down) must not print one traceback per pair.
+        storage = FakeAnchorStorage([_anchor(f"note {i}") for i in range(6)])
+        storage.fail_reads = True
+        report = ConsolidationReport()
+
+        with caplog.at_level(logging.WARNING):
+            await ConsolidationEngine(storage)._dedup(report, dry_run=False)
+
+        assert report.extra["alias_checks_failed"] == 5
+        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert len(warnings) == 2  # ledger preload failed + one aggregate for the pass
+        aggregate = [r for r in warnings if "Dedup alias linking degraded" in r.message]
+        assert len(aggregate) == 1
+        assert aggregate[0].exc_info is not None
+
+    @pytest.mark.asyncio
+    async def test_dry_run_counts_the_census_and_writes_nothing(self) -> None:
+        storage = FakeAnchorStorage([_anchor("a"), _anchor("b")])
+        report = ConsolidationReport(dry_run=True)
+
+        await ConsolidationEngine(storage)._dedup(report, dry_run=True)
+
+        assert report.duplicates_found == 1
+        assert report.new_alias_links == 0
+        assert report.alias_links_existing == 0
+        assert storage.synapses == []
+        assert "links not checked in dry run" in report.summary()
+
+
+class TestAliasLinkSummaryLine:
+    def test_healthy_run_shows_no_failure_text(self) -> None:
+        report = ConsolidationReport(
+            duplicates_found=955, new_alias_links=0, alias_links_existing=955
+        )
+
+        line = report._alias_link_line()
+
+        assert line == "955 pairs (census), 0 new links, 955 already linked"
+        assert "FAILED" not in line
+
+    def test_failures_are_spelled_out(self) -> None:
+        report = ConsolidationReport(duplicates_found=10, new_alias_links=4, alias_links_existing=3)
+        report.extra["alias_checks_failed"] = 2
+        report.extra["alias_writes_failed"] = 1
+
+        line = report._alias_link_line()
+
+        assert "4 new links, 3 already linked" in line
+        assert "2 checks FAILED (state unknown)" in line
+        assert "1 writes FAILED" in line
+
+    def test_dry_run_does_not_claim_links_were_checked(self) -> None:
+        report = ConsolidationReport(duplicates_found=12, dry_run=True)
+
+        assert report._alias_link_line() == ("12 pairs (census only; links not checked in dry run)")

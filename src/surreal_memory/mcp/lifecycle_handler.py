@@ -285,6 +285,26 @@ class LifecycleHandler:
         result["strategy"] = strategy_str
         result["dry_run"] = dry_run
         result["summary"] = delta.report.summary()
+        # Machine-readable twin of the dedup line in ``summary``. A client that
+        # wants to know whether "0 new links" meant "already linked" or "every
+        # attempt failed" should not have to parse prose.
+        #
+        # Narrow on purpose, in both directions: the named fields are listed one
+        # by one rather than taken from ``asdict(report)``, and ``extra`` is
+        # filtered to the dedup diagnostics. Exporting ``extra`` wholesale would
+        # silently widen this MCP contract every time an unrelated strategy grew
+        # a new key.
+        extra = {
+            key: value
+            for key, value in delta.report.extra.items()
+            if key.startswith(("alias_", "dedup_"))
+        }
+        result["report"] = {
+            "duplicates_found": delta.report.duplicates_found,
+            "new_alias_links": delta.report.new_alias_links,
+            "alias_links_existing": delta.report.alias_links_existing,
+            "extra": extra,
+        }
         return result
 
     async def _tool_stats(self, args: dict[str, Any]) -> dict[str, Any]:
