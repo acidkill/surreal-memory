@@ -367,6 +367,24 @@ class TestSurrealDBDeviceRecords:
         assert any("non-numeric last_sync_sequence" in r.message for r in caplog.records)
 
 
+def _is_record_id(obj: object) -> bool:
+    """Duck-typed RecordID check, immune to a cross-import identity race.
+
+    `isinstance(x, RecordID)` with RecordID freshly imported in the test
+    intermittently raises `TypeError: isinstance() arg 2 must be a type` under
+    CI's parallel xdist workers (not reproduced locally after 15+ attempts
+    across worker counts, `--dist worksteal`, and `--cov` on/off — the SDK's
+    RecordID is a plain static class with no lazy-loading, and the failing
+    worker was never the one that ran anything patching `sys.modules`, so the
+    exact trigger is still unconfirmed). Checking by class name + module path
+    gives identical protection against the regression this guards against —
+    raw f-string interpolation, whose type name is "str" — without depending
+    on two `RecordID` references resolving to the exact same object.
+    """
+    cls = type(obj)
+    return cls.__name__ == "RecordID" and cls.__module__.startswith("surrealdb")
+
+
 class TestSurrealDBRecordIdBinding:
     """Regression guard for a live bug found while testing U3.
 
@@ -401,8 +419,6 @@ class TestSurrealDBRecordIdBinding:
         return storage
 
     async def test_get_device_binds_a_record_id_not_a_raw_string(self) -> None:
-        from surrealdb import RecordID
-
         storage = self._store()
         conn = AsyncMock()
         conn.select.return_value = []
@@ -411,14 +427,12 @@ class TestSurrealDBRecordIdBinding:
         await storage.get_device("dev-001")
 
         (resource,), _ = conn.select.call_args
-        assert isinstance(resource, RecordID), (
+        assert _is_record_id(resource), (
             f"get_device must bind a RecordID, not {type(resource).__name__}"
         )
         assert resource.table_name == "device"
 
     async def test_update_device_sync_binds_a_record_id_not_a_raw_string(self) -> None:
-        from surrealdb import RecordID
-
         storage = self._store()
         conn = AsyncMock()
         storage._conn = conn
@@ -426,14 +440,12 @@ class TestSurrealDBRecordIdBinding:
         await storage.update_device_sync("dev-001", 7)
 
         (resource, _data), _ = conn.merge.call_args
-        assert isinstance(resource, RecordID), (
+        assert _is_record_id(resource), (
             f"update_device_sync must bind a RecordID, not {type(resource).__name__}"
         )
         assert resource.table_name == "device"
 
     async def test_remove_device_binds_a_record_id_not_a_raw_string(self) -> None:
-        from surrealdb import RecordID
-
         storage = self._store()
         conn = AsyncMock()
         storage._conn = conn
@@ -441,14 +453,12 @@ class TestSurrealDBRecordIdBinding:
         await storage.remove_device("dev-001")
 
         (resource,), _ = conn.delete.call_args
-        assert isinstance(resource, RecordID), (
+        assert _is_record_id(resource), (
             f"remove_device must bind a RecordID, not {type(resource).__name__}"
         )
         assert resource.table_name == "device"
 
     async def test_register_device_merge_fallback_binds_a_record_id(self) -> None:
-        from surrealdb import RecordID
-
         storage = self._store()
         conn = AsyncMock()
         conn.insert.side_effect = RuntimeError("already exists")
@@ -457,15 +467,13 @@ class TestSurrealDBRecordIdBinding:
         await storage.register_device("dev-001", "laptop")
 
         (resource, _data), _ = conn.merge.call_args
-        assert isinstance(resource, RecordID), (
+        assert _is_record_id(resource), (
             f"register_device's merge fallback must bind a RecordID, not {type(resource).__name__}"
         )
         assert resource.table_name == "device"
 
     async def test_save_brain_merge_fallback_binds_a_record_id(self) -> None:
         import dataclasses
-
-        from surrealdb import RecordID
 
         from surreal_memory.core.brain import Brain, BrainConfig
 
@@ -482,7 +490,7 @@ class TestSurrealDBRecordIdBinding:
         await storage.save_brain(brain)
 
         (resource, _data), _ = conn.merge.call_args
-        assert isinstance(resource, RecordID), (
+        assert _is_record_id(resource), (
             f"save_brain's merge fallback must bind a RecordID, not {type(resource).__name__}"
         )
         assert resource.table_name == "brain"
@@ -495,8 +503,6 @@ class TestSurrealDBRecordIdBinding:
         # the merge-fallback test above (conn.merge auto-succeeding on a bare
         # AsyncMock) never actually exercises this branch.
         import dataclasses
-
-        from surrealdb import RecordID
 
         from surreal_memory.core.brain import Brain, BrainConfig
 
@@ -519,7 +525,7 @@ class TestSurrealDBRecordIdBinding:
         select_call, *update_calls = conn.query.call_args_list
         select_sql, select_params = select_call.args
         assert "SELECT" in select_sql
-        assert isinstance(select_params["id"], RecordID)
+        assert _is_record_id(select_params["id"])
         assert select_params["id"].table_name == "brain"
         assert select_params["id"].id == brain.id
 
@@ -527,7 +533,7 @@ class TestSurrealDBRecordIdBinding:
         for call in update_calls:
             update_sql, update_params = call.args
             assert update_sql.startswith("UPDATE $rid SET ")
-            assert isinstance(update_params["rid"], RecordID), (
+            assert _is_record_id(update_params["rid"]), (
                 "the UPDATE fallback must bind a RecordID via $rid, not a raw "
                 f"f-string — got {type(update_params['rid']).__name__}"
             )
