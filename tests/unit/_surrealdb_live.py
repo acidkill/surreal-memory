@@ -47,6 +47,8 @@ LIVE_TEST_BRAIN_NAMES = frozenset(
         "pinned-expiry-test-9f3a1c",  # test_surrealdb_expiry_respects_pinned_live.py
         "bug006-tm-delete-id-live",  # test_surrealdb_typed_memory_delete_id_live.py
         "kw-df-batch-live-4b8d2e",  # test_surrealdb_keyword_df_live.py
+        "zz-dashboard-brains-scope-live",  # test_dashboard_brains_scope.py (list_brains_api)
+        "zz-dashboard-stats-scope-live",  # test_dashboard_brains_scope.py (get_stats)
     }
 )
 

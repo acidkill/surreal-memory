@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from surreal_memory.server.dashboard_cache import TTLCache
-from surreal_memory.server.dependencies import get_storage, require_local_request
+from surreal_memory.server.dependencies import get_storage, require_local_request, storage_for_scope
 from surreal_memory.storage.base import NeuralStorage
 
 logger = logging.getLogger(__name__)
@@ -108,13 +108,11 @@ class SwitchBrainRequest(BaseModel):
     response_model=DashboardStats,
     summary="Get dashboard overview stats",
 )
-async def get_stats() -> DashboardStats:
+async def get_stats(
+    storage: Annotated[NeuralStorage, Depends(get_storage)],
+) -> DashboardStats:
     """Get overall dashboard statistics across all brains."""
-    from surreal_memory.unified_config import (
-        get_config,
-        get_shared_storage,
-        list_available_brains,
-    )
+    from surreal_memory.unified_config import get_config, list_available_brains
 
     cfg = get_config()
     brain_names = await list_available_brains()
@@ -130,24 +128,31 @@ async def get_stats() -> DashboardStats:
         running the multi-second analyze for every brain was pure waste — a
         station carrying integration-test residue brains paid a full diagnostic
         pass for each of them on every overview load.
+
+        Per-brain access goes through ``storage_for_scope``, never
+        ``get_shared_storage(brain_name=...)``: on the SurrealDB backend the
+        latter returns the process-wide singleton *after* repointing its brain,
+        so this read-only GET used to leave the singleton bound to whichever
+        brain came last in ``brain_names`` — poisoning every later reader of
+        that instance, including the consolidation/decay daemons. Same defect
+        (and same fix) as ``list_brains_api`` and the hub router's read paths.
         """
         is_active = name == active_name
         try:
-            brain_storage = await get_shared_storage(brain_name=name)
-
-            # Counts are cheap (indexed count()) — always compute them live so the
-            # neuron/synapse/fiber numbers are never stale.
-            stats = await brain_storage.get_stats(name)
-            grade = "—"
-            purity = 0.0
-            if is_active:
-                # Grade/purity is the multi-second part — served from the per-brain
-                # TTL cache (recomputed at most once per window).
-                try:
-                    grade, purity = await _cached_grade_purity(brain_storage, name)
-                except Exception:
-                    logger.debug("Diagnostics failed for active brain %s", name, exc_info=True)
-                    grade = "F"
+            async with storage_for_scope(storage, name) as brain_storage:
+                # Counts are cheap (indexed count()) — always compute them live so
+                # the neuron/synapse/fiber numbers are never stale.
+                stats = await brain_storage.get_stats(name)
+                grade = "—"
+                purity = 0.0
+                if is_active:
+                    # Grade/purity is the multi-second part — served from the
+                    # per-brain TTL cache (recomputed at most once per window).
+                    try:
+                        grade, purity = await _cached_grade_purity(brain_storage, name)
+                    except Exception:
+                        logger.debug("Diagnostics failed for active brain %s", name, exc_info=True)
+                        grade = "F"
             return BrainSummary(
                 id=name,
                 name=name,
@@ -166,11 +171,10 @@ async def get_stats() -> DashboardStats:
             logger.warning("Brain analysis failed for %s", name, exc_info=True)
             return BrainSummary(id=name, name=name, is_active=is_active)
 
-    # Analyze brains sequentially, NOT via asyncio.gather: the SurrealDB backend
-    # shares one storage singleton with a mutable current-brain pointer, so
-    # concurrent per-brain analysis races and corrupts orphan/synapse reads
-    # (each _analyze_brain repins the shared pointer). Sequential keeps each
-    # brain's reads consistent. Brain count is tiny, so latency is negligible.
+    # Analyze brains sequentially, NOT via asyncio.gather: even with
+    # storage_for_scope, the active brain's branch reuses the SHARED singleton
+    # (the fast path), so concurrent analyses of the active brain would still
+    # race on its mutable state. Brain count is tiny, so latency is negligible.
     brains = [await _analyze_brain(name) for name in brain_names]
 
     total_n = sum(b.neuron_count for b in brains)
@@ -263,21 +267,27 @@ async def get_uncertainty(
     response_model=list[BrainSummary],
     summary="List all brains",
 )
-async def list_brains_api() -> list[BrainSummary]:
+async def list_brains_api(
+    storage: Annotated[NeuralStorage, Depends(get_storage)],
+) -> list[BrainSummary]:
     """List all available brains with summary stats, including health grade.
 
     Previously this endpoint left grade/purity at their model defaults (F / 0.0)
     because it never ran diagnostics, so the dashboard's Brains table showed
     every brain as grade F while the stats cards (which DO run diagnostics)
     showed the real grade — the F-vs-D mismatch. Run diagnostics per brain here
-    too, sequentially (the SurrealDB backend shares one storage singleton with a
-    mutable brain pointer, so concurrent analysis would race).
+    too, sequentially — one isolated connection at a time rather than a burst.
+
+    Per-brain diagnostics go through ``storage_for_scope``, never
+    ``get_shared_storage(brain_name=...)``: on the SurrealDB backend the latter
+    returns the process-wide singleton *after* repointing its brain, so this
+    read-only GET used to leave the singleton bound to whichever brain came last
+    in the iteration order. Every later reader of that instance — the remaining
+    dashboard endpoints, and the consolidation/decay daemons that tick off the
+    same shared storage — then silently operated on the wrong brain. Same defect
+    (and same fix) as the hub router's read paths.
     """
-    from surreal_memory.unified_config import (
-        get_config,
-        get_shared_storage,
-        list_available_brains,
-    )
+    from surreal_memory.unified_config import get_config, list_available_brains
 
     cfg = get_config()
     brain_names = await list_available_brains()
@@ -286,18 +296,18 @@ async def list_brains_api() -> list[BrainSummary]:
 
     for name in brain_names:
         try:
-            brain_storage = await get_shared_storage(brain_name=name)
-            stats = await brain_storage.get_stats(name)
-            grade = "F"
-            purity = 0.0
-            try:
-                from surreal_memory.engine.diagnostics import DiagnosticsEngine
+            async with storage_for_scope(storage, name) as brain_storage:
+                stats = await brain_storage.get_stats(name)
+                grade = "F"
+                purity = 0.0
+                try:
+                    from surreal_memory.engine.diagnostics import DiagnosticsEngine
 
-                report = await DiagnosticsEngine(brain_storage).analyze(name)
-                grade = report.grade
-                purity = report.purity_score
-            except Exception:
-                logger.debug("Diagnostics failed for brain %s", name, exc_info=True)
+                    report = await DiagnosticsEngine(brain_storage).analyze(name)
+                    grade = report.grade
+                    purity = report.purity_score
+                except Exception:
+                    logger.debug("Diagnostics failed for brain %s", name, exc_info=True)
             results.append(
                 BrainSummary(
                     id=name,
