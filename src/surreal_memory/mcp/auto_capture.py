@@ -26,6 +26,11 @@ DECISION_PATTERNS = [
     r"(?:the )?decision(?: is| was)?[:\s]+(.+?)(?:\.|$)",
     r"(?:chose|picked|selected) (.+?) (?:over|instead of) (.+?)(?:\.|$)",
     r"(?:switched|moved|migrated) (?:from .+? to|to) (.+?)(?:\.|$)",
+    # Polish — wybór/decyzja (forma bezosobowa i "my")
+    r"(?:wybrano|wybraliśmy|zdecydowano(?: się)?(?: na)?|zdecydowaliśmy(?: się)?(?: na)?) (.+?) (?:zamiast(?: na)?|nad) (.+?)(?:\.|$)",
+    r"(?:wybrano|wybraliśmy|zdecydowano(?: się)?(?: na)?|zdecydowaliśmy(?: się)?(?: na)?)[:\s]+(.+?)(?:\.|$)",
+    # Polish — przyczyna decyzji ("bo"/"ponieważ" w zdaniu decyzyjnym)
+    r"(?:wybrano|wybraliśmy|zdecydowano|zdecydowaliśmy)(?:.+?)(?:bo|ponieważ)[:\s]*(.+?)(?:\.|$)",
 ]
 
 ERROR_PATTERNS = [
@@ -37,6 +42,10 @@ ERROR_PATTERNS = [
     r"problem[:\s]+(.+?)(?:\.|$)",
     r"(?:fixed|resolved|solved)(?: (?:it|this))? by[:\s]+(.+?)(?:\.|$)",
     r"(?:workaround|hack)[:\s]+(.+?)(?:\.|$)",
+    # Polish
+    r"przyczyną(?: \w+)? (?:był|była|było|jest|okazał[ao]? się)[:\s]*(.+?)(?:\.|$)",
+    r"naprawiono (?:przez|za pomocą)[:\s]+(.+?)(?:\.|$)",
+    r"root cause(?: był| była| to| jest)[:\s]+(.+?)(?:\.|$)",
 ]
 
 TODO_PATTERNS = [
@@ -67,6 +76,10 @@ PREFERENCE_PATTERNS = [
     r"(?:actually|no)[,:\s]+(?:it |that )?should (?:be|have)[:\s]+(.+?)(?:\.|$)",
     r"(?:change|update|fix|correct) (?:it |that |this )?(?:to|from .+? to)[:\s]+(.+?)(?:\.|$)",
     r"(?:instead of .+?)[,:\s]+(?:use|do|try)[:\s]+(.+?)(?:\.|$)",
+    # Polish
+    r"preferuję[:\s]+(.+?)(?:\.|$)",
+    r"zawsze używaj[:\s]+(.+?)(?:\.|$)",
+    r"nigdy nie[:\s]+(.+?)(?:\.|$)",
 ]
 
 INSIGHT_PATTERNS = [
@@ -78,6 +91,9 @@ INSIGHT_PATTERNS = [
     r"(?:it |this )(?:turns out|actually means)[:\s]+(.+?)(?:\.|$)",
     r"(?:lesson learned|takeaway|key insight)[:\s]+(.+?)(?:\.|$)",
     r"(?:TIL|today I learned)[:\s]+(.+?)(?:\.|$)",
+    # Polish
+    r"okazało się,?\s*że[:\s]*(.+?)(?:\.|$)",
+    r"wniosek[:\s]+(.+?)(?:\.|$)",
 ]
 
 
@@ -109,13 +125,21 @@ def _detect_patterns(
             elif len(captured) < 10:
                 adjusted_confidence *= 0.3  # Penalize too-short captures
 
-            # Trim at sentence boundary if over-captured
-            if len(captured) > 100:
+            # Trim at the LAST sentence boundary before ~300 chars, not the
+            # first one after char 50. The old cutoff amputated the causal
+            # clause a capture like "we chose X because Y" almost always
+            # carries past the halfway point of a sentence — "Y" is usually
+            # the whole reason the memory is worth keeping. Searching the
+            # wider [0, 300) window for the LATEST boundary preserves it;
+            # only a genuine run-on with no punctuation in that window falls
+            # back to a hard cut, so length stays bounded either way.
+            if len(captured) > 300:
+                boundary = -1
                 for sep in (".", "!", "?", ";"):
-                    idx = captured.find(sep, 50)
-                    if idx > 0:
-                        captured = captured[:idx]
-                        break
+                    idx = captured.rfind(sep, 0, 300)
+                    if idx > boundary:
+                        boundary = idx
+                captured = captured[: boundary + 1] if boundary > 0 else captured[:300]
 
             content = f"{prefix}{captured}" if prefix else captured
             detected.append(
