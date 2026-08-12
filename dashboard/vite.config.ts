@@ -31,6 +31,10 @@ export default defineConfig({
           'vendor-motion': ['framer-motion'],
           'vendor-ui': ['class-variance-authority', 'clsx', 'tailwind-merge'],
           'vendor-icons': ['@phosphor-icons/react'],
+          // three.js is the heaviest dependency in the app and is only reachable
+          // from the Graph route, which is already React.lazy — keeping it in its
+          // own chunk means every other page stops paying for it.
+          'vendor-3d': ['three', '3d-force-graph'],
         },
       },
     },

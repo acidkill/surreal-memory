@@ -228,7 +228,14 @@
     "time": "time",
     "action": "action",
     "state": "state",
-    "other": "other"
+    "other": "other",
+    "cappedNote": "Showing {{shown}} of {{total}} neurons (API limit).",
+    "updating": "updating…",
+    "connections": "Connections",
+    "loadError": "Could not load the graph.",
+    "retry": "Retry",
+    "focusHint": "Click a node to focus its connections",
+    "close": "Close"
   },
   "timeline": {
     "title": "Timeline",

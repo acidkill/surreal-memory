@@ -1,4 +1,4 @@
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tanstack/react-query"
 import { api } from "@/api/client"
 import type {
   DashboardStats,
@@ -162,6 +162,11 @@ export function useGraph(limit = 500) {
   return useQuery({
     queryKey: keys.graph(limit),
     queryFn: () => api.get<GraphResponse>(`/api/graph?limit=${limit}`),
+    // Keep the previous graph on screen while a new limit loads. Without this
+    // the query goes back to `pending` on every slider change, unmounting the
+    // canvas — which for a WebGL view means tearing down and recreating the
+    // rendering context, not just a re-render.
+    placeholderData: keepPreviousData,
   })
 }
 
