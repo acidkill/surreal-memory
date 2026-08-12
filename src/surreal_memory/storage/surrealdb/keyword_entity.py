@@ -58,28 +58,40 @@ class SurrealDBKeywordEntityMixin:
         Single multi-statement round-trip for the whole batch. The previous
         per-keyword SELECT-then-merge/insert was an N+1 (~2 ops per keyword per
         encoded memory) that dominated doc-training cost — a 100-chunk run issued
-        ~9k keyword-DF SELECTs. ``UPSERT ... SET fiber_count = (fiber_count ?? 0)
-        + 1`` handles both create (null → 0 → 1) and increment in one statement
-        per keyword, all pipelined in one query. The (brain_id, keyword) UNIQUE
-        index makes the UPSERT atomic.
+        ~9k keyword-DF SELECTs.
+
+        Matches by CONTENT (``WHERE brain_id = $bid AND keyword = $kw``), not by
+        a synthetically-computed record id: "UPSERT inherently checks unique
+        indexes to determine if a record is a duplicate... without scanning the
+        entire table" (SurrealDB docs), so this stays a single indexed
+        operation per statement while being immune to a record id whose prefix
+        no longer matches how ids are minted today. A prior version computed
+        the id itself (``type::record('keyword_document_frequency',
+        f"{brain_id}_{keyword}")``); on this table's live data that computed id
+        collides with 911 rows still carrying a record-id prefix from a
+        historical brain rename that never touched their ``brain_id`` FIELD —
+        the (brain_id, keyword) UNIQUE index has no gap, but the id text does,
+        so writing by id text created a duplicate-row conflict on every legacy
+        keyword. Writing by content sidesteps the id text entirely: whichever
+        row already satisfies the WHERE clause is the one that gets updated,
+        regardless of what its id happens to look like.
         """
         if not keywords:
             return
 
         brain_id = self._get_brain_id()
-        bid_safe = _to_surreal_id(brain_id)
         now = utcnow()
         unique = list(set(keywords))
         params: dict[str, Any] = {"bid": brain_id, "now": now}
         stmts: list[str] = []
         for i, kw in enumerate(unique):
-            sid = f"{bid_safe}_{_safe_id(kw)}"
-            params[f"sid{i}"] = sid
-            params[f"kw{i}"] = kw
+            kw_key = f"kw{i}"
+            params[kw_key] = kw
             stmts.append(
-                "UPSERT type::record('keyword_document_frequency', $sid{i})"
-                " SET keyword = $kw{i}, brain_id = $bid,"
+                f"UPSERT keyword_document_frequency"
+                f" SET keyword = ${kw_key}, brain_id = $bid,"
                 " fiber_count = (fiber_count ?? 0) + 1, last_updated = $now"
+                f" WHERE brain_id = $bid AND keyword = ${kw_key}"
             )
         await self._query(";\n".join(stmts) + ";", **params)
 

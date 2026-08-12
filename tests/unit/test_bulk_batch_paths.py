@@ -12,6 +12,7 @@ These are mock/fake based — no live SurrealDB required.
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -54,6 +55,41 @@ def test_increment_keyword_df_is_single_round_trip():
     # one UPSERT statement per unique keyword, joined by ;
     assert sql.count("UPSERT") == 4
     assert "fiber_count = (fiber_count ?? 0) + 1" in sql
+
+
+def test_increment_keyword_df_interpolates_every_statement_index():
+    """Every ``$name`` in the SQL must be a parameter that was actually bound.
+
+    The statement builder once used a non-f literal, emitting the four literal
+    characters ``$sid{i}`` while binding the correct ``sid0``/``sid1``/... —
+    SurrealDB rejected the whole batch at parse time, and the sole caller
+    swallows the exception, so the table silently stopped being written. The
+    assertions above all still passed on that broken SQL (the UPSERT count and
+    SET clause were untouched), so check the placeholders themselves.
+
+    The write path itself later moved from a computed record id to a
+    content-matched ``WHERE brain_id = $bid AND keyword = $kwN`` (see
+    ``keyword_document_frequency``'s docstring for why — matching by id text
+    collided with rows carrying a legacy id prefix from a historical brain
+    rename), so there is no longer a ``sidN`` param family to check; the
+    interpolation guarantee this test protects is unchanged, only the
+    parameter names are.
+    """
+    store = _FakeKeywordStore()
+    asyncio.run(store.increment_keyword_df(["react", "vue", "angular"]))
+    sql, params = store.queries[0]
+
+    assert "{" not in sql and "}" not in sql, f"uninterpolated placeholder in SQL: {sql}"
+
+    referenced = set(re.findall(r"\$(\w+)", sql))
+    assert referenced <= set(params), f"SQL references unbound params: {referenced - set(params)}"
+    # each keyword got its own bound placeholder, referenced in both the SET
+    # and the WHERE clause of its statement
+    assert {"kw0", "kw1", "kw2", "bid"} <= referenced
+    # distinct keyword values per statement — no funnelling several keywords
+    # into one placeholder
+    assert len({params["kw0"], params["kw1"], params["kw2"]}) == 3
+    assert sql.count("WHERE brain_id = $bid AND keyword = $kw") == 3
 
 
 def test_increment_keyword_df_dedups_and_noops_empty():
