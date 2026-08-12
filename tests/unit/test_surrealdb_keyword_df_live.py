@@ -101,9 +101,9 @@ async def test_increment_keyword_df_updates_a_row_with_a_legacy_id_prefix(  # ty
 ) -> None:
     """Regression for a residual defect the interpolation fix's own live
     verification surfaced: writing by a COMPUTED record id (rather than by
-    content) collides with rows whose id still carries a prefix from a
-    historical brain rename — 911 such rows exist on the live production
-    brain, each with brain_id='default' but a record id like
+    content) collides with rows whose id still carries a prefix from a prior
+    id scheme — the kind of row a long-lived installation accumulates after a
+    historical brain rename, with brain_id='default' but a record id like
     'my_brain.v2_<keyword>'. Matching by (brain_id, keyword) via WHERE, not by
     a synthetic id, must find and update that row regardless of what its id
     looks like — never attempt to CREATE a second row for the same pair, which

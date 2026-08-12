@@ -1244,10 +1244,10 @@ class TestMCPProtocol:
 
     @pytest.mark.asyncio
     async def test_timeout_records_a_diagnosable_reason(self, server: MCPServer) -> None:
-        """The real, live-measured dominant failure mode for smem_remember_batch:
-        every one of 12 real failures had duration_ms within 10ms of the 30s
-        timeout. Before this fix, task_context stayed "" — indistinguishable
-        from a validation reject or an auth failure."""
+        """The dominant failure mode for smem_remember_batch: a call that times
+        out has duration_ms land within milliseconds of the 30s timeout, not a
+        validation reject or an auth failure. Before this fix, task_context
+        stayed "" for that case — indistinguishable from those other causes."""
         storage = self._storage_capturing_tool_events()
 
         with (

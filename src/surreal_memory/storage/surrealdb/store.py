@@ -2948,9 +2948,9 @@ class SurrealDBStorage(
 
         Consolidation's dream cycle only ever replays ~20 dormant neurons, but
         the base implementation had to pull the whole ``neuron_state`` table to
-        find them: on a 127k-state brain that is 6.9 s and 127k materialized
-        objects to touch 20 rows. Filtering and sampling in the DB does it in
-        ~1.5 s with 20 rows on the wire. ``ORDER BY rand()`` keeps the sampling
+        find them — every row materialized in Python just to keep 20 of them.
+        Filtering and sampling in the DB instead puts only the 20 rows actually
+        needed on the wire. ``ORDER BY rand()`` keeps the sampling
         uniform, which matters because reactivation is meant to reach a
         different slice of the dormant set on every run.
         """

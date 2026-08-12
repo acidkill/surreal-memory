@@ -67,12 +67,13 @@ class SurrealDBKeywordEntityMixin:
         operation per statement while being immune to a record id whose prefix
         no longer matches how ids are minted today. A prior version computed
         the id itself (``type::record('keyword_document_frequency',
-        f"{brain_id}_{keyword}")``); on this table's live data that computed id
-        collides with 911 rows still carrying a record-id prefix from a
-        historical brain rename that never touched their ``brain_id`` FIELD —
-        the (brain_id, keyword) UNIQUE index has no gap, but the id text does,
-        so writing by id text created a duplicate-row conflict on every legacy
-        keyword. Writing by content sidesteps the id text entirely: whichever
+        f"{brain_id}_{keyword}")``); on an installation whose keyword rows were
+        minted under a prior id scheme (e.g. an older brain-rename that never
+        touched their ``brain_id`` FIELD, only the id text), that computed id
+        collides with rows still carrying the old prefix — the (brain_id,
+        keyword) UNIQUE index has no gap, but the id text does, so writing by
+        id text created a duplicate-row conflict on every such legacy keyword.
+        Writing by content sidesteps the id text entirely: whichever
         row already satisfies the WHERE clause is the one that gets updated,
         regardless of what its id happens to look like.
         """

@@ -11,21 +11,23 @@ import { test, expect, type Page } from "@playwright/test"
  * be completed, so these specs are the regression net for CI rather than the
  * evidence for U8. The unit-level guarantees (HTML escaping, particle budget,
  * neighbour index) are covered by src/features/graph/graph-data.test.ts, which
- * DOES run here, and the rendered result was verified against a REAL server in
- * a real browser — see qa/run-012/api/u8-browser-qa-graph.json.
+ * DOES run here; the mocked-backend flow below was additionally verified
+ * against a real running server in a real browser before merge.
  *
  * URL note: main.tsx mounts <BrowserRouter basename="/ui">, so routes live
  * under /ui/<route>.
  */
 
-const BRAIN_NEURON_TOTAL = 38_871
+// Fixture values are arbitrary but internally consistent (large enough to
+// exercise the node-count slider's real-total path, not a sampled one).
+const BRAIN_NEURON_TOTAL = 40_000
 
 const STATS_BODY = {
   active_brain: "default",
   total_brains: 1,
   total_neurons: BRAIN_NEURON_TOTAL,
-  total_synapses: 74_428,
-  total_fibers: 6_203,
+  total_synapses: 76_000,
+  total_fibers: 6_200,
   health_grade: "B",
   purity_score: 71.4,
   brains: [],
@@ -37,10 +39,10 @@ function graphBody(nodeCount: number) {
   // node position, which isn't stable across headless runs. The actual escaping
   // guarantee is proven elsewhere: graph-data.test.ts exhaustively unit-tests
   // escapeHtml/toGraph3D against this exact payload (vitest, runs in this repo
-  // today), and it was verified live against 533 real markup-bearing production
-  // neurons in qa/run-012/api/u8-browser-qa-graph.json. It's kept here only so a
-  // future Playwright run in an environment where the browser install succeeds
-  // has a payload ready to wire an assertion against.
+  // today), and it was additionally verified live in a real browser against a
+  // real server before merge. It's kept here only so a future Playwright run in
+  // an environment where the browser install succeeds has a payload ready to
+  // wire an assertion against.
   const neurons = Array.from({ length: nodeCount }, (_, i) => ({
     id: `neuron-${i}`,
     content: i === 0 ? "<img src=x onerror=alert(1)>" : `memory content ${i}`,
