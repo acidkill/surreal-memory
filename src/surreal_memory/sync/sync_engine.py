@@ -5,11 +5,12 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from surreal_memory.core.fiber import Fiber
 from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.core.synapse import Direction, Synapse, SynapseType
+from surreal_memory.sync.device import get_device_name
 from surreal_memory.sync.incremental_merge import merge_change_lists
 from surreal_memory.sync.protocol import (
     ConflictStrategy,
@@ -40,6 +41,10 @@ class SyncEngine:
     5. Update watermark
     """
 
+    #: Device ids this process has already tried to self-register, so a registry
+    #: that keeps refusing costs one attempt, not one per sync cycle.
+    _self_registration_attempted: ClassVar[set[str]] = set()
+
     def __init__(
         self,
         storage: NeuralStorage,
@@ -52,8 +57,27 @@ class SyncEngine:
 
     async def prepare_sync_request(self, brain_id: str) -> SyncRequest:
         """Prepare a sync request with local pending changes."""
-        # Get the last known sync sequence
+        # Get the last known sync sequence. A machine only ever appeared in the
+        # registry when some *other* device synced with it, so the one machine
+        # guaranteed to be using this brain — this one — was the one missing
+        # from its own device list. Register it here, on the first sync it runs.
         device = await self._storage.get_device(self._device_id)
+        if device is None and self._device_id not in SyncEngine._self_registration_attempted:
+            # Once per process, not once per cycle: a fresh engine is built for
+            # every sync call, so an unguarded retry would turn a registry that
+            # is permanently unhappy into one extra write and one traceback per
+            # sync interval, forever.
+            SyncEngine._self_registration_attempted.add(self._device_id)
+            try:
+                await self._storage.register_device(self._device_id, get_device_name())
+            except Exception:
+                # Registration is bookkeeping, not a precondition: a sync that
+                # works must not be blocked by a registry that does not.
+                logger.warning(
+                    "Could not self-register device %s; syncing anyway",
+                    self._device_id,
+                    exc_info=True,
+                )
         last_sequence = device.last_sync_sequence if device else 0
 
         # Get unsynced local changes

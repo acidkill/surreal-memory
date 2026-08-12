@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 from surreal_memory.core.fiber import Fiber
@@ -18,6 +20,9 @@ from surreal_memory.sync.protocol import (
     SyncStatus,
 )
 from surreal_memory.sync.sync_engine import SyncEngine
+
+if TYPE_CHECKING:
+    import pytest
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -817,3 +822,71 @@ class TestFiberFromPayload:
 
         assert fiber.neuron_ids == {"n-1", "n-2"}
         assert fiber.synapse_ids == {"s-1"}
+
+
+class TestLocalDeviceSelfRegistration:
+    """A device only ever landed in the registry when some *other* device synced
+    with it, so the one machine guaranteed to be using the brain — this one —
+    was the one missing from its own device list."""
+
+    def setup_method(self) -> None:
+        # The "already attempted" guard is process-wide by design; each test
+        # needs a clean slate.
+        SyncEngine._self_registration_attempted.clear()
+
+    async def test_unknown_local_device_registers_itself(self) -> None:
+        storage = _make_mock_storage(device=None)
+        engine = SyncEngine(storage, "dev-local")
+
+        request = await engine.prepare_sync_request("brain-test")
+
+        storage.register_device.assert_awaited_once()
+        device_id, device_name = storage.register_device.await_args.args
+        assert device_id == "dev-local"
+        assert device_name, "the hostname must be recorded, not an empty name"
+        assert request.last_sequence == 0
+
+    async def test_known_device_is_not_registered_again(self) -> None:
+        device = DeviceRecord(
+            device_id="dev-local",
+            brain_id="brain-test",
+            device_name="laptop",
+            last_sync_at=None,
+            last_sync_sequence=17,
+            registered_at=datetime(2026, 8, 1, 10, 0, 0),
+        )
+        storage = _make_mock_storage(device=device)
+        engine = SyncEngine(storage, "dev-local")
+
+        request = await engine.prepare_sync_request("brain-test")
+
+        storage.register_device.assert_not_awaited()
+        assert request.last_sequence == 17
+
+    async def test_registration_failure_never_blocks_the_sync(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # Registration is bookkeeping. A registry that refuses must not cost the
+        # user their sync.
+        storage = _make_mock_storage(device=None)
+        storage.register_device = AsyncMock(side_effect=RuntimeError("registry unavailable"))
+        engine = SyncEngine(storage, "dev-local")
+
+        with caplog.at_level(logging.WARNING):
+            request = await engine.prepare_sync_request("brain-test")
+
+        assert request.last_sequence == 0
+        assert request.device_id == "dev-local"
+        assert any("self-register" in r.message for r in caplog.records)
+
+    async def test_a_refusing_registry_costs_one_attempt_not_one_per_cycle(self) -> None:
+        # A fresh engine is built for every sync call, so without a process-wide
+        # guard a permanently broken registry would take one write and one
+        # traceback every sync interval, forever.
+        storage = _make_mock_storage(device=None)
+        storage.register_device = AsyncMock(side_effect=RuntimeError("registry unavailable"))
+
+        for _ in range(5):
+            await SyncEngine(storage, "dev-local").prepare_sync_request("brain-test")
+
+        assert storage.register_device.await_count == 1

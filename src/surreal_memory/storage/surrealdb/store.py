@@ -23,6 +23,7 @@ from surreal_memory.core.memory_types import TypedMemory
 from surreal_memory.core.neuron import Neuron, NeuronState, NeuronType
 from surreal_memory.core.project import Project
 from surreal_memory.core.synapse import Direction, Synapse, SynapseType
+from surreal_memory.core.sync_records import DeviceRecord
 from surreal_memory.storage.base import NeuralStorage
 from surreal_memory.storage.surrealdb._ids import _safe_brain_id, _to_surreal_id
 from surreal_memory.storage.surrealdb.activity import SurrealDBActivityMixin
@@ -249,6 +250,40 @@ def _parse_datetime(val: Any) -> datetime | None:
         except (ValueError, AttributeError):
             return None
     return None
+
+
+def _device_record(
+    row: dict[str, Any], brain_id: str, *, fallback_device_id: str = ""
+) -> DeviceRecord:
+    """Build the storage contract's device record from one ``device`` row.
+
+    The two sync fields are what the dashboard, the MCP sync status, the hub
+    routes and the sync engine all read. This backend used to hand them the
+    local-identity ``DeviceInfo`` instead, which carries none of them, so every
+    one of those readers raised ``AttributeError`` inside its own ``except`` and
+    reported "no devices" rather than "this is broken".
+    """
+    try:
+        last_sync_sequence = int(row.get("last_sync_sequence") or 0)
+    except (TypeError, ValueError):
+        # A malformed watermark must not take down the caller: `get_device` is
+        # read on the sync hot path with no guard of its own, so raising here
+        # would block a sync over a bookkeeping value. Zero re-sends changes
+        # that were already sent, which is recoverable.
+        logger.warning(
+            "Device %s has a non-numeric last_sync_sequence %r; treating it as 0",
+            row.get("device_id", fallback_device_id),
+            row.get("last_sync_sequence"),
+        )
+        last_sync_sequence = 0
+    return DeviceRecord(
+        device_id=str(row.get("device_id", fallback_device_id)),
+        brain_id=str(row.get("brain_id", brain_id)),
+        device_name=str(row.get("device_name", "")),
+        last_sync_at=_parse_datetime(row.get("last_sync_at")),
+        last_sync_sequence=last_sync_sequence,
+        registered_at=_parse_datetime(row.get("registered_at")) or utcnow(),
+    )
 
 
 def _ensure_naive(dt: datetime) -> datetime:
@@ -1896,11 +1931,14 @@ class SurrealDBStorage(
     # ================================================================
 
     async def save_brain(self, brain: Brain) -> None:
+        from surrealdb import RecordID
+
         conn = self._ensure_conn()
-        # brain.id is inlined raw into ``merge("brain:{id}")`` and the fallback
-        # ``UPDATE brain:{id} SET ...`` statement below — fail-closed reject a
-        # hostile id at the store layer (not just the REST route).
+        # brain.id is inlined raw into the fallback record-id lookups below —
+        # fail-closed reject a hostile id at the store layer (not just the
+        # REST route).
         _safe_brain_id(brain.id)
+        rid = RecordID("brain", brain.id)
 
         record_data: dict[str, Any] = {
             "id": brain.id,  # Use original ID to avoid underscore conversion
@@ -1913,18 +1951,25 @@ class SurrealDBStorage(
         try:
             await conn.insert("brain", record_data)
         except Exception:
-            # Try to update existing record
+            # Try to update existing record. A raw f"brain:{brain.id}" resource
+            # string would fail here: brain ids are UUIDs, and SurrealQL's
+            # record-id grammar commits to parsing a part starting with a digit
+            # as a *number*, hard-failing at the first non-digit character
+            # (confirmed live — every existing-brain save hit this). RecordID
+            # binds the id as a query variable instead of inlining it into
+            # query text, sidestepping that parser ambiguity entirely.
             try:
-                await conn.merge(f"brain:{brain.id}", record_data)
+                await conn.merge(rid, record_data)
             except Exception:
-                # Query and update if merge also fails
-                rows = await self._query(
-                    "SELECT * FROM brain WHERE id = $id", id=f"brain:{brain.id}"
-                )
+                # Query and update if merge also fails. Bind the same RecordID
+                # rather than comparing `id` to a plain string: SurrealDB
+                # stores `id` as a structured record-id value, so a string
+                # comparison risks matching nothing and silently no-op'ing.
+                rows = await self._query("SELECT * FROM brain WHERE id = $id", id=rid)
                 if rows:
                     for field, value in record_data.items():
                         await self._query(
-                            f"UPDATE brain:{brain.id} SET {field} = $value", value=value
+                            "UPDATE $rid SET " + field + " = $value", rid=rid, value=value
                         )
 
     async def get_brain(self, brain_id: str) -> Brain | None:
@@ -2598,88 +2643,117 @@ class SurrealDBStorage(
     # Device Registry
     # ================================================================
 
-    async def register_device(self, device_id: str, device_name: str = "") -> Any:
+    async def register_device(self, device_id: str, device_name: str = "") -> DeviceRecord:
+        from surrealdb import RecordID
+
         brain_id = self._get_brain_id()
         conn = self._ensure_conn()
         did = _to_surreal_id(device_id)
 
-        from surreal_memory.sync.device import DeviceInfo
-
+        registered_at = utcnow()
         record = {
             "id": f"{brain_id}_{did}",
             "device_id": device_id,
             "brain_id": brain_id,
             "device_name": device_name,
-            "registered_at": utcnow(),
+            "registered_at": registered_at,
             "last_sync_sequence": 0,
         }
         try:
             await conn.insert("device", record)
         except Exception:
-            await conn.merge(f"device:{brain_id}_{did}", record)
+            # A raw f-string resource here would hit the same record-id parsing
+            # trap as get_device/update_device_sync/remove_device below: a brain
+            # id is a UUID, and SurrealQL commits to parsing a record-id part
+            # that starts with a digit as a *number*, then hard-fails on the
+            # first non-digit character. RecordID binds the id as a query
+            # variable instead of inlining it into query text, so it is immune.
+            await conn.merge(RecordID("device", f"{brain_id}_{did}"), record)
 
-        return DeviceInfo(
+        # Mirrors the in-memory backend: the return value reflects the insert
+        # values rather than a re-read of a row that may already have existed.
+        return DeviceRecord(
             device_id=device_id,
+            brain_id=brain_id,
             device_name=device_name,
-            registered_at=utcnow(),
+            last_sync_at=None,
+            last_sync_sequence=0,
+            registered_at=registered_at,
         )
 
-    async def get_device(self, device_id: str) -> Any | None:
+    async def get_device(self, device_id: str) -> DeviceRecord | None:
+        from surrealdb import RecordID
+
         brain_id = self._get_brain_id()
         did = _to_surreal_id(device_id)
         try:
-            result = await self._conn.select(f"device:{brain_id}_{did}")
-            if result:
-                r = result[0] if isinstance(result, list) else result
-                from surreal_memory.sync.device import DeviceInfo
-
-                return DeviceInfo(
-                    device_id=str(r.get("device_id", device_id)),
-                    device_name=str(r.get("device_name", "")),
-                    registered_at=_parse_datetime(r.get("registered_at")) or utcnow(),
-                )
+            # RecordID binds the id as a query variable rather than inlining it
+            # into raw query text. A brain id is a UUID; SurrealQL's record-id
+            # grammar commits to parsing a part starting with a digit as a
+            # *number* and hard-fails at the first non-digit character, so an
+            # f"device:{brain_id}_{did}" resource string raised on every call
+            # (confirmed live: "Parse error ... unexpected character after
+            # number token"). _to_surreal_id-folded ids (neuron/synapse/fiber)
+            # never hit this because dashes there become underscores, which the
+            # tokenizer treats as a clean delimiter — brain ids are deliberately
+            # NOT folded (they may contain '.', see _safe_brain_id), so they need
+            # this instead.
+            result = await self._conn.select(RecordID("device", f"{brain_id}_{did}"))
         except Exception:
-            pass
+            # Swallowing this silently is how "Devices (0)" survived a release:
+            # every caller reads a bare None as "no such device" and moves on.
+            logger.warning("Device lookup failed for %s", device_id, exc_info=True)
+            return None
+        if result:
+            r = result[0] if isinstance(result, list) else result
+            return _device_record(r, brain_id, fallback_device_id=device_id)
         return None
 
-    async def list_devices(self) -> list[Any]:
+    async def list_devices(self) -> list[DeviceRecord]:
         brain_id = self._get_brain_id()
         rows = await self._query(
             "SELECT * FROM device WHERE brain_id = $brain_id ORDER BY registered_at ASC",
             brain_id=brain_id,
         )
-        from surreal_memory.sync.device import DeviceInfo
-
-        return [
-            DeviceInfo(
-                device_id=str(r.get("device_id", "")),
-                device_name=str(r.get("device_name", "")),
-                registered_at=_parse_datetime(r.get("registered_at")) or utcnow(),
-            )
-            for r in rows
-        ]
+        return [_device_record(r, brain_id) for r in rows]
 
     async def update_device_sync(self, device_id: str, last_sync_sequence: int) -> None:
+        from surrealdb import RecordID
+
         brain_id = self._get_brain_id()
         did = _to_surreal_id(device_id)
         try:
+            # See get_device for why this must be a RecordID, not an f-string:
+            # a raw dash-containing brain id inlined into record-id text fails
+            # SurrealQL's numeric-literal disambiguation.
             await self._conn.merge(
-                f"device:{brain_id}_{did}",
+                RecordID("device", f"{brain_id}_{did}"),
                 {
                     "last_sync_at": utcnow(),
                     "last_sync_sequence": last_sync_sequence,
                 },
             )
         except Exception:
-            pass
+            # Losing this write only means the next sync re-sends changes it
+            # already sent — recoverable, but never invisible.
+            logger.warning(
+                "Failed to record sync watermark %d for device %s",
+                last_sync_sequence,
+                device_id,
+                exc_info=True,
+            )
 
     async def remove_device(self, device_id: str) -> bool:
+        from surrealdb import RecordID
+
         brain_id = self._get_brain_id()
         did = _to_surreal_id(device_id)
         try:
-            await self._conn.delete(f"device:{brain_id}_{did}")
+            # See get_device for why this must be a RecordID, not an f-string.
+            await self._conn.delete(RecordID("device", f"{brain_id}_{did}"))
             return True
         except Exception:
+            logger.warning("Failed to remove device %s", device_id, exc_info=True)
             return False
 
     # ================================================================

@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import pathlib
+from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock
 
 import pytest_asyncio
+
+if TYPE_CHECKING:
+    import pytest
 
 from surreal_memory.core.brain import Brain, BrainConfig
 from surreal_memory.core.sync_records import DeviceRecord
@@ -245,3 +251,285 @@ class TestBrainIsolation:
         assert devices_a[0].device_id == "dev-in-a"
 
         await storage.close()
+
+
+class TestSurrealDBDeviceRecords:
+    """The SurrealDB backend must speak the same device shape as every other one.
+
+    It used to return the local-identity ``DeviceInfo``, which has no
+    ``last_sync_at`` and no ``last_sync_sequence``. Every reader — the dashboard
+    sync card, the MCP sync status, the hub routes, the sync engine — reads
+    those two fields inside a ``try``, so the missing attributes surfaced as
+    "Devices (0)" rather than as an error.
+    """
+
+    @staticmethod
+    def _store() -> Any:
+        from surreal_memory.storage.surrealdb.store import SurrealDBStorage
+
+        storage = SurrealDBStorage()
+        storage.set_brain("brain-1")
+        return storage
+
+    async def test_list_devices_returns_device_records_with_sync_fields(self) -> None:
+        storage = self._store()
+        storage._query = AsyncMock(
+            return_value=[
+                {
+                    "device_id": "dev-001",
+                    "brain_id": "brain-1",
+                    "device_name": "my-laptop",
+                    "registered_at": "2026-08-01T10:00:00Z",
+                    "last_sync_at": "2026-08-11T09:30:00Z",
+                    "last_sync_sequence": 42,
+                }
+            ]
+        )
+
+        devices = await storage.list_devices()
+
+        assert len(devices) == 1
+        device = devices[0]
+        assert isinstance(device, DeviceRecord)
+        assert device.device_id == "dev-001"
+        assert device.brain_id == "brain-1"
+        assert device.device_name == "my-laptop"
+        assert device.last_sync_sequence == 42
+        assert device.last_sync_at is not None
+        # The five fields every consumer renders must survive the mapping.
+        assert device.registered_at.isoformat()
+
+    async def test_never_synced_device_reads_as_zero_not_as_missing(self) -> None:
+        storage = self._store()
+        storage._query = AsyncMock(return_value=[{"device_id": "dev-002", "device_name": "fresh"}])
+
+        device = (await storage.list_devices())[0]
+
+        assert device.last_sync_at is None
+        assert device.last_sync_sequence == 0
+        assert device.brain_id == "brain-1"
+
+    async def test_register_device_returns_a_record_the_hub_route_can_render(self) -> None:
+        storage = self._store()
+        conn = AsyncMock()
+        storage._conn = conn
+
+        record = await storage.register_device("dev-003", "workstation")
+
+        assert isinstance(record, DeviceRecord)
+        # hub.py renders exactly these; a DeviceInfo made the route 500.
+        assert record.device_id == "dev-003"
+        assert record.device_name == "workstation"
+        assert record.last_sync_sequence == 0
+        assert record.registered_at.isoformat()
+
+    async def test_a_failed_lookup_is_logged_not_swallowed(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        storage = self._store()
+        conn = AsyncMock()
+        conn.select.side_effect = RuntimeError("connection reset")
+        storage._conn = conn
+
+        with caplog.at_level(logging.WARNING):
+            result = await storage.get_device("dev-004")
+
+        assert result is None
+        assert any("Device lookup failed" in r.message for r in caplog.records)
+
+    async def test_a_failed_watermark_write_is_logged_not_swallowed(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        storage = self._store()
+        conn = AsyncMock()
+        conn.merge.side_effect = RuntimeError("connection reset")
+        storage._conn = conn
+
+        with caplog.at_level(logging.WARNING):
+            await storage.update_device_sync("dev-005", 7)
+
+        assert any("sync watermark" in r.message for r in caplog.records)
+
+    async def test_a_malformed_watermark_degrades_to_zero_instead_of_raising(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # get_device is read on the sync hot path with no guard of its own, so
+        # raising over a bookkeeping value would block the sync itself.
+        storage = self._store()
+        storage._query = AsyncMock(
+            return_value=[{"device_id": "dev-006", "last_sync_sequence": "not-a-number"}]
+        )
+
+        with caplog.at_level(logging.WARNING):
+            device = (await storage.list_devices())[0]
+
+        assert device.last_sync_sequence == 0
+        assert any("non-numeric last_sync_sequence" in r.message for r in caplog.records)
+
+
+class TestSurrealDBRecordIdBinding:
+    """Regression guard for a live bug found while testing U3.
+
+    A brain id is a UUID (e.g. ``00313cb4-61ca-...``) and is deliberately NOT
+    folded through ``_to_surreal_id`` (``_safe_brain_id`` keeps its dashes —
+    brain ids may also contain '.'). Inlining it as an f-string resource, e.g.
+    ``conn.select(f"device:{brain_id}_{did}")``, hits a real SurrealQL parser
+    trap: a record-id part starting with a digit is parsed as a *number*, and
+    the parser hard-fails at the first non-digit character. Confirmed live
+    against the real SurrealDB container — every read/update/delete on the
+    device registry raised ``ValidationError: Parse error ... unexpected
+    character after number token``, and the same pattern in ``save_brain``'s
+    merge/update fallback was equally broken.
+
+    The fix binds the id via ``RecordID(table, id)`` instead, which the SDK
+    sends as a query *variable* (CBOR-encoded), never through the SurrealQL
+    text parser. These tests assert the TYPE passed to ``conn.select`` /
+    ``merge`` / ``delete`` is a ``RecordID``, not a string — a mock accepts
+    either silently, so only an explicit type assertion catches a regression
+    back to raw f-string interpolation.
+    """
+
+    @staticmethod
+    def _store() -> Any:
+        from surreal_memory.storage.surrealdb.store import SurrealDBStorage
+
+        storage = SurrealDBStorage()
+        # A brain id shaped like the real live 'default' brain's UUID — the
+        # exact shape that reproduced the parse error (digits then a hex
+        # letter inside the first UUID segment).
+        storage.set_brain("00313cb4-61ca-4e69-9784-e51431e99ad7")
+        return storage
+
+    async def test_get_device_binds_a_record_id_not_a_raw_string(self) -> None:
+        from surrealdb import RecordID
+
+        storage = self._store()
+        conn = AsyncMock()
+        conn.select.return_value = []
+        storage._conn = conn
+
+        await storage.get_device("dev-001")
+
+        (resource,), _ = conn.select.call_args
+        assert isinstance(resource, RecordID), (
+            f"get_device must bind a RecordID, not {type(resource).__name__}"
+        )
+        assert resource.table_name == "device"
+
+    async def test_update_device_sync_binds_a_record_id_not_a_raw_string(self) -> None:
+        from surrealdb import RecordID
+
+        storage = self._store()
+        conn = AsyncMock()
+        storage._conn = conn
+
+        await storage.update_device_sync("dev-001", 7)
+
+        (resource, _data), _ = conn.merge.call_args
+        assert isinstance(resource, RecordID), (
+            f"update_device_sync must bind a RecordID, not {type(resource).__name__}"
+        )
+        assert resource.table_name == "device"
+
+    async def test_remove_device_binds_a_record_id_not_a_raw_string(self) -> None:
+        from surrealdb import RecordID
+
+        storage = self._store()
+        conn = AsyncMock()
+        storage._conn = conn
+
+        await storage.remove_device("dev-001")
+
+        (resource,), _ = conn.delete.call_args
+        assert isinstance(resource, RecordID), (
+            f"remove_device must bind a RecordID, not {type(resource).__name__}"
+        )
+        assert resource.table_name == "device"
+
+    async def test_register_device_merge_fallback_binds_a_record_id(self) -> None:
+        from surrealdb import RecordID
+
+        storage = self._store()
+        conn = AsyncMock()
+        conn.insert.side_effect = RuntimeError("already exists")
+        storage._conn = conn
+
+        await storage.register_device("dev-001", "laptop")
+
+        (resource, _data), _ = conn.merge.call_args
+        assert isinstance(resource, RecordID), (
+            f"register_device's merge fallback must bind a RecordID, not {type(resource).__name__}"
+        )
+        assert resource.table_name == "device"
+
+    async def test_save_brain_merge_fallback_binds_a_record_id(self) -> None:
+        import dataclasses
+
+        from surrealdb import RecordID
+
+        from surreal_memory.core.brain import Brain, BrainConfig
+
+        storage = self._store()
+        conn = AsyncMock()
+        conn.insert.side_effect = RuntimeError("already exists")
+        storage._conn = conn
+
+        brain = dataclasses.replace(
+            Brain.create(name="default", config=BrainConfig()),
+            id="00313cb4-61ca-4e69-9784-e51431e99ad7",
+        )
+
+        await storage.save_brain(brain)
+
+        (resource, _data), _ = conn.merge.call_args
+        assert isinstance(resource, RecordID), (
+            f"save_brain's merge fallback must bind a RecordID, not {type(resource).__name__}"
+        )
+        assert resource.table_name == "brain"
+        assert resource.id == brain.id
+
+    async def test_save_brain_select_and_update_fallback_binds_a_record_id(self) -> None:
+        # Deepest fallback: both insert() AND merge() fail, so save_brain falls
+        # through to a raw SELECT + per-field UPDATE. This is the OTHER call
+        # site that carried the original bug — database-reviewer flagged that
+        # the merge-fallback test above (conn.merge auto-succeeding on a bare
+        # AsyncMock) never actually exercises this branch.
+        import dataclasses
+
+        from surrealdb import RecordID
+
+        from surreal_memory.core.brain import Brain, BrainConfig
+
+        storage = self._store()
+        conn = AsyncMock()
+        conn.insert.side_effect = RuntimeError("already exists")
+        conn.merge.side_effect = RuntimeError("merge also unavailable")
+        # _query() calls conn.query(sql, params); shape a response so the
+        # SELECT branch sees one row and proceeds to the UPDATE loop.
+        conn.query.return_value = [{"id": "00313cb4-61ca-4e69-9784-e51431e99ad7"}]
+        storage._conn = conn
+
+        brain = dataclasses.replace(
+            Brain.create(name="default", config=BrainConfig()),
+            id="00313cb4-61ca-4e69-9784-e51431e99ad7",
+        )
+
+        await storage.save_brain(brain)
+
+        select_call, *update_calls = conn.query.call_args_list
+        select_sql, select_params = select_call.args
+        assert "SELECT" in select_sql
+        assert isinstance(select_params["id"], RecordID)
+        assert select_params["id"].table_name == "brain"
+        assert select_params["id"].id == brain.id
+
+        assert update_calls, "the per-field UPDATE loop must have run"
+        for call in update_calls:
+            update_sql, update_params = call.args
+            assert update_sql.startswith("UPDATE $rid SET ")
+            assert isinstance(update_params["rid"], RecordID), (
+                "the UPDATE fallback must bind a RecordID via $rid, not a raw "
+                f"f-string — got {type(update_params['rid']).__name__}"
+            )
+            assert update_params["rid"].table_name == "brain"
+            assert update_params["rid"].id == brain.id

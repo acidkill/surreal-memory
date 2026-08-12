@@ -1013,7 +1013,10 @@ async def get_sync_status(
             ]
             result["device_count"] = len(devices_raw)
         except Exception:
-            logger.debug("Could not fetch sync stats", exc_info=True)
+            # WARNING, not DEBUG: this block used to hide an AttributeError from
+            # the storage layer, so the card rendered a confident "Devices (0)"
+            # for an entire release instead of admitting it could not read them.
+            logger.warning("Could not fetch sync stats", exc_info=True)
             result["devices"] = []
             result["device_count"] = 0
     else:
