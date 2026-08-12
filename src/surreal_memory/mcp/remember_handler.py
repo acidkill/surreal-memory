@@ -276,6 +276,20 @@ class RememberHandler:
             from surreal_memory.engine.context_merger import merge_context
 
             content = merge_context(content, raw_context, mem_type.value)
+            # merge_context appends the caller-supplied context verbatim and has
+            # no cap of its own, so the pre-merge check above does not bound what
+            # actually gets stored: a tiny `content` with a huge `context` dict
+            # would sail past it. Re-check the FINAL merged string — that is the
+            # string persisted, so it is the one MAX_CONTENT_LENGTH must bound.
+            # (Batch enforces the same rule up-front by counting `context`
+            # toward MAX_BATCH_TOTAL_CHARS in _remember_batch.)
+            if len(content) > MAX_CONTENT_LENGTH:
+                return {
+                    "error": (
+                        f"Content too long ({len(content)} chars after merging context). "
+                        f"Max: {MAX_CONTENT_LENGTH}."
+                    )
+                }
 
         # Auto-importance scoring when priority not explicitly set
         raw_priority = args.get("priority")
