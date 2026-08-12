@@ -489,6 +489,36 @@ DEFINE FIELD status        ON watch_state TYPE string DEFAULT 'active';
 DEFINE INDEX idx_wstate_brain      ON watch_state FIELDS brain_id;
 DEFINE INDEX idx_wstate_path       ON watch_state FIELDS brain_id, file_path UNIQUE;
 DEFINE INDEX idx_wstate_status     ON watch_state FIELDS brain_id, status;
+
+-- Tag co-occurrence (semantic drift detection input — port of the SQLite mixin
+-- removed in 3524066d). Purely additive, same reasoning as training_files above:
+-- ships in SCHEMA_SQL, not behind a SCHEMA_VERSION bump, so existing databases
+-- pick it up on their next start. Field named `pair_count`, not `count` — the
+-- latter collides with SurrealQL's own `count()` aggregate function.
+DEFINE TABLE tag_cooccurrence SCHEMAFULL;
+DEFINE FIELD brain_id         ON tag_cooccurrence TYPE string;
+DEFINE FIELD tag_a            ON tag_cooccurrence TYPE string;
+DEFINE FIELD tag_b            ON tag_cooccurrence TYPE string;
+DEFINE FIELD pair_count       ON tag_cooccurrence TYPE int DEFAULT 0;
+DEFINE FIELD last_seen        ON tag_cooccurrence TYPE datetime DEFAULT time::now();
+DEFINE INDEX idx_tco_brain    ON tag_cooccurrence FIELDS brain_id;
+DEFINE INDEX idx_tco_pair     ON tag_cooccurrence FIELDS brain_id, tag_a, tag_b UNIQUE;
+DEFINE INDEX idx_tco_count    ON tag_cooccurrence FIELDS brain_id, pair_count;
+
+-- Drift clusters (detected tag groups that may refer to the same concept —
+-- output of engine/drift_clusters.py, persisted by ConsolidationStrategy.DETECT_DRIFT).
+DEFINE TABLE drift_clusters SCHEMAFULL;
+DEFINE FIELD brain_id      ON drift_clusters TYPE string;
+DEFINE FIELD cluster_id    ON drift_clusters TYPE string;
+DEFINE FIELD canonical     ON drift_clusters TYPE string;
+DEFINE FIELD members       ON drift_clusters TYPE array<string>;
+DEFINE FIELD confidence    ON drift_clusters TYPE float DEFAULT 0.0;
+DEFINE FIELD status        ON drift_clusters TYPE string DEFAULT 'detected';
+DEFINE FIELD created_at    ON drift_clusters TYPE datetime DEFAULT time::now();
+DEFINE FIELD resolved_at   ON drift_clusters TYPE option<datetime>;
+DEFINE INDEX idx_dclu_brain   ON drift_clusters FIELDS brain_id;
+DEFINE INDEX idx_dclu_id      ON drift_clusters FIELDS brain_id, cluster_id UNIQUE;
+DEFINE INDEX idx_dclu_status  ON drift_clusters FIELDS brain_id, status;
 """
 
 

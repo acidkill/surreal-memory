@@ -285,9 +285,11 @@ class LifecycleHandler:
         result["strategy"] = strategy_str
         result["dry_run"] = dry_run
         result["summary"] = delta.report.summary()
-        # Machine-readable twin of the dedup line in ``summary``. A client that
-        # wants to know whether "0 new links" meant "already linked" or "every
-        # attempt failed" should not have to parse prose.
+        # Machine-readable twin of the counters in ``summary`` whose bare value
+        # is ambiguous. A client that wants to know whether "0 new links" meant
+        # "already linked" or "every attempt failed" — or whether 0 drift
+        # clusters meant "none exist" or "detection never ran" — should not have
+        # to parse prose.
         #
         # Narrow on purpose, in both directions: the named fields are listed one
         # by one rather than taken from ``asdict(report)``, and ``extra`` is
@@ -303,6 +305,8 @@ class LifecycleHandler:
             "duplicates_found": delta.report.duplicates_found,
             "new_alias_links": delta.report.new_alias_links,
             "alias_links_existing": delta.report.alias_links_existing,
+            # On a dry run this is the count that WOULD have been persisted.
+            "drift_clusters_found": delta.report.drift_clusters_found,
             "extra": extra,
         }
         return result

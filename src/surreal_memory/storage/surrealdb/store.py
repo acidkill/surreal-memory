@@ -31,6 +31,7 @@ from surreal_memory.storage.surrealdb.alerts import SurrealDBAlertsMixin
 from surreal_memory.storage.surrealdb.cognitive import SurrealDBCognitiveMixin
 from surreal_memory.storage.surrealdb.compression import SurrealDBCompressionMixin
 from surreal_memory.storage.surrealdb.depth_priors import SurrealDBDepthPriorsMixin
+from surreal_memory.storage.surrealdb.drift import SurrealDBDriftMixin
 from surreal_memory.storage.surrealdb.keyword_entity import SurrealDBKeywordEntityMixin
 from surreal_memory.storage.surrealdb.maturation import SurrealDBMaturationMixin
 from surreal_memory.storage.surrealdb.pinning import SurrealDBPinningMixin
@@ -69,6 +70,7 @@ _BRAIN_SCOPED_TABLES: tuple[str, ...] = (
     "compression_backups",
     "depth_priors",
     "device",
+    "drift_clusters",
     "entity_refs",
     "fiber",
     "hot_index",
@@ -87,6 +89,7 @@ _BRAIN_SCOPED_TABLES: tuple[str, ...] = (
     "review_schedules",
     "source",
     "synapse",
+    "tag_cooccurrence",
     "tool_events",
     "training_files",
     "typed_memory",
@@ -489,6 +492,7 @@ class SurrealDBStorage(
     SurrealDBDepthPriorsMixin,
     SurrealDBReasoningTracesMixin,
     SurrealDBToolEventsMixin,
+    SurrealDBDriftMixin,
     SurrealDBPinningMixin,
     SurrealDBTrainingFilesMixin,
     SurrealDBWatchStateMixin,

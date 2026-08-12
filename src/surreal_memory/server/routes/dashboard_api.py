@@ -238,8 +238,7 @@ async def get_uncertainty(
     """Uncertainty overview for the active brain, TTL-cached per brain.
 
     Reuses ``engine.uncertainty_report.build_brain_uncertainty`` (the same aggregation
-    the smem_uncertainty tool serves) so the server never imports mcp. Drift is
-    SQLite-only; on SurrealDB drift_clusters is 0.
+    the smem_uncertainty tool serves) so the server never imports mcp.
     """
     import copy
 

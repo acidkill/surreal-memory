@@ -560,11 +560,11 @@ Pin, unpin, or list pinned memories. Pinned memories skip decay, pruning, and co
 
 ### `smem_consolidate`
 
-Run memory consolidation on the current brain. Strategies: prune (remove weak synapses/orphans), merge (combine overlapping fibers), summarize (cluster topic neurons), mature (episodic→semantic), infer (co-activation synapses), enrich (metadata extraction), dream (synthetic bridges), learn_habits (workflow patterns), dedup (merge near-duplicates), semantic_link (cross-domain connections), compress (old fibers), process_tool_events, all (run all in dependency order). Use dry_run=true to preview without applying changes.
+Run memory consolidation on the current brain. Strategies: prune (remove weak synapses/orphans), merge (combine overlapping fibers), summarize (cluster topic neurons), mature (episodic→semantic), infer (co-activation synapses), enrich (metadata extraction), dream (synthetic bridges), learn_habits (workflow patterns), dedup (merge near-duplicates), semantic_link (cross-domain connections), compress (old fibers), process_tool_events, detect_drift (recompute tag-cooccurrence drift clusters), all (run all in dependency order). Use dry_run=true to preview without applying changes.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `strategy` | string (`prune`, `merge`, `summarize`, `mature`, `infer`, `enrich`, `dream`, `learn_habits`, `dedup`, `semantic_link`, `compress`, `process_tool_events`, `all`) | No | default: all | Consolidation strategy to run (default: all) |
+| `strategy` | string (`prune`, `merge`, `summarize`, `mature`, `infer`, `enrich`, `dream`, `learn_habits`, `dedup`, `semantic_link`, `compress`, `process_tool_events`, `detect_drift`, `all`) | No | default: all | Consolidation strategy to run (default: all) |
 | `dry_run` | boolean | No | default: false | Preview changes without applying (default: false) |
 | `prune_weight_threshold` | number | No | default: 0.05 | Synapse weight threshold for pruning (default: 0.05) |
 | `merge_overlap_threshold` | number | No | default: 0.5 | Jaccard overlap threshold for merging fibers (default: 0.5) |
@@ -715,7 +715,7 @@ Reasoning training: status, mine, patterns, or config.
 
 ### `smem_uncertainty`
 
-How much can you trust this brain's memories? Uncertainty diagnostics — contradictions, low-evidence (low trust) facts, superseded facts, soon-expiring memories, and drift. Separate from smem_conflicts (which is CRUD). Read-only. Note: low_evidence/superseded sample the most-recent ~200 typed memories (see response 'scan.typed_scan_truncated'); contradiction count is capped. Drift is not yet implemented on this backend.
+How much can you trust this brain's memories? Uncertainty diagnostics — contradictions, low-evidence (low trust) facts, superseded facts, soon-expiring memories, and drift. Separate from smem_conflicts (which is CRUD). Read-only. Note: low_evidence/superseded sample the most-recent ~200 typed memories (see response 'scan.typed_scan_truncated'); contradiction count is capped. Drift clusters appear once a detect_drift consolidation pass has run.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|

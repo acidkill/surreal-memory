@@ -61,6 +61,7 @@ class ConsolidationStrategy(StrEnum):
     REPLAY = "replay"  # Hippocampal replay: LTP/LTD on recent fibers
     SCHEMA = "schema"  # Schema assimilation: bottom-up knowledge organization
     INTERFERENCE = "interference"  # Interference forgetting: memory competition
+    DETECT_DRIFT = "detect_drift"  # Tag-cooccurrence Jaccard clustering
     ALL = "all"
 
 
@@ -145,6 +146,8 @@ class ConsolidationReport:
     semantic_synapses_created: int = 0
     semantic_synapses_skipped: int = 0
     """Eligible pairs that already carried a synapse, so no edge was created."""
+    drift_clusters_found: int = 0
+    """Tag clusters (re)detected and persisted by DETECT_DRIFT this run."""
     memories_promoted: int = 0
     fibers_compressed: int = 0
     tokens_saved: int = 0
@@ -243,6 +246,7 @@ class ConsolidationReport:
             f"  Tokens saved: {self.tokens_saved}",
             f"  Reasoning traces ingested: {self.reasoning_traces_ingested}",
             f"  Reasoning patterns learned: {self.reasoning_patterns_learned}",
+            f"  Drift clusters found: {self.drift_clusters_found}",
             f"  Duration: {self.duration_ms:.1f}ms",
         ]
         if self.merge_details:
@@ -293,6 +297,7 @@ class ConsolidationReport:
             + self.semantic_synapses_created
             + self.fibers_compressed
             + self.stages_advanced
+            + self.drift_clusters_found
         )
         if total_changes > 0:
             return hints
@@ -359,6 +364,7 @@ class ConsolidationEngine:
         frozenset(
             {
                 ConsolidationStrategy.SEMANTIC_LINK,
+                ConsolidationStrategy.DETECT_DRIFT,
             }
         ),
     )
@@ -411,6 +417,7 @@ class ConsolidationEngine:
             ConsolidationStrategy.REPLAY: lambda: self._replay(report, dry_run),
             ConsolidationStrategy.SCHEMA: lambda: self._schema(report, dry_run),
             ConsolidationStrategy.INTERFERENCE: lambda: self._interference(report, dry_run),
+            ConsolidationStrategy.DETECT_DRIFT: lambda: self._detect_drift(report, dry_run),
         }
         handler = dispatch.get(strategy)
         if handler is not None:
@@ -2079,6 +2086,32 @@ class ConsolidationEngine:
                         int(report.extra.get("semantic_link_failures", 0)) + 1
                     )
                     logger.warning("Semantic synapse write failed (not a duplicate)", exc_info=True)
+
+    async def _detect_drift(
+        self,
+        report: ConsolidationReport,
+        dry_run: bool,
+    ) -> None:
+        """Recompute semantic drift clusters from accumulated tag co-occurrence.
+
+        Native SurrealDB port of the SQLite-only feature removed in 3524066d.
+        A pure read-detect-persist step: it never touches neurons, synapses or
+        fibers, only the tag_cooccurrence/drift_clusters tables.
+
+        A dry run still detects — it reports how many clusters it WOULD have
+        saved and skips only the writes, matching ``_dedup``'s census-always /
+        write-never-on-dry-run shape. Returning 0 without looking would make a
+        preview of a clean brain indistinguishable from a preview of a drifting
+        one, which is the exact ambiguity this feature exists to remove.
+        """
+        from surreal_memory.engine.drift_clusters import refresh_drift_clusters
+
+        try:
+            report.drift_clusters_found = await refresh_drift_clusters(
+                self._storage, persist=not dry_run
+            )
+        except Exception:
+            logger.warning("Drift cluster detection failed", exc_info=True)
 
     async def _compress(
         self,

@@ -178,7 +178,6 @@
     "superseded": "Superseded",
     "expiring": "Expiring",
     "drift": "Drift Clusters",
-    "driftSqliteOnly": "Drift detection is SQLite-only.",
     "truncatedNote": "Low-trust and superseded reflect only the most-recent {{count}} scanned memories.",
     "fiberId": "Fiber",
     "trustScore": "Trust",

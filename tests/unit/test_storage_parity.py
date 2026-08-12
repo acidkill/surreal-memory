@@ -35,6 +35,12 @@ _CONTRACT = (
     "get_training_file_by_hash",
     "update_training_file_progress",
     "get_training_stats",
+    "record_tag_cooccurrence",
+    "get_tag_cooccurrence",
+    "get_tag_fiber_counts",
+    "save_drift_cluster",
+    "get_drift_clusters",
+    "resolve_drift_cluster",
 )
 
 # SharedStorage is a thin HTTP client against a remote server, with no local

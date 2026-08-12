@@ -887,9 +887,48 @@ class TestMCPToolCalls:
             "duplicates_found": 3,
             "new_alias_links": 1,
             "alias_links_existing": 1,
+            "drift_clusters_found": 0,
             "extra": {"alias_checks_failed": 1, "dedup_anchors_truncated": True},
         }
         assert "1 checks FAILED (state unknown)" in result["summary"]
+
+    @pytest.mark.asyncio
+    async def test_consolidate_exposes_drift_cluster_count(self, server: MCPServer) -> None:
+        """detect_drift's count must reach the caller in BOTH surfaces.
+
+        A bare 0 is ambiguous — "no drift exists" versus "detection never ran" —
+        which is the exact ambiguity this whole feature was rebuilt to remove.
+        Leaving the counter out of the machine-readable ``report`` (and out of
+        ``summary``) would have reinstated it one layer up from storage.
+        """
+        from surreal_memory.engine.consolidation import ConsolidationReport
+
+        report = ConsolidationReport(drift_clusters_found=2)
+
+        mock_storage = AsyncMock()
+        mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
+        mock_storage.get_brain = AsyncMock(
+            return_value=MagicMock(id="test-brain", name="test", config=MagicMock())
+        )
+
+        mock_delta = MagicMock()
+        mock_delta.to_dict.return_value = {"before": {}, "after": {}, "delta": {}}
+        mock_delta.report = report
+
+        with (
+            patch.object(server, "get_storage", return_value=mock_storage),
+            patch(
+                "surreal_memory.engine.consolidation_delta.run_with_delta",
+                new_callable=AsyncMock,
+                return_value=mock_delta,
+            ),
+        ):
+            result = await server.call_tool("smem_consolidate", {"strategy": "detect_drift"})
+
+        assert result["report"]["drift_clusters_found"] == 2
+        assert "Drift clusters found: 2" in result["summary"]
+        assert "Why nothing changed" not in result["summary"]
 
     @pytest.mark.asyncio
     async def test_consolidate_invalid_strategy(self, server: MCPServer) -> None:

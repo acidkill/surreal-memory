@@ -3,7 +3,7 @@
 ``build_uncertainty_block`` assembles a compact "how much should you trust this
 answer?" block from signals ALREADY at hand after a recall — disputed neurons,
 superseded facts among the returned fibers, low answer confidence, soon-expiring
-memories, and (SQLite-only) detected drift clusters intersecting the returned
+memories, and detected drift clusters intersecting the returned
 fibers' tags. Read-only + defensive: every source is guarded so a missing method
 or backend gap degrades to empty rather than raising. Returns None when there is
 no uncertainty signal, so recall only attaches the block when it means something.
@@ -108,7 +108,7 @@ async def _expiring(storage: Any, fiber_ids: list[str], within_days: int) -> lis
 
 
 async def _drift(storage: Any, tags: set[str]) -> list[dict[str, Any]]:
-    """Detected drift clusters intersecting the returned fibers' tags (SQLite-only)."""
+    """Detected drift clusters intersecting the returned fibers' tags."""
     getter = getattr(storage, "get_drift_clusters", None)
     if getter is None:
         return []
@@ -224,7 +224,7 @@ async def count_active_contradictions(storage: Any) -> tuple[int, bool]:
 
 
 async def get_detected_drift(storage: Any, limit: int = _TOP_N) -> list[dict[str, Any]]:
-    """Detected drift clusters (SQLite-only; [] on backends without get_drift_clusters)."""
+    """Detected drift clusters ([] before any detect_drift consolidation pass has run)."""
     getter = getattr(storage, "get_drift_clusters", None)
     if getter is None:
         return []
@@ -267,7 +267,7 @@ async def build_brain_uncertainty(storage: Any, within_days: int = 14) -> dict[s
     """Brain-wide uncertainty overview (the smem_uncertainty 'overview' shape).
 
     Reused by both the MCP tool and the dashboard route (server must not import mcp).
-    All sources bounded/guarded; drift is SQLite-only.
+    All sources bounded/guarded.
     """
     conflicts_active, contradictions_capped = await count_active_contradictions(storage)
     try:

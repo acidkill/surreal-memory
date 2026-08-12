@@ -123,8 +123,9 @@ test.describe("U6 Uncertainty page", () => {
     await expect(page.getByText(/fiber-aaaaaaaa-1/)).toBeVisible()
     await expect(page.getByText("0.20", { exact: true })).toBeVisible()
 
-    // Drift card shows its SQLite-only note because drift_clusters is empty & count === 0.
-    await expect(page.getByText("Drift detection is SQLite-only.")).toBeVisible()
+    // Drift card falls back to the generic empty-state note (no backend-limitation copy;
+    // drift detection now runs on every backend via the detect_drift consolidation strategy).
+    await expect(page.getByText("Nothing to show.")).toBeVisible()
 
     // No raw untranslated i18n keys should leak into the DOM.
     await expect(page.getByText(/uncertainty\.[a-zA-Z]/)).toHaveCount(0)

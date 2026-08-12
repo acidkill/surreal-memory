@@ -2188,6 +2188,60 @@ class NeuralStorage(ABC):
         """List pinned fibers for the current brain, newest first."""
         return []
 
+    # ========== Semantic Drift Detection ==========
+    #
+    # Port of the SQLite-only mixin removed in 3524066d — every caller probed
+    # for these six with getattr and quietly returned nothing, so drift
+    # detection always reported "clean" on the only backend the product
+    # ships. Declared concrete (not abstract) for the same reason as the
+    # Pinned block above: SharedStorage has no local tables, and these honest
+    # empty defaults are what the getattr probes already produced.
+
+    async def record_tag_cooccurrence(self, tags: set[str]) -> None:
+        """Record tag co-occurrence pairs from one fiber's merged tags.
+
+        Feeds ``engine/drift_clusters.py``'s Jaccard clustering. A backend
+        that no-ops here simply never accumulates drift-detection input.
+        """
+        return None
+
+    async def get_tag_cooccurrence(
+        self, min_count: int = 2, limit: int = 500
+    ) -> list[tuple[str, str, int]]:
+        """(tag_a, tag_b, pair_count) above threshold, count descending."""
+        return []
+
+    async def get_tag_fiber_counts(self) -> dict[str, int]:
+        """Fiber count per tag, for Jaccard's denominator."""
+        return {}
+
+    async def save_drift_cluster(
+        self,
+        cluster_id: str,
+        canonical: str,
+        members: list[str],
+        confidence: float,
+        status: str = "detected",
+    ) -> None:
+        """Upsert a detected drift cluster."""
+        return None
+
+    async def get_drift_clusters(
+        self, status: str | None = None, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        """Detected drift clusters, optionally filtered by status.
+
+        Consulted by ``engine/uncertainty_report.py`` and the dashboard's
+        Uncertainty page. A backend returning ``[]`` here reads as "no drift
+        detected" rather than "this backend never implemented it" — which is
+        exactly the ambiguity that made the feature invisible before this.
+        """
+        return []
+
+    async def resolve_drift_cluster(self, cluster_id: str, status: str) -> bool:
+        """Update a drift cluster's status (merged/aliased/dismissed)."""
+        return False
+
     # ========== Graph Statistics ==========
 
     async def get_graph_density(self) -> float:

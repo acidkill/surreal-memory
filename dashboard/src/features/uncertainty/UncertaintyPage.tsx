@@ -151,7 +151,6 @@ export default function UncertaintyPage() {
           count={counts?.drift_clusters}
           isLoading={isLoading}
           isEmpty={!samples?.drift_clusters.length}
-          emptyLabel={counts?.drift_clusters === 0 ? t("uncertainty.driftSqliteOnly") : undefined}
         >
           <SampleTable
             columns={[t("uncertainty.canonical"), t("uncertainty.confidence")]}
