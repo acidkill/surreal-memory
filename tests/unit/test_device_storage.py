@@ -409,6 +409,16 @@ class TestSurrealDBRecordIdBinding:
 
     @staticmethod
     def _store() -> Any:
+        from tests.unit._surrealdb_live import ensure_real_surrealdb_sdk
+
+        # A stub-installing test module elsewhere in the suite can leave
+        # sys.modules["surrealdb"] as a MagicMock in this worker (the exact
+        # "stub pollution" _surrealdb_live.py's own docstring documents and
+        # the live tests already guard against) -- heal it before importing
+        # store.py, or store.py's own lazy `from surrealdb import RecordID`
+        # binds to the mock too and these tests stop testing anything.
+        ensure_real_surrealdb_sdk()
+
         from surreal_memory.storage.surrealdb.store import SurrealDBStorage
 
         storage = SurrealDBStorage()
