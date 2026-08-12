@@ -81,7 +81,12 @@ profile_default/
 ipython_config.py
 
 # pyenv
-.python-version
+# NOTE: `.python-version` is deliberately NOT ignored. It is this repo's
+# interpreter pin, read by both uv and pyenv, and it has to reach a fresh
+# clone. Ignoring it (the default in most Python .gitignore templates) let
+# `uv sync` pick whatever interpreter happened to be on the machine, which is
+# how a dev environment ends up resolving dependencies for a Python newer than
+# the one `requires-python` floors at and `[tool.mypy] python_version` targets.
 
 # pipenv
 Pipfile.lock

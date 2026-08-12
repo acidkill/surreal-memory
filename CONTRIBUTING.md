@@ -10,8 +10,27 @@ Please be respectful and constructive in all interactions. We're building someth
 
 ### Prerequisites
 
-- Python 3.11 or higher
+- Python 3.11 — see "Interpreter version" below before you create the venv
 - Git
+
+### Interpreter version
+
+The package supports Python 3.11+ (`requires-python = ">=3.11"`), but the
+**development environment must be Python 3.11**, which is what CI type-checks
+and lints with. The repo pins it in `.python-version`; `uv` and `pyenv` both
+read that file, so `uv venv` / `uv sync` / `uv run` select 3.11 automatically
+(uv will download it if it is not installed).
+
+This is a pin, not a preference. `[tool.mypy] python_version` is `"3.11"`, so
+mypy parses *every* file it reads — including the type stubs inside installed
+third-party packages — with Python 3.11 syntax rules. Build the venv on a
+newer interpreter and the resolver is free to install distributions that are
+published for 3.12+ only, whose stubs may use syntax 3.11 cannot parse (PEP-695
+`type X = ...` statements, for example). `mypy src/` then fails inside
+`site-packages` on a tree where nothing is wrong with the code.
+
+If you are not using uv, create the venv from a 3.11 interpreter explicitly
+(`python3.11 -m venv .venv`).
 
 ### Setup Steps
 
@@ -25,7 +44,11 @@ Please be respectful and constructive in all interactions. We're building someth
 2. **Create a virtual environment**
 
    ```bash
-   python -m venv .venv
+   # Recommended — honors .python-version
+   uv venv
+
+   # Without uv, name the 3.11 interpreter explicitly
+   python3.11 -m venv .venv
 
    # Windows
    .venv\Scripts\activate
