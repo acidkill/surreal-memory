@@ -12,6 +12,8 @@ import pytest
 
 from surreal_memory.core.neuron import NeuronState
 from surreal_memory.engine.consolidation import ConsolidationReport
+from surreal_memory.storage.base import NeuralStorage
+from surreal_memory.storage.memory_store import InMemoryStorage
 from surreal_memory.utils.timeutils import utcnow
 
 # ── Hebbian Floor Tests ──
@@ -74,78 +76,160 @@ def _make_neuron_state(
     )
 
 
+async def _seeded_storage(states: list[NeuronState]) -> InMemoryStorage:
+    storage = InMemoryStorage()
+    storage.set_brain("b")
+    for state in states:
+        await storage.update_neuron_state(state)
+    return storage
+
+
+class TestDormantStateQuery:
+    """The dedicated dormant query — filtering and sampling belong in storage."""
+
+    @pytest.mark.asyncio
+    async def test_returns_only_dormant_states(self) -> None:
+        """Neurons with access_frequency > 0 are never returned."""
+        storage = await _seeded_storage(
+            [_make_neuron_state(f"d{i}", access_frequency=0) for i in range(3)]
+            + [_make_neuron_state(f"a{i}", access_frequency=3) for i in range(3)]
+        )
+
+        dormant = await storage.get_dormant_neuron_states(limit=20)
+
+        assert {s.neuron_id for s in dormant} == {"d0", "d1", "d2"}
+
+    @pytest.mark.asyncio
+    async def test_caps_at_limit(self) -> None:
+        """A brain whose dormant set dwarfs the limit still yields exactly limit rows."""
+        storage = await _seeded_storage(
+            [_make_neuron_state(f"n{i}", access_frequency=0) for i in range(50)]
+        )
+
+        dormant = await storage.get_dormant_neuron_states(limit=20)
+
+        assert len(dormant) == 20
+        assert len({s.neuron_id for s in dormant}) == 20
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_when_nothing_dormant(self) -> None:
+        storage = await _seeded_storage(
+            [_make_neuron_state(f"n{i}", access_frequency=1) for i in range(5)]
+        )
+
+        assert await storage.get_dormant_neuron_states(limit=20) == []
+
+    @pytest.mark.asyncio
+    async def test_sampling_is_randomized(self) -> None:
+        """Repeated calls must reach different slices, or replay starves the tail."""
+        storage = await _seeded_storage(
+            [_make_neuron_state(f"n{i}", access_frequency=0) for i in range(100)]
+        )
+
+        seen: set[str] = set()
+        for _ in range(5):
+            seen |= {s.neuron_id for s in await storage.get_dormant_neuron_states(limit=20)}
+
+        assert len(seen) > 20
+
+    @pytest.mark.asyncio
+    async def test_base_default_matches_backend_semantics(self) -> None:
+        """Backends that do not override still get filter + cap from the base class."""
+        states = [_make_neuron_state(f"d{i}", access_frequency=0) for i in range(30)]
+        states += [_make_neuron_state(f"a{i}", access_frequency=2) for i in range(5)]
+        storage = await _seeded_storage(states)
+
+        dormant = await NeuralStorage.get_dormant_neuron_states(storage, limit=20)
+
+        assert len(dormant) == 20
+        assert all(s.access_frequency == 0 for s in dormant)
+
+
 class TestDormantReactivation:
     @pytest.mark.asyncio
     async def test_reactivates_dormant_neurons(self) -> None:
         """Dormant neurons (access_frequency=0) should get a small activation bump."""
         from surreal_memory.engine.consolidation import ConsolidationEngine
 
-        storage = AsyncMock()
+        storage = await _seeded_storage(
+            [_make_neuron_state(f"n{i}", access_frequency=0) for i in range(5)]
+        )
         consolidator = ConsolidationEngine(storage)
-
-        dormant = [_make_neuron_state(f"n{i}", access_frequency=0) for i in range(5)]
-        storage.get_all_neuron_states.return_value = dormant
 
         report = ConsolidationReport()
         await consolidator._reactivate_dormant(report, dry_run=False)
 
         assert report.neurons_reactivated == 5
-        assert storage.update_neuron_state.call_count == 5
-
-        # Check that activation was bumped
-        first_call = storage.update_neuron_state.call_args_list[0][0][0]
-        assert first_call.activation_level == 0.35  # 0.3 + 0.05
-        assert first_call.access_frequency == 1
+        stored = await storage.get_all_neuron_states()
+        assert all(s.access_frequency == 1 for s in stored)
+        assert all(s.activation_level == 0.35 for s in stored)  # 0.3 + 0.05
 
     @pytest.mark.asyncio
     async def test_skips_active_neurons(self) -> None:
         """Neurons with access_frequency > 0 should not be reactivated."""
         from surreal_memory.engine.consolidation import ConsolidationEngine
 
-        storage = AsyncMock()
+        storage = await _seeded_storage(
+            [_make_neuron_state(f"n{i}", access_frequency=3) for i in range(5)]
+        )
         consolidator = ConsolidationEngine(storage)
-
-        active = [_make_neuron_state(f"n{i}", access_frequency=3) for i in range(5)]
-        storage.get_all_neuron_states.return_value = active
 
         report = ConsolidationReport()
         await consolidator._reactivate_dormant(report, dry_run=False)
 
         assert report.neurons_reactivated == 0
-        storage.update_neuron_state.assert_not_called()
+        stored = await storage.get_all_neuron_states()
+        assert all(s.activation_level == 0.3 for s in stored)
 
     @pytest.mark.asyncio
     async def test_caps_at_20_neurons(self) -> None:
         """Should reactivate at most 20 dormant neurons."""
         from surreal_memory.engine.consolidation import ConsolidationEngine
 
-        storage = AsyncMock()
+        storage = await _seeded_storage(
+            [_make_neuron_state(f"n{i}", access_frequency=0) for i in range(50)]
+        )
         consolidator = ConsolidationEngine(storage)
-
-        dormant = [_make_neuron_state(f"n{i}", access_frequency=0) for i in range(50)]
-        storage.get_all_neuron_states.return_value = dormant
 
         report = ConsolidationReport()
         await consolidator._reactivate_dormant(report, dry_run=False)
 
         assert report.neurons_reactivated == 20
+        reactivated = [s for s in await storage.get_all_neuron_states() if s.access_frequency > 0]
+        assert len(reactivated) == 20
+
+    @pytest.mark.asyncio
+    async def test_asks_storage_for_a_bounded_sample(self) -> None:
+        """The whole state table must never be pulled just to find dormant neurons."""
+        from surreal_memory.engine.consolidation import ConsolidationEngine
+
+        storage = AsyncMock()
+        storage.get_dormant_neuron_states.return_value = [
+            _make_neuron_state("n0", access_frequency=0)
+        ]
+        consolidator = ConsolidationEngine(storage)
+
+        await consolidator._reactivate_dormant(ConsolidationReport(), dry_run=False)
+
+        storage.get_all_neuron_states.assert_not_called()
+        storage.get_dormant_neuron_states.assert_awaited_once_with(limit=20)
 
     @pytest.mark.asyncio
     async def test_dry_run_counts_only(self) -> None:
         """Dry run should count but not update."""
         from surreal_memory.engine.consolidation import ConsolidationEngine
 
-        storage = AsyncMock()
+        storage = await _seeded_storage(
+            [_make_neuron_state(f"n{i}", access_frequency=0) for i in range(5)]
+        )
         consolidator = ConsolidationEngine(storage)
-
-        dormant = [_make_neuron_state(f"n{i}", access_frequency=0) for i in range(5)]
-        storage.get_all_neuron_states.return_value = dormant
 
         report = ConsolidationReport()
         await consolidator._reactivate_dormant(report, dry_run=True)
 
         assert report.neurons_reactivated == 5
-        storage.update_neuron_state.assert_not_called()
+        stored = await storage.get_all_neuron_states()
+        assert all(s.access_frequency == 0 for s in stored)
 
     @pytest.mark.asyncio
     async def test_handles_storage_error_gracefully(self) -> None:
@@ -154,7 +238,7 @@ class TestDormantReactivation:
 
         storage = AsyncMock()
         consolidator = ConsolidationEngine(storage)
-        storage.get_all_neuron_states.side_effect = RuntimeError("DB error")
+        storage.get_dormant_neuron_states.side_effect = RuntimeError("DB error")
 
         report = ConsolidationReport()
         await consolidator._reactivate_dormant(report, dry_run=False)

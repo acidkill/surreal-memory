@@ -38,6 +38,11 @@ logger = logging.getLogger(__name__)
 # the pass reports the total and flags the truncation instead of hiding it.
 _DEDUP_MAX_ANCHORS = 2000
 
+# How many dormant neurons one dream cycle replays. Kept small on purpose: the
+# point is a trickle of reactivation so nothing stays dormant forever, not a
+# sweep of the whole dormant set (which is most of a mature brain).
+_DORMANT_REPLAY_SAMPLE = 20
+
 
 class ConsolidationStrategy(StrEnum):
     """Available consolidation strategies."""
@@ -1650,22 +1655,19 @@ class ConsolidationEngine:
         from dataclasses import replace as dc_replace
 
         try:
-            # Fetch all states — TODO: add dedicated dormant query to storage interface
-            all_states = await self._storage.get_all_neuron_states()
+            # Filter and sample in storage: the dormant set is most of a mature
+            # brain, so pulling every state here just to keep 20 of them made a
+            # dream cycle scan the whole neuron_state table.
+            sample = await self._storage.get_dormant_neuron_states(limit=_DORMANT_REPLAY_SAMPLE)
         except Exception:
             logging.getLogger(__name__).debug(
                 "Failed to get neuron states for dream cycle", exc_info=True
             )
             return
 
-        dormant = [s for s in all_states if s.access_frequency == 0]
-        if not dormant:
+        if not sample:
             return
 
-        # Sample up to 20 dormant neurons (randomize to avoid always picking the same)
-        import random
-
-        sample = random.sample(dormant, min(20, len(dormant)))
         if dry_run:
             report.neurons_reactivated = len(sample)
             return

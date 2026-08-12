@@ -2943,6 +2943,25 @@ class SurrealDBStorage(
         )
         return [_row_to_neuron_state(r) for r in rows]
 
+    async def get_dormant_neuron_states(self, limit: int = 20) -> list[NeuronState]:
+        """Sample dormant (``access_frequency = 0``) states in a single query.
+
+        Consolidation's dream cycle only ever replays ~20 dormant neurons, but
+        the base implementation had to pull the whole ``neuron_state`` table to
+        find them: on a 127k-state brain that is 6.9 s and 127k materialized
+        objects to touch 20 rows. Filtering and sampling in the DB does it in
+        ~1.5 s with 20 rows on the wire. ``ORDER BY rand()`` keeps the sampling
+        uniform, which matters because reactivation is meant to reach a
+        different slice of the dormant set on every run.
+        """
+        brain_id = self._get_brain_id()
+        rows = await self._query(
+            "SELECT * FROM neuron_state"
+            f" WHERE brain_id = {_brain_literal(brain_id)} AND access_frequency = 0"
+            f" ORDER BY rand() LIMIT {int(limit)}",
+        )
+        return [_row_to_neuron_state(r) for r in rows]
+
     async def count_activated_neuron_states(self, brain_id: str | None = None) -> int:
         """Count neuron_states with access_frequency > 0 via a DB aggregate.
 

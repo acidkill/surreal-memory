@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
@@ -282,6 +283,28 @@ class NeuralStorage(ABC):
             List of all neuron states
         """
         raise NotImplementedError
+
+    async def get_dormant_neuron_states(self, limit: int = 20) -> list[NeuronState]:
+        """Get a random sample of dormant neuron states for the current brain.
+
+        Dormant means ``access_frequency == 0`` — a neuron that has never been
+        recalled since it was written. Consolidation replays a small sample of
+        those on every dream cycle, so only ``limit`` rows are ever needed; the
+        filter and the sampling belong in the query engine, not in the caller.
+
+        Default implementation materializes every state and samples in Python.
+        Backends should override to push the filter down.
+
+        Args:
+            limit: Maximum number of dormant states to return
+
+        Returns:
+            Up to ``limit`` dormant states, sampled without replacement
+        """
+        dormant = [s for s in await self.get_all_neuron_states() if s.access_frequency == 0]
+        if len(dormant) <= limit:
+            return dormant
+        return random.sample(dormant, limit)
 
     async def get_neuron_states_batch(self, neuron_ids: list[str]) -> dict[str, NeuronState]:
         """Get activation states for multiple neurons in one call.

@@ -8,6 +8,7 @@ SurrealDB is the supported backend (see ``docker-compose.surrealdb.yml``).
 
 from __future__ import annotations
 
+import random
 from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Any, Literal
@@ -221,6 +222,14 @@ class InMemoryStorage(
     async def get_all_neuron_states(self) -> list[NeuronState]:
         brain_id = self._get_brain_id()
         return list(self._states[brain_id].values())
+
+    async def get_dormant_neuron_states(self, limit: int = 20) -> list[NeuronState]:
+        """Sample dormant (never-recalled) states without copying the whole table."""
+        brain_id = self._get_brain_id()
+        dormant = [s for s in self._states[brain_id].values() if s.access_frequency == 0]
+        if len(dormant) <= limit:
+            return dormant
+        return random.sample(dormant, limit)
 
     async def suggest_neurons(
         self,
