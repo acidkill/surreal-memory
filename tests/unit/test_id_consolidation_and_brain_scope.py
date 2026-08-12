@@ -27,7 +27,9 @@ from __future__ import annotations
 import sys
 from unittest.mock import AsyncMock, MagicMock
 
-if "surrealdb" not in sys.modules:
+try:
+    import surrealdb  # noqa: F401
+except ImportError:  # pragma: no cover - CI unit env has no surrealdb SDK
     sys.modules["surrealdb"] = MagicMock()
     sys.modules["surrealdb.errors"] = MagicMock()
 
