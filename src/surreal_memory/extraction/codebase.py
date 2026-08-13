@@ -214,7 +214,16 @@ class PythonExtractor:
     def _extract_import(
         self, node: ast.Import | ast.ImportFrom, file_path: str
     ) -> tuple[list[CodeSymbol], list[CodeRelationship]]:
-        """Extract import symbols."""
+        """Extract import symbols.
+
+        run 013 (K5) fix: the relationship ``target`` is the symbol NAME that was
+        created (``alias.asname or alias.name``), NOT the dotted module path. The
+        encoder keys symbol neurons by that same name, so the previous code — which
+        set the target to ``alias.name`` for ``import X as Y`` and to
+        ``f"{module}.{alias.name}"`` for ``from M import N`` — never matched a key
+        in ``symbol_id_map`` and the import edge was silently dropped. The symbol
+        neuron IS the import; the edge must point at it.
+        """
         symbols: list[CodeSymbol] = []
         relationships: list[CodeRelationship] = []
 
@@ -231,17 +240,12 @@ class PythonExtractor:
                     )
                 )
                 relationships.append(
-                    CodeRelationship(
-                        source=file_path,
-                        target=alias.name,
-                        relation="imports",
-                    )
+                    CodeRelationship(source=file_path, target=name, relation="imports")
                 )
         else:
             module = node.module or ""
             for alias in node.names:
                 name = alias.asname or alias.name
-                full_target = f"{module}.{alias.name}" if module else alias.name
                 symbols.append(
                     CodeSymbol(
                         name=name,
@@ -252,12 +256,11 @@ class PythonExtractor:
                     )
                 )
                 relationships.append(
-                    CodeRelationship(
-                        source=file_path,
-                        target=full_target,
-                        relation="imports",
-                    )
+                    CodeRelationship(source=file_path, target=name, relation="imports")
                 )
+            # module is retained implicitly via the symbol's presence; the previous
+            # dotted target (f"{module}.{alias.name}") is what broke the edge.
+            _ = module  # documented: no longer used as a relationship target
 
         return symbols, relationships
 

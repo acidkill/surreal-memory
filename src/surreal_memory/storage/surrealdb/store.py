@@ -2181,11 +2181,20 @@ class SurrealDBStorage(
 
     async def get_stats(self, brain_id: str) -> dict[str, int]:
         # Inline the (validated) brain_id so the count() aggregates use the
-        # brain_id index instead of a full scan — see _brain_literal. The three
+        # brain_id index instead of a full scan — see _brain_literal. The
         # scans are independent, so run them concurrently.
         lit = _brain_literal(brain_id)
-        neuron_rows, synapse_rows, fiber_rows = await asyncio.gather(
+        neuron_rows, indexed_rows, synapse_rows, fiber_rows = await asyncio.gather(
             self._query(f"SELECT count() AS c FROM neuron WHERE brain_id = {lit} GROUP ALL"),
+            # Structural (code-index) neurons — metadata.indexed is set only by
+            # CodebaseIndexer. The idx_neuron_indexed index keeps this an indexed
+            # equality, not a scan. structural_neuron_count lets the diagnostics
+            # engine score connectivity on the organic subgraph without a separate
+            # metadata scan per call-site.
+            self._query(
+                f"SELECT count() AS c FROM neuron "
+                f"WHERE brain_id = {lit} AND metadata.indexed = true GROUP ALL"
+            ),
             self._query(f"SELECT count() AS c FROM synapse WHERE brain_id = {lit} GROUP ALL"),
             self._query(f"SELECT count() AS c FROM fiber WHERE brain_id = {lit} GROUP ALL"),
         )
@@ -2197,6 +2206,7 @@ class SurrealDBStorage(
 
         return {
             "neuron_count": _count(neuron_rows),
+            "structural_neuron_count": _count(indexed_rows),
             "synapse_count": _count(synapse_rows),
             "fiber_count": _count(fiber_rows),
         }
@@ -2268,6 +2278,35 @@ class SurrealDBStorage(
         if total_count > 0:
             synapse_stats["avg_weight"] = round(total_weight / total_count, 4)
         synapse_stats["total_reinforcements"] = total_reinforcements
+
+        # run 013 (connectivity honesty): count synapses on the ORGANIC subgraph
+        # — both endpoints non-indexed AND type not in the structural set
+        # (alias/audit). This is the variant-(c) numerator for connectivity:
+        # the type breakdown above is global, so a code-heavy brain's by_type is
+        # dominated by code-index edges that never carried a memory. The
+        # endpoint join uses the native RELATION in/out fields, each an indexed
+        # equality on the neuron record link. The structural type list is
+        # duplicated from DiagnosticsEngine._STRUCTURAL_SYNAPSE_TYPES to avoid a
+        # storage→engine circular import; keep the two in sync (a single source
+        # of truth would require a shared module — deferred, the set is stable).
+        _structural = ("alias", "stored_by", "verified_at", "approved_by", "source_of")
+        # Inline brain_id (validated by _brain_literal) so the planner uses the
+        # brain_id index — a parameterized $bid falls back to a full scan on the
+        # synapse table (see _brain_literal docstring). $stypes is a list param,
+        # which does not affect the brain_id index pick. Consistent with K2.
+        lit = _brain_literal(brain_id)
+        organic_rows = await self._query(
+            f"SELECT count() AS c FROM synapse "
+            f"WHERE brain_id = {lit} "
+            f"AND in.metadata.indexed != true "
+            f"AND out.metadata.indexed != true "
+            f"AND type NOT IN $stypes "
+            f"GROUP ALL",
+            stypes=list(_structural),
+        )
+        synapse_stats["organic_synapse_count"] = (
+            int(organic_rows[0].get("c", 0)) if organic_rows else 0
+        )
 
         # The remaining four fields mirror InMemoryStorage.get_enhanced_stats
         # (storage/memory_store.py) so both backends report the same shape.

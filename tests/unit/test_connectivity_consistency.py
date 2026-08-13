@@ -239,7 +239,8 @@ class TestHintsStateTheUnit:
 
         assert "semantic synapses/neuron" in hint
         assert "3-8 per neuron" in hint
-        assert "alias and audit edges excluded" in hint
+        # run 013: exclusion set now also names code-index edges.
+        assert "code-index edges excluded" in hint
         # "target: 3+" sat next to a number that could be a 0-1 score.
         assert "target: 3+" not in hint
 
@@ -256,7 +257,8 @@ class TestHintsStateTheUnit:
 
         assert "semantic synapses/neuron" in message
         assert "3-8 per neuron" in message
-        assert "alias and audit edges excluded" in message
+        # run 013: exclusion set now also names code-index edges.
+        assert "code-index edges excluded" in message
         # Alert routing keys off this prefix — keep it recognisable.
         assert message.startswith("Low connectivity (")
 

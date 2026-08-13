@@ -137,14 +137,21 @@ class MaintenanceHandler:
         fiber_count = stats.get("fiber_count", 0)
         neuron_count = stats.get("neuron_count", 0)
         synapse_count = stats.get("synapse_count", 0)
+        # run 013: structural/code-index neuron count from the live aggregate
+        # (K2). The connectivity denominator is the organic remainder.
+        structural_neuron_count = stats.get("structural_neuron_count", 0)
+        connectivity_neuron_count = max(0, neuron_count - structural_neuron_count)
 
-        # Connectivity describes the semantic graph, never write volume. alias rows
-        # are dedup pointers written once per repeated mention and audit edges point
-        # at agents/sources, so on a real brain 89% of the table was plumbing — enough
-        # to keep both the enrich hint and the auto-dream trigger below silent on a
-        # graph that actually held 1.4 semantic edges/neuron. The exclusion set lives
-        # in DiagnosticsEngine so this pulse and smem_health can never disagree.
+        # Connectivity describes the semantic ORGANIC graph, never write volume
+        # and never code-index volume. alias rows are dedup pointers, audit edges
+        # point at agents/sources, and code-index edges link two indexed neurons in
+        # one source file — on a real brain 89% of the table was plumbing. Counted
+        # against the full neuron total that plumbing kept both the enrich hint and
+        # the auto-dream trigger below silent on a graph that held 1.4 real
+        # edges/neuron. The exclusion lives in DiagnosticsEngine + the storage
+        # organic_synapse_count so this pulse and smem_health can never disagree.
         semantic_synapse_count = synapse_count
+        organic_synapse_count = synapse_count
         try:
             from surreal_memory.engine.diagnostics import DiagnosticsEngine
 
@@ -154,15 +161,29 @@ class MaintenanceHandler:
                 enhanced = await storage.get_enhanced_stats(brain_id, include_neuron_types=False)
             except TypeError:
                 enhanced = await storage.get_enhanced_stats(brain_id)
+            syn_stats = enhanced.get("synapse_stats", {})
             semantic_synapse_count = DiagnosticsEngine._count_semantic_synapses(
-                synapse_count, enhanced.get("synapse_stats", {})
+                synapse_count, syn_stats
             )
+            # organic_synapse_count = both-endpoints-organic AND non-structural type
+            # (variant c). Falls back to the type-filtered count when the backend
+            # cannot answer the endpoint join — over-reporting connectivity only
+            # ever withholds a hint, never invents a false alarm.
+            osc = syn_stats.get("organic_synapse_count")
+            if osc is not None:
+                organic_synapse_count = int(osc)
+            else:
+                organic_synapse_count = semantic_synapse_count
         except Exception:
             # Keep the pulse alive on the raw total. That can only over-report
             # connectivity (fewer hints), never invent a false low-connectivity alarm.
             logger.debug("Health pulse: synapse type breakdown unavailable", exc_info=True)
 
-        connectivity = semantic_synapse_count / neuron_count if neuron_count > 0 else 0.0
+        connectivity = (
+            organic_synapse_count / connectivity_neuron_count
+            if connectivity_neuron_count > 0
+            else 0.0
+        )
 
         # Estimate orphan ratio: neurons not covered by fibers
         # Heuristic: each fiber typically creates ~5 neurons
@@ -287,10 +308,12 @@ class MaintenanceHandler:
 
         Dream exploration discovers hidden connections via random spreading
         activation. Only fires when:
-        - connectivity < 1.5 SEMANTIC synapses/neuron (alias and audit edges do
-          not count — a brain whose edges are all dedup plumbing needs dream MORE,
-          not less, so counting them here suppressed the trigger that was meant
-          to rescue exactly that brain)
+        - connectivity < 1.5 ORGANIC synapses/neuron — both endpoints organic,
+          code-index edges excluded (run 013). A brain whose ORGANIC memory
+          graph is thin needs dream MORE not less; the old code-index-inflated
+          total both invented false alarms on healthy organic brains and masked
+          the real thin ones. The 1.5 threshold is the same — it now reads the
+          honest organic number.
         - neuron_count >= 50
         - dream cooldown has expired (default 24h)
         """
@@ -501,7 +524,7 @@ def _evaluate_thresholds(
         hints.append(
             HealthHint(
                 message=f"Low connectivity ({connectivity:.1f} semantic synapses/neuron, "
-                "healthy: 3-8 per neuron; alias and audit edges excluded). "
+                "healthy: 3-8 per neuron; alias, audit and code-index edges excluded). "
                 "Consider running consolidation with enrich strategy.",
                 severity=HintSeverity.LOW,
                 recommended_strategy="enrich",

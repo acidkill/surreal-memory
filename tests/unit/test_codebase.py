@@ -150,11 +150,15 @@ class TestPythonExtractor:
         assert "os" in import_names
         assert "Path" in import_names
 
-        # Check import relationships
+        # Check import relationships. run 013 (K5): the relationship target is
+        # the imported SYMBOL name (the neuron the encoder creates), not the
+        # dotted module path — so "from pathlib import Path" yields target
+        # "Path", not "pathlib.Path". The dotted form never matched the encoder's
+        # symbol_id_map key, so the import edge was silently dropped before.
         import_rels = [r for r in relationships if r.relation == "imports"]
         import_targets = {r.target for r in import_rels}
         assert "os" in import_targets
-        assert "pathlib.Path" in import_targets
+        assert "Path" in import_targets
 
     def test_extract_constants(self, extractor: PythonExtractor, sample_file: Path) -> None:
         """Finds SCREAMING_SNAKE top-level assigns."""

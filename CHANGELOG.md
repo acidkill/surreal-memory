@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.5.0] — 2026-08-13 — connectivity honesty: code-index excluded from the metric
+
+### Changed — connectivity is now scored on the organic subgraph
+
+- **Code-index neurons and edges no longer inflate connectivity.** `structural_neuron_count`
+  (code-index neurons, `metadata.indexed = true`) is now a live indexed aggregate, and
+  `connectivity` divides the organic synapse count by the organic neuron count. The
+  numerator counts a synapse only when **both** endpoints are organic (the code-index
+  synapse types `contains` / `co_occurs` / `is_a` / `related_to` are shared with the
+  organic encoder, so they are filtered by endpoint, not by type). `activation_efficiency`,
+  `consolidation_ratio` and `freshness` likewise exclude structural/code-index volume.
+  `orphan_rate`, `diversity` and `recall_confidence` are unchanged.
+
+> **The pre-change purity score is NOT comparable to the post-change one — and unlike the
+> 2.15.0 alias fix, it moves the OTHER way.** 2.15.0 dropped alias edges and *lowered*
+> purity (the brain had less connectivity than advertised). 3.5.0 drops code-index edges
+> and *raises* purity on code-heavy brains: the organic memory graph was healthier than the
+> code-index-inflated denominator suggested. A brain that reported a thin-graph grade purely
+> because half its neurons were code-index leaves will jump. Do not read this as new
+> connectivity — it is the same graph, measured honestly.
+
+### Changed — codebase indexer
+
+- **Co-occurrence edges are now capped by an edge budget, not a symbol count.** Files with
+  more than 5 symbols previously got **zero** co-occurrence edges (the `<= 5` guard skipped
+  the whole block); now every file gets up to 20, choosing the closest symbol pairs by line
+  proximity.
+- **Import edges now connect.** The relationship target for `from M import N` and
+  `import X as Y` was the dotted module path / original name, which never matched the
+  encoder's symbol-id key — so import synapses were silently dropped. The target is now the
+  imported symbol name.
+
+### Added
+
+- `structural_neuron_count` and `connectivity_neuron_count` surfaced on the health report
+  and the dashboard payload, so a purity move the raw counts can't explain is attributable.
+- `_is_structural_neuron(metadata)` helper on `DiagnosticsEngine` — the single extension
+  point for future structural-neuron classes.
+
 ## [3.4.0] — 2026-08-13 — dedup honesty, native drift detection, and a 3D graph
 
 ### Added

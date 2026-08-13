@@ -53,6 +53,15 @@ _RELATION_TO_SYNAPSE: dict[str, tuple[SynapseType, float]] = {
     "co_occurs": (SynapseType.CO_OCCURS, 0.5),
 }
 
+# run 013 (K5): cap the NUMBER of co-occurrence EDGES per file, not the number
+# of symbols. The previous `max_co_occurs = 5` check skipped co-occurrence
+# entirely for any file with more than 5 symbols — i.e. almost every real file
+# — so large files contributed zero intra-file structure to the graph. This
+# budget keeps the O(n²) worst case bounded while always emitting SOME edges:
+# pairs are ordered by line proximity (symbols defined near each other co-occur
+# more meaningfully) and the closest pairs win the budget.
+_MAX_CO_OCCUR_EDGES = 20
+
 _DEFAULT_EXTENSIONS: frozenset[str] = frozenset(
     {
         ".py",
@@ -190,19 +199,29 @@ class CodebaseEncoder:
             )
             synapses_created.append(synapse)
 
-        # 4. Create co-occurrence synapses (capped to avoid O(n²) explosion)
+        # 4. Create co-occurrence synapses, capped by an EDGE budget (run 013 K5).
+        #    Previously a file with >5 symbols got ZERO co-occurrence edges; now
+        #    every file gets up to _MAX_CO_OCCUR_EDGES, choosing the closest pairs
+        #    by line number (nearby symbols co-occur more meaningfully than ones
+        #    hundreds of lines apart).
         symbol_neurons = neurons_created[1:]  # Skip file neuron
-        max_co_occurs = 5  # Max files: create all pairs; large files: skip
-        if len(symbol_neurons) <= max_co_occurs:
+        if symbol_neurons:
+            pairs = []
             for i, neuron_a in enumerate(symbol_neurons):
+                line_a = int(neuron_a.metadata.get("line_start", 0))
                 for neuron_b in symbol_neurons[i + 1 :]:
-                    synapse = Synapse.create(
-                        source_id=neuron_a.id,
-                        target_id=neuron_b.id,
-                        type=SynapseType.CO_OCCURS,
-                        weight=0.5,
-                    )
-                    synapses_created.append(synapse)
+                    line_b = int(neuron_b.metadata.get("line_start", 0))
+                    pairs.append((abs(line_a - line_b), neuron_a, neuron_b))
+            # Closest pairs first; ties broken by neuron id for determinism.
+            pairs.sort(key=lambda p: (p[0], p[1].id, p[2].id))
+            for _dist, neuron_a, neuron_b in pairs[:_MAX_CO_OCCUR_EDGES]:
+                synapse = Synapse.create(
+                    source_id=neuron_a.id,
+                    target_id=neuron_b.id,
+                    type=SynapseType.CO_OCCURS,
+                    weight=0.5,
+                )
+                synapses_created.append(synapse)
 
         # 5. Bundle into fiber
         neuron_ids = {n.id for n in neurons_created}

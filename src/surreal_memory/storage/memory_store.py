@@ -466,8 +466,12 @@ class InMemoryStorage(
     # ========== Statistics ==========
 
     async def get_stats(self, brain_id: str) -> dict[str, int]:
+        structural = sum(
+            1 for n in self._neurons[brain_id].values() if bool(n.metadata.get("indexed"))
+        )
         return {
             "neuron_count": len(self._neurons[brain_id]),
+            "structural_neuron_count": structural,
             "synapse_count": len(self._synapses[brain_id]),
             "fiber_count": len(self._fibers[brain_id]),
             "project_count": len(self._projects[brain_id]),
@@ -518,10 +522,24 @@ class InMemoryStorage(
         }
         by_type: dict[str, list[float]] = {}
         total_reinforcements = 0
+        # run 013: organic-subgraph synapse count (variant c — both endpoints
+        # non-indexed AND type not structural). Mirrors the SurrealDB endpoint
+        # join; keep the structural-type set in sync with DiagnosticsEngine.
+        _structural = {"alias", "stored_by", "verified_at", "approved_by", "source_of"}
+        indexed_ids = {
+            nid for nid, n in self._neurons[brain_id].items() if bool(n.metadata.get("indexed"))
+        }
+        organic_synapse_count = 0
         for synapse in self._synapses[brain_id].values():
             t = synapse.type.value
             by_type.setdefault(t, []).append(synapse.weight)
             total_reinforcements += synapse.reinforced_count
+            if (
+                t not in _structural
+                and synapse.source_id not in indexed_ids
+                and synapse.target_id not in indexed_ids
+            ):
+                organic_synapse_count += 1
 
         all_weights: list[float] = []
         for t, weights in by_type.items():
@@ -536,6 +554,7 @@ class InMemoryStorage(
         if all_weights:
             synapse_stats["avg_weight"] = round(sum(all_weights) / len(all_weights), 4)
         synapse_stats["total_reinforcements"] = total_reinforcements
+        synapse_stats["organic_synapse_count"] = organic_synapse_count
 
         # Memory time range
         fibers = list(self._fibers[brain_id].values())

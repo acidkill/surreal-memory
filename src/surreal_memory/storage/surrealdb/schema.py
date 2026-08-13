@@ -53,6 +53,10 @@ DEFINE FIELD lifecycle_state ON neuron TYPE string DEFAULT 'active';
 DEFINE FIELD frozen          ON neuron TYPE bool DEFAULT false;
 DEFINE FIELD last_accessed_at ON neuron TYPE option<datetime>;
 DEFINE INDEX idx_neuron_brain    ON neuron FIELDS brain_id;
+-- Accelerates the structural_neuron_count aggregate (COUNT WHERE metadata.indexed = true)
+-- used by DiagnosticsEngine to score connectivity on the organic subgraph only.
+-- Without this index the count full-scans the neuron table on every get_stats call.
+DEFINE INDEX IF NOT EXISTS idx_neuron_indexed ON neuron FIELDS metadata.indexed;
 DEFINE INDEX idx_neuron_type     ON neuron FIELDS brain_id, type;
 DEFINE INDEX idx_neuron_hash     ON neuron FIELDS brain_id, content_hash;
 DEFINE INDEX idx_neuron_content  ON neuron FIELDS brain_id, content;

@@ -293,6 +293,13 @@ class BrainHealthReport:
     # raw table total. Kept separate so a dashboard can show both without guessing.
     semantic_synapse_count: int = 0
 
+    # Structural (code-index) neuron count and the organic remainder used as the
+    # connectivity denominator (run 013). A dashboard needs both to explain why
+    # `connectivity` moved independently of `synapse_count`: the denominator
+    # changed, not the graph.
+    structural_neuron_count: int = 0
+    connectivity_neuron_count: int = 0
+
     # Maturation visibility (run 010 / D2): consolidation_ratio alone cannot
     # explain itself -- these two answer "what does the stage breakdown look
     # like" and "of the fibers not yet semantic, which gate is blocking them".
@@ -336,6 +343,10 @@ def build_health_payload(report: BrainHealthReport, *, brain: str) -> dict[str, 
         "neuron_count": report.neuron_count,
         "synapse_count": report.synapse_count,
         "fiber_count": report.fiber_count,
+        # run 013: connectivity is scored on the organic subgraph. Exposing both
+        # counts lets a dashboard explain a purity move that the raw counts can't.
+        "structural_neuron_count": report.structural_neuron_count,
+        "connectivity_neuron_count": report.connectivity_neuron_count,
         "contradiction_count": report.contradiction_count,
         "conflict_rate": report.conflict_rate,
         "warnings": [
@@ -413,6 +424,15 @@ class DiagnosticsEngine:
     # in_row / in_column stay for the same reason — table structure links content to
     # content. The test is "does traversing this edge return meaning?", not "did a
     # human type it?".
+    #
+    # NOTE (run 013): the code-index synapse TYPES (contains / co_occurs / is_a /
+    # related_to) are NOT added here. They are shared with the organic encoder —
+    # consolidation, dream, enrichment, db_knowledge and others all emit them
+    # between organic neurons — so excluding by type would drop real semantic
+    # edges. The code-index edges are filtered instead by ENDPOINT: a synapse is
+    # structural when either endpoint is an indexed neuron. See
+    # _count_organic_synapses / connectivity_neuron_count (K2/K3) and
+    # DECISIONS.md variant (c).
     _STRUCTURAL_SYNAPSE_TYPES: frozenset[str] = frozenset(
         {
             SynapseType.ALIAS.value,
@@ -422,6 +442,22 @@ class DiagnosticsEngine:
             SynapseType.SOURCE_OF.value,
         }
     )
+
+    @staticmethod
+    def _is_structural_neuron(metadata: dict[str, Any] | None) -> bool:
+        """Central predicate: is this neuron structural (code-index plumbing)?
+
+        The single place to extend when a new class of non-memory neuron lands.
+        Today the only structural neurons are code-index leaves emitted by
+        ``CodebaseIndexer`` (``metadata["indexed"] = True``). Connectivity and
+        activation score against the organic remainder
+        (``connectivity_neuron_count = neuron_count - structural_neuron_count``);
+        the synapse-side filter is endpoint-based (variant c, DECISIONS.md):
+        a synapse counts only when BOTH endpoints are organic.
+        """
+        if not metadata:
+            return False
+        return bool(metadata.get("indexed"))
 
     def __init__(self, storage: NeuralStorage) -> None:
         self._storage = storage
@@ -456,6 +492,14 @@ class DiagnosticsEngine:
         neuron_count: int = enhanced.get("neuron_count", 0)
         synapse_count: int = enhanced.get("synapse_count", 0)
         fiber_count: int = enhanced.get("fiber_count", 0)
+        # Structural (code-index) neuron count — maintained as a live indexed
+        # aggregate by the storage backend (see get_stats). Used to score
+        # connectivity on the organic subgraph: a code-index neuron is a leaf
+        # in a per-file tree, never the endpoint of a memory the user cares
+        # about, so including it in the denominator deflates connectivity.
+        # See DECISIONS.md (run 013, K1) — variant (c): both endpoints organic.
+        structural_neuron_count: int = enhanced.get("structural_neuron_count", 0)
+        connectivity_neuron_count = max(0, neuron_count - structural_neuron_count)
 
         # Early return for empty brain
         if neuron_count == 0 or fiber_count == 0:
@@ -494,25 +538,47 @@ class DiagnosticsEngine:
 
         (
             fibers,
-            consolidation_ratio,
             activation_efficiency,
             connected,
             stage_distribution,
             semantic_gate_blockers,
         ) = await asyncio.gather(
             self._storage.get_fibers(limit=10000),
-            self._compute_consolidation_ratio(fiber_count),
-            self._compute_activation_efficiency(neuron_count),
+            # run 013: activation efficiency is scored against the ORGANIC brain
+            # — indexed neurons are never recalled (access_frequency stays 0), so
+            # including them deflates the ratio on code-heavy brains.
+            self._compute_activation_efficiency(connectivity_neuron_count),
             _connected_or_none(),
             _stage_distribution_or_none(),
             _semantic_gate_blockers_or_none(),
         )
 
+        # run 013: consolidation ratio over the ORGANIC fiber count. Computed
+        # after the gather because it depends on `fibers` (the code_index tag
+        # filter), which the gather just returned. Code-index fibers never
+        # mature, so including them deflated the ratio on code-heavy brains.
+        organic_fiber_count = sum(1 for f in fibers if "code_index" not in (f.tags or set()))
+        consolidation_ratio = await self._compute_consolidation_ratio(
+            fiber_count, organic_fiber_count
+        )
+
         # Score connectivity on the semantic graph only — see _STRUCTURAL_SYNAPSE_TYPES.
         semantic_synapse_count = self._count_semantic_synapses(synapse_count, synapse_stats)
-        connectivity = self._compute_connectivity(semantic_synapse_count, neuron_count)
+        # K2/K3 (run 013): connectivity is scored on the ORGANIC subgraph.
+        # Denominator = organic neuron count (K2). Numerator = organic synapse
+        # count: both endpoints non-indexed AND type not structural (variant c,
+        # DECISIONS.md). The endpoint filter is what makes this honest — the
+        # code-index synapse types (contains/co_occurs/is_a/related_to) are
+        # shared with the organic encoder, so a type-only filter would drop real
+        # semantic edges. Falls back to the type-filtered count when the backend
+        # cannot answer the endpoint join (older backends / mocks).
+        organic_synapse_count = int(synapse_stats.get("organic_synapse_count", -1))
+        if organic_synapse_count < 0:
+            organic_synapse_count = semantic_synapse_count
+        connectivity = self._compute_connectivity(organic_synapse_count, connectivity_neuron_count)
         diversity = self._compute_diversity(synapse_stats)
-        freshness = self._compute_freshness(fibers)
+        # run 013: freshness on the organic fiber set only.
+        freshness = self._compute_freshness(fibers, organic_only=True)
         orphan_rate = await self._compute_orphan_rate(neuron_count, fibers, connected=connected)
         recall_confidence = self._compute_recall_confidence(synapse_stats)
 
@@ -547,7 +613,9 @@ class DiagnosticsEngine:
 
         # Generate warnings and recommendations. The ratio quoted to the user must be
         # the one the score was computed from, otherwise the text and the bar disagree.
-        raw_connectivity = semantic_synapse_count / max(neuron_count, 1)
+        # Use the organic numerator AND denominator so the quoted ratio matches the
+        # 0-1 score, which is also computed on the organic subgraph (run 013).
+        raw_connectivity = organic_synapse_count / max(connectivity_neuron_count, 1)
         warnings, recommendations = self._generate_diagnostics(
             neuron_count=neuron_count,
             synapse_count=synapse_count,
@@ -576,6 +644,8 @@ class DiagnosticsEngine:
         by_type = synapse_stats.get("by_type", {})
         penalty_metrics = {
             "neuron_count": neuron_count,
+            "structural_neuron_count": structural_neuron_count,
+            "connectivity_neuron_count": connectivity_neuron_count,
             "synapse_count": synapse_count,
             "semantic_synapse_count": semantic_synapse_count,
             "fiber_count": fiber_count,
@@ -607,6 +677,8 @@ class DiagnosticsEngine:
             contradiction_count=contradicts_count,
             conflict_rate=round(conflict_rate, 4),
             semantic_synapse_count=semantic_synapse_count,
+            structural_neuron_count=structural_neuron_count,
+            connectivity_neuron_count=connectivity_neuron_count,
             stage_distribution=stage_distribution,
             semantic_gate_blockers=semantic_gate_blockers,
         )
@@ -681,8 +753,16 @@ class DiagnosticsEngine:
         return min(1.0, entropy / max_entropy)
 
     @staticmethod
-    def _compute_freshness(fibers: list[Any]) -> float:
-        """Compute fraction of fibers accessed/created in last 7 days."""
+    def _compute_freshness(fibers: list[Any], organic_only: bool = False) -> float:
+        """Compute fraction of fibers accessed/created in last 7 days.
+
+        run 013: when ``organic_only`` is set, code-index fibers are excluded —
+        a bulk re-index touches every source file and stamps them all recent,
+        which otherwise reports a brain with 20k indexed fibers as maximally
+        fresh even when no real memory was stored in a week.
+        """
+        if organic_only:
+            fibers = [f for f in fibers if "code_index" not in (f.tags or set())]
         if not fibers:
             return 0.0
 
@@ -691,14 +771,23 @@ class DiagnosticsEngine:
         fresh_count = sum(1 for f in fibers if (f.last_conducted or f.created_at) >= cutoff)
         return fresh_count / len(fibers)
 
-    async def _compute_consolidation_ratio(self, fiber_count: int) -> float:
-        """Compute fraction of fibers that reached SEMANTIC stage."""
-        if fiber_count == 0:
+    async def _compute_consolidation_ratio(
+        self, fiber_count: int, organic_fiber_count: int | None = None
+    ) -> float:
+        """Compute fraction of fibers that reached SEMANTIC stage.
+
+        run 013: scores against the ORGANIC fiber count when available —
+        code-index fibers never mature past their initial stage, so including
+        them in the denominator deflates the ratio on code-heavy brains.
+        Falls back to the total when the organic count is unknown.
+        """
+        denom = organic_fiber_count if organic_fiber_count is not None else fiber_count
+        if denom == 0:
             return 0.0
         semantic_records = await self._storage.find_maturations(
             stage=MemoryStage.SEMANTIC,
         )
-        return len(semantic_records) / fiber_count
+        return len(semantic_records) / denom
 
     async def _compute_orphan_rate(
         self,

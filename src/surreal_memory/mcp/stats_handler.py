@@ -190,23 +190,34 @@ class StatsHandler:
         except Exception:
             logger.debug("Activation check failed (non-critical)", exc_info=True)
 
-        # Low connectivity hint. Counted on the semantic graph only, using the same
-        # exclusion set as smem_health — alias/audit rows scale with write volume,
-        # not with what is known, so including them made this hint quote a ratio
-        # (13.5/neuron on a real brain) that contradicted the health report's 1.4
-        # for the same brain. Falls back to the raw total when a caller passes plain
-        # get_stats() output with no by_type breakdown.
-        if neuron_count > 0:
-            from surreal_memory.engine.diagnostics import DiagnosticsEngine
+        # Low connectivity hint. Counted on the ORGANIC semantic graph, using the
+        # same exclusion as smem_health (run 013): code-index edges (indexed↔indexed
+        # within one source file) and alias/audit rows are structural — including
+        # them made this hint quote a ratio (13.5/neuron on a real brain) that
+        # contradicted the health report's 1.4 for the same brain, and fired false
+        # alarms on code-heavy brains whose organic graph was healthy. The organic
+        # count comes from synapse_stats; connectivity_neuron_count is the organic
+        # remainder of the neuron total. Falls back to the type-filtered count over
+        # the full neuron total when the backend cannot answer the endpoint join.
+        from surreal_memory.engine.diagnostics import DiagnosticsEngine
 
-            semantic_synapse_count = DiagnosticsEngine._count_semantic_synapses(
-                synapse_count, stats.get("synapse_stats", {})
+        structural_neuron_count = int(stats.get("structural_neuron_count", 0))
+        connectivity_neuron_count = max(0, neuron_count - structural_neuron_count)
+        syn_stats = stats.get("synapse_stats", {})
+        organic_synapse_count = syn_stats.get("organic_synapse_count")
+        if organic_synapse_count is None:
+            organic_synapse_count = DiagnosticsEngine._count_semantic_synapses(
+                synapse_count, syn_stats
             )
-            connectivity = semantic_synapse_count / neuron_count
-            if connectivity < 2.0 and neuron_count >= 20:
+            organic_denom = neuron_count
+        else:
+            organic_denom = connectivity_neuron_count
+        if organic_denom > 0:
+            connectivity = int(organic_synapse_count) / organic_denom
+            if connectivity < 2.0 and organic_denom >= 20:
                 hints.append(
                     f"Low connectivity ({connectivity:.1f} semantic synapses/neuron, "
-                    "healthy: 3-8 per neuron; alias and audit edges excluded). "
+                    "healthy: 3-8 per neuron; alias, audit and code-index edges excluded). "
                     "Store memories with context like 'X because Y' to build richer links."
                 )
 
