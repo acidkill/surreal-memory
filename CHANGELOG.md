@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **`smem consolidate` "Connection reset by peer" loop (port exhaustion).** The
+  surrealdb SDK's HTTP transport opens a brand-new TCP connection for every RPC
+  (`async with aiohttp.ClientSession()` per `_send`). Consolidation strategies
+  that issue tens of thousands of small queries (`compress`, `semantic_link`)
+  exhausted the ephemeral port range within minutes — measured 39,720 sockets in
+  TIME_WAIT against the DB port — after which the kernel RST'd every new
+  connection, including the SDK's own reconnect/signin, and the client spun in
+  `[Errno 104] Connection reset by peer` forever. The store now rewrites
+  `http(s)://` URLs to `ws(s)://` so the SDK multiplexes all RPCs over one
+  persistent WebSocket connection (verified live: `compress` on a 6.5k-fiber
+  brain completes in ~36 s with **zero** TIME_WAIT sockets; previously it never
+  completed). An explicit `ws://`/`wss://`/embedded URL always passes through
+  unchanged.
+
 ## [3.5.0] — 2026-08-13 — connectivity honesty: code-index excluded from the metric
 
 ### Changed — connectivity is now scored on the organic subgraph

@@ -152,6 +152,32 @@ _BRAIN_ID_SAFE = re.compile(r"^[a-zA-Z0-9_.\-]+$")
 # sockets).
 _BATCH_FETCH_CONCURRENCY = 16
 
+
+def _prefer_ws_transport(url: str) -> str:
+    """Rewrite http(s):// URLs to ws(s):// for the SDK connection.
+
+    The surrealdb SDK's HTTP transport opens a brand-new aiohttp.ClientSession
+    (a brand-new TCP connection) for every single RPC call -- there is no
+    connection pool and no keep-alive reuse. Workloads that issue many small
+    queries (consolidation's compress/semantic_link run per-id batch selects
+    and per-row writes across tens of thousands of records) exhaust the
+    ephemeral port range within minutes: measured 39,720 sockets stuck in
+    TIME_WAIT against :8001, after which the kernel RSTs every new connection
+    -- including the SDK's own reconnect/signin -- and the client spins in
+    "Connection reset by peer" forever (the long-standing `smem consolidate`
+    failure). The WebSocket transport multiplexes all RPCs over one
+    persistent connection and eliminates the port churn entirely.
+
+    Callers that already pass ws:// or wss:// (or a non-http scheme) are
+    returned unchanged, so an explicit override always wins.
+    """
+    if url.startswith("http://"):
+        return "ws://" + url[len("http://"):]
+    if url.startswith("https://"):
+        return "wss://" + url[len("https://"):]
+    return url
+
+
 # Rows per multi-statement write round-trip (update_synapses_batch /
 # update_neuron_states_batch). Matches the ~500 already proven by
 # update_neuron_embeddings: big enough that the per-round-trip cost (~2ms of
@@ -523,7 +549,7 @@ class SurrealDBStorage(
         from surreal_memory.storage.surrealdb.connection import SurrealSettings
 
         settings = SurrealSettings.from_env()
-        self._url = url or settings.url
+        self._url = _prefer_ws_transport(url or settings.url)
         self._namespace = namespace or settings.namespace
         self._database = database or settings.database
         self._user = user or settings.user
