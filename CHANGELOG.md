@@ -17,9 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   connection, including the SDK's own reconnect/signin, and the client spun in
   `[Errno 104] Connection reset by peer` forever. The store now rewrites
   `http(s)://` URLs to `ws(s)://` so the SDK multiplexes all RPCs over one
-  persistent WebSocket connection (verified live: `compress` on a 6.5k-fiber
-  brain completes in ~36 s with **zero** TIME_WAIT sockets; previously it never
-  completed). An explicit `ws://`/`wss://`/embedded URL always passes through
+  persistent WebSocket connection. Measured on the same workload, the WebSocket
+  transport opens **zero** additional sockets where the HTTP transport opened two
+  per query, and the consolidation pass that previously never completed now
+  finishes. An explicit `ws://`/`wss://`/embedded URL always passes through
   unchanged.
 
 ## [3.5.0] — 2026-08-13 — connectivity honesty: code-index excluded from the metric
