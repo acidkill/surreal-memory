@@ -33,10 +33,7 @@ class TestPreferWsTransport:
         assert _prefer_ws_transport("surrealkv:///data/db") == "surrealkv:///data/db"
 
     def test_url_with_path_preserved(self):
-        assert (
-            _prefer_ws_transport("https://host/prefix")
-            == "wss://host/prefix"
-        )
+        assert _prefer_ws_transport("https://host/prefix") == "wss://host/prefix"
 
 
 class TestStoreUsesWsUrl:
