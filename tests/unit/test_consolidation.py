@@ -784,3 +784,63 @@ async def test_merge_never_removes_reasoning_pattern_fiber() -> None:
         if f.id in {"pattern-1", "pattern-2"}:
             assert f.metadata.get("_source_model") == "claude-fable-5"
             assert f.metadata.get("_reasoning_category") == "debugging"
+
+
+@pytest.mark.asyncio
+async def test_merge_never_removes_pinned_fiber_without_pattern_markers() -> None:
+    """A fiber pinned for any reason must survive _merge at 100% neuron overlap.
+
+    _merge already skips fibers carrying `_habit_pattern` / `_reasoning_pattern`
+    markers, so the pinned fiber here deliberately carries NEITHER: with such a
+    marker the existing guard rescues it and the test passes with or without the
+    `pinned` check, proving nothing. Unprotected today is every other reason a
+    fiber is pinned — a trained knowledge base, or an explicit user pin. Merge
+    deletes the member fibers and the merged fiber keeps only `merged_from`, so
+    the pin goes with them.
+    """
+    store = InMemoryStorage()
+    brain = Brain.create(name="merge_pinned_test", brain_id="mp-brain")
+    await store.save_brain(brain)
+    store.set_brain(brain.id)
+
+    for nid in ("n-a", "n-b", "n-c"):
+        await store.add_neuron(Neuron.create(type=NeuronType.ENTITY, content=nid, neuron_id=nid))
+
+    shared = {"n-a", "n-b", "n-c"}  # 100% overlap → Jaccard 1.0, well above 0.5
+    plain1 = Fiber(
+        id="plain-1",
+        neuron_ids=shared,
+        synapse_ids=set(),
+        anchor_neuron_id="n-a",
+        pathway=["n-a"],
+        frequency=5,
+    )
+    plain2 = Fiber(
+        id="plain-2",
+        neuron_ids=shared,
+        synapse_ids=set(),
+        anchor_neuron_id="n-b",
+        pathway=["n-b"],
+        frequency=5,
+    )
+    pinned_fiber = Fiber(
+        id="pinned-1",
+        neuron_ids=shared,
+        synapse_ids=set(),
+        anchor_neuron_id="n-a",
+        pathway=["n-a"],
+        frequency=5,
+        pinned=True,
+    )
+    assert not any(
+        marker in pinned_fiber.metadata for marker in ("_habit_pattern", "_reasoning_pattern")
+    ), "the fixture must not qualify for the pre-existing marker guard"
+
+    for f in (plain1, plain2, pinned_fiber):
+        await store.add_fiber(f)
+
+    engine = ConsolidationEngine(store, ConsolidationConfig())
+    await engine._merge(ConsolidationReport(), dry_run=False)
+
+    remaining = {f.id for f in await store.get_fibers(limit=100)}
+    assert "pinned-1" in remaining, "merge must never delete a pinned fiber"

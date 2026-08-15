@@ -240,3 +240,132 @@ class TestNmemForget:
         result = await server.call_tool("smem_forget", {"memory_id": neuron.id, "hard": True})
         assert result["status"] == "hard_deleted"
         storage.delete_neuron.assert_awaited_once()
+
+
+class TestEditRefreshesDerivedFields:
+    """A content edit must refresh the fields derived from the content.
+
+    Without this, ``smem_edit`` re-saved the OLD SimHash and the OLD embedding
+    vector alongside the NEW text — the memory stayed retrievable by what it
+    used to say, and ``reindex --missing-only`` could not repair it because the
+    vector field was never empty.
+    """
+
+    @pytest.mark.asyncio
+    async def test_edit_recomputes_content_hash(self) -> None:
+        from surreal_memory.core.neuron import Neuron, NeuronType
+        from surreal_memory.utils.simhash import simhash
+
+        server = _make_server()
+        storage = AsyncMock()
+        storage.current_brain_id = "brain-1"
+        old = "the office is closed on fridays"
+        neuron = Neuron.create(type=NeuronType.CONCEPT, content=old)
+        from dataclasses import replace as dc_replace
+
+        neuron = dc_replace(neuron, content_hash=simhash(old))
+
+        storage.get_typed_memory = AsyncMock(return_value=None)
+        storage.get_fiber = AsyncMock(return_value=None)
+        storage.get_neuron = AsyncMock(return_value=neuron)
+        storage.update_neuron = AsyncMock()
+        server.get_storage = AsyncMock(return_value=storage)
+
+        new = "the office is open on fridays again"
+        result = await server.call_tool("smem_edit", {"memory_id": neuron.id, "content": new})
+        assert result["status"] == "edited"
+
+        saved = storage.update_neuron.await_args.args[0]
+        assert saved.content == new
+        assert saved.content_hash == simhash(new), (
+            "content_hash must be the fingerprint of the NEW content — keeping the old "
+            "one feeds near-duplicate detection the SimHash of text that no longer exists"
+        )
+
+    @pytest.mark.asyncio
+    async def test_edit_reembeds_when_vector_present(self) -> None:
+        from unittest.mock import patch
+
+        from surreal_memory.core.neuron import Neuron, NeuronType
+
+        server = _make_server()
+        storage = AsyncMock()
+        storage.current_brain_id = "brain-1"
+        stale_vec = [0.1, 0.2, 0.3]
+        anchor = Neuron.create(
+            type=NeuronType.CONCEPT,
+            content="old content",
+            metadata={"_embedding": list(stale_vec)},
+        )
+        fiber = MagicMock()
+        fiber.anchor_neuron_id = anchor.id
+
+        from surreal_memory.core.memory_types import MemoryType, Priority, TypedMemory
+
+        typed_mem = TypedMemory.create(
+            fiber_id="fiber-1",
+            memory_type=MemoryType.FACT,
+            priority=Priority.NORMAL,
+            source="test",
+        )
+        storage.get_typed_memory = AsyncMock(return_value=typed_mem)
+        storage.get_fiber = AsyncMock(return_value=fiber)
+        storage.get_neuron = AsyncMock(return_value=anchor)
+        storage.update_neuron = AsyncMock()
+        server.get_storage = AsyncMock(return_value=storage)
+
+        fresh_vec = [9.0, 8.0, 7.0]
+        provider = MagicMock()
+        provider.embed_batch = AsyncMock(return_value=[list(fresh_vec)])
+        with patch(
+            "surreal_memory.engine.semantic_discovery._create_provider", return_value=provider
+        ):
+            result = await server.call_tool(
+                "smem_edit", {"memory_id": "fiber-1", "content": "corrected content"}
+            )
+
+        assert result["status"] == "edited"
+        saved = storage.update_neuron.await_args.args[0]
+        assert saved.metadata["_embedding"] == fresh_vec, (
+            "the vector saved with the new content must describe the new content — "
+            "re-saving the old one keeps the memory retrievable by what it used to say"
+        )
+        provider.embed_batch.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_edit_survives_provider_unavailable_but_warns(self, caplog) -> None:
+        import logging
+        from unittest.mock import patch
+
+        from surreal_memory.core.neuron import Neuron, NeuronType
+
+        server = _make_server()
+        storage = AsyncMock()
+        storage.current_brain_id = "brain-1"
+        neuron = Neuron.create(
+            type=NeuronType.CONCEPT,
+            content="old content",
+            metadata={"_embedding": [0.1, 0.2]},
+        )
+        storage.get_typed_memory = AsyncMock(return_value=None)
+        storage.get_fiber = AsyncMock(return_value=None)
+        storage.get_neuron = AsyncMock(return_value=neuron)
+        storage.update_neuron = AsyncMock()
+        server.get_storage = AsyncMock(return_value=storage)
+
+        with (
+            patch(
+                "surreal_memory.engine.semantic_discovery._create_provider",
+                side_effect=RuntimeError("no provider"),
+            ),
+            caplog.at_level(logging.WARNING, logger="surreal_memory.mcp.lifecycle_handler"),
+        ):
+            result = await server.call_tool(
+                "smem_edit", {"memory_id": neuron.id, "content": "new content"}
+            )
+
+        assert result["status"] == "edited", "edit must not depend on embedder availability"
+        assert any("reindex" in r.message for r in caplog.records), (
+            "a stale vector left behind must be reported loudly, with the remediation "
+            "command — silence here is indistinguishable from a successful refresh"
+        )

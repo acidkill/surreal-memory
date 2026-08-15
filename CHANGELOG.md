@@ -82,6 +82,27 @@ are fixed here.
   set each run. Credential errors still fail fast on the first attempt;
   non-connection errors still propagate unchanged. Both paths share one backoff
   constant so they cannot drift apart.
+- **The retry now covers the whole connect-and-prepare window, not just signin.** The
+  flake simply moved: with signin protected, the next Integration failure landed at
+  `INFO FOR DB` inside `apply_migrations` — a handshake query on the raw connection,
+  where no `_query` retry reaches. Version gate, schema apply and migrations are
+  extracted into `_prepare_database()` and re-run as one idempotent unit on a fresh
+  connection after a dropped transport. Version-gate rejections still fail fast — an
+  old server does not get newer by reconnecting.
+
+### Fixed — the `SELECT VALUE` unwrap heuristic is gone (#154, finding 3)
+
+- **`_query` no longer shape-sniffs its result.** The `result[0] if isinstance(result[0],
+  list) else result` unwrap was a fossil from SDK 1.x, which returned the RPC envelope;
+  the pinned `surrealdb>=2.0.0,<3.0.0` unwraps it itself (verified live over ws and http
+  against SurrealDB 3.5.0). Its only remaining effect was the #143 bug class: a
+  `SELECT VALUE` on an array-typed field returns a list of per-row arrays, and the
+  heuristic collapsed that to the **first row's array**. The retry/reconnect core moved to
+  `_query_response`, with `_query` (rows) and `_query_values` (per-row values) as honest
+  thin wrappers. New live integration tests pin all three shapes — scalar `VALUE`,
+  array-typed `VALUE`, and rows — plus `get_connected_neuron_ids` end to end
+  (`tests/integration/test_surrealdb_query_shapes.py`); unit mocks that encoded the
+  envelope shape were corrected to what the SDK actually returns.
 
 ## [3.5.0] — 2026-08-13 — connectivity honesty: code-index excluded from the metric
 

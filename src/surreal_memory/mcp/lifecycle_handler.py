@@ -15,10 +15,71 @@ from surreal_memory.mcp.tool_handler_utils import _get_brain_or_error, _require_
 from surreal_memory.utils.timeutils import utcnow
 
 if TYPE_CHECKING:
+    from surreal_memory.core.neuron import Neuron
     from surreal_memory.storage.base import NeuralStorage
     from surreal_memory.unified_config import UnifiedConfig
 
 logger = logging.getLogger(__name__)
+
+
+async def _content_refreshed(storage: NeuralStorage, neuron: Neuron, new_content: str) -> Neuron:
+    """Return *neuron* with its content replaced and the derived fields refreshed.
+
+    ``content_hash`` is a pure function of the content, so it is recomputed
+    unconditionally — keeping the old fingerprint would feed near-duplicate
+    detection the SimHash of text that no longer exists.
+
+    The embedding is recomputed only when the neuron already carries one
+    (``metadata["_embedding"]``, surfaced by the storage read). ``update_neuron``
+    writes whatever vector that key holds, so without a refresh a content edit
+    actively re-saves the OLD vector against the NEW text: the memory stays
+    retrievable by what it used to say, and ``reindex --missing-only`` cannot
+    repair it because the field is never empty. Re-embedding goes through the
+    same provider path and bounded wait the write path uses; if the provider is
+    unavailable the edit still succeeds, but the stale vector is reported with a
+    warning instead of being rewritten silently.
+    """
+    from dataclasses import replace as dc_replace
+
+    from surreal_memory.utils.simhash import simhash
+
+    meta = dict(neuron.metadata)
+    updated = dc_replace(
+        neuron, content=new_content, content_hash=simhash(new_content), metadata=meta
+    )
+    if "_embedding" not in meta:
+        return updated
+    try:
+        import asyncio
+
+        from surreal_memory.core.brain import BrainConfig
+        from surreal_memory.engine.encoder import _inline_embed_timeout
+        from surreal_memory.engine.semantic_discovery import _create_provider
+
+        brain = await storage.get_brain(storage.brain_id or "")
+        provider = _create_provider(
+            brain.config if brain else BrainConfig(), task_type="RETRIEVAL_DOCUMENT"
+        )
+        embed = provider.embed_batch([updated.embedding_text()])
+        budget = _inline_embed_timeout()
+        vectors = await (asyncio.wait_for(embed, timeout=budget) if budget else embed)
+        meta["_embedding"] = list(vectors[0])
+    except TimeoutError:
+        logger.warning(
+            "smem_edit changed the content of neuron %s but re-embedding exceeded "
+            "its time budget — the stored vector still describes the old content; "
+            "run `smem reindex --all` to repair it.",
+            neuron.id,
+        )
+    except Exception:
+        logger.warning(
+            "smem_edit changed the content of neuron %s but could not recompute its "
+            "embedding — the stored vector still describes the old content; "
+            "run `smem reindex --all` to repair it.",
+            neuron.id,
+            exc_info=True,
+        )
+    return updated
 
 
 class LifecycleHandler:
@@ -108,13 +169,11 @@ class LifecycleHandler:
                         changes.append(f"tier: {old_tier} → {updated_tm.tier}")
                 await storage.update_typed_memory(updated_tm)
 
-            # Update anchor neuron content
+            # Update anchor neuron content (and the fields derived from it)
             if new_content is not None:
                 anchor = await storage.get_neuron(fiber.anchor_neuron_id)
                 if anchor:
-                    from dataclasses import replace as dc_replace
-
-                    updated_neuron = dc_replace(anchor, content=new_content)
+                    updated_neuron = await _content_refreshed(storage, anchor, new_content)
                     await storage.update_neuron(updated_neuron)
                     changes.append(f"content updated ({len(new_content)} chars)")
 
@@ -131,7 +190,7 @@ class LifecycleHandler:
 
             changes = []
             if new_content is not None:
-                neuron = dc_replace(neuron, content=new_content)
+                neuron = await _content_refreshed(storage, neuron, new_content)
                 changes.append(f"content updated ({len(new_content)} chars)")
             if new_type is not None:
                 from surreal_memory.core.neuron import NeuronType

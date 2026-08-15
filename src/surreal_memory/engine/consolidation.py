@@ -965,6 +965,17 @@ class ConsolidationEngine:
             ):
                 continue
 
+            # Never merge a pinned fiber away, for the same reason as the marker
+            # guard above: the merged fiber carries only `merged_from`, dropping
+            # both the pin itself and the source metadata. That guard covers
+            # pattern fibers; it does not cover the other reasons a fiber is
+            # pinned — a trained knowledge base, or an explicit user pin.
+            # Pinning exists precisely to make a fiber survive lifecycle, and
+            # merge is part of lifecycle, so without this a pinned fiber is
+            # silently absorbed on the next consolidation pass.
+            if fiber_list[i].pinned or fiber_list[j].pinned:
+                continue
+
             set_a = fiber_list[i].neuron_ids
             set_b = fiber_list[j].neuron_ids
             intersection = len(set_a & set_b)

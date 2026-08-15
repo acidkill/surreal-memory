@@ -18,11 +18,25 @@ Two independent defects made a full consolidation unusable on a ~11k-neuron brai
 from __future__ import annotations
 
 import asyncio
+import sys
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
 from surreal_memory.engine.consolidation import ConsolidationConfig
+
+# Same stand-in as tests/unit/test_surrealdb_store.py. The default unit env
+# (`.[dev,server]`) has no SDK, and the tests below monkeypatch
+# `surrealdb.AsyncSurreal`, which needs the module to at least be importable.
+# Installing it here rather than relying on another test module having done so
+# keeps this file runnable on its own — and under `-n auto`, where which module
+# a worker imports first is not something to bet on.
+try:
+    import surrealdb  # noqa: F401
+except ImportError:  # pragma: no cover - exercised only where the SDK is absent
+    sys.modules["surrealdb"] = MagicMock()
+    sys.modules["surrealdb.errors"] = MagicMock()
 
 
 class TestStrategyTimeouts:
@@ -116,7 +130,9 @@ class _FlakyConn:
         if self.remaining > 0:
             self.remaining -= 1
             raise ConnectionResetError(104, "Connection reset by peer")
-        return [[{"ok": True}]]
+        # SDK >=2.0.0 shape: query() returns the first statement's rows
+        # directly, with no envelope to unwrap (see _query's docstring).
+        return [{"ok": True}]
 
 
 @pytest.mark.asyncio
@@ -175,7 +191,9 @@ class _StubConn:
         self.queries += 1
         if not self.alive:
             raise ConnectionResetError(104, "Connection reset by peer")
-        return [[{"ok": True}]]
+        # What the pinned SDK actually returns: the first statement's result,
+        # already unwrapped from the RPC envelope.
+        return [{"ok": True}]
 
     async def close(self) -> None:
         self.closed = True
@@ -433,7 +451,7 @@ class TestCancellationFromAPeerReconnect:
                 if self.first:
                     self.first = False
                     raise asyncio.CancelledError
-                return [[{"ok": True}]]
+                return [{"ok": True}]
 
         store = _store_with(_CancellingOnceConn())
         monkeypatch.setattr("surrealdb.AsyncSurreal", _ConnFactory(alive=True), raising=False)

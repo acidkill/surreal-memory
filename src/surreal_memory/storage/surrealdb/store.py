@@ -608,20 +608,21 @@ class SurrealDBStorage(
 
         from surreal_memory.storage.surrealdb.connection import (
             AUTH_HINT,
-            MIN_SERVER_VERSION,
             StorageAuthError,
-            StorageVersionError,
             is_credential_error,
-            parse_server_version,
         )
-        from surreal_memory.storage.surrealdb.migrations import apply_migrations
 
-        # A reset during signin/use is the same transient class _query already
-        # retries (S-01). Every live-gated test opens its own connection, and
-        # the Integration CI job showed a single server hiccup mid-run
-        # aborting whichever test happened to be signing in at that moment
-        # (Errno 104 at signin — a different test set each run). Credential
-        # errors still fail fast: they never fix themselves.
+        # A reset anywhere in the connect-and-prepare window is the same
+        # transient class _query already retries (S-01). Every live-gated test
+        # opens its own connection, and the Integration CI job showed a single
+        # server hiccup mid-run aborting whichever test was connecting at that
+        # moment — Errno 104 at signin until #172 retried it, then at the
+        # handshake queries (`INFO FOR DB` inside apply_migrations) that run on
+        # the raw connection with no _query retry to protect them. Every
+        # prepare step is idempotent (IF-NOT-EXISTS schema, version-gated
+        # migrations), so the whole attempt can simply re-run on a fresh
+        # connection. Credential errors still fail fast: they never fix
+        # themselves, and neither do version-gate rejections.
         # Same backoff grid as the reconnect path in _query, from one constant so
         # the two cannot drift apart.
         for attempt, delay in enumerate(_RECONNECT_BACKOFF, start=1):
@@ -631,10 +632,12 @@ class SurrealDBStorage(
                 self._conn = AsyncSurreal(self._url)
                 await self._conn.signin({"username": self._user, "password": self._password})
                 await self._conn.use(self._namespace, self._database)
-                # Remember which loop owns this connection: the SDK creates its
-                # response futures here, and awaiting them from another loop is
-                # an error _query has to detect and repair.
+                # Remember which loop owns this connection before anything runs
+                # on it: the SDK creates its response futures here, and awaiting
+                # them from another loop is an error _query has to detect and
+                # repair.
                 self._conn_loop = asyncio.get_running_loop()
+                await self._prepare_database()
                 break
             except Exception as exc:
                 if is_credential_error(exc):
@@ -645,11 +648,48 @@ class SurrealDBStorage(
                 if not _is_connection_error(exc) or attempt == len(_RECONNECT_BACKOFF):
                     raise
                 logger.warning(
-                    "SurrealDB signin attempt %d/%d failed: %s",
+                    "SurrealDB connect attempt %d/%d failed: %s",
                     attempt,
                     len(_RECONNECT_BACKOFF),
                     exc,
                 )
+
+        # Detect ISO GQL capability (SurrealDB 3.2+) once, non-fatally (2s budget).
+        # A labeled MATCH via eval::gql succeeds only when the server was started
+        # with --allow-experimental gql AND --allow-eval-query; otherwise it raises
+        # and get_path stays on BFS. The neuron LABEL is required — an unlabeled
+        # `MATCH (n)` fails to parse even when GQL is enabled.
+        try:
+            await asyncio.wait_for(
+                self._conn.query('RETURN eval::gql("MATCH (n:neuron) RETURN n LIMIT 1")'),
+                timeout=2,
+            )
+            self._gql_available = True
+        except Exception:
+            self._gql_available = False
+            logger.debug("ISO GQL not available; get_path will use BFS.", exc_info=True)
+
+        logger.info(
+            "SurrealDB connected: %s ns=%s db=%s (gql=%s)",
+            self._url,
+            self._namespace,
+            self._database,
+            self._gql_available,
+        )
+
+    async def _prepare_database(self) -> None:
+        """Gate on server version, then apply schema and migrations.
+
+        Runs on ``self._conn`` during :meth:`initialize`; every step is
+        idempotent, which is what makes the whole connect-and-prepare attempt
+        safely re-runnable after a dropped transport.
+        """
+        from surreal_memory.storage.surrealdb.connection import (
+            MIN_SERVER_VERSION,
+            StorageVersionError,
+            parse_server_version,
+        )
+        from surreal_memory.storage.surrealdb.migrations import apply_migrations
 
         # Hard version gate (>= 3.2.0): the synapse RELATION schema and the
         # auto-migration below require SurrealDB 3.2.0. A failed/unparsable probe
@@ -675,29 +715,6 @@ class SurrealDBStorage(
         await ensure_schema(self._conn, self._embedding_dim)
         # Auto-run the synapse->RELATE migration on first connect after upgrade.
         await apply_migrations(self._conn)
-
-        # Detect ISO GQL capability (SurrealDB 3.2+) once, non-fatally (2s budget).
-        # A labeled MATCH via eval::gql succeeds only when the server was started
-        # with --allow-experimental gql AND --allow-eval-query; otherwise it raises
-        # and get_path stays on BFS. The neuron LABEL is required — an unlabeled
-        # `MATCH (n)` fails to parse even when GQL is enabled.
-        try:
-            await asyncio.wait_for(
-                self._conn.query('RETURN eval::gql("MATCH (n:neuron) RETURN n LIMIT 1")'),
-                timeout=2,
-            )
-            self._gql_available = True
-        except Exception:
-            self._gql_available = False
-            logger.debug("ISO GQL not available; get_path will use BFS.", exc_info=True)
-
-        logger.info(
-            "SurrealDB connected: %s ns=%s db=%s (gql=%s)",
-            self._url,
-            self._namespace,
-            self._database,
-            self._gql_available,
-        )
 
     async def close(self) -> None:
         """Close the SurrealDB connection.
@@ -826,8 +843,9 @@ class SurrealDBStorage(
                 104, "SurrealDB connection was closed while the query was in flight"
             ) from None
 
-    async def _query(self, sql: str, **params: Any) -> list[dict[str, Any]]:
-        """Execute a SurrealQL query and return result rows.
+    async def _query_response(self, sql: str, **params: Any) -> Any:
+        """Execute a SurrealQL query and return the SDK's result for the first
+        statement, as-is.
 
         Retries after re-authenticating if the cached connection's token has
         expired. SurrealDB issues root tokens with a ~1h TTL and the SDK's HTTP
@@ -907,25 +925,38 @@ class SurrealDBStorage(
                         )
             else:
                 raise last_exc
-        if result and isinstance(result, list) and len(result) > 0:
-            return result[0] if isinstance(result[0], list) else result
-        return []
+        return result
+
+    async def _query(self, sql: str, **params: Any) -> list[dict[str, Any]]:
+        """Execute a row query and return its rows.
+
+        The pinned SDK (``surrealdb>=2.0.0,<3.0.0``) already unwraps the RPC
+        envelope: ``query()`` returns the first statement's result directly —
+        rows for a ``SELECT``. The historical ``result[0] if
+        isinstance(result[0], list)`` unwrap predates that and only "worked"
+        because rows are dicts, never lists; on ``SELECT VALUE`` it corrupted
+        the result whenever the projected field was array-typed (a list of
+        per-row arrays collapsed to the first row — the #143 bug, left behind
+        by #154's finding 3). A statement that returns a non-list (a bare
+        scalar) reads as no rows, as before.
+        """
+        result = await self._query_response(sql, **params)
+        return result if isinstance(result, list) else []
 
     async def _query_values(self, sql: str, **params: Any) -> list[Any]:
         """Execute a ``SELECT VALUE ...`` query and return the flat per-row value list.
 
-        ``_query`` is typed ``list[dict[str, Any]]``, which understates what it
-        actually returns for ``SELECT VALUE``: each element is the selected
-        field's raw value (a record id, a scalar, or -- if the field is
-        array-typed -- itself a list), never a row dict. mypy stays quiet about
-        every ``SELECT VALUE`` call site that (mis)treats the result as rows
-        precisely because that mismatched annotation makes it look like one;
-        that silence is the mechanism behind #143's bug (a `SELECT VALUE
-        <array-field>` result iterated character-by-character). Give
-        ``SELECT VALUE`` call sites an honestly-typed entry point instead of
-        re-litigating the row-vs-value distinction at each one.
+        Each element is the selected field's raw value for one row (a record
+        id, a scalar, or -- if the field is array-typed -- itself a list), so an
+        array-typed field yields a list of lists, one per row, and that shape
+        must survive: callers that flatten it decide how, not this helper.
+        ``_query``'s ``list[dict[str, Any]]`` annotation understates exactly
+        this, which is why mypy stayed quiet about the ``SELECT VALUE`` call
+        site that #143 fixed; give value queries an honestly-typed entry point
+        instead of re-litigating the row-vs-value distinction at each one.
         """
-        return await self._query(sql, **params)
+        result = await self._query_response(sql, **params)
+        return result if isinstance(result, list) else []
 
     async def _reconnect(self, *, close_previous: bool = True) -> None:
         """Re-establish the SurrealDB connection after a token expiry / drop.
@@ -2972,6 +3003,11 @@ class SurrealDBStorage(
             logger.warning("Device lookup failed for %s", device_id, exc_info=True)
             return None
         if result:
+            # SDK 2.x `select()` on a single record returns [record]; the bare-
+            # dict branch is defensive for shapes it has been seen to return in
+            # other versions. Unlike the removed `_query` unwrap, this tests
+            # `result` itself, not its first element, so a record whose field
+            # is a list cannot be mistaken for the wrapper.
             r = result[0] if isinstance(result, list) else result
             return _device_record(r, brain_id, fallback_device_id=device_id)
         return None
