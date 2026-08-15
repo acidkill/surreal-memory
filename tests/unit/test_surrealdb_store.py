@@ -69,17 +69,21 @@ class TestInitializeAuthFailFast:
         assert "myhost" in msg
 
     @pytest.mark.asyncio
-    async def test_non_credential_exception_propagates_unchanged(self):
+    async def test_non_credential_non_connection_exception_propagates_unchanged(self):
         from surreal_memory.storage.surrealdb.store import SurrealDBStorage
 
         mock_conn = AsyncMock()
-        mock_conn.signin.side_effect = ConnectionRefusedError("connection refused")
+        # NOT a connection-class error: those now retry with backoff (see
+        # TestInitializeTransientReset below); everything else must still
+        # surface on the first attempt.
+        mock_conn.signin.side_effect = RuntimeError("unexpected")
 
         storage = SurrealDBStorage()
 
         with patch("surrealdb.AsyncSurreal", return_value=mock_conn, create=True):
-            with pytest.raises(ConnectionRefusedError):
+            with pytest.raises(RuntimeError):
                 await storage.initialize()
+        assert mock_conn.signin.await_count == 1
 
     @pytest.mark.asyncio
     async def test_initialize_success_does_not_raise(self):
@@ -96,6 +100,125 @@ class TestInitializeAuthFailFast:
             patch("surreal_memory.storage.surrealdb.store.ensure_schema", new_callable=AsyncMock),
         ):
             await storage.initialize()  # must not raise
+
+
+class TestInitializeTransientReset:
+    """A transient transport reset during signin/use retries with backoff.
+
+    The Integration CI job runs the live-gated tests against one container;
+    each opens its own connection, and a single server hiccup mid-run aborted
+    whichever test was signing in at that moment (Errno 104 — a different
+    test set each run). _query already retries this class (S-01); signin
+    now does too. Credential errors never retry."""
+
+    @pytest.mark.asyncio
+    async def test_transient_reset_during_signin_is_retried(self, monkeypatch):
+        from surreal_memory.storage.surrealdb.store import SurrealDBStorage
+
+        async def _no_sleep(_d: float) -> None:
+            return None
+
+        monkeypatch.setattr("surreal_memory.storage.surrealdb.store.asyncio.sleep", _no_sleep)
+
+        def _conn() -> AsyncMock:
+            c = AsyncMock()
+            c.version.return_value = "surrealdb-3.5.0"
+            return c
+
+        conn1, conn2, conn3 = _conn(), _conn(), _conn()
+        conn1.signin.side_effect = ConnectionResetError(104, "Connection reset by peer")
+        conn2.signin.side_effect = ConnectionResetError(104, "Connection reset by peer")
+
+        storage = SurrealDBStorage()
+
+        with (
+            patch("surrealdb.AsyncSurreal", side_effect=[conn1, conn2, conn3], create=True),
+            patch("surreal_memory.storage.surrealdb.store.ensure_schema", new_callable=AsyncMock),
+            patch(
+                "surreal_memory.storage.surrealdb.migrations.apply_migrations",
+                new_callable=AsyncMock,
+            ),
+        ):
+            await storage.initialize()  # third attempt lands
+
+        assert storage._conn is conn3
+        assert conn3.signin.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_transient_reset_during_use_is_retried(self, monkeypatch):
+        from surreal_memory.storage.surrealdb.store import SurrealDBStorage
+
+        async def _no_sleep(_d: float) -> None:
+            return None
+
+        monkeypatch.setattr("surreal_memory.storage.surrealdb.store.asyncio.sleep", _no_sleep)
+
+        def _conn() -> AsyncMock:
+            c = AsyncMock()
+            c.version.return_value = "surrealdb-3.5.0"
+            return c
+
+        conn1, conn2 = _conn(), _conn()
+        conn1.use.side_effect = ConnectionResetError(104, "Connection reset by peer")
+
+        storage = SurrealDBStorage()
+
+        with (
+            patch("surrealdb.AsyncSurreal", side_effect=[conn1, conn2], create=True),
+            patch("surreal_memory.storage.surrealdb.store.ensure_schema", new_callable=AsyncMock),
+            patch(
+                "surreal_memory.storage.surrealdb.migrations.apply_migrations",
+                new_callable=AsyncMock,
+            ),
+        ):
+            await storage.initialize()
+
+        assert storage._conn is conn2
+
+    @pytest.mark.asyncio
+    async def test_persistent_reset_exhausts_retries_and_raises(self, monkeypatch):
+        from surreal_memory.storage.surrealdb.store import SurrealDBStorage
+
+        sleeps: list[float] = []
+
+        async def _fake_sleep(d: float) -> None:
+            sleeps.append(d)
+
+        monkeypatch.setattr("surreal_memory.storage.surrealdb.store.asyncio.sleep", _fake_sleep)
+
+        conns = []
+        for _ in range(3):
+            c = AsyncMock()
+            c.signin.side_effect = ConnectionResetError(104, "Connection reset by peer")
+            conns.append(c)
+
+        storage = SurrealDBStorage()
+
+        with patch("surrealdb.AsyncSurreal", side_effect=conns, create=True):
+            with pytest.raises(ConnectionResetError):
+                await storage.initialize()
+
+        # Backoff happened between the three attempts.
+        assert sleeps == [1.0, 3.0]
+
+    @pytest.mark.asyncio
+    async def test_credential_error_is_not_retried(self):
+        from surreal_memory.storage.surrealdb.connection import StorageAuthError
+        from surreal_memory.storage.surrealdb.store import SurrealDBStorage
+
+        class NotAllowedError(Exception):  # name triggers class-name fallback
+            pass
+
+        mock_conn = AsyncMock()
+        mock_conn.signin.side_effect = NotAllowedError("not allowed")
+
+        storage = SurrealDBStorage()
+
+        with patch("surrealdb.AsyncSurreal", return_value=mock_conn, create=True):
+            with pytest.raises(StorageAuthError):
+                await storage.initialize()
+
+        assert mock_conn.signin.await_count == 1  # fail fast, no retry
 
 
 class TestReconnectAuthFailFast:

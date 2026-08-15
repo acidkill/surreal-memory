@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 A full consolidation pass could spend minutes stalled and then flood the terminal with
 `[Errno 104] Connection reset by peer`, ending in a report of zeros that looked exactly
-like "there was nothing to do". Four independent defects fed that one symptom; all four
+like "there was nothing to do". Several independent defects fed that one symptom; they
 are fixed here.
 
 ### Fixed
@@ -74,6 +74,14 @@ are fixed here.
   clean run prints neither. `smem consolidate` exits non-zero when a stage
   failed, so automation that gates on the exit code still sees the failure now
   that the command no longer crashes on it.
+- **`initialize()` survives a transient reset during signin.** Signin and `use` now
+  retry with backoff on connection-class errors (3 attempts, 0/1/3 s), mirroring the
+  retry `_query` already had for dropped transports (S-01). The Integration CI job
+  showed a single SurrealDB hiccup mid-run aborting whichever live-gated test
+  happened to be signing in at that moment — `Errno 104` at signin, a different test
+  set each run. Credential errors still fail fast on the first attempt;
+  non-connection errors still propagate unchanged. Both paths share one backoff
+  constant so they cannot drift apart.
 
 ## [3.5.0] — 2026-08-13 — connectivity honesty: code-index excluded from the metric
 

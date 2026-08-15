@@ -616,18 +616,40 @@ class SurrealDBStorage(
         )
         from surreal_memory.storage.surrealdb.migrations import apply_migrations
 
-        self._conn = AsyncSurreal(self._url)
-        try:
-            await self._conn.signin({"username": self._user, "password": self._password})
-        except Exception as exc:
-            if is_credential_error(exc):
-                raise StorageAuthError(
-                    f"SurrealDB authentication failed for user '{self._user}' at {self._url}.",
-                    hint=AUTH_HINT,
-                ) from exc
-            raise
-        await self._conn.use(self._namespace, self._database)
-        self._conn_loop = asyncio.get_running_loop()
+        # A reset during signin/use is the same transient class _query already
+        # retries (S-01). Every live-gated test opens its own connection, and
+        # the Integration CI job showed a single server hiccup mid-run
+        # aborting whichever test happened to be signing in at that moment
+        # (Errno 104 at signin — a different test set each run). Credential
+        # errors still fail fast: they never fix themselves.
+        # Same backoff grid as the reconnect path in _query, from one constant so
+        # the two cannot drift apart.
+        for attempt, delay in enumerate(_RECONNECT_BACKOFF, start=1):
+            if delay:
+                await asyncio.sleep(delay)
+            try:
+                self._conn = AsyncSurreal(self._url)
+                await self._conn.signin({"username": self._user, "password": self._password})
+                await self._conn.use(self._namespace, self._database)
+                # Remember which loop owns this connection: the SDK creates its
+                # response futures here, and awaiting them from another loop is
+                # an error _query has to detect and repair.
+                self._conn_loop = asyncio.get_running_loop()
+                break
+            except Exception as exc:
+                if is_credential_error(exc):
+                    raise StorageAuthError(
+                        f"SurrealDB authentication failed for user '{self._user}' at {self._url}.",
+                        hint=AUTH_HINT,
+                    ) from exc
+                if not _is_connection_error(exc) or attempt == len(_RECONNECT_BACKOFF):
+                    raise
+                logger.warning(
+                    "SurrealDB signin attempt %d/%d failed: %s",
+                    attempt,
+                    len(_RECONNECT_BACKOFF),
+                    exc,
+                )
 
         # Hard version gate (>= 3.2.0): the synapse RELATION schema and the
         # auto-migration below require SurrealDB 3.2.0. A failed/unparsable probe
