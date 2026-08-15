@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — `initialize()` survives a transient reset during signin
+
+- **Signin/`use` now retry with backoff on connection-class errors** (3 attempts,
+  0/1/3 s), mirroring the retry `_query` already had for dropped transports (S-01).
+  The Integration CI job showed a single SurrealDB hiccup mid-run aborting whichever
+  live-gated test happened to be signing in at that moment — `Errno 104` at signin,
+  a different test set each run, and the job red on `main` for it. Credential errors
+  still fail fast on the first attempt; non-connection errors still propagate
+  unchanged.
+
 ### Fixed — the `SELECT VALUE` unwrap heuristic is gone (#154, finding 3)
 
 - **`_query` no longer shape-sniffs its result.** The `result[0] if isinstance(result[0],
