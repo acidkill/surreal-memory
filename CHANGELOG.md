@@ -57,12 +57,16 @@ are fixed here.
   smaller page because those rows must carry their vector; and the similarity pass
   now yields periodically. Holding the loop for minutes was long enough to miss the
   WebSocket keepalive, after which the peer drops the connection.
-- **`numpy` moved from an optional extra into the base dependencies.** The
-  semantic-link strategy runs by default but declared numpy only under
-  `embeddings-openai`, which not even the `all` extra pulls in. Installs without it
-  fell into a pure-python fallback that cannot finish at the shipped caps and that
-  the per-strategy timeout cannot interrupt, because it never awaits. The fallback
-  is now bounded and warns when it truncates.
+- **The numpy-less similarity fallback is bounded, yields, and says so.** The
+  semantic-link strategy runs by default, but numpy — which makes it vectorised —
+  is optional (`embeddings-openai`). Without it the pass fell into a pure-python
+  O(n²·d) double loop that cannot finish at the shipped caps and that the
+  per-strategy timeout cannot interrupt, because the loop never awaits: the pass
+  hung instead of completing. It now processes a bounded slice, hands the event
+  loop back periodically, and logs a warning naming numpy when it truncates.
+  numpy stays optional deliberately: numpy >= 2.5 ships stubs written in 3.12
+  syntax that mypy at this project's `python_version` (3.11) cannot parse, so
+  making it mandatory would break `mypy src/` for every consumer.
 - **The consolidation report says what failed.** A strategy raising anything other
   than a timeout used to abort the whole pass. Failures are now recorded per
   strategy, the remaining strategies still run, and both failures and timeouts are

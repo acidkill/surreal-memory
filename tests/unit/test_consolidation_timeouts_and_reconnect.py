@@ -182,7 +182,14 @@ class _StubConn:
 
 
 class _ConnFactory:
-    """Replacement for ``surrealdb.AsyncSurreal``; counts how often it is called."""
+    """Replacement for ``surrealdb.AsyncSurreal``; counts how often it is called.
+
+    Patched with ``raising=False`` everywhere below: the default test install
+    (`.[dev,server]`, what CI's unit-test jobs use) has no real `surrealdb`
+    package, and the stand-in in `sys.modules` does not expose `AsyncSurreal`,
+    so `raising=True` fails there while passing on a machine that happens to
+    have the SDK installed.
+    """
 
     def __init__(self, *, alive: bool = True) -> None:
         self.alive = alive
@@ -229,7 +236,7 @@ class TestSingleFlightReconnect:
         dead = _StubConn(alive=False)
         store = _store_with(dead)
         factory = _ConnFactory(alive=True)
-        monkeypatch.setattr("surrealdb.AsyncSurreal", factory, raising=True)
+        monkeypatch.setattr("surrealdb.AsyncSurreal", factory, raising=False)
 
         results = await asyncio.gather(
             *(store._query("SELECT 1") for _ in range(_BATCH_FETCH_CONCURRENCY))
@@ -246,7 +253,7 @@ class TestSingleFlightReconnect:
     async def test_reconnect_closes_the_connection_it_replaces(self, monkeypatch: Any) -> None:
         dead = _StubConn(alive=False)
         store = _store_with(dead)
-        monkeypatch.setattr("surrealdb.AsyncSurreal", _ConnFactory(alive=True), raising=True)
+        monkeypatch.setattr("surrealdb.AsyncSurreal", _ConnFactory(alive=True), raising=False)
 
         await store._query("SELECT 1")
 
@@ -267,7 +274,7 @@ class TestSingleFlightReconnect:
 
         store = _store_with(_StubConn(alive=False))
         # Every replacement is dead too, so all three attempts run and log.
-        monkeypatch.setattr("surrealdb.AsyncSurreal", _ConnFactory(alive=False), raising=True)
+        monkeypatch.setattr("surrealdb.AsyncSurreal", _ConnFactory(alive=False), raising=False)
         # Drop the real backoff waits. Patching asyncio.sleep itself would also
         # neuter the stubs' yields, which is exactly what this test needs.
         monkeypatch.setattr(
@@ -292,14 +299,18 @@ class TestSingleFlightReconnect:
     @pytest.mark.asyncio
     async def test_bad_credentials_still_fail_fast(self, monkeypatch: Any) -> None:
         """A wrong password must not be retried three times on every caller."""
-        from surrealdb.errors import NotAllowedError
-
         from surreal_memory.storage.surrealdb.connection import StorageAuthError
+
+        # Defined here rather than imported from surrealdb.errors: the default
+        # test install has no SDK. `is_credential_error` recognises this by class
+        # name and by the message, both of which are exercised as written.
+        class NotAllowedError(Exception):
+            pass
 
         class _RefusingConn(_StubConn):
             async def signin(self, _creds: dict[str, str]) -> None:
                 await asyncio.sleep(0)
-                raise NotAllowedError("auth", "There was a problem with authentication")
+                raise NotAllowedError("There was a problem with authentication")
 
         def _factory(_url: str) -> _RefusingConn:
             _factory.calls += 1  # type: ignore[attr-defined]
@@ -307,7 +318,7 @@ class TestSingleFlightReconnect:
 
         _factory.calls = 0  # type: ignore[attr-defined]
         store = _store_with(_StubConn(alive=False))
-        monkeypatch.setattr("surrealdb.AsyncSurreal", _factory, raising=True)
+        monkeypatch.setattr("surrealdb.AsyncSurreal", _factory, raising=False)
 
         with pytest.raises(StorageAuthError):
             await store._query("SELECT 1")
@@ -335,7 +346,7 @@ class TestConnectionLoopAffinity:
             store = _store_with(healthy_but_foreign)
             store._conn_loop = foreign_loop
             factory = _ConnFactory(alive=True)
-            monkeypatch.setattr("surrealdb.AsyncSurreal", factory, raising=True)
+            monkeypatch.setattr("surrealdb.AsyncSurreal", factory, raising=False)
 
             rows = await store._query("SELECT 1")
 
@@ -364,7 +375,7 @@ class TestConnectionLoopAffinity:
                 # this method exists to absorb.
                 return _StubConn(alive=attempts["n"] > 1)
 
-            monkeypatch.setattr("surrealdb.AsyncSurreal", _flaky_factory, raising=True)
+            monkeypatch.setattr("surrealdb.AsyncSurreal", _flaky_factory, raising=False)
             monkeypatch.setattr(
                 "surreal_memory.storage.surrealdb.store._RECONNECT_BACKOFF",
                 (0.0, 0.0, 0.0),
@@ -388,7 +399,7 @@ class TestConnectionLoopAffinity:
             healthy_but_foreign = _StubConn(alive=True)
             store = _store_with(healthy_but_foreign)
             store._conn_loop = foreign_loop
-            monkeypatch.setattr("surrealdb.AsyncSurreal", _ConnFactory(alive=True), raising=True)
+            monkeypatch.setattr("surrealdb.AsyncSurreal", _ConnFactory(alive=True), raising=False)
 
             await store._query("SELECT 1")
 
@@ -425,7 +436,7 @@ class TestCancellationFromAPeerReconnect:
                 return [[{"ok": True}]]
 
         store = _store_with(_CancellingOnceConn())
-        monkeypatch.setattr("surrealdb.AsyncSurreal", _ConnFactory(alive=True), raising=True)
+        monkeypatch.setattr("surrealdb.AsyncSurreal", _ConnFactory(alive=True), raising=False)
 
         rows = await store._query("SELECT 1")
 
@@ -444,7 +455,7 @@ class TestCancellationFromAPeerReconnect:
                 raise AssertionError("unreachable")
 
         store = _store_with(_HangingConn(alive=True))
-        monkeypatch.setattr("surrealdb.AsyncSurreal", _ConnFactory(alive=True), raising=True)
+        monkeypatch.setattr("surrealdb.AsyncSurreal", _ConnFactory(alive=True), raising=False)
 
         with pytest.raises(asyncio.TimeoutError):
             await asyncio.wait_for(store._query("SELECT 1"), timeout=0.05)

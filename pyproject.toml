@@ -41,14 +41,6 @@ dependencies = [
     "aiohttp>=3.9.0",
     "rich>=13.0.0",
     "typing_extensions>=4.0",
-    # Vectorised cosine for the semantic-link consolidation strategy, which runs
-    # by default in `smem consolidate` / `--strategy all`. It was previously
-    # declared only under the embeddings-openai extra — which even the `all`
-    # extra does not pull in — so the documented installs fell back to a
-    # pure-python double loop that cannot finish at the shipped caps and that
-    # the per-strategy timeout cannot interrupt (it never awaits). A default-on
-    # strategy must not depend on an extra nobody installs.
-    "numpy>=1.24",
 ]
 
 [project.optional-dependencies]
@@ -114,6 +106,14 @@ embeddings = [
 ]
 embeddings-openai = [
     "openai>=1.0",
+    # Vectorised cosine for semantic-link consolidation. Deliberately NOT a base
+    # dependency: numpy >= 2.5 ships stubs written in 3.12 syntax, which mypy at
+    # this project's python_version (3.11) cannot parse, so making it mandatory
+    # breaks `mypy src/` for everyone — see
+    # test_python_version_pin.py::TestStubSyntaxHazard, which exists to catch
+    # exactly that. Without numpy the strategy still runs: the fallback is
+    # bounded, yields to the event loop, and warns that it truncated.
+    "numpy>=1.24",
 ]
 embeddings-openrouter = [
     "openai>=1.0",
