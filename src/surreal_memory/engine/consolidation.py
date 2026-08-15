@@ -262,6 +262,16 @@ class ConsolidationReport:
                     f"({detail.neuron_count} neurons, {detail.reason})"
                 )
 
+        # Zeros from a pass where stages died look exactly like zeros from a
+        # pass where there was nothing to do. Say which it was — but only when
+        # something actually went wrong, so a clean run stays quiet.
+        failed = self.extra.get("failed_strategies")
+        if failed:
+            lines.append(f"  Stages failed: {', '.join(failed)}")
+        timed_out = self.extra.get("timed_out_strategies")
+        if timed_out:
+            lines.append(f"  Stages timed out: {', '.join(timed_out)}")
+
         backfilled = self.extra.get("maturations_backfilled")
         if backfilled:
             lines.append(
@@ -475,6 +485,11 @@ class ConsolidationEngine:
         strategy_timeout = self._config.strategy_timeout_seconds
         total_timeout = self._config.total_timeout_seconds
         timed_out_strategies: list[str] = []
+        # A strategy that raises anything other than TimeoutError used to escape
+        # this loop and kill the whole pass, so the caller saw a traceback (or,
+        # worse, a report full of zeros that looks exactly like "nothing to do").
+        # Record the failure, keep going, and name it in the summary.
+        failed_strategies: list[str] = []
 
         for tier in self.STRATEGY_TIERS:
             tier_strategies = tier & requested
@@ -512,6 +527,16 @@ class ConsolidationEngine:
                         strategy_timeout,
                     )
                     timed_out_strategies.append(strategy.value)
+                except Exception as exc:
+                    strategy_elapsed = time.perf_counter() - strategy_start
+                    logger.error(
+                        "Consolidation: %s failed after %.1fs: %s",
+                        strategy.value,
+                        strategy_elapsed,
+                        exc,
+                        exc_info=True,
+                    )
+                    failed_strategies.append(f"{strategy.value} ({type(exc).__name__})")
                 finally:
                     strategy_elapsed = time.perf_counter() - strategy_start
                     logger.info(
@@ -525,6 +550,8 @@ class ConsolidationEngine:
 
         if timed_out_strategies:
             report.extra["timed_out_strategies"] = timed_out_strategies
+        if failed_strategies:
+            report.extra["failed_strategies"] = failed_strategies
 
         # Auto-tier promotion/demotion (Pro feature, runs after standard strategies)
         await self._run_auto_tier(report, dry_run)

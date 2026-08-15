@@ -92,7 +92,9 @@ async def detect_interference(
     target = max_candidates * 2
     offset = 0
     while len(candidates) < target:
-        batch = await storage.find_neurons(limit=page_size, offset=offset)
+        # Tag overlap and simhash only — the embedding vectors are never read
+        # here, so pulling them just inflates every page of this scan.
+        batch = await storage.find_neurons(limit=page_size, offset=offset, include_embedding=False)
         if not batch:
             break
         for n in batch:
@@ -249,7 +251,9 @@ async def batch_interference_scan(
     page_size = 1000
     offset = 0
     while True:
-        batch = await storage.find_neurons(limit=page_size, offset=offset)
+        # Counts tags, nothing else — this scan walks the WHOLE brain, so
+        # carrying a 1024-float vector on every row is pure transfer cost.
+        batch = await storage.find_neurons(limit=page_size, offset=offset, include_embedding=False)
         if not batch:
             break
         for n in batch:

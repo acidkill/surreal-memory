@@ -14,6 +14,7 @@ preventing stale semantic links from accumulating.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 from dataclasses import dataclass, field
@@ -41,6 +42,28 @@ SEMANTIC_TOP_K = 5  # link each neuron to its K most-similar peers
 # response is how the LIFECYCLE pass earned "[Errno 104] Connection reset by
 # peer". Matches the neuron scan's page size just above.
 _SYNAPSE_PAGE_SIZE = 5000
+
+# Page size for the neuron scan. Unlike every other scan in the engine, these
+# rows MUST carry their embedding vector — the similarity pass is the one place
+# that needs it — so a page is ~1024 floats per row and has to stay far smaller
+# than the synapse page above.
+_EMBEDDING_PAGE_SIZE = 1000
+
+# How many similarity rows to process between yields back to the event loop.
+# The similarity pass is pure CPU with no I/O of its own, so without an explicit
+# yield it holds the loop for as long as it runs — long enough to miss the
+# WebSocket keepalive (the `websockets` default is a 20 s ping interval with a
+# 20 s timeout, which the SurrealDB SDK does not override), after which the peer
+# drops the connection and every following query fails with
+# "[Errno 104] Connection reset by peer".
+_YIELD_EVERY_ROWS = 100
+
+# Ceiling for the pure-python similarity fallback. The vectorised path is O(n*d)
+# per row in C; the fallback is O(n*d) per row in interpreted Python, roughly
+# three orders of magnitude slower, so at MAX_NEURONS_TO_LINK it does not finish
+# in any useful time — and because it never awaits, the per-strategy timeout
+# cannot interrupt it either. Bound it and say so, rather than hang.
+_FALLBACK_MAX_NEURONS = 500
 
 
 @dataclass(frozen=True)
@@ -328,23 +351,31 @@ async def discover_semantic_synapses(
         return SemanticDiscoveryResult()
 
     # Collect eligible neurons that already carry a stored embedding (no re-embed).
-    batch_size = 5000
-    offset = 0
+    # Ask for the two eligible types separately so the filter runs in the DB's
+    # composite (brain_id, type) index instead of dragging every neuron in the
+    # brain across the wire and discarding most of them here. On a large brain
+    # the type-agnostic scan fetched the whole table — vectors included — to keep
+    # the CONCEPT/ENTITY minority.
     eligible: list[Neuron] = []
     vectors: list[list[float]] = []
-    while True:
-        batch = await storage.find_neurons(limit=batch_size, offset=offset)
-        if not batch:
-            break
-        for n in batch:
-            if n.type in (NeuronType.CONCEPT, NeuronType.ENTITY) and n.content.strip():
+    for neuron_type in (NeuronType.CONCEPT, NeuronType.ENTITY):
+        offset = 0
+        while True:
+            batch = await storage.find_neurons(
+                type=neuron_type, limit=_EMBEDDING_PAGE_SIZE, offset=offset
+            )
+            if not batch:
+                break
+            for n in batch:
+                if not n.content.strip():
+                    continue
                 emb = n.metadata.get("_embedding")
                 if emb:
                     eligible.append(n)
                     vectors.append([float(x) for x in emb])
-        offset += len(batch)
-        if len(batch) < batch_size:
-            break
+            offset += len(batch)
+            if len(batch) < _EMBEDDING_PAGE_SIZE:
+                break
 
     if len(eligible) < 2:
         return SemanticDiscoveryResult()
@@ -415,6 +446,10 @@ async def discover_semantic_synapses(
         mat = np.asarray(vectors, dtype=np.float32)
         mat /= np.linalg.norm(mat, axis=1, keepdims=True) + 1e-9
         for i in range(len(eligible)):
+            if i and i % _YIELD_EVERY_ROWS == 0:
+                # Hand the loop back. Nothing in this pass awaits on its own, so
+                # without this the connection's keepalive never gets to run.
+                await asyncio.sleep(0)
             sims = mat @ mat[i]
             sims[i] = -1.0
             order = np.argsort(-sims)[:top_k]
@@ -430,12 +465,27 @@ async def discover_semantic_synapses(
             if len(new_synapses) >= max_pairs:
                 break
     except ImportError:
-        # Pure-python fallback (slower) — bounded by the caps above.
-        for i in range(len(eligible)):
+        # Pure-python fallback. It is ~3 orders of magnitude slower than the
+        # vectorised path, so MAX_NEURONS_TO_LINK is far too generous for it:
+        # at that size the pass never finishes, and since it never awaits, the
+        # per-strategy timeout cannot cut it short either. Do a bounded slice
+        # and say plainly that the full pass needs numpy.
+        considered = min(len(eligible), _FALLBACK_MAX_NEURONS)
+        if len(eligible) > considered:
+            logger.warning(
+                "numpy is not installed: semantic discovery is running its pure-python "
+                "fallback and will consider only %d of %d eligible neurons this pass. "
+                "Install numpy to link the whole set.",
+                considered,
+                len(eligible),
+            )
+        for i in range(considered):
+            if i and i % _YIELD_EVERY_ROWS == 0:
+                await asyncio.sleep(0)
             row = sorted(
                 (
                     (j, _cosine_similarity(vectors[i], vectors[j]))
-                    for j in range(len(eligible))
+                    for j in range(considered)
                     if j != i
                 ),
                 key=lambda t: t[1],

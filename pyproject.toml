@@ -41,6 +41,14 @@ dependencies = [
     "aiohttp>=3.9.0",
     "rich>=13.0.0",
     "typing_extensions>=4.0",
+    # Vectorised cosine for the semantic-link consolidation strategy, which runs
+    # by default in `smem consolidate` / `--strategy all`. It was previously
+    # declared only under the embeddings-openai extra — which even the `all`
+    # extra does not pull in — so the documented installs fell back to a
+    # pure-python double loop that cannot finish at the shipped caps and that
+    # the per-strategy timeout cannot interrupt (it never awaits). A default-on
+    # strategy must not depend on an extra nobody installs.
+    "numpy>=1.24",
 ]
 
 [project.optional-dependencies]
@@ -106,7 +114,6 @@ embeddings = [
 ]
 embeddings-openai = [
     "openai>=1.0",
-    "numpy>=1.24",  # vectorised cosine for semantic-link consolidation (pure-python fallback exists)
 ]
 embeddings-openrouter = [
     "openai>=1.0",

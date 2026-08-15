@@ -59,8 +59,13 @@ async def dream(
     """
     rng = random.Random(seed)
 
-    # Get a pool of neurons to sample from
-    all_neurons: list[Neuron] = await storage.find_neurons(limit=10000)
+    # Get a pool of neurons to sample from. Dream never reads the embedding
+    # vectors — it samples ids and spreads activation over the synapse graph —
+    # so ask storage to leave them out. Included, this one call pulls 10k x a
+    # 1024-float vector in a single response, which is megabytes of payload the
+    # pass discards and, on the HTTP transport, a response large enough to be
+    # dropped mid-transfer ("[Errno 104] Connection reset by peer").
+    all_neurons: list[Neuron] = await storage.find_neurons(limit=10000, include_embedding=False)
     if len(all_neurons) < 2:
         return DreamResult()
 
