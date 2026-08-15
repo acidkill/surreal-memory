@@ -123,8 +123,11 @@ One paragraph: the problem this PR solves and why it solves it this way.
 
 ## Verified by
 
-@your-github-handle — built with <agent name + version>.
+@your-github-handle.
 ```
+
+The handle is the accountability record — Hard Rule #2 forbids naming the tool
+next to it, so this section stays attribution-free.
 
 ---
 
