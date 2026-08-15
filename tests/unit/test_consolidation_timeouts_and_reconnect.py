@@ -100,7 +100,9 @@ class _FlakyConn:
         if self.remaining > 0:
             self.remaining -= 1
             raise ConnectionResetError(104, "Connection reset by peer")
-        return [[{"ok": True}]]
+        # SDK >=2.0.0 shape: query() returns the first statement's rows
+        # directly, with no envelope to unwrap (see _query's docstring).
+        return [{"ok": True}]
 
 
 @pytest.mark.asyncio

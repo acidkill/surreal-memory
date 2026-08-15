@@ -79,14 +79,12 @@ class TestFindNeuronsProjection:
         st, conn = _store_with_mock_conn()
         conn.query = AsyncMock(
             return_value=[
-                [
-                    {
-                        "id": _FakeRID("neuron", "n_1"),
-                        "type": "concept",
-                        "content": "x",
-                        "metadata": {},
-                    }
-                ]
+                {
+                    "id": _FakeRID("neuron", "n_1"),
+                    "type": "concept",
+                    "content": "x",
+                    "metadata": {},
+                }
             ]
         )
         neurons = await st.find_neurons(limit=1, include_embedding=False)
@@ -136,8 +134,8 @@ class TestSynapseDegrees:
         st, conn = _store_with_mock_conn()
         conn.query = AsyncMock(
             side_effect=[
-                [[{"nid": _FakeRID("neuron", "a_1"), "deg": 3}]],  # GROUP BY in
-                [[{"nid": _FakeRID("neuron", "a_1"), "deg": 2}]],  # GROUP BY out
+                [{"nid": _FakeRID("neuron", "a_1"), "deg": 3}],  # GROUP BY in
+                [{"nid": _FakeRID("neuron", "a_1"), "deg": 2}],  # GROUP BY out
             ]
         )
         degree = await st.get_synapse_degrees()
@@ -154,20 +152,18 @@ class TestEdgesForNeurons:
         st, conn = _store_with_mock_conn()
         conn.query = AsyncMock(
             return_value=[
-                [
-                    {
-                        "id": _FakeRID("neuron", "src_1"),
-                        "edges": [
-                            {
-                                "id": _FakeRID("synapse", "e_1"),
-                                "out": _FakeRID("neuron", "dst_2"),
-                                "type": "related_to",
-                                "weight": 0.8,
-                                "direction": "uni",
-                            }
-                        ],
-                    }
-                ]
+                {
+                    "id": _FakeRID("neuron", "src_1"),
+                    "edges": [
+                        {
+                            "id": _FakeRID("synapse", "e_1"),
+                            "out": _FakeRID("neuron", "dst_2"),
+                            "type": "related_to",
+                            "weight": 0.8,
+                            "direction": "uni",
+                        }
+                    ],
+                }
             ]
         )
         edges = await st.get_edges_for_neurons(["src-1"])
@@ -190,7 +186,7 @@ class TestEdgesForNeurons:
 class TestDiagnosticsAggregates:
     async def test_count_activated_uses_group_all(self):
         st, conn = _store_with_mock_conn()
-        conn.query = AsyncMock(return_value=[[{"c": 42}]])
+        conn.query = AsyncMock(return_value=[{"c": 42}])
         n = await st.count_activated_neuron_states()
         (sql,) = _queries(conn)
         assert "count()" in sql and "access_frequency > 0" in sql and "GROUP ALL" in sql
@@ -200,8 +196,8 @@ class TestDiagnosticsAggregates:
         st, conn = _store_with_mock_conn()
         conn.query = AsyncMock(
             side_effect=[
-                [[str(_FakeRID("neuron", "a_1"))]],  # SELECT VALUE in ... GROUP BY in
-                [[str(_FakeRID("neuron", "b_2"))]],  # SELECT VALUE out ... GROUP BY out
+                [str(_FakeRID("neuron", "a_1"))],  # SELECT VALUE in ... GROUP BY in
+                [str(_FakeRID("neuron", "b_2"))],  # SELECT VALUE out ... GROUP BY out
             ]
         )
         connected = await st.get_connected_neuron_ids()
@@ -215,16 +211,20 @@ class TestDiagnosticsAggregates:
 # _query_values -- honest SELECT VALUE typing (#154 finding 3)
 # --------------------------------------------------------------------------- #
 class TestQueryValues:
+    """The SDK (>=2.0.0) unwraps the RPC envelope itself: query() returns the
+    first statement's result directly, so these mocks use the shapes a live
+    server produces (verified against SurrealDB 3.5.0 over ws and http)."""
+
     async def test_flat_scalar_list(self):
         """`in`/`out` are scalar record links -- one value per row."""
         st, conn = _store_with_mock_conn()
-        conn.query = AsyncMock(return_value=[["neuron:a", "neuron:b"]])
+        conn.query = AsyncMock(return_value=["neuron:a", "neuron:b"])
         values = await st._query_values("SELECT VALUE in FROM synapse")
         assert values == ["neuron:a", "neuron:b"]
 
     async def test_empty_result_is_empty_list(self):
         st, conn = _store_with_mock_conn()
-        conn.query = AsyncMock(return_value=[[]])
+        conn.query = AsyncMock(return_value=[])
         assert await st._query_values("SELECT VALUE in FROM synapse") == []
 
     async def test_a_row_whose_value_is_itself_an_array_is_not_collapsed(self):
@@ -232,9 +232,23 @@ class TestQueryValues:
         row whose value is an array must come back as that one array, not be
         confused for "these array elements are separate rows"."""
         st, conn = _store_with_mock_conn()
-        conn.query = AsyncMock(return_value=[[["tag-a", "tag-b"]]])
+        conn.query = AsyncMock(return_value=[["tag-a", "tag-b"]])
         values = await st._query_values("SELECT VALUE tags FROM neuron")
         assert values == [["tag-a", "tag-b"]]
+
+    async def test_every_rows_array_comes_back_not_just_the_first(self):
+        """The #154-finding-3 residual, pinned: the old ``result[0] if
+        isinstance(result[0], list)`` unwrap collapsed a list of per-row
+        arrays to the FIRST row's array. All rows must survive."""
+        st, conn = _store_with_mock_conn()
+        conn.query = AsyncMock(return_value=[["t1", "t2"], ["t3"], None])
+        values = await st._query_values("SELECT VALUE tags FROM neuron")
+        assert values == [["t1", "t2"], ["t3"], None]
+
+    async def test_scalar_statement_result_reads_as_no_values(self):
+        st, conn = _store_with_mock_conn()
+        conn.query = AsyncMock(return_value=5)
+        assert await st._query_values("RETURN 5") == []
 
 
 class TestGetAllSynapsesProjection:

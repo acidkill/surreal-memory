@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed — the `SELECT VALUE` unwrap heuristic is gone (#154, finding 3)
+
+- **`_query` no longer shape-sniffs its result.** The `result[0] if isinstance(result[0],
+  list) else result` unwrap was a fossil from SDK 1.x, which returned the RPC envelope;
+  the pinned `surrealdb>=2.0.0,<3.0.0` unwraps it itself (verified live over ws and http
+  against SurrealDB 3.5.0). Its only remaining effect was the #143 bug class: a
+  `SELECT VALUE` on an array-typed field returns a list of per-row arrays, and the
+  heuristic collapsed that to the **first row's array**. The retry/reconnect core moved to
+  `_query_response`, with `_query` (rows) and `_query_values` (per-row values) as honest
+  thin wrappers. New live integration tests pin all three shapes — scalar `VALUE`,
+  array-typed `VALUE`, and rows — plus `get_connected_neuron_ids` end to end
+  (`tests/integration/test_surrealdb_query_shapes.py`); unit mocks that encoded the
+  envelope shape were corrected to what the SDK actually returns.
+
 ## [3.5.0] — 2026-08-13 — connectivity honesty: code-index excluded from the metric
 
 ### Changed — connectivity is now scored on the organic subgraph

@@ -675,8 +675,9 @@ class SurrealDBStorage(
     # Query helper
     # ================================================================
 
-    async def _query(self, sql: str, **params: Any) -> list[dict[str, Any]]:
-        """Execute a SurrealQL query and return result rows.
+    async def _query_response(self, sql: str, **params: Any) -> Any:
+        """Execute a SurrealQL query and return the SDK's result for the first
+        statement, as-is.
 
         Retries once after re-authenticating if the cached connection's token
         has expired. SurrealDB issues root tokens with a ~1h TTL and the SDK's
@@ -721,25 +722,38 @@ class SurrealDBStorage(
                     )
             else:
                 raise last_exc
-        if result and isinstance(result, list) and len(result) > 0:
-            return result[0] if isinstance(result[0], list) else result
-        return []
+        return result
+
+    async def _query(self, sql: str, **params: Any) -> list[dict[str, Any]]:
+        """Execute a row query and return its rows.
+
+        The pinned SDK (``surrealdb>=2.0.0,<3.0.0``) already unwraps the RPC
+        envelope: ``query()`` returns the first statement's result directly —
+        rows for a ``SELECT``. The historical ``result[0] if
+        isinstance(result[0], list)`` unwrap predates that and only "worked"
+        because rows are dicts, never lists; on ``SELECT VALUE`` it corrupted
+        the result whenever the projected field was array-typed (a list of
+        per-row arrays collapsed to the first row — the #143 bug, left behind
+        by #154's finding 3). A statement that returns a non-list (a bare
+        scalar) reads as no rows, as before.
+        """
+        result = await self._query_response(sql, **params)
+        return result if isinstance(result, list) else []
 
     async def _query_values(self, sql: str, **params: Any) -> list[Any]:
         """Execute a ``SELECT VALUE ...`` query and return the flat per-row value list.
 
-        ``_query`` is typed ``list[dict[str, Any]]``, which understates what it
-        actually returns for ``SELECT VALUE``: each element is the selected
-        field's raw value (a record id, a scalar, or -- if the field is
-        array-typed -- itself a list), never a row dict. mypy stays quiet about
-        every ``SELECT VALUE`` call site that (mis)treats the result as rows
-        precisely because that mismatched annotation makes it look like one;
-        that silence is the mechanism behind #143's bug (a `SELECT VALUE
-        <array-field>` result iterated character-by-character). Give
-        ``SELECT VALUE`` call sites an honestly-typed entry point instead of
-        re-litigating the row-vs-value distinction at each one.
+        Each element is the selected field's raw value for one row (a record
+        id, a scalar, or -- if the field is array-typed -- itself a list), so an
+        array-typed field yields a list of lists, one per row, and that shape
+        must survive: callers that flatten it decide how, not this helper.
+        ``_query``'s ``list[dict[str, Any]]`` annotation understates exactly
+        this, which is why mypy stayed quiet about the ``SELECT VALUE`` call
+        site that #143 fixed; give value queries an honestly-typed entry point
+        instead of re-litigating the row-vs-value distinction at each one.
         """
-        return await self._query(sql, **params)
+        result = await self._query_response(sql, **params)
+        return result if isinstance(result, list) else []
 
     async def _reconnect(self) -> None:
         """Re-establish the SurrealDB connection after a token expiry / 401.
@@ -2748,6 +2762,11 @@ class SurrealDBStorage(
             logger.warning("Device lookup failed for %s", device_id, exc_info=True)
             return None
         if result:
+            # SDK 2.x `select()` on a single record returns [record]; the bare-
+            # dict branch is defensive for shapes it has been seen to return in
+            # other versions. Unlike the removed `_query` unwrap, this tests
+            # `result` itself, not its first element, so a record whose field
+            # is a list cannot be mistaken for the wrapper.
             r = result[0] if isinstance(result, list) else result
             return _device_record(r, brain_id, fallback_device_id=device_id)
         return None
