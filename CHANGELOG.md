@@ -67,7 +67,9 @@ are fixed here.
   than a timeout used to abort the whole pass. Failures are now recorded per
   strategy, the remaining strategies still run, and both failures and timeouts are
   named in the summary — the latter were already recorded but never printed. A
-  clean run prints neither.
+  clean run prints neither. `smem consolidate` exits non-zero when a stage
+  failed, so automation that gates on the exit code still sees the failure now
+  that the command no longer crashes on it.
 
 ## [3.5.0] — 2026-08-13 — connectivity honesty: code-index excluded from the metric
 

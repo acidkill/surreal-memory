@@ -216,6 +216,45 @@ class TestLeastConnectedRotationSurvives:
     """
 
     @pytest.mark.asyncio
+    async def test_per_type_paging_does_not_starve_the_second_type(self, monkeypatch: Any) -> None:
+        """Fetching CONCEPT then ENTITY must not push every ENTITY past the cap.
+
+        Two places cut on list order: the `eligible[:MAX_NEURONS_TO_LINK]` slice
+        `_select_candidates` falls back to when it has no degree data (a brain
+        with no synapses yet, or a backend that cannot answer
+        `get_synapse_degrees`), and the stable sort it uses otherwise, where
+        never-linked neurons of both types tie at degree 0. Concatenating the two
+        scans would hand the whole cut to CONCEPT.
+        """
+        from surreal_memory.core.brain import BrainConfig
+        from surreal_memory.engine import semantic_discovery as sd
+
+        monkeypatch.setattr(sd, "_effective_embedding", lambda _c: (True, "stub", "stub"))
+        monkeypatch.setattr(sd, "MAX_NEURONS_TO_LINK", 4)
+
+        captured: dict[str, list[Neuron]] = {}
+
+        async def _capture(_storage: Any, eligible: list[Neuron], vectors: Any) -> Any:
+            captured["eligible"] = eligible
+            return eligible[:4], vectors[:4]
+
+        monkeypatch.setattr(sd, "_select_candidates", _capture)
+
+        pool = [_neuron(f"c{i}", NeuronType.CONCEPT, [1.0, float(i) / 50.0]) for i in range(6)]
+        pool += [
+            _neuron(f"e{i}", NeuronType.ENTITY, [0.0, 1.0 - float(i) / 50.0]) for i in range(6)
+        ]
+
+        await sd.discover_semantic_synapses(_RecordingStorage(pool), BrainConfig())  # type: ignore[arg-type]
+
+        prefix = captured["eligible"][:4]
+        types = {n.type for n in prefix}
+        assert types == {NeuronType.CONCEPT, NeuronType.ENTITY}, (
+            f"the first {len(prefix)} eligible neurons are all {types} — one whole type is "
+            "starved out of every pass by the cap"
+        )
+
+    @pytest.mark.asyncio
     async def test_selection_prefers_the_least_connected(self, monkeypatch: Any) -> None:
         from surreal_memory.engine import semantic_discovery as sd
 
@@ -300,6 +339,43 @@ class TestReportNamesWhatFailed:
 
         assert "Stages failed:" not in summary
         assert "Stages timed out:" not in summary
+
+    def test_the_cli_exits_non_zero_when_a_stage_failed(self) -> None:
+        """Automation gates on the exit code, not on the summary text.
+
+        A raising strategy used to escape the runner and crash the command, so
+        the exit code was non-zero. Now the pass survives and names the casualty
+        — which must not turn a partially failed run into a silent success.
+        """
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from typer.testing import CliRunner
+
+        from surreal_memory.cli.main import app
+        from surreal_memory.engine.consolidation import ConsolidationReport
+
+        report = ConsolidationReport()
+        report.extra["failed_strategies"] = ["prune (ConnectionResetError)"]
+        delta = MagicMock()
+        delta.report = report
+        delta.summary = MagicMock(return_value=report.summary())
+
+        cli = "surreal_memory.cli.commands.tools"
+        with (
+            patch(f"{cli}.get_config", return_value=MagicMock()),
+            patch(f"{cli}.resolve_brain", return_value="default"),
+            patch(f"{cli}.get_storage", new=AsyncMock(return_value=MagicMock())),
+            patch(
+                "surreal_memory.engine.consolidation_delta.run_with_delta",
+                new=AsyncMock(return_value=delta),
+            ),
+        ):
+            result = CliRunner().invoke(app, ["consolidate", "--dry-run"])
+
+        assert "Stages failed:" in result.output, result.output
+        assert result.exit_code == 1, (
+            f"exit code {result.exit_code} — a pass with a dead stage reported success"
+        )
 
     def test_timed_out_stages_are_surfaced_too(self) -> None:
         """`timed_out_strategies` was recorded but never printed."""

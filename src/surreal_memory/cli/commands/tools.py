@@ -618,6 +618,14 @@ def consolidate(
             except Exception:
                 pass  # Non-critical UI hint — don't fail consolidation
 
+        # A strategy that dies no longer aborts the pass — the others still run
+        # and the summary names the casualty. Automation gates on the exit code,
+        # not on the text, so a partially failed pass must not exit 0 just
+        # because it now degrades gracefully instead of crashing.
+        failed = delta.report.extra.get("failed_strategies")
+        if failed:
+            raise typer.Exit(1)
+
     run_async(_consolidate())
 
 

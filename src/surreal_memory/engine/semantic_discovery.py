@@ -356,9 +356,10 @@ async def discover_semantic_synapses(
     # brain across the wire and discarding most of them here. On a large brain
     # the type-agnostic scan fetched the whole table — vectors included — to keep
     # the CONCEPT/ENTITY minority.
-    eligible: list[Neuron] = []
-    vectors: list[list[float]] = []
+    per_type: list[tuple[list[Neuron], list[list[float]]]] = []
     for neuron_type in (NeuronType.CONCEPT, NeuronType.ENTITY):
+        type_neurons: list[Neuron] = []
+        type_vectors: list[list[float]] = []
         offset = 0
         while True:
             batch = await storage.find_neurons(
@@ -371,11 +372,29 @@ async def discover_semantic_synapses(
                     continue
                 emb = n.metadata.get("_embedding")
                 if emb:
-                    eligible.append(n)
-                    vectors.append([float(x) for x in emb])
+                    type_neurons.append(n)
+                    type_vectors.append([float(x) for x in emb])
             offset += len(batch)
             if len(batch) < _EMBEDDING_PAGE_SIZE:
                 break
+        per_type.append((type_neurons, type_vectors))
+
+    # Interleave the two types instead of concatenating them. Two things below
+    # cut on list order, and both would otherwise systematically starve whichever
+    # type came second: the `eligible[:MAX_NEURONS_TO_LINK]` slice that
+    # `_select_candidates` falls back to whenever it has no degree data (a brain
+    # with no synapses yet, or any backend that cannot answer
+    # `get_synapse_degrees`), and the stable sort it uses otherwise, where
+    # never-linked neurons of both types tie at degree 0. The old type-agnostic
+    # scan mixed them by construction; per-type paging has to mix them on purpose.
+    eligible: list[Neuron] = []
+    vectors: list[list[float]] = []
+    longest = max((len(type_neurons) for type_neurons, _ in per_type), default=0)
+    for index in range(longest):
+        for type_neurons, type_vectors in per_type:
+            if index < len(type_neurons):
+                eligible.append(type_neurons[index])
+                vectors.append(type_vectors[index])
 
     if len(eligible) < 2:
         return SemanticDiscoveryResult()
