@@ -171,6 +171,42 @@ class TestSemanticDiscoveryFetch:
         )
 
 
+class TestPurePythonFallbackIsBounded:
+    """Without numpy the similarity pass must still finish — and say it truncated.
+
+    `numpy` used to be declared only under the `embeddings-openai` extra, which not
+    even `all` pulls in, while semantic-link runs by default. Installs without it
+    fell into an interpreted O(n^2*d) double loop over up to `MAX_NEURONS_TO_LINK`
+    vectors: it does not finish in any useful time, and because it never awaits,
+    the per-strategy timeout cannot cut it short either.
+    """
+
+    @pytest.mark.asyncio
+    async def test_fallback_truncates_and_warns(self, monkeypatch: Any, caplog: Any) -> None:
+        import logging as _logging
+        import sys
+
+        from surreal_memory.core.brain import BrainConfig
+        from surreal_memory.engine import semantic_discovery as sd
+
+        monkeypatch.setattr(sd, "_effective_embedding", lambda _c: (True, "stub", "stub"))
+        monkeypatch.setattr(sd, "_FALLBACK_MAX_NEURONS", 4)
+        # `None` in sys.modules makes `import numpy` raise ImportError, which is
+        # exactly how a numpy-less install reaches the fallback.
+        monkeypatch.setitem(sys.modules, "numpy", None)
+
+        pool = [_neuron(f"c{i}", NeuronType.CONCEPT, [1.0, float(i) / 50.0]) for i in range(10)]
+        storage = _RecordingStorage(pool)
+
+        with caplog.at_level(_logging.WARNING, logger="surreal_memory.engine.semantic_discovery"):
+            result = await sd.discover_semantic_synapses(storage, BrainConfig())  # type: ignore[arg-type]
+
+        assert result is not None, "the fallback did not return — it must not run unbounded"
+        warnings = [r.getMessage() for r in caplog.records if "numpy" in r.getMessage()]
+        assert warnings, "the fallback truncated silently; a degraded pass has to say so"
+        assert "4 of 10" in warnings[0], warnings[0]
+
+
 class TestLeastConnectedRotationSurvives:
     """Run 012's rotation must keep working now that the fetch is per-type.
 
