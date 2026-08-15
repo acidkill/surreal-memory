@@ -349,6 +349,38 @@ class TestConnectionLoopAffinity:
             foreign_loop.close()
 
     @pytest.mark.asyncio
+    async def test_a_failed_rebuild_still_gets_the_retry_budget(self, monkeypatch: Any) -> None:
+        """The loop-change rebuild must not be a single-shot exception to the retry contract."""
+        foreign_loop = asyncio.new_event_loop()
+        try:
+            store = _store_with(_StubConn(alive=True))
+            store._conn_loop = foreign_loop
+
+            attempts = {"n": 0}
+
+            def _flaky_factory(_url: str) -> _StubConn:
+                attempts["n"] += 1
+                # The first connect hits the same transient reset the rest of
+                # this method exists to absorb.
+                return _StubConn(alive=attempts["n"] > 1)
+
+            monkeypatch.setattr("surrealdb.AsyncSurreal", _flaky_factory, raising=True)
+            monkeypatch.setattr(
+                "surreal_memory.storage.surrealdb.store._RECONNECT_BACKOFF",
+                (0.0, 0.0, 0.0),
+                raising=True,
+            )
+
+            rows = await store._query("SELECT 1")
+
+            assert rows == [{"ok": True}]
+            assert attempts["n"] > 1, (
+                "a transient failure during the loop-change rebuild was not retried"
+            )
+        finally:
+            foreign_loop.close()
+
+    @pytest.mark.asyncio
     async def test_foreign_connection_is_dropped_not_closed(self, monkeypatch: Any) -> None:
         """``close()`` would await on the other loop's objects — only drop the reference."""
         foreign_loop = asyncio.new_event_loop()
@@ -363,3 +395,56 @@ class TestConnectionLoopAffinity:
             assert healthy_but_foreign.closed is False
         finally:
             foreign_loop.close()
+
+
+class TestCancellationFromAPeerReconnect:
+    """Closing a connection cancels EVERY future pending on it, not just one.
+
+    All callers are multiplexed over the one shared connection, so when a peer's
+    reconnect closes it, the SDK's receive-task cleanup cancels the in-flight
+    requests of coroutines that had nothing wrong with them. `CancelledError` is
+    a `BaseException`, so it walks straight through every `except Exception` —
+    including the per-id guard in `get_neurons_batch` — and `asyncio.gather`
+    without `return_exceptions=True` then tears down the whole batch. A
+    cancellation this task never asked for is really "the connection went away",
+    and belongs in the retry path.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_cancellation_we_did_not_ask_for_is_retried(self, monkeypatch: Any) -> None:
+        class _CancellingOnceConn(_StubConn):
+            def __init__(self) -> None:
+                super().__init__(alive=True)
+                self.first = True
+
+            async def query(self, _sql: str, _params: Any) -> list[Any]:
+                await asyncio.sleep(0)
+                if self.first:
+                    self.first = False
+                    raise asyncio.CancelledError
+                return [[{"ok": True}]]
+
+        store = _store_with(_CancellingOnceConn())
+        monkeypatch.setattr("surrealdb.AsyncSurreal", _ConnFactory(alive=True), raising=True)
+
+        rows = await store._query("SELECT 1")
+
+        assert rows == [{"ok": True}], (
+            "a peer-induced cancellation escaped instead of being retried — that is what "
+            "takes down an entire get_neurons_batch fan-out"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_real_cancellation_still_propagates(self, monkeypatch: Any) -> None:
+        """Swallowing a genuine cancel would break wait_for and task teardown."""
+
+        class _HangingConn(_StubConn):
+            async def query(self, _sql: str, _params: Any) -> list[Any]:
+                await asyncio.Event().wait()
+                raise AssertionError("unreachable")
+
+        store = _store_with(_HangingConn(alive=True))
+        monkeypatch.setattr("surrealdb.AsyncSurreal", _ConnFactory(alive=True), raising=True)
+
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(store._query("SELECT 1"), timeout=0.05)

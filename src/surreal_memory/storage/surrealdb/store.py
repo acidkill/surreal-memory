@@ -737,9 +737,15 @@ class SurrealDBStorage(
         ``asyncio.Lock`` binds to the loop it is first awaited on. A storage
         singleton reused from a second ``asyncio.run()`` would therefore raise
         "bound to a different event loop" the moment it tried to reconnect —
-        before it could repair anything. The swap below is straight-line
-        synchronous code, so concurrent coroutines on the new loop cannot
-        interleave inside it and still end up sharing one lock.
+        before it could repair anything.
+
+        The swap below contains no ``await``, so coroutines sharing one OS
+        thread cannot interleave inside it and end up with competing locks.
+        That is the supported shape: one storage instance driven by one thread
+        at a time, sequentially across loops. Driving the same instance from two
+        threads concurrently is NOT supported — the GIL can preempt between the
+        read and the write and reintroduce exactly the divergence this guards
+        against.
         """
         running = asyncio.get_running_loop()
         if self._reauth_lock_loop is not running:
@@ -770,6 +776,34 @@ class SurrealDBStorage(
                 logger.debug("SurrealDB connection belongs to a different event loop; rebuilding")
                 await self._reconnect(close_previous=False)
 
+    async def _run_query(self, sql: str, params: dict[str, Any]) -> Any:
+        """One query attempt, with a peer-induced cancellation made retryable.
+
+        Closing a WebSocket connection cancels the SDK's receive task, and its
+        cleanup cancels EVERY future still pending on that connection — not just
+        the one belonging to whoever triggered the close. Those futures belong to
+        other coroutines multiplexed over the same shared connection, so one
+        caller's reconnect lands an `asyncio.CancelledError` in unrelated,
+        otherwise-healthy siblings. `CancelledError` is a `BaseException`, so it
+        slips past every `except Exception` on the way out — including the guard
+        in `get_neurons_batch`'s per-id fetch — and `asyncio.gather` without
+        `return_exceptions=True` then tears down the whole batch.
+
+        A cancellation this task did not ask for is really "the connection went
+        away underneath me", which is precisely what the retry path exists to
+        absorb. Translate it. A cancellation the task DID ask for (`task.cancel()`,
+        `asyncio.wait_for` expiring) still propagates untouched.
+        """
+        try:
+            return await self._ensure_conn().query(sql, params)
+        except asyncio.CancelledError:
+            task = asyncio.current_task()
+            if task is None or task.cancelling() > 0:
+                raise
+            raise ConnectionResetError(
+                104, "SurrealDB connection was closed while the query was in flight"
+            ) from None
+
     async def _query(self, sql: str, **params: Any) -> list[dict[str, Any]]:
         """Execute a SurrealQL query and return result rows.
 
@@ -795,11 +829,15 @@ class SurrealDBStorage(
         """
         from surreal_memory.storage.surrealdb.connection import StorageAuthError
 
-        await self._ensure_conn_on_current_loop()
         generation = self._conn_generation
 
         try:
-            result = await self._ensure_conn().query(sql, params)
+            # Inside the try on purpose: rebuilding for a loop change can hit the
+            # very same transient reset as any other connect, and it deserves the
+            # same three attempts with backoff as the rest of this method rather
+            # than failing the caller on the first blip.
+            await self._ensure_conn_on_current_loop()
+            result = await self._run_query(sql, params)
         except Exception as exc:
             if not (_is_auth_error(exc) or _is_connection_error(exc)):
                 raise
@@ -822,7 +860,7 @@ class SurrealDBStorage(
                             await self._reconnect()
                             reconnected_here = True
                         generation = self._conn_generation
-                    result = await self._ensure_conn().query(sql, params)
+                    result = await self._run_query(sql, params)
                     break
                 except StorageAuthError:
                     # Bad credentials never fix themselves — fail fast.
@@ -894,6 +932,7 @@ class SurrealDBStorage(
         )
 
         previous = self._conn
+        previous_loop = self._conn_loop
         conn = AsyncSurreal(self._url)
         try:
             await conn.signin({"username": self._user, "password": self._password})
@@ -909,7 +948,17 @@ class SurrealDBStorage(
         self._conn_loop = asyncio.get_running_loop()
         self._conn_generation += 1
 
-        if previous is not None and previous is not conn and close_previous:
+        # Never close a connection owned by another loop, whatever the caller
+        # asked for: its close() awaits that loop's objects. Dropping the
+        # reference is the only safe move, and the caller cannot always know
+        # which case it is in.
+        may_close = (
+            close_previous
+            and previous is not None
+            and previous is not conn
+            and previous_loop is asyncio.get_running_loop()
+        )
+        if may_close:
             # Same tolerance as close(): the HTTP transport has no socket to tear
             # down and raises. A failure to close must never mask the successful
             # reconnect the caller is waiting for.
