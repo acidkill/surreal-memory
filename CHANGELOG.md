@@ -5,7 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.5.1] — 2026-08-15 — `smem consolidate` stops exhausting the socket table
+
+A full consolidation pass could spend minutes stalled and then flood the terminal with
+`[Errno 104] Connection reset by peer`, ending in a report of zeros that looked exactly
+like "there was nothing to do". Four independent defects fed that one symptom; all four
+are fixed here.
 
 ### Fixed
 - **`smem consolidate` "Connection reset by peer" loop (port exhaustion).** The
@@ -22,6 +27,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   per query, and the consolidation pass that previously never completed now
   finishes. An explicit `ws://`/`wss://`/embedded URL always passes through
   unchanged.
+- **One dropped connection no longer costs one reconnect per concurrent caller.**
+  The re-auth lock serialised the callers but did not deduplicate them, so every
+  query in a batch fan-out that failed on the same dead connection built its own
+  replacement, retried three times and logged its own warning. Reconnects are now
+  single-flight behind a generation counter: the first caller repairs the
+  connection, the rest re-run their query on it. Only the path that actually
+  reconnected warns. The replaced connection is closed (it used to leak a socket,
+  and on the WebSocket transport an orphaned receive task), and the backoff grid
+  carries a small jitter.
+- **A reconnect no longer cancels its siblings' in-flight queries.** Closing a
+  WebSocket connection cancels every RPC future still pending on it, not just the
+  one that triggered the close — and `asyncio.CancelledError` is a
+  `BaseException`, so it bypassed the retry path and tore down whole batches. A
+  cancellation the task did not request is now treated as a dropped transport and
+  retried; a real cancellation still propagates.
+- **A storage instance reused from a second event loop repairs itself.** The SDK
+  creates its response futures on the loop that opened the socket, so a cached
+  storage singleton driven by a later `asyncio.run()` failed every query with
+  `RuntimeError: … Future … attached to a different loop` — neither an auth nor a
+  transport error, so nothing retried it and the connection stayed broken for the
+  life of the process. The connection's loop is now checked and the connection
+  rebuilt when it differs.
+- **Consolidation stops fetching embedding vectors it never reads.** `find_neurons`
+  includes them by default, so `dream` pulled 10 000 of them in a single response
+  and the two `interference` scans carried one per row across the whole brain.
+- **`semantic_link` no longer scans the whole neuron table, nor holds the event
+  loop.** It pages per neuron type so the filter runs in the database index, with a
+  smaller page because those rows must carry their vector; and the similarity pass
+  now yields periodically. Holding the loop for minutes was long enough to miss the
+  WebSocket keepalive, after which the peer drops the connection.
+- **`numpy` moved from an optional extra into the base dependencies.** The
+  semantic-link strategy runs by default but declared numpy only under
+  `embeddings-openai`, which not even the `all` extra pulls in. Installs without it
+  fell into a pure-python fallback that cannot finish at the shipped caps and that
+  the per-strategy timeout cannot interrupt, because it never awaits. The fallback
+  is now bounded and warns when it truncates.
+- **The consolidation report says what failed.** A strategy raising anything other
+  than a timeout used to abort the whole pass. Failures are now recorded per
+  strategy, the remaining strategies still run, and both failures and timeouts are
+  named in the summary — the latter were already recorded but never printed. A
+  clean run prints neither.
 
 ## [3.5.0] — 2026-08-13 — connectivity honesty: code-index excluded from the metric
 
