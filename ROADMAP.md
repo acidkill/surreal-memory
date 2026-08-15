@@ -3,7 +3,7 @@
 > Forward-looking vision. What's next, what's possible, where we're going.
 > ZERO LLM dependency — pure algorithmic, regex, graph-based.
 
-**Current state**: v3.4.0 — 57 MCP tools, 7100+ tests, neuroscience engine (10 brain-inspired algorithms), tiered memory loading (HOT/WARM/COLD).
+**Current state**: v3.4.0 — 57 MCP tools, 7200+ tests, neuroscience engine (10 brain-inspired algorithms), tiered memory loading (HOT/WARM/COLD).
 
 **Storage**: SurrealDB is the only persistent backend — schema v9 — and `storage_backend`
 defaults to it. `#141` removed the SQLite backend entirely; selecting `storage_backend = "sqlite"`

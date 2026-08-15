@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed — `initialize()` survives a transient reset during signin
+
+- **Signin/`use` now retry with backoff on connection-class errors** (3 attempts,
+  0/1/3 s), mirroring the retry `_query` already had for dropped transports (S-01).
+  The Integration CI job showed a single SurrealDB hiccup mid-run aborting whichever
+  live-gated test happened to be signing in at that moment — `Errno 104` at signin,
+  a different test set each run, and the job red on `main` for it. Credential errors
+  still fail fast on the first attempt; non-connection errors still propagate
+  unchanged.
+
 ## [3.5.0] — 2026-08-13 — connectivity honesty: code-index excluded from the metric
 
 ### Changed — connectivity is now scored on the organic subgraph
