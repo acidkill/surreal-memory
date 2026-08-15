@@ -103,13 +103,15 @@ class TestInitializeAuthFailFast:
 
 
 class TestInitializeTransientReset:
-    """A transient transport reset during signin/use retries with backoff.
+    """A transient transport reset during the connect-and-prepare window retries.
 
     The Integration CI job runs the live-gated tests against one container;
     each opens its own connection, and a single server hiccup mid-run aborted
-    whichever test was signing in at that moment (Errno 104 — a different
-    test set each run). _query already retries this class (S-01); signin
-    now does too. Credential errors never retry."""
+    whichever test was connecting at that moment (Errno 104 — a different
+    test set each run). _query already retries this class (S-01); #172
+    extended it to signin, and this now covers the handshake queries too
+    (`INFO FOR DB` inside apply_migrations was where the next flake moved
+    to). Credential errors never retry."""
 
     @pytest.mark.asyncio
     async def test_transient_reset_during_signin_is_retried(self, monkeypatch):
@@ -174,6 +176,70 @@ class TestInitializeTransientReset:
             await storage.initialize()
 
         assert storage._conn is conn2
+
+    @pytest.mark.asyncio
+    async def test_transient_reset_during_handshake_is_retried(self, monkeypatch):
+        """The exact Integration failure shape: signin succeeds, then the
+        schema/migration queries on the raw connection hit the reset —
+        no _query retry covers them, so the whole attempt must re-run."""
+        from surreal_memory.storage.surrealdb.store import SurrealDBStorage
+
+        async def _no_sleep(_d: float) -> None:
+            return None
+
+        monkeypatch.setattr("surreal_memory.storage.surrealdb.store.asyncio.sleep", _no_sleep)
+
+        def _conn() -> AsyncMock:
+            c = AsyncMock()
+            c.version.return_value = "surrealdb-3.5.0"
+            return c
+
+        conn1, conn2 = _conn(), _conn()
+
+        ensure_schema = AsyncMock(
+            side_effect=[ConnectionResetError(104, "Connection reset by peer"), None]
+        )
+
+        storage = SurrealDBStorage()
+
+        with (
+            patch("surrealdb.AsyncSurreal", side_effect=[conn1, conn2], create=True),
+            patch("surreal_memory.storage.surrealdb.store.ensure_schema", ensure_schema),
+            patch(
+                "surreal_memory.storage.surrealdb.migrations.apply_migrations",
+                new_callable=AsyncMock,
+            ),
+        ):
+            await storage.initialize()
+
+        assert storage._conn is conn2, "a fresh connection must back the retried attempt"
+        assert ensure_schema.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_version_gate_rejection_is_not_retried(self, monkeypatch):
+        """An old server never gets newer by reconnecting — fail fast."""
+        from surreal_memory.storage.surrealdb.connection import StorageVersionError
+        from surreal_memory.storage.surrealdb.store import SurrealDBStorage
+
+        async def _no_sleep(_d: float) -> None:
+            return None
+
+        monkeypatch.setattr("surreal_memory.storage.surrealdb.store.asyncio.sleep", _no_sleep)
+
+        conns = []
+        for _ in range(3):  # if retried, the loop would consume these
+            c = AsyncMock()
+            c.version.return_value = "surrealdb-3.1.1"
+            conns.append(c)
+
+        storage = SurrealDBStorage()
+
+        with patch("surrealdb.AsyncSurreal", side_effect=conns, create=True):
+            with pytest.raises(StorageVersionError):
+                await storage.initialize()
+
+        assert conns[0].signin.await_count == 1
+        assert conns[1].signin.await_count == 0, "version-gate rejection must not reconnect"
 
     @pytest.mark.asyncio
     async def test_persistent_reset_exhausts_retries_and_raises(self, monkeypatch):

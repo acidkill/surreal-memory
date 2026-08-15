@@ -554,20 +554,21 @@ class SurrealDBStorage(
 
         from surreal_memory.storage.surrealdb.connection import (
             AUTH_HINT,
-            MIN_SERVER_VERSION,
             StorageAuthError,
-            StorageVersionError,
             is_credential_error,
-            parse_server_version,
         )
-        from surreal_memory.storage.surrealdb.migrations import apply_migrations
 
-        # A reset during signin/use is the same transient class _query already
-        # retries (S-01). Every live-gated test opens its own connection, and
-        # the Integration CI job showed a single server hiccup mid-run
-        # aborting whichever test happened to be signing in at that moment
-        # (Errno 104 at signin — a different test set each run). Credential
-        # errors still fail fast: they never fix themselves.
+        # A reset anywhere in the connect-and-prepare window is the same
+        # transient class _query already retries (S-01). Every live-gated test
+        # opens its own connection, and the Integration CI job showed a single
+        # server hiccup mid-run aborting whichever test was connecting at that
+        # moment — Errno 104 at signin until #172 retried it, then at the
+        # handshake queries (`INFO FOR DB` inside apply_migrations) that run on
+        # the raw connection with no _query retry to protect them. Every
+        # prepare step is idempotent (IF-NOT-EXISTS schema, version-gated
+        # migrations), so the whole attempt can simply re-run on a fresh
+        # connection. Credential errors still fail fast: they never fix
+        # themselves, and neither do version-gate rejections.
         delays = (0.0, 1.0, 3.0)
         for attempt, delay in enumerate(delays, start=1):
             if delay:
@@ -576,6 +577,7 @@ class SurrealDBStorage(
                 self._conn = AsyncSurreal(self._url)
                 await self._conn.signin({"username": self._user, "password": self._password})
                 await self._conn.use(self._namespace, self._database)
+                await self._prepare_database()
                 break
             except Exception as exc:
                 if is_credential_error(exc):
@@ -586,11 +588,48 @@ class SurrealDBStorage(
                 if not _is_connection_error(exc) or attempt == len(delays):
                     raise
                 logger.warning(
-                    "SurrealDB signin attempt %d/%d failed: %s",
+                    "SurrealDB connect attempt %d/%d failed: %s",
                     attempt,
                     len(delays),
                     exc,
                 )
+
+        # Detect ISO GQL capability (SurrealDB 3.2+) once, non-fatally (2s budget).
+        # A labeled MATCH via eval::gql succeeds only when the server was started
+        # with --allow-experimental gql AND --allow-eval-query; otherwise it raises
+        # and get_path stays on BFS. The neuron LABEL is required — an unlabeled
+        # `MATCH (n)` fails to parse even when GQL is enabled.
+        try:
+            await asyncio.wait_for(
+                self._conn.query('RETURN eval::gql("MATCH (n:neuron) RETURN n LIMIT 1")'),
+                timeout=2,
+            )
+            self._gql_available = True
+        except Exception:
+            self._gql_available = False
+            logger.debug("ISO GQL not available; get_path will use BFS.", exc_info=True)
+
+        logger.info(
+            "SurrealDB connected: %s ns=%s db=%s (gql=%s)",
+            self._url,
+            self._namespace,
+            self._database,
+            self._gql_available,
+        )
+
+    async def _prepare_database(self) -> None:
+        """Gate on server version, then apply schema and migrations.
+
+        Runs on ``self._conn`` during :meth:`initialize`; every step is
+        idempotent, which is what makes the whole connect-and-prepare attempt
+        safely re-runnable after a dropped transport.
+        """
+        from surreal_memory.storage.surrealdb.connection import (
+            MIN_SERVER_VERSION,
+            StorageVersionError,
+            parse_server_version,
+        )
+        from surreal_memory.storage.surrealdb.migrations import apply_migrations
 
         # Hard version gate (>= 3.2.0): the synapse RELATION schema and the
         # auto-migration below require SurrealDB 3.2.0. A failed/unparsable probe
@@ -616,29 +655,6 @@ class SurrealDBStorage(
         await ensure_schema(self._conn, self._embedding_dim)
         # Auto-run the synapse->RELATE migration on first connect after upgrade.
         await apply_migrations(self._conn)
-
-        # Detect ISO GQL capability (SurrealDB 3.2+) once, non-fatally (2s budget).
-        # A labeled MATCH via eval::gql succeeds only when the server was started
-        # with --allow-experimental gql AND --allow-eval-query; otherwise it raises
-        # and get_path stays on BFS. The neuron LABEL is required — an unlabeled
-        # `MATCH (n)` fails to parse even when GQL is enabled.
-        try:
-            await asyncio.wait_for(
-                self._conn.query('RETURN eval::gql("MATCH (n:neuron) RETURN n LIMIT 1")'),
-                timeout=2,
-            )
-            self._gql_available = True
-        except Exception:
-            self._gql_available = False
-            logger.debug("ISO GQL not available; get_path will use BFS.", exc_info=True)
-
-        logger.info(
-            "SurrealDB connected: %s ns=%s db=%s (gql=%s)",
-            self._url,
-            self._namespace,
-            self._database,
-            self._gql_available,
-        )
 
     async def close(self) -> None:
         """Close the SurrealDB connection.

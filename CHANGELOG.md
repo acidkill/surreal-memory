@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a different test set each run, and the job red on `main` for it. Credential errors
   still fail fast on the first attempt; non-connection errors still propagate
   unchanged.
+- **The retry now covers the whole connect-and-prepare window, not just signin.** The
+  flake simply moved: with signin protected, the next Integration failure landed at
+  `INFO FOR DB` inside `apply_migrations` — a handshake query on the raw connection,
+  where no `_query` retry reaches. Version gate, schema apply and migrations are
+  extracted into `_prepare_database()` and re-run as one idempotent unit on a fresh
+  connection after a dropped transport. Version-gate rejections still fail fast — an
+  old server does not get newer by reconnecting.
 
 ## [3.5.0] — 2026-08-13 — connectivity honesty: code-index excluded from the metric
 
