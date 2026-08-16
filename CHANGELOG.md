@@ -56,6 +56,23 @@ work. Both halves are fixed.
   summaries, hippocampal replay, interference fan effects, schema creation and auto-tiering.
 - The dedup census honours the configured SimHash threshold instead of silently using the
   looser library default, and both the threshold and the anchor cap are configurable.
+- `skipped (existing)` counted pairs the same pass had just created: a bidirectional top-K
+  neighbourhood reaches each pair twice, so the second visit was booked as a pre-existing
+  link. Those are counted separately now, and a resampled candidate set states outright
+  that its numbers are not comparable with the previous run's.
+- The health delta labelled the semantic-maturation share "Consolidation ratio", printed
+  directly beneath the merge counters where it read as a compression ratio. The label now
+  says what it measures; the wire field keeps its name, so the API contract is unchanged.
+- The dashboard consolidation route exposed eight counters and none of the new ones, so
+  everything this release made honest was visible over MCP but not in the UI.
+
+### Performance
+
+- Consolidation no longer reads the whole synapse table in a single response. An unbounded
+  `get_synapses()` emitted a query with no LIMIT — on a mature brain six figures of rows at
+  once, twice per run, which is the shape that produces `[Errno 104] Connection reset by
+  peer` on the HTTP transport. Prune, infer, enrichment and dream now page through a shared
+  helper on the storage base class.
 
 ### Added
 
