@@ -1,6 +1,6 @@
 {
   "name": "surreal-memory",
-  "version": "3.5.1",
+  "version": "3.6.0",
   "description": "Reflex-based memory system for AI agents with SurrealDB backend — stores experiences as interconnected neurons and recalls them through spreading activation, mimicking how the human brain works.",
   "author": {
     "name": "Toni Nowak / AI-Flow NOWAK"

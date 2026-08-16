@@ -5,6 +5,69 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.6.0] — 2026-08-16 — consolidation stops manufacturing work, and its counters stop lying
+
+Running `smem consolidate` twice in a row on an unchanged brain was not a no-op. It
+created new data every time, and the report gave no way to tell that apart from useful
+work. Both halves are fixed.
+
+### Fixed — consolidation no longer destroys or duplicates data
+
+- **`summarize` is idempotent.** Every run used to re-materialise each tag cluster as a
+  fresh concept neuron, summary fiber and up to ten synapses. Worse, summary fibers carry
+  the union of their sources' tags, so each run fed the previous run's output back into
+  clustering. A cluster is now identified by a hash of its sorted source fiber ids and is
+  skipped if its summary already exists; summaries written before this key existed derive
+  it from `source_fibers`, so older rows suppress duplicates too. Summary fibers are also
+  excluded from the clustering input.
+- **`merge` creates before it destroys.** Source fibers were deleted first and the merged
+  fiber written afterwards, so a failing write left them gone with no successor —
+  unrecoverable on non-transactional storage.
+- **`merge` no longer orphans the typed-memory layer.** `delete_fiber` has no cascade to
+  `typed_memory`, and `update_typed_memory` cannot move a row to another fiber because its
+  record id derives from `fiber_id`. Memory type, priority, trust score and validity window
+  were silently stranded on every merge. Those rows are now read before any delete and
+  reassigned to the surviving fiber, strongest priority and widest validity window winning.
+- **`merge` preserves source metadata.** `essence`, `conductivity`, `coherence` and
+  `compression_tier` were replaced wholesale by a bare `merged_from` list, and the summary
+  became the constant "Merged from N fibers" — which is what recall surfaces display.
+
+### Fixed — two permanent blind spots
+
+- **The dedup census window rotates.** It took a fixed prefix of the anchor list, which is
+  ordered by id and never shrinks because dedup deletes nothing, so the same anchors were
+  compared every run and the rest were never compared at all. A cursor in `Brain.metadata`
+  now advances one window per run and wraps, covering the whole population over a cycle.
+- **Query-pattern mining looks at recent events.** It fetched action events with no time
+  window; the backend orders ascending, so it mined the oldest events in the brain's
+  history and, once the log grew past the fetch limit, no new query could ever enter it.
+
+### Fixed — every counter states what it measured
+
+- `fibers_removed` counted delete *attempts*; `delete_fiber` swallows its exception and
+  returns `False`, and the caller ignored it.
+- Drift detection returned the number of clusters *saved* while the report called them
+  *found*, so a failed write looked like less drift. Detection and persistence are now
+  separate, and the failed-write log was raised from debug to warning.
+- `_detect_drift` swallowed its own exception, keeping a dead detector out of
+  `failed_strategies` and making it report zero — indistinguishable from a clean brain.
+- Counters that were recorded and never rendered now appear when non-zero:
+  semantic-link write failures, deferred compressions, merge delete failures, skipped
+  summaries, hippocampal replay, interference fan effects, schema creation and auto-tiering.
+- The dedup census honours the configured SimHash threshold instead of silently using the
+  looser library default, and both the threshold and the anchor cap are configurable.
+
+### Added
+
+- **A counter-contract test.** Two earlier rounds of honesty fixes were shipped and the
+  same defect class returned in neighbouring code, because each fix was local. The test
+  scans the engine for every key written into the report and fails unless each is either
+  rendered or listed as deliberately silent with a reason. It found six live defects the
+  first time it ran.
+- `scripts/cleanup_consolidation_debt.py` — measures and, on request, removes the duplicate
+  summaries earlier versions accumulated. Modes are ordered by blast radius
+  (`--measure`, `--dry-run`, `--apply`) and `--brain` is required with no default.
+
 ## [3.5.1] — 2026-08-15 — `smem consolidate` stops exhausting the socket table
 
 A full consolidation pass could spend minutes stalled and then flood the terminal with

@@ -1,0 +1,2 @@
+#V2
+SELECT VALUE meta::id(id) FROM brain WHERE name = 'default';
