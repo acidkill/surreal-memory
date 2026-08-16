@@ -165,15 +165,7 @@ LLM-powered deduplication settings.
 | `llm_max_pairs_per_encode` | `int` | `3` |  |
 | `merge_strategy` | `str` | `keep_newer` |  |
 | `max_candidates` | `int` | `30` | wider search (was 10) |
-
-> These settings govern deduplication **at encode time**. The consolidation pass has its
-> own two knobs on `ConsolidationConfig`, because it censuses anchors rather than
-> individual writes:
->
-> | Setting | Type | Default | Description |
-> |---|---|---|---|
-> | `dedup_max_anchors` | `int` | `2000` | anchors compared pairwise per consolidation run. The window rotates between runs, so raising this widens each pass rather than deciding what is ever seen |
-> | `dedup_simhash_threshold` | `int` | `7` | Hamming distance below which two fingerprints count as near-duplicates. Mirrors `[dedup].simhash_threshold`; before 3.6.0 the census silently used the looser library default of 10 |
+| `consolidation_max_anchors` | `int` | `2000` |  |
 
 ## `[tool_tier]`
 

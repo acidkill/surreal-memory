@@ -563,7 +563,7 @@ class ConsolidationEngine:
         tier_config: TierConfig | None = None,
     ) -> None:
         self._storage = storage
-        self._config = config or ConsolidationConfig()
+        self._config = config or self._config_from_settings()
         self._dream_decay_multiplier = dream_decay_multiplier
         self._tier_config = tier_config
 
@@ -1324,6 +1324,25 @@ class ConsolidationEngine:
 
     _DEDUP_CURSOR_KEY = "_dedup_anchor_cursor"
     _SYNAPSE_PAGE_SIZE = 5000
+
+    @staticmethod
+    def _config_from_settings() -> ConsolidationConfig:
+        """Default config, with the dedup knobs taken from the user's [dedup] section.
+
+        Without this the census cap and threshold were only reachable by editing the
+        source — the settings existed but nothing read them.
+        """
+        try:
+            from surreal_memory.unified_config import UnifiedConfig
+
+            dedup = UnifiedConfig.load().dedup
+            return ConsolidationConfig(
+                dedup_max_anchors=int(dedup.consolidation_max_anchors),
+                dedup_simhash_threshold=int(dedup.simhash_threshold),
+            )
+        except Exception:
+            # Config is optional here: consolidation must still run on a bare install.
+            return ConsolidationConfig()
 
     async def _all_synapses_paged(self) -> list[Synapse]:
         """Every synapse in the brain, fetched in pages instead of one giant read.

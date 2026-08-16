@@ -875,6 +875,12 @@ class DedupSettings:
     llm_max_pairs_per_encode: int = 3
     merge_strategy: str = "keep_newer"
     max_candidates: int = 30  # wider search (was 10)
+    consolidation_max_anchors: int = 2000
+    """Anchors the consolidation census compares pairwise per run.
+
+    The window rotates between runs, so this widens each pass rather than deciding
+    what is ever looked at. Raising it costs CPU quadratically.
+    """
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -888,6 +894,7 @@ class DedupSettings:
             "llm_max_pairs_per_encode": self.llm_max_pairs_per_encode,
             "merge_strategy": self.merge_strategy,
             "max_candidates": self.max_candidates,
+            "consolidation_max_anchors": self.consolidation_max_anchors,
         }
 
     @classmethod
@@ -903,6 +910,7 @@ class DedupSettings:
             llm_max_pairs_per_encode=int(data.get("llm_max_pairs_per_encode", 3)),
             merge_strategy=str(data.get("merge_strategy", "keep_newer")),
             max_candidates=int(data.get("max_candidates", 30)),
+            consolidation_max_anchors=int(data.get("consolidation_max_anchors", 2000)),
         )
 
 
