@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.6.2] — 2026-08-16 — the dashboard sees the last two consolidation counters
+
+A Stage-2 API pass against the running service found `ConsolidationResponse` carrying 18 of the
+20 counters the consolidation report produces: `semantic_link_failures` and `tool_events_ingested`
+were absent. On that surface a run whose semantic-link writes failed still rendered as clean —
+the blind spot 3.6.0 set out to close, surviving on the API because the earlier sweep verified the
+report and not the route's response model.
+
+### Fixed
+
+- `ConsolidationResponse` exposes `semantic_link_failures` and `tool_events_ingested`, so the
+  dashboard and any API client see the same failure signals the CLI already showed.
+
 ## [3.6.1] — 2026-08-16 — the dedup census line says the window is moving
 
 3.6.0 made the dedup census window rotate instead of re-comparing a frozen prefix, but the
