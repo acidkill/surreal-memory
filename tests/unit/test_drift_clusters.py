@@ -208,7 +208,7 @@ class TestRefreshDriftClusters:
         storage.get_tag_fiber_counts = AsyncMock(return_value={"react": 12, "reactjs": 11})
         storage.save_drift_cluster = AsyncMock()
 
-        saved = await refresh_drift_clusters(storage)
+        detected, saved = await refresh_drift_clusters(storage)
 
         assert saved == 1
         storage.save_drift_cluster.assert_called_once()
@@ -220,7 +220,7 @@ class TestRefreshDriftClusters:
         storage.get_tag_fiber_counts = AsyncMock(return_value={})
         storage.save_drift_cluster = AsyncMock()
 
-        saved = await refresh_drift_clusters(storage)
+        detected, saved = await refresh_drift_clusters(storage)
 
         assert saved == 0
         storage.save_drift_cluster.assert_not_called()
@@ -235,7 +235,7 @@ class TestRefreshDriftClusters:
         storage.save_drift_cluster = AsyncMock()
 
         with caplog.at_level(logging.WARNING, logger="surreal_memory.engine.drift_clusters"):
-            saved = await refresh_drift_clusters(storage)
+            detected, saved = await refresh_drift_clusters(storage)
 
         assert saved == 0
         storage.save_drift_cluster.assert_not_called()
@@ -253,7 +253,7 @@ class TestRefreshDriftClusters:
         storage.save_drift_cluster = AsyncMock()
 
         with caplog.at_level(logging.WARNING, logger="surreal_memory.engine.drift_clusters"):
-            saved = await refresh_drift_clusters(storage)
+            detected, saved = await refresh_drift_clusters(storage)
 
         assert saved == 0
         storage.save_drift_cluster.assert_not_called()
@@ -273,9 +273,10 @@ class TestRefreshDriftClusters:
         )
         storage.save_drift_cluster = AsyncMock(side_effect=[RuntimeError("boom"), None])
 
-        saved = await refresh_drift_clusters(storage)
+        detected, saved = await refresh_drift_clusters(storage)
 
-        assert saved == 1
+        assert detected == 2, "both clusters were detected"
+        assert saved == 1, "only one persisted — the failure must stay visible"
         assert storage.save_drift_cluster.call_count == 2
 
 
@@ -348,7 +349,7 @@ class TestDetectDriftStrategy:
         storage.get_tag_fiber_counts = AsyncMock(return_value={"react": 12, "reactjs": 11})
         storage.save_drift_cluster = AsyncMock()
 
-        would_save = await refresh_drift_clusters(storage, persist=False)
+        detected, would_save = await refresh_drift_clusters(storage, persist=False)
 
         assert would_save == 1
         storage.save_drift_cluster.assert_not_called()

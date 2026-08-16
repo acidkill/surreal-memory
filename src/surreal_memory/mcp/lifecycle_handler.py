@@ -358,14 +358,17 @@ class LifecycleHandler:
         extra = {
             key: value
             for key, value in delta.report.extra.items()
-            if key.startswith(("alias_", "dedup_"))
+            if key.startswith(("alias_", "dedup_", "merge_", "semantic_link_", "summaries_"))
         }
         result["report"] = {
             "duplicates_found": delta.report.duplicates_found,
             "new_alias_links": delta.report.new_alias_links,
             "alias_links_existing": delta.report.alias_links_existing,
-            # On a dry run this is the count that WOULD have been persisted.
+            # Detected vs persisted, so the promise made in the comment above is
+            # actually kept: a client can now tell "no clusters exist" from "writes
+            # failed" without parsing prose.
             "drift_clusters_found": delta.report.drift_clusters_found,
+            "drift_clusters_persisted": delta.report.drift_clusters_persisted,
             "extra": extra,
         }
         return result

@@ -205,9 +205,10 @@ async def test_refresh_drift_clusters_end_to_end(surrealdb_storage) -> None:  # 
         await surrealdb_storage.add_fiber(fiber)
         await surrealdb_storage.record_tag_cooccurrence({"react", "reactjs"})
 
-    saved = await refresh_drift_clusters(surrealdb_storage)
+    detected, saved = await refresh_drift_clusters(surrealdb_storage)
 
-    assert saved == 1
+    assert detected == 1, "one cluster must be detected"
+    assert saved == 1, "and it must actually persist — the two are reported separately"
     clusters = await surrealdb_storage.get_drift_clusters()
     assert len(clusters) == 1
     assert set(clusters[0]["members"]) == {"react", "reactjs"}

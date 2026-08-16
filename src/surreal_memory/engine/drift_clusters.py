@@ -196,7 +196,9 @@ def detect_clusters(
     return reports
 
 
-async def refresh_drift_clusters(storage: NeuralStorage, *, persist: bool = True) -> int:
+async def refresh_drift_clusters(
+    storage: NeuralStorage, *, persist: bool = True
+) -> tuple[int, int]:
     """Recompute drift clusters from the current tag_cooccurrence table.
 
     Read-detect-persist, all fail-soft on the reads (an empty result degrades
@@ -211,7 +213,9 @@ async def refresh_drift_clusters(storage: NeuralStorage, *, persist: bool = True
     whole feature exists to remove. Mirrors ``ConsolidationEngine._dedup``,
     which likewise censuses unconditionally and gates only its writes.
 
-    Returns the number of clusters persisted, or would-be-persisted on a dry run.
+    Returns ``(detected, persisted)``. The two are reported separately because a
+    failing write used to be indistinguishable from a cluster that was never found:
+    the count returned was the SAVED count while the report called it "found".
     """
     # WARNING, not debug: a failed read here makes the pass report zero clusters,
     # which is indistinguishable from an honest "no drift found" — the exact
@@ -223,18 +227,19 @@ async def refresh_drift_clusters(storage: NeuralStorage, *, persist: bool = True
         cooccurrences = await storage.get_tag_cooccurrence(min_count=MIN_COOCCURRENCE_COUNT)
     except Exception:
         logger.warning("Failed to read tag_cooccurrence for drift detection", exc_info=True)
-        return 0
+        return (0, 0)
 
     try:
         tag_fiber_counts = await storage.get_tag_fiber_counts()
     except Exception:
         logger.warning("Failed to read tag fiber counts for drift detection", exc_info=True)
-        return 0
+        return (0, 0)
 
     reports = detect_clusters(cooccurrences, tag_fiber_counts)
+    detected = len(reports)
 
     if not persist:
-        return len(reports)
+        return (detected, detected)
 
     saved = 0
     for report in reports:
@@ -248,6 +253,9 @@ async def refresh_drift_clusters(storage: NeuralStorage, *, persist: bool = True
             )
             saved += 1
         except Exception:
-            logger.debug("Failed to persist drift cluster %s", report.cluster_id, exc_info=True)
+            # WARNING, not debug: a swallowed write silently lowers the number the
+            # report shows, so the operator sees "fewer clusters" instead of "a write
+            # failed".
+            logger.warning("Failed to persist drift cluster %s", report.cluster_id, exc_info=True)
 
-    return saved
+    return (detected, saved)

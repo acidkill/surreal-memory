@@ -888,6 +888,9 @@ class TestMCPToolCalls:
             "new_alias_links": 1,
             "alias_links_existing": 1,
             "drift_clusters_found": 0,
+            # Detected vs persisted are separate so a failed write cannot masquerade
+            # as "fewer clusters found".
+            "drift_clusters_persisted": 0,
             "extra": {"alias_checks_failed": 1, "dedup_anchors_truncated": True},
         }
         assert "1 checks FAILED (state unknown)" in result["summary"]
