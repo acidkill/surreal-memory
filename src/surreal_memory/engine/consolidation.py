@@ -287,9 +287,16 @@ class ConsolidationReport:
     def _summaries_skipped_line(self) -> str | None:
         """Show idempotence at work: clusters whose summary already existed."""
         skipped = int(self.extra.get("summaries_skipped_existing", 0))
-        if skipped <= 0:
-            return None
-        return f"  Summaries skipped (already exist): {skipped}"
+        total = self.extra.get("summarize_fibers_total")
+        scanned = self.extra.get("summarize_fibers_scanned")
+        parts = []
+        if skipped > 0:
+            parts.append(f"  Summaries skipped (already exist): {skipped}")
+        if total and scanned:
+            parts.append(
+                f"  [summarize input truncated: {scanned} of {total} tagged fibers clustered]"
+            )
+        return "\n".join(parts) if parts else None
 
     def _silent_strategy_lines(self) -> list[str]:
         """Work done by strategies that never had a line of their own.
@@ -315,6 +322,13 @@ class ConsolidationReport:
         auto_tier = self.extra.get("auto_tier")
         if auto_tier:
             lines.append(f"  Auto-tiering: {auto_tier}")
+        ingested = int(self.extra.get("tool_events_ingested", 0))
+        processed = int(self.extra.get("tool_events_processed", 0))
+        if ingested or processed:
+            lines.append(f"  Tool events: {ingested} ingested, {processed} processed")
+        states = int(self.extra.get("lifecycle_states_updated", 0))
+        if states:
+            lines.append(f"  Lifecycle states updated: {states}")
         return lines
 
     def _compress_deferred_line(self) -> str | None:
@@ -1464,6 +1478,10 @@ class ConsolidationEngine:
         # Cap fiber count for O(N²) pair comparison — keep highest-salience
         max_fibers_for_clustering = 1000
         if len(fiber_list) > max_fibers_for_clustering:
+            # Say so in the report. Dedup annotates its census cap; this one used to cut
+            # silently, so a partial result read as a complete one.
+            report.extra["summarize_fibers_total"] = len(fiber_list)
+            report.extra["summarize_fibers_scanned"] = max_fibers_for_clustering
             fiber_list = sorted(fiber_list, key=lambda f: f.salience, reverse=True)[
                 :max_fibers_for_clustering
             ]
@@ -2698,6 +2716,11 @@ class ConsolidationEngine:
             config.tool_memory.max_buffer_lines,
         )
         if ingest_result.events_ingested > 0:
+            # Into the report, not only the debug log: this strategy could ingest
+            # thousands of events and the report looked identical to it being disabled.
+            report.extra["tool_events_ingested"] = (
+                int(report.extra.get("tool_events_ingested", 0)) + ingest_result.events_ingested
+            )
             _logger.debug(
                 "PROCESS_TOOL_EVENTS: ingested %d events from buffer",
                 ingest_result.events_ingested,
@@ -2706,6 +2729,9 @@ class ConsolidationEngine:
         # Process events into neurons/synapses
         result = await process_events(self._storage, brain_id, config.tool_memory)  # type: ignore[arg-type]
         if result.events_processed > 0:
+            report.extra["tool_events_processed"] = (
+                int(report.extra.get("tool_events_processed", 0)) + result.events_processed
+            )
             _logger.debug(
                 "PROCESS_TOOL_EVENTS: processed %d events, created %d neurons, %d synapses",
                 result.events_processed,
