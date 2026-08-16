@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.6.1] — 2026-08-16 — the dedup census line says the window is moving
+
+3.6.0 made the dedup census window rotate instead of re-comparing a frozen prefix, but the
+report kept the old wording: `[census truncated at anchor cap: 2000 of 3859 anchors compared]`.
+That reads exactly like the behaviour it replaced — it says work was cut and nothing about the
+window advancing, so a healthy rotating census and a permanently stuck one rendered identically.
+
+### Fixed
+
+- The dedup line now names the window, its position and the coverage horizon, e.g.
+  `[census window 2000-3859 of 3859 anchors, wraps; rotates per run, full pass every 2 runs]`.
+  A wrap past the end of the population is marked rather than printed as an out-of-range slice.
+- `dedup_window_start` was written into the report and never rendered — the same
+  recorded-but-invisible defect class 3.6.0 set out to eliminate. It had been added to the
+  counter-contract test's exemption list instead of being surfaced; the exemption is removed,
+  so the contract test now guards this key like every other.
+
 ## [3.6.0] — 2026-08-16 — consolidation stops manufacturing work, and its counters stop lying
 
 Running `smem consolidate` twice in a row on an unchanged brain was not a no-op. It

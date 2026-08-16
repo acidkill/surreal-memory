@@ -689,7 +689,11 @@ class TestDedupReportAccounting:
         assert report.extra["dedup_anchors_scanned"] == 5
         assert report.extra["dedup_anchors_truncated"] is True
         assert report.duplicates_found == 4
-        assert "census truncated at anchor cap" in report.summary()
+        # The line must name the WINDOW and its rotation, not just that work was cut —
+        # "truncated at cap" alone reads identically to the old frozen-prefix census.
+        text = report.summary()
+        assert "census window 0-5 of 7 anchors" in text
+        assert "rotates per run" in text
 
     @pytest.mark.asyncio
     async def test_routine_truncation_does_not_raise_a_warning(

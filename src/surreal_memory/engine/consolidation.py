@@ -379,10 +379,30 @@ class ConsolidationReport:
             if problems:
                 line += f" [{', '.join(problems)}]"
         if self.extra.get("dedup_anchors_truncated"):
-            total = self.extra.get("dedup_anchors_total")
-            scanned = self.extra.get("dedup_anchors_scanned")
-            line += f" [census truncated at anchor cap: {scanned} of {total} anchors compared]"
+            line += self._dedup_window_note()
         return line
+
+    def _dedup_window_note(self) -> str:
+        """Describe the census WINDOW, not just the cap.
+
+        "truncated at anchor cap: 2000 of 3859" reads exactly like the frozen-prefix
+        behaviour this pass was rebuilt to end: it reports that work was cut and says
+        nothing about the window advancing, so a rotating window and a permanent blind
+        spot render identically. Naming the slice and how many runs make a full pass is
+        what tells them apart at a glance.
+        """
+        total = int(self.extra.get("dedup_anchors_total") or 0)
+        scanned = int(self.extra.get("dedup_anchors_scanned") or 0)
+        start = int(self.extra.get("dedup_window_start") or 0)
+        if not total or not scanned:
+            return ""
+        end = start + scanned
+        runs_for_full_pass = -(-total // scanned)  # ceil division
+        wrapped = ", wraps" if end > total else ""
+        return (
+            f" [census window {start}-{min(end, total)} of {total} anchors{wrapped};"
+            f" rotates per run, full pass every {runs_for_full_pass} runs]"
+        )
 
     def summary(self) -> str:
         """Generate human-readable summary."""

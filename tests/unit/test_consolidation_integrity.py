@@ -214,7 +214,6 @@ _EXTRA_KEYS_NOT_RENDERED = {
     "dedup_anchors_total": "feeds the dedup census line",
     "dedup_anchors_scanned": "feeds the dedup census line",
     "dedup_anchors_truncated": "feeds the dedup census line",
-    "dedup_window_start": "diagnostic for the rotating dedup window",
     "alias_ledger_pairs": "ledger diagnostics, exported over MCP",
     "alias_ledger_complete": "ledger diagnostics, exported over MCP",
     "alias_ledger_load_failed": "ledger diagnostics, exported over MCP",
@@ -334,6 +333,37 @@ class TestCounterContract:
         )
         # The wire field must NOT be renamed — that is an API/dashboard contract.
         assert "consolidation_ratio" in render
+
+    def test_dedup_line_shows_the_window_is_rotating(self) -> None:
+        """A rotating window must not render like the old frozen prefix.
+
+        The pre-3.6.0 line said only "truncated at anchor cap: N of M", which is what a
+        permanently-stuck census also looks like. The operator has to be able to see the
+        window move without reading Brain.metadata.
+        """
+        report = ConsolidationReport()
+        report.duplicates_found = 801
+        report.extra["dedup_anchors_truncated"] = True
+        report.extra["dedup_anchors_total"] = 3859
+        report.extra["dedup_anchors_scanned"] = 2000
+        report.extra["dedup_window_start"] = 2000
+
+        text = report.summary()
+        assert "census window 2000-3859" in text, "the window's position must be visible"
+        assert "rotates per run" in text, "it must be clear the window advances"
+        assert "full pass every 2 runs" in text, "coverage horizon must be stated"
+
+    def test_dedup_window_wrap_is_marked(self) -> None:
+        """A window running off the end wraps; say so rather than showing a bogus range."""
+        report = ConsolidationReport()
+        report.extra["dedup_anchors_truncated"] = True
+        report.extra["dedup_anchors_total"] = 3859
+        report.extra["dedup_anchors_scanned"] = 2000
+        report.extra["dedup_window_start"] = 3000
+
+        text = report.summary()
+        assert "wraps" in text
+        assert "3000-3859" in text, "the range must be clamped to the population"
 
     def test_recorded_failures_reach_the_summary(self) -> None:
         """semantic_link_failures / compress_fibers_deferred were written, never shown."""
