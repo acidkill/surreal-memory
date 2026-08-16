@@ -350,6 +350,46 @@ async def test_get_reasoning_context_skips_when_already_injected(
     assert result == ""
 
 
+async def test_subagent_start_injects_every_time_despite_session_marker(
+    clean_env: Path, tmp_path: Path
+) -> None:
+    # SubagentStart fires once per spawned subagent; the payload carries the
+    # PARENT session_id, so honoring the per-session marker would starve every
+    # subagent after the first injection. It must inject regardless of the
+    # marker — and must NOT set it (the marker belongs to main-session hooks).
+    mark_injected("s-parent")  # parent session already injected via SessionStart
+    storage = InMemoryStorage()
+    storage.set_brain("default")
+    await _add_pattern(storage, "claude-fable-5", "debugging", "debugging: verify", "s", 1.0, 3)
+    cfg = _ucfg(tmp_path, injection_map=(("claude-opus-*", "claude-fable-5"),))
+    with (
+        patch("surreal_memory.unified_config.get_config", return_value=cfg),
+        patch(
+            "surreal_memory.unified_config.get_shared_storage",
+            new=AsyncMock(return_value=storage),
+        ),
+    ):
+        block = await get_reasoning_context(
+            {
+                "session_id": "s-parent",
+                "model": "claude-opus-4-8",
+                "hook_event_name": "SubagentStart",
+            }
+        )
+        # A fresh session id via SubagentStart must not consume the session marker.
+        fresh = await get_reasoning_context(
+            {
+                "session_id": "s-fresh",
+                "model": "claude-opus-4-8",
+                "hook_event_name": "SubagentStart",
+            }
+        )
+
+    assert "learned from claude-fable-5" in block
+    assert "learned from claude-fable-5" in fresh
+    assert already_injected("s-fresh") is False
+
+
 # ── session idempotency markers ──────────────────────────────────────────────
 
 

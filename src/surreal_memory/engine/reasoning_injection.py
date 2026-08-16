@@ -235,19 +235,29 @@ async def get_reasoning_context(hook_input: dict[str, Any]) -> str:
     """Resolve the active model, build its reasoning block, mark the session.
 
     Shared by the SessionStart and UserPromptSubmit hooks. Opt-in via
-    reasoning_training.injection_enabled; injects at most once per session via the
-    marker (already_injected/mark_injected), so whichever hook fires first wins and
-    the other is a no-op. Storage is opened on the current brain and always closed.
-    Returns "" when injection is disabled, already done this session, or nothing
-    matched.
+    reasoning_training.injection_enabled. Those two fire for the same session and
+    race each other, so they inject at most once per session via the marker
+    (already_injected/mark_injected) — whichever gets there first wins.
+
+    The marker is keyed on ``session_id``, so it is only correct for events that
+    fire once per session. A per-subagent event (``SubagentStart``, which a user
+    can wire to this same entry point) carries the PARENT session's id, so
+    honouring the marker there would return "" for every subagent after the
+    first — and silently, since "" is also the legitimate "nothing matched"
+    answer. Such events are exempt from the marker and do not set it.
+
+    Storage is opened on the current brain and always closed. Returns "" when
+    injection is disabled, already done this session (session-scoped events
+    only), or nothing matched.
     """
     from surreal_memory.unified_config import get_config, get_shared_storage
 
     config = get_config()
     if not config.reasoning_training.injection_enabled:
         return ""
+    per_session = str(hook_input.get("hook_event_name") or "") != "SubagentStart"
     session_id = str(hook_input.get("session_id") or "")
-    if already_injected(session_id):
+    if per_session and already_injected(session_id):
         return ""
 
     model = resolve_active_model(hook_input)
@@ -260,7 +270,7 @@ async def get_reasoning_context(hook_input: dict[str, Any]) -> str:
         except Exception:
             logger.debug("reasoning storage.close() failed (non-fatal)", exc_info=True)
 
-    if block:
+    if block and per_session:
         mark_injected(session_id)
     return block
 
