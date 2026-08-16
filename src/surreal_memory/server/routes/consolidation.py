@@ -56,6 +56,11 @@ class ConsolidationResponse(BaseModel):
     # the same ambiguity the MCP contract already fixed.
     summaries_skipped_existing: int = 0
     merge_delete_failures: int = 0
+    # Write failures and ingested tool events reach the CLI report but were missing
+    # here, so the dashboard could not tell a run whose writes failed from a clean one
+    # — the same blind spot on a different surface.
+    semantic_link_failures: int = 0
+    tool_events_ingested: int = 0
     drift_clusters_found: int = 0
     drift_clusters_persisted: int = 0
     semantic_synapses_created: int = 0
@@ -115,6 +120,8 @@ async def consolidate_brain(
         summaries_created=report.summaries_created,
         summaries_skipped_existing=int(report.extra.get("summaries_skipped_existing", 0)),
         merge_delete_failures=int(report.extra.get("merge_delete_failures", 0)),
+        semantic_link_failures=int(report.extra.get("semantic_link_failures", 0)),
+        tool_events_ingested=int(report.extra.get("tool_events_ingested", 0)),
         drift_clusters_found=report.drift_clusters_found,
         drift_clusters_persisted=report.drift_clusters_persisted,
         semantic_synapses_created=report.semantic_synapses_created,
