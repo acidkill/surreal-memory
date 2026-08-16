@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -32,6 +33,10 @@ if TYPE_CHECKING:
     from surreal_memory.storage.base import NeuralStorage
 
 logger = logging.getLogger(__name__)
+
+# Mining window for recall events. Matches the habit miner's 30-day horizon so both
+# passes describe the same recent behaviour rather than two different eras.
+_QUERY_PATTERN_WINDOW_DAYS = 30
 
 
 @dataclass(frozen=True)
@@ -216,8 +221,13 @@ async def learn_query_patterns(
     """
     report = QueryPatternReport()
 
-    # Fetch recall events
-    events = await storage.get_action_sequences(limit=1000)
+    # Fetch recall events from a RECENT window. Without `since` the backend orders
+    # ascending and returns the 1000 OLDEST events in the brain's history, so once the
+    # log passes that size no new query ever enters the window and this pass mines a
+    # frozen prefix forever. learn_habits already passes a window; this one did not.
+    events = await storage.get_action_sequences(
+        since=reference_time - timedelta(days=_QUERY_PATTERN_WINDOW_DAYS), limit=1000
+    )
     recall_events = [e for e in events if e.action_type == "recall" and e.action_context]
 
     if len(recall_events) < 3:

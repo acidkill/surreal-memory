@@ -14,8 +14,11 @@ import pytest
 
 from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.core.synapse import Synapse, SynapseType
-from surreal_memory.engine import consolidation
-from surreal_memory.engine.consolidation import ConsolidationEngine, ConsolidationReport
+from surreal_memory.engine.consolidation import (
+    ConsolidationConfig,
+    ConsolidationEngine,
+    ConsolidationReport,
+)
 from surreal_memory.engine.dedup.alias_edges import (
     ALIAS_EDGE_WEIGHT,
     AliasEdgeLedger,
@@ -676,11 +679,11 @@ class TestDedupReportAccounting:
     async def test_truncated_census_says_so(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # A silent cap turns "duplicates in my brain" into "duplicates among the
         # first N anchors in scan order" without telling anyone.
-        monkeypatch.setattr(consolidation, "_DEDUP_MAX_ANCHORS", 5)
         storage = FakeAnchorStorage([_anchor(f"note {i}") for i in range(7)])
         report = ConsolidationReport()
+        engine = ConsolidationEngine(storage, config=ConsolidationConfig(dedup_max_anchors=5))
 
-        await ConsolidationEngine(storage)._dedup(report, dry_run=False)
+        await engine._dedup(report, dry_run=False)
 
         assert report.extra["dedup_anchors_total"] == 7
         assert report.extra["dedup_anchors_scanned"] == 5
@@ -695,11 +698,11 @@ class TestDedupReportAccounting:
         # Outgrowing the cap is a steady state for a big brain. Warning about it
         # every run trains operators to ignore dedup warnings, which buries the
         # failures this unit exists to surface.
-        monkeypatch.setattr(consolidation, "_DEDUP_MAX_ANCHORS", 5)
         storage = FakeAnchorStorage([_anchor(f"note {i}") for i in range(7)])
+        engine = ConsolidationEngine(storage, config=ConsolidationConfig(dedup_max_anchors=5))
 
         with caplog.at_level(logging.INFO):
-            await ConsolidationEngine(storage)._dedup(ConsolidationReport(), dry_run=False)
+            await engine._dedup(ConsolidationReport(), dry_run=False)
 
         assert any("census truncated" in r.message for r in caplog.records)
         assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
