@@ -174,7 +174,7 @@ async def find_cross_cluster_links(
         cluster_anchors.append(best_fiber.anchor_neuron_id)
 
     # Check existing synapses between cluster anchors
-    existing_synapses = await storage.get_synapses(type=SynapseType.RELATED_TO)
+    existing_synapses = await storage.get_synapses_paged(type=SynapseType.RELATED_TO)
     existing_pairs: set[tuple[str, str]] = set()
     for syn in existing_synapses:
         existing_pairs.add((syn.source_id, syn.target_id))

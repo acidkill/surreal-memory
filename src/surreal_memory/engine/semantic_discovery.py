@@ -74,6 +74,22 @@ class SemanticDiscoveryResult:
     pairs_evaluated: int = 0
     synapses_created: int = 0
     skipped_existing: int = 0
+    skipped_created_this_run: int = 0
+    """Pairs skipped because THIS pass had just created them.
+
+    Kept apart from ``skipped_existing``: a bidirectional top-K neighbourhood reaches
+    each pair twice, so counting the second visit as pre-existing made the report
+    overstate how much of the graph was already linked.
+    """
+
+    eligible_total: int = 0
+    """Candidates before ``MAX_NEURONS_TO_LINK`` resampling — 0 when nothing was cut.
+
+    Each pass deliberately targets the least-connected slice, so consecutive runs
+    describe different candidate sets and their counters are not comparable. Saying so
+    is the difference between an honest metric and a confusing one.
+    """
+
     synapses: list[Synapse] = field(default_factory=list)
     truncated: bool = False
     """True when the run stopped at ``semantic_discovery_max_pairs``.
@@ -402,8 +418,12 @@ async def discover_semantic_synapses(
     # Safety cap on very large brains. Below the cap, ordering doesn't matter
     # (everything is considered); above it, WHICH neurons get dropped decides
     # whether repeated runs make progress or just resaturate the same slice.
+    eligible_before_resample = len(eligible)
     if len(eligible) > MAX_NEURONS_TO_LINK:
         eligible, vectors = await _select_candidates(storage, eligible, vectors)
+    else:
+        # Nothing was cut, so there is no candidate-set change to report.
+        eligible_before_resample = 0
     neurons_embedded = len(vectors)
 
     # Existing pairs (any synapse type) so we never duplicate a connection.
@@ -431,12 +451,21 @@ async def discover_semantic_synapses(
 
     new_synapses: list[Synapse] = []
     skipped = 0
+    skipped_created_this_run = 0
     pairs_evaluated = 0
+    # Pairs this pass itself created. With a bidirectional top-K neighbourhood the same
+    # pair is reached twice — once from each end — so without this set the second visit
+    # was counted as "already existed", inflating a number the report labels as
+    # pre-existing links.
+    created_this_run: set[frozenset[str]] = set()
 
     def _link(i: int, j: int, sim: float) -> bool:
         """Create one SIMILAR_TO synapse if the pair is new. Returns True if added."""
-        nonlocal skipped
+        nonlocal skipped, skipped_created_this_run
         pair = frozenset({eligible[i].id, eligible[j].id})
+        if pair in created_this_run:
+            skipped_created_this_run += 1
+            return False
         if pair in existing_pairs:
             skipped += 1
             return False
@@ -457,6 +486,7 @@ async def discover_semantic_synapses(
             )
         )
         existing_pairs.add(pair)
+        created_this_run.add(pair)
         return True
 
     try:
@@ -525,6 +555,8 @@ async def discover_semantic_synapses(
         pairs_evaluated=pairs_evaluated,
         synapses_created=len(new_synapses),
         skipped_existing=skipped,
+        skipped_created_this_run=skipped_created_this_run,
+        eligible_total=eligible_before_resample,
         synapses=new_synapses,
         truncated=len(new_synapses) >= max_pairs,
     )

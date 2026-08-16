@@ -100,7 +100,12 @@ class ConsolidationDelta:
                 round(self.after.freshness - self.before.freshness, 4),
             ),
             (
-                "Consolidation ratio",
+                # Named for what it measures, not for the pass it appears under. It is
+                # the share of fibers that reached the SEMANTIC maturation stage — NOT a
+                # compression or merge ratio, which is how the old label read directly
+                # beneath the merge counters. The wire field keeps its old name so the
+                # API and dashboard contract is unchanged.
+                "Semantic maturation ratio",
                 self.before.consolidation_ratio,
                 self.after.consolidation_ratio,
                 round(self.after.consolidation_ratio - self.before.consolidation_ratio, 4),

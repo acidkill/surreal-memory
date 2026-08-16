@@ -75,7 +75,7 @@ async def dream(
 
     # Build set of existing synapse pairs for fast lookup
     # Only fetch RELATED_TO synapses — dream creates this type
-    all_synapses = await storage.get_synapses(type=SynapseType.RELATED_TO)
+    all_synapses = await storage.get_synapses_paged(type=SynapseType.RELATED_TO)
     existing_pairs: set[tuple[str, str]] = set()
     for syn in all_synapses:
         existing_pairs.add((syn.source_id, syn.target_id))

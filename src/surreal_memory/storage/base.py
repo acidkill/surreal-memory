@@ -422,6 +422,33 @@ class NeuralStorage(ABC):
         """
         ...
 
+    async def get_synapses_paged(
+        self,
+        *,
+        type: SynapseType | None = None,
+        page_size: int = 5000,
+    ) -> list[Synapse]:
+        """Every matching synapse, fetched page by page instead of in one response.
+
+        An unbounded ``get_synapses()`` emits a query with no LIMIT. Measured on a real
+        brain that is six figures of rows in a single response — the shape that produces
+        ``[Errno 104] Connection reset by peer`` on the HTTP transport. The total work is
+        the same; what changes is that no individual response is oversized.
+
+        Concrete backends inherit this as-is; only ``get_synapses`` needs implementing.
+        """
+        collected: list[Synapse] = []
+        offset = 0
+        while True:
+            page = await self.get_synapses(type=type, limit=page_size, offset=offset)
+            if not page:
+                break
+            collected.extend(page)
+            if len(page) < page_size:
+                break
+            offset += len(page)
+        return collected
+
     @abstractmethod
     async def update_synapse(self, synapse: Synapse) -> None:
         """

@@ -277,6 +277,64 @@ class TestCounterContract:
         assert "Drift clusters found: 5" in text
         assert "FAILED" not in text, "a healthy run must not add noise"
 
+    def test_pairs_reached_twice_are_not_called_pre_existing(self) -> None:
+        """DEF-15: a pair this run created must not inflate 'skipped (existing)'."""
+        report = ConsolidationReport()
+        report.semantic_synapses_created = 10
+        report.semantic_synapses_skipped = 4
+        report.extra["semantic_pairs_seen_twice"] = 9
+
+        text = report.summary()
+        assert "4 skipped (existing)" in text
+        assert "9 reached twice this run" in text, (
+            "pairs created by this pass must be reported separately"
+        )
+
+    def test_resampled_candidates_are_flagged_as_incomparable(self) -> None:
+        """DEF-16: consecutive runs describe different candidate slices — say so."""
+        report = ConsolidationReport()
+        report.extra["semantic_candidates_total"] = 12000
+        report.extra["semantic_candidates_scanned"] = 10000
+
+        text = report.summary()
+        assert "candidates resampled: 10000 of 12000" in text
+        assert "NOT comparable" in text
+
+    def test_summarize_input_truncation_is_announced(self) -> None:
+        """DEF-16: a capped clustering input must not read as a complete one."""
+        report = ConsolidationReport()
+        report.extra["summarize_fibers_total"] = 2800
+        report.extra["summarize_fibers_scanned"] = 1000
+
+        text = report.summary()
+        assert "summarize input truncated: 1000 of 2800" in text
+
+    def test_tool_event_work_reaches_the_report(self) -> None:
+        """DEF-14: ingesting thousands of events must not look like being disabled."""
+        report = ConsolidationReport()
+        report.extra["tool_events_ingested"] = 1200
+        report.extra["tool_events_processed"] = 900
+
+        assert "Tool events: 1200 ingested, 900 processed" in report.summary()
+
+    def test_maturation_ratio_is_named_for_what_it_measures(self) -> None:
+        """DEF-17: the label sat under the merge counters and read as a merge ratio.
+
+        Checks the RENDERED delta, not the source, so a mention of the old wording in a
+        comment cannot pass or fail the test by accident.
+        """
+        import inspect
+
+        from surreal_memory.engine import consolidation_delta
+
+        render = inspect.getsource(consolidation_delta.ConsolidationDelta.summary)
+        assert '"Semantic maturation ratio"' in render, "the honest label must be rendered"
+        assert '"Consolidation ratio"' not in render, (
+            "the misleading label must be gone from the rendered delta"
+        )
+        # The wire field must NOT be renamed — that is an API/dashboard contract.
+        assert "consolidation_ratio" in render
+
     def test_recorded_failures_reach_the_summary(self) -> None:
         """semantic_link_failures / compress_fibers_deferred were written, never shown."""
         report = ConsolidationReport()

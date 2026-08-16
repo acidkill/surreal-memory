@@ -241,8 +241,21 @@ class ConsolidationReport:
             f"{self.semantic_synapses_created} created, "
             f"{self.semantic_synapses_skipped} skipped (existing)"
         )
+        seen_twice = int(self.extra.get("semantic_pairs_seen_twice", 0))
+        if seen_twice:
+            # These were created by THIS pass and reached a second time from the other
+            # end of the neighbourhood. Folding them into "existing" overstated how much
+            # of the graph was already linked.
+            line += f", {seen_twice} reached twice this run"
         if self.extra.get("semantic_link_truncated"):
             line += " [truncated at cap]"
+        total = self.extra.get("semantic_candidates_total")
+        scanned = self.extra.get("semantic_candidates_scanned")
+        if total and scanned:
+            line += (
+                f" [candidates resampled: {scanned} of {total} — counters are NOT "
+                "comparable with the previous run]"
+            )
         return line
 
     def _stage_transitions_suffix(self) -> str:
@@ -767,7 +780,7 @@ class ConsolidationEngine:
             return
 
         # Get all synapses
-        all_synapses = await self._storage.get_synapses()
+        all_synapses = await self._all_synapses_paged()
         pruned_synapse_ids: set[str] = set()
 
         # Preload pinned neuron IDs to protect from pruning
@@ -1310,6 +1323,31 @@ class ConsolidationEngine:
                     )
 
     _DEDUP_CURSOR_KEY = "_dedup_anchor_cursor"
+    _SYNAPSE_PAGE_SIZE = 5000
+
+    async def _all_synapses_paged(self) -> list[Synapse]:
+        """Every synapse in the brain, fetched in pages instead of one giant read.
+
+        Measured on a real brain: an unbounded ``get_synapses()`` pulls the entire
+        table — six figures of rows — over a single response. That is the shape that
+        produced ``[Errno 104] Connection reset by peer`` elsewhere in this engine, and
+        it is why semantic_discovery already pages. Same total work, but no single
+        oversized response and a yield point between pages.
+        """
+        collected: list[Synapse] = []
+        offset = 0
+        while True:
+            page = await self._storage.get_synapses(limit=self._SYNAPSE_PAGE_SIZE, offset=offset)
+            if not page:
+                break
+            collected.extend(page)
+            if len(page) < self._SYNAPSE_PAGE_SIZE:
+                break
+            offset += len(page)
+            # Nothing else in these passes awaits, so without this the connection's
+            # keepalive never runs during a long scan.
+            await asyncio.sleep(0)
+        return collected
 
     async def _dedup_cursor(self, anchors_total: int) -> int:
         """Where this run's dedup window starts.
@@ -1910,7 +1948,7 @@ class ConsolidationEngine:
 
         # 2. Build existing synapse pairs set + lookup for reinforcement
         # Need all types: existing_pairs prevents duplicate creation, synapse_by_pair enables reinforcement
-        all_synapses = await self._storage.get_synapses()
+        all_synapses = await self._all_synapses_paged()
         existing_pairs: set[tuple[str, str]] = set()
         synapse_by_pair: dict[tuple[str, str], Synapse] = {}
         for syn in all_synapses:
@@ -2460,6 +2498,17 @@ class ConsolidationEngine:
         # type; surfacing that number is what turns a flat "2000" into an
         # honest "N created, K skipped".
         report.semantic_synapses_skipped += result.skipped_existing
+        if result.skipped_created_this_run:
+            report.extra["semantic_pairs_seen_twice"] = (
+                int(report.extra.get("semantic_pairs_seen_twice", 0))
+                + result.skipped_created_this_run
+            )
+        if result.eligible_total:
+            # The candidate set was resampled, so this run's counters describe a
+            # different slice than the last one's. Say so rather than letting the
+            # numbers look comparable.
+            report.extra["semantic_candidates_total"] = result.eligible_total
+            report.extra["semantic_candidates_scanned"] = result.neurons_embedded
         if result.truncated:
             report.extra["semantic_link_truncated"] = True
 

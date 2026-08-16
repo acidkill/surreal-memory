@@ -51,6 +51,17 @@ class ConsolidationResponse(BaseModel):
     fibers_removed: int
     fibers_created: int
     summaries_created: int
+    # Counters that make a report readable rather than merely non-empty. Without
+    # them the dashboard cannot tell "nothing to do" from "the writes failed" —
+    # the same ambiguity the MCP contract already fixed.
+    summaries_skipped_existing: int = 0
+    merge_delete_failures: int = 0
+    drift_clusters_found: int = 0
+    drift_clusters_persisted: int = 0
+    semantic_synapses_created: int = 0
+    semantic_synapses_skipped: int = 0
+    duplicates_found: int = 0
+    new_alias_links: int = 0
     merge_details: list[MergeDetailResponse]
     dry_run: bool
 
@@ -102,6 +113,14 @@ async def consolidate_brain(
         fibers_removed=report.fibers_removed,
         fibers_created=report.fibers_created,
         summaries_created=report.summaries_created,
+        summaries_skipped_existing=int(report.extra.get("summaries_skipped_existing", 0)),
+        merge_delete_failures=int(report.extra.get("merge_delete_failures", 0)),
+        drift_clusters_found=report.drift_clusters_found,
+        drift_clusters_persisted=report.drift_clusters_persisted,
+        semantic_synapses_created=report.semantic_synapses_created,
+        semantic_synapses_skipped=report.semantic_synapses_skipped,
+        duplicates_found=report.duplicates_found,
+        new_alias_links=report.new_alias_links,
         merge_details=[
             MergeDetailResponse(
                 original_fiber_ids=list(d.original_fiber_ids),
