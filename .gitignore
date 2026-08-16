@@ -258,3 +258,6 @@ qa/
 
 # signle backups
 .env.bak.pre-ws-transport_20260803_141252
+
+# surreal sql REPL history, written into the cwd
+history.txt
