@@ -9,9 +9,10 @@ Provides automated memory maintenance:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from dataclasses import replace as dc_replace
 from datetime import datetime
@@ -37,6 +38,58 @@ logger = logging.getLogger(__name__)
 # the census only ever describes this many anchors, in scan order, which is why
 # the pass reports the total and flags the truncation instead of hiding it.
 _DEDUP_MAX_ANCHORS = 2000
+
+
+def _summary_cluster_key_from_ids(fiber_ids: Iterable[str]) -> str:
+    """Stable identity of a summary cluster: a hash of its sorted source fiber ids.
+
+    Sorted so member order never changes the key, hashed so the value stays short
+    enough to live in metadata and be compared cheaply.
+    """
+    joined = "|".join(sorted(fiber_ids))
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:32]
+
+
+def _summary_cluster_key(cluster_fibers: Sequence[Fiber]) -> str:
+    """Cluster key for the fibers a summary is about."""
+    return _summary_cluster_key_from_ids(f.id for f in cluster_fibers)
+
+
+_MERGED_SUMMARY_MAX_CHARS = 500
+
+
+def _merged_summary(member_fibers: Sequence[Fiber]) -> str:
+    """Summary for a merged fiber, built from its sources.
+
+    The previous constant string ("Merged from N fibers") is what recall surfaces
+    return for the merged fiber, so every merge used to erase the only human-readable
+    trace of what the memory was about.
+    """
+    parts = [f.summary.strip() for f in member_fibers if f.summary and f.summary.strip()]
+    if not parts:
+        return f"Merged from {len(member_fibers)} fibers"
+    joined = "; ".join(dict.fromkeys(parts))
+    if len(joined) <= _MERGED_SUMMARY_MAX_CHARS:
+        return joined
+    return joined[: _MERGED_SUMMARY_MAX_CHARS - 1].rstrip() + "…"
+
+
+def _merged_metadata(member_fibers: Sequence[Fiber]) -> dict[str, Any]:
+    """Union of the sources' metadata plus the merge provenance.
+
+    Replacing metadata wholesale dropped essence, conductivity, coherence,
+    compression_tier and _verbatim. Sources are applied in ascending salience so the
+    most salient fiber wins a key collision.
+    """
+    merged: dict[str, Any] = {}
+    for fiber in sorted(member_fibers, key=lambda f: f.salience):
+        for key, value in fiber.metadata.items():
+            if key == "merged_from":
+                continue
+            merged[key] = value
+    merged["merged_from"] = [f.id for f in member_fibers]
+    return merged
+
 
 # How many dormant neurons one dream cycle replays. Kept small on purpose: the
 # point is a trickle of reactivation so nothing stays dormant forever, not a
@@ -84,6 +137,15 @@ class ConsolidationConfig:
     infer_co_activation_threshold: int = 3
     infer_window_days: int = 7
     infer_max_per_run: int = 50
+    # How many anchors one dedup census compares pairwise. Configurable because the
+    # pass walks a rotating window: with a hardcoded value the only way to widen
+    # coverage on a large brain was to edit the source.
+    dedup_max_anchors: int = _DEDUP_MAX_ANCHORS
+    # Hamming distance below which two SimHash fingerprints count as near-duplicates.
+    # Mirrors DedupConfig.simhash_threshold — the census used to fall back to the
+    # looser library default (10), so it counted pairs the project's own policy no
+    # longer considers duplicates.
+    dedup_simhash_threshold: int = 7
     # 600s per strategy, not 120s: on large brains (10k+ neurons) the heavy passes
     # — compress, lifecycle, essence backfill — legitimately need minutes, and a
     # 120s cap aborted them mid-run so consolidation never converged.
@@ -152,6 +214,9 @@ class ConsolidationReport:
     semantic_synapses_skipped: int = 0
     """Eligible pairs that already carried a synapse, so no edge was created."""
     drift_clusters_found: int = 0
+    # Detected and persisted are separate: the counter used to return the SAVED count
+    # while the report called it "found", so a failing write looked like a smaller brain.
+    drift_clusters_persisted: int = 0
     """Tag clusters (re)detected and persisted by DETECT_DRIFT this run."""
     memories_promoted: int = 0
     fibers_compressed: int = 0
@@ -192,6 +257,72 @@ class ConsolidationReport:
             return ""
         parts = ", ".join(f"{key}: {count}" for key, count in transitions.items() if count)
         return f" ({parts})" if parts else ""
+
+    def _drift_cluster_line(self) -> str:
+        """Drift line that distinguishes detection from persistence.
+
+        The old wording printed the SAVED count under the word "found", so a run whose
+        writes failed looked like a run that simply found less.
+        """
+        line = f"  Drift clusters found: {self.drift_clusters_found}"
+        failed = self.drift_clusters_found - self.drift_clusters_persisted
+        if failed > 0:
+            line += f" ({self.drift_clusters_persisted} persisted, {failed} FAILED to persist)"
+        return line
+
+    def _semantic_link_failure_line(self) -> str | None:
+        """Surface write failures that were previously recorded and never shown."""
+        failures = int(self.extra.get("semantic_link_failures", 0))
+        if failures <= 0:
+            return None
+        return f"  Semantic synapse writes FAILED: {failures}"
+
+    def _merge_delete_failure_line(self) -> str | None:
+        """Surface merge deletes that did not confirm."""
+        failures = int(self.extra.get("merge_delete_failures", 0))
+        if failures <= 0:
+            return None
+        return f"  Merge source deletes FAILED: {failures}"
+
+    def _summaries_skipped_line(self) -> str | None:
+        """Show idempotence at work: clusters whose summary already existed."""
+        skipped = int(self.extra.get("summaries_skipped_existing", 0))
+        if skipped <= 0:
+            return None
+        return f"  Summaries skipped (already exist): {skipped}"
+
+    def _silent_strategy_lines(self) -> list[str]:
+        """Work done by strategies that never had a line of their own.
+
+        replay, interference, schema and tiering all wrote their results into
+        ``extra`` and nothing rendered them, so a run that reorganised the graph
+        looked identical to a run that did nothing.
+        """
+        lines: list[str] = []
+        ltp = int(self.extra.get("replay_ltp", 0))
+        ltd = int(self.extra.get("replay_ltd", 0))
+        episodes = int(self.extra.get("replay_episodes", 0))
+        if episodes or ltp or ltd:
+            lines.append(
+                f"  Hippocampal replay: {episodes} episodes ({ltp} strengthened, {ltd} weakened)"
+            )
+        fan_effects = int(self.extra.get("interference_fan_effects", 0))
+        if fan_effects:
+            lines.append(f"  Interference fan effects: {fan_effects}")
+        schemas = int(self.extra.get("schemas_created", 0))
+        if schemas:
+            lines.append(f"  Schemas created: {schemas}")
+        auto_tier = self.extra.get("auto_tier")
+        if auto_tier:
+            lines.append(f"  Auto-tiering: {auto_tier}")
+        return lines
+
+    def _compress_deferred_line(self) -> str | None:
+        """Show work postponed by the compression budget instead of hiding it as zero."""
+        deferred = int(self.extra.get("compress_fibers_deferred", 0))
+        if deferred <= 0:
+            return None
+        return f"  Fibers deferred (time budget): {deferred}"
 
     def _alias_link_line(self) -> str:
         """Render the dedup counters so "nothing to do" cannot read like "all broken".
@@ -251,7 +382,7 @@ class ConsolidationReport:
             f"  Tokens saved: {self.tokens_saved}",
             f"  Reasoning traces ingested: {self.reasoning_traces_ingested}",
             f"  Reasoning patterns learned: {self.reasoning_patterns_learned}",
-            f"  Drift clusters found: {self.drift_clusters_found}",
+            self._drift_cluster_line(),
             f"  Duration: {self.duration_ms:.1f}ms",
         ]
         if self.merge_details:
@@ -261,6 +392,19 @@ class ConsolidationReport:
                     f"    {len(detail.original_fiber_ids)} fibers -> {detail.merged_fiber_id[:8]}... "
                     f"({detail.neuron_count} neurons, {detail.reason})"
                 )
+
+        # Counters that were recorded but never rendered: a run whose writes failed
+        # used to be indistinguishable from a clean one. Each line appears only when
+        # non-zero, so a healthy run stays quiet.
+        for optional_line in (
+            self._summaries_skipped_line(),
+            self._merge_delete_failure_line(),
+            self._semantic_link_failure_line(),
+            self._compress_deferred_line(),
+        ):
+            if optional_line:
+                lines.append(optional_line)
+        lines.extend(self._silent_strategy_lines())
 
         # Zeros from a pass where stages died look exactly like zeros from a
         # pass where there was nothing to do. Say which it was — but only when
@@ -1043,8 +1187,8 @@ class ConsolidationEngine:
                 frequency=best_frequency,
                 auto_tags=merged_auto_tags,
                 agent_tags=merged_agent_tags,
-                summary=f"Merged from {len(member_fibers)} fibers",
-                metadata={"merged_from": [f.id for f in member_fibers]},
+                summary=_merged_summary(member_fibers),
+                metadata=_merged_metadata(member_fibers),
                 created_at=min(f.created_at for f in member_fibers),
             )
 
@@ -1091,10 +1235,30 @@ class ConsolidationEngine:
                     if record is not None:
                         source_maturations.append(record)
 
-                for fiber in member_fibers:
-                    await self._storage.delete_fiber(fiber.id)
-                    report.fibers_removed += 1
+                # Read the typed-memory layer BEFORE anything is deleted. delete_fiber
+                # has no cascade to typed_memory, and update_typed_memory cannot move a
+                # row to another fiber (its record id is derived from fiber_id), so a
+                # merge that skipped this step silently orphaned memory_type, priority,
+                # trust_score and the validity window of every source.
+                source_typed = await self._collect_source_typed_memories(member_fibers)
+
+                # Create BEFORE destroying. The previous order deleted every source
+                # first, so a failing add_fiber left N fibers gone with no successor —
+                # unrecoverable, because storage here is not transactional.
                 await self._storage.add_fiber(merged_fiber)
+
+                if source_typed is not None:
+                    await self._reassign_typed_memory(source_typed, member_fibers, merged_fiber_id)
+
+                for fiber in member_fibers:
+                    if await self._storage.delete_fiber(fiber.id):
+                        report.fibers_removed += 1
+                    else:
+                        # delete_fiber swallows its exception and returns False; counting
+                        # the attempt would report work that never happened.
+                        report.extra["merge_delete_failures"] = (
+                            int(report.extra.get("merge_delete_failures", 0)) + 1
+                        )
 
                 if source_maturations:
                     # Merging must never cost a fiber the maturation progress it
@@ -1131,17 +1295,171 @@ class ConsolidationEngine:
                         )
                     )
 
+    _DEDUP_CURSOR_KEY = "_dedup_anchor_cursor"
+
+    async def _dedup_cursor(self, anchors_total: int) -> int:
+        """Where this run's dedup window starts.
+
+        Persisted in Brain.metadata (SCHEMALESS, same place the quality badge lives)
+        rather than a new table — no migration, and the state is naturally per-brain.
+        Read-modify-write is not atomic, which is acceptable because consolidations do
+        not run concurrently; the worst case is a window repeated once.
+        """
+        try:
+            brain = await self._storage.get_brain(self._storage.current_brain_id or "")
+        except Exception:
+            logger.debug("Could not read dedup cursor", exc_info=True)
+            return 0
+        if brain is None:
+            return 0
+        raw = brain.metadata.get(self._DEDUP_CURSOR_KEY, 0)
+        try:
+            cursor = int(raw)
+        except (TypeError, ValueError):
+            return 0
+        # A shrunken brain must not leave the cursor past the end.
+        return cursor % anchors_total if anchors_total else 0
+
+    async def _advance_dedup_cursor(self, cursor: int, cap: int, anchors_total: int) -> None:
+        """Move the window forward so the next run sees the next slice."""
+        if anchors_total <= 0:
+            return
+        next_cursor = (cursor + cap) % anchors_total
+        try:
+            brain_id = self._storage.current_brain_id or ""
+            brain = await self._storage.get_brain(brain_id)
+            if brain is None:
+                return
+            brain.metadata[self._DEDUP_CURSOR_KEY] = next_cursor
+            await self._storage.save_brain(brain)
+        except Exception:
+            # A cursor that fails to advance costs coverage on the next run, not
+            # correctness of this one — never abort the pass over it.
+            logger.debug("Could not persist dedup cursor", exc_info=True)
+
+    async def _collect_source_typed_memories(
+        self, member_fibers: list[Fiber]
+    ) -> dict[str, Any] | None:
+        """Typed-memory rows of the fibers about to be merged, read before any delete.
+
+        Returns ``None`` when the layer cannot be read, so the caller can tell "no rows
+        existed" apart from "the lookup failed" and skip the reassignment rather than
+        destroying rows it never saw.
+        """
+        try:
+            return await self._storage.get_typed_memories_batch([f.id for f in member_fibers])
+        except Exception:
+            logger.debug("Could not read typed memories during merge", exc_info=True)
+            return None
+
+    async def _reassign_typed_memory(
+        self,
+        source_typed: dict[str, Any],
+        member_fibers: list[Fiber],
+        merged_fiber_id: str,
+    ) -> None:
+        """Move the merged fibers' typed-memory layer onto the surviving fiber.
+
+        ``add_typed_memory`` is an UPSERT keyed by fiber_id, so writing the merged row
+        first and deleting the sources afterwards never leaves the merge without a
+        typed-memory row. Conflicts resolve deterministically: strongest priority wins,
+        then the widest validity window, so merging can only preserve reach, never
+        silently shorten how long a memory stays valid.
+        """
+        records = [tm for tm in source_typed.values() if tm is not None]
+        if not records:
+            return
+
+        def _priority_of(record: Any) -> tuple[int, float]:
+            # created_at as the tie-break keeps the choice stable across runs.
+            return (int(record.priority), -record.created_at.timestamp())
+
+        winner = max(records, key=_priority_of)
+        trust_scores = [r.trust_score for r in records if r.trust_score is not None]
+        valid_froms = [r.valid_from for r in records if r.valid_from is not None]
+        expiries = [r.expires_at for r in records if r.expires_at is not None]
+
+        merged_tags: set[str] = set()
+        for record in records:
+            merged_tags |= set(record.tags)
+
+        merged_record = dc_replace(
+            winner,
+            fiber_id=merged_fiber_id,
+            trust_score=max(trust_scores) if trust_scores else winner.trust_score,
+            valid_from=min(valid_froms) if valid_froms else winner.valid_from,
+            # All sources expiring -> keep the latest; any source open-ended -> stay
+            # open-ended, because a merge must not invent an expiry.
+            expires_at=(max(expiries) if len(expiries) == len(records) and expiries else None),
+            tags=frozenset(merged_tags),
+        )
+
+        try:
+            await self._storage.add_typed_memory(merged_record)
+        except Exception:
+            logger.warning("Could not write merged typed memory", exc_info=True)
+            return
+
+        for fiber in member_fibers:
+            if fiber.id == merged_fiber_id:
+                continue
+            if fiber.id in source_typed:
+                try:
+                    await self._storage.delete_typed_memory(fiber.id)
+                except Exception:
+                    logger.debug("Could not delete source typed memory", exc_info=True)
+
+    @staticmethod
+    def _summarize_input_fibers(fibers: list[Fiber]) -> list[Fiber]:
+        """Fibers eligible as clustering INPUT.
+
+        Excludes this pass's own output: a summary fiber carries the union of its
+        sources' tags, so leaving it in would let each run cluster the previous run's
+        summaries and grow the brain without bound.
+        """
+        return [f for f in fibers if f.tags and f.metadata.get("_consolidation") != "summary_fiber"]
+
+    @staticmethod
+    def _existing_summary_cluster_keys(fibers: list[Fiber]) -> set[str]:
+        """Cluster keys of summaries that already exist.
+
+        Derived from the same fiber list the pass already fetched rather than a second
+        query: ``find_fibers`` has no offset parameter, so a separate lookup could not
+        be paged and would silently see only its first page.
+        """
+        keys: set[str] = set()
+        for fiber in fibers:
+            if fiber.metadata.get("_consolidation") != "summary_fiber":
+                continue
+            key = fiber.metadata.get("_cluster_key")
+            if key:
+                keys.add(str(key))
+                continue
+            # Summaries written before the key existed: derive it from the recorded
+            # sources so historical rows still suppress duplicates.
+            sources = fiber.metadata.get("source_fibers")
+            if isinstance(sources, list) and sources:
+                keys.add(_summary_cluster_key_from_ids(str(s) for s in sources))
+        return keys
+
     async def _summarize(
         self,
         report: ConsolidationReport,
         dry_run: bool,
     ) -> None:
-        """Create concept neurons for tag-based clusters using inverted index."""
+        """Create concept neurons for tag-based clusters using inverted index.
+
+        Idempotent: a cluster whose summary already exists is skipped rather than
+        recreated. Without that gate every run re-materialised the same clusters —
+        one concept neuron, one fiber and up to ten synapses each — and, because
+        summary fibers carry the union of their sources' tags, they fed straight
+        back into the next clustering pass.
+        """
         fibers = await self._storage.get_fibers(limit=10000)
         if len(fibers) < self._config.summarize_min_cluster_size:
             return
 
-        fiber_list = [f for f in fibers if f.tags]
+        fiber_list = self._summarize_input_fibers(fibers)
 
         # Cap fiber count for O(N²) pair comparison — keep highest-salience
         max_fibers_for_clustering = 1000
@@ -1210,11 +1528,24 @@ class ConsolidationEngine:
             root = find(i)
             groups.setdefault(root, []).append(i)
 
+        existing_cluster_keys = self._existing_summary_cluster_keys(fibers)
+
         for members in groups.values():
             if len(members) < self._config.summarize_min_cluster_size:
                 continue
 
             cluster_fibers = [fiber_list[i] for i in members]
+
+            # Idempotence gate: a cluster is identified by the set of fibers it
+            # summarises, so the same input always yields the same key. Comparing the
+            # key in Python is deliberate — find_fibers(metadata_key=...) filters on
+            # key EXISTENCE, not value.
+            cluster_key = _summary_cluster_key(cluster_fibers)
+            if cluster_key in existing_cluster_keys:
+                report.extra["summaries_skipped_existing"] = (
+                    int(report.extra.get("summaries_skipped_existing", 0)) + 1
+                )
+                continue
 
             summaries = [f.summary for f in cluster_fibers if f.summary]
             all_tags: set[str] = set()
@@ -1275,6 +1606,7 @@ class ConsolidationEngine:
                 tags=all_tags,
                 metadata={
                     "_consolidation": "summary_fiber",
+                    "_cluster_key": cluster_key,
                     "source_fibers": [f.id for f in cluster_fibers],
                 },
             )
@@ -1933,10 +2265,21 @@ class ConsolidationEngine:
             report.extra["dedup_anchors_scanned"] = anchors_total
             return
 
-        # Cap anchors to prevent O(N^2) blowup (N=2000 → 2M comparisons)
-        if anchors_total > _DEDUP_MAX_ANCHORS:
-            anchors = anchors[:_DEDUP_MAX_ANCHORS]
+        # Cap anchors to prevent O(N^2) blowup, but ROTATE the window between runs.
+        # Taking a fixed prefix meant the same anchors were compared every time while
+        # the rest of the population was never compared at all — not "later", ever.
+        cap = max(2, int(self._config.dedup_max_anchors))
+        cursor = 0
+        if anchors_total > cap:
+            cursor = await self._dedup_cursor(anchors_total)
+            window = anchors[cursor : cursor + cap]
+            if len(window) < cap:
+                # Wrap around so the window keeps its size at the end of the list.
+                window += anchors[: cap - len(window)]
+            anchors = window
             report.extra["dedup_anchors_truncated"] = True
+            report.extra["dedup_window_start"] = cursor
+            await self._advance_dedup_cursor(cursor, cap, anchors_total)
             # INFO, not WARNING: on a brain that has simply outgrown the cap this
             # is a steady state, and every run would raise the same alarm until
             # operators learned to ignore dedup warnings — burying the real
@@ -2000,7 +2343,11 @@ class ConsolidationEngine:
                 if anchor_b.content_hash is None or anchor_b.content_hash == 0:
                     continue
 
-                if is_near_duplicate(anchor_a.content_hash, anchor_b.content_hash):
+                if is_near_duplicate(
+                    anchor_a.content_hash,
+                    anchor_b.content_hash,
+                    threshold=self._config.dedup_simhash_threshold,
+                ):
                     report.duplicates_found += 1
                     seen.add(anchor_b.id)
 
@@ -2146,12 +2493,13 @@ class ConsolidationEngine:
         """
         from surreal_memory.engine.drift_clusters import refresh_drift_clusters
 
-        try:
-            report.drift_clusters_found = await refresh_drift_clusters(
-                self._storage, persist=not dry_run
-            )
-        except Exception:
-            logger.warning("Drift cluster detection failed", exc_info=True)
+        # Deliberately NOT wrapped in try/except: swallowing the failure here kept it
+        # out of `failed_strategies`, so a dead detector reported "0 clusters" and read
+        # exactly like a clean brain. The run() loop already records and names a failing
+        # strategy, which is the honest outcome.
+        detected, persisted = await refresh_drift_clusters(self._storage, persist=not dry_run)
+        report.drift_clusters_found = detected
+        report.drift_clusters_persisted = persisted
 
     async def _compress(
         self,
