@@ -166,6 +166,42 @@ class InMemorySyncMixin:
         self._change_log[brain_id] = kept
         return pruned
 
+    async def collapse_pending_updates(self, max_rows: int = 200_000) -> int:
+        """Drop pending ``update`` rows superseded by a newer pending update.
+
+        Mirrors the SurrealDB implementation: only ``operation == "update"``
+        rows that are still unsynced are eligible, and the newest entry per
+        (entity_type, entity_id) always survives.
+        """
+        brain_id = self._get_brain_id()
+        entries = self._change_log.get(brain_id, [])
+        if not entries:
+            return 0
+
+        newest: dict[tuple[str, str], int] = {}
+        for entry in entries:
+            if entry.synced or entry.operation != "update":
+                continue
+            key = (entry.entity_type, entry.entity_id)
+            if entry.id > newest.get(key, -1):
+                newest[key] = entry.id
+
+        removed = 0
+        kept: list[ChangeEntry] = []
+        for entry in entries:
+            superseded = (
+                not entry.synced
+                and entry.operation == "update"
+                and entry.id != newest.get((entry.entity_type, entry.entity_id), entry.id)
+            )
+            if superseded and removed < max_rows:
+                removed += 1
+                continue
+            kept.append(entry)
+
+        self._change_log[brain_id] = kept
+        return removed
+
     async def seed_change_log(self, device_id: str = "") -> dict[str, int]:
         """Seed the change log with all existing entities as 'insert' entries."""
         brain_id = self._get_brain_id()

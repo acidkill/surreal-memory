@@ -1904,6 +1904,27 @@ class NeuralStorage(ABC):
         """
         raise NotImplementedError
 
+    async def collapse_pending_updates(self, max_rows: int = 200_000) -> int:
+        """Drop pending ``update`` rows superseded by a newer pending update.
+
+        Replication converges on the newest payload per entity, so only the
+        latest pending ``update`` for a given entity carries information. This
+        is the growth control for brains whose sync never completes: without it
+        the log grows without bound and nothing ever removes a row, because
+        :meth:`prune_synced_changes` can only remove entries that were
+        successfully synced.
+
+        ``insert``/``delete`` rows and any row already marked synced must be
+        left untouched -- see the SurrealDB implementation for why.
+
+        Args:
+            max_rows: Upper bound on rows removed in a single pass.
+
+        Returns:
+            Count of rows deleted.
+        """
+        raise NotImplementedError
+
     async def seed_change_log(self, device_id: str = "") -> dict[str, int]:
         """Seed the change log with all existing entities as 'insert' entries.
 

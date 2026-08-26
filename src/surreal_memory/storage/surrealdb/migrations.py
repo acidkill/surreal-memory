@@ -44,9 +44,10 @@ from surreal_memory.storage.surrealdb.schema import SCHEMA_VERSION, SYNAPSE_V8_D
 
 logger = logging.getLogger(__name__)
 
-TARGET_VERSION = SCHEMA_VERSION  # 9
+TARGET_VERSION = SCHEMA_VERSION  # 10
 SOURCE_VERSION = 7  # flat synapse table (pre 7->8 migration)
 RELATION_SYNAPSE_VERSION = 8  # synapse became a RELATION table in the 7->8 migration
+TYPED_VALIDITY_VERSION = 9  # TypedMemory validity fields + retrieval_trace table
 
 BACKUP_TABLE = "synapse_migration_backup"
 BATCH_SIZE = 500
@@ -555,13 +556,50 @@ async def _migrate_8_to_9(conn: Any) -> None:
                 # schema. Only the idempotent "already exists" re-DEFINE is skipped.
                 logger.error("v9 migration statement failed: %s (%s)", stmt[:80], exc)
                 raise
+    # Stamp 9 explicitly, not TARGET_VERSION: this step brings a database to v9
+    # and nothing further. Stamping the moving target claimed every later schema
+    # version without running its DDL.
+    await _stamp_version(conn, TYPED_VALIDITY_VERSION)
+
+
+_V10_DDL = ("DEFINE INDEX idx_changelog_synced ON change_log FIELDS brain_id, synced",)
+
+
+async def _migrate_9_to_10(conn: Any) -> None:
+    """Additive schema-v10 migration: index change_log on (brain_id, synced).
+
+    Every count filtered on ``synced`` previously degraded to a full read of the
+    brain's change_log, because the planner had to fetch the field from each row.
+    Measured on a large log: the same count was well over an order of magnitude slower without this index, which is the difference between the dashboard's sync card
+    answering and appearing to hang.
+
+    Pure idempotent DDL, no data movement. Building the index does scan the
+    existing table once, so on a large neglected log this migration is not
+    instant -- it is still bounded, one-off, and far cheaper than paying the full
+    read on every dashboard load. Stamps v10 last.
+    """
+    for stmt in _V10_DDL:
+        try:
+            await conn.query(stmt + ";")
+        except Exception as exc:
+            if "already exists" in str(exc).lower():
+                logger.debug("v10 migration statement skipped (already exists): %s", stmt[:80])
+            else:
+                logger.error("v10 migration statement failed: %s (%s)", stmt[:80], exc)
+                raise
     await _stamp_version(conn, TARGET_VERSION)
 
 
 # Registry mirrors sqlite_schema.MIGRATIONS: {(from, to): migrate_callable}.
 MIGRATIONS = {
     (SOURCE_VERSION, RELATION_SYNAPSE_VERSION): _migrate_7_to_8,  # (7, 8)
-    (RELATION_SYNAPSE_VERSION, TARGET_VERSION): _migrate_8_to_9,  # (8, 9)
+    # Pinned to explicit version constants, NOT to TARGET_VERSION: this entry
+    # used to read (RELATION_SYNAPSE_VERSION, TARGET_VERSION), so bumping the
+    # schema silently re-registered the 8->9 migration as 8->10 and left 9->10
+    # missing entirely. A v8 database would then have jumped straight to a v10
+    # stamp without ever running the v10 DDL.
+    (RELATION_SYNAPSE_VERSION, TYPED_VALIDITY_VERSION): _migrate_8_to_9,  # (8, 9)
+    (TYPED_VALIDITY_VERSION, TARGET_VERSION): _migrate_9_to_10,  # (9, 10)
 }
 
 

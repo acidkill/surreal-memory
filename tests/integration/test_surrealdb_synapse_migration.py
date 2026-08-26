@@ -198,7 +198,7 @@ async def test_v7_upgrade_preserves_count_ids_endpoints_export_and_merkle() -> N
     assert post_merkle == pre_merkle
 
     # schema_meta stamped + backup retained
-    assert await M._read_stamped_version(conn) == 9
+    assert await M._read_stamped_version(conn) == M.TARGET_VERSION
     assert await M._count(conn, M.BACKUP_TABLE) == len(expected)
 
     # get_neighbors + get_path parity via native edges
@@ -238,7 +238,7 @@ async def test_second_initialize_is_noop() -> None:
     store2 = _store(db)
     await store2.initialize()
     store2.set_brain(brain.id)
-    assert await M._read_stamped_version(conn) == 9
+    assert await M._read_stamped_version(conn) == M.TARGET_VERSION
     assert len(await store2.get_all_synapses()) == len(expected)
 
 
@@ -274,7 +274,7 @@ async def test_two_parallel_apply_migrations_run_exactly_once() -> None:
     # the migration incomplete), so a retryable transient is only tolerated when the end
     # state is still correct.
     def _acceptable(r: object) -> bool:
-        if r == 9 or isinstance(r, M.MigrationError):
+        if r == M.TARGET_VERSION or isinstance(r, M.MigrationError):
             return True
         return isinstance(r, Exception) and "can be retried" in str(r).lower()
 
@@ -282,7 +282,7 @@ async def test_two_parallel_apply_migrations_run_exactly_once() -> None:
         assert _acceptable(r), f"unexpected result {r!r}"
 
     # Regardless of which call won the race, the migration must have completed exactly once.
-    assert await M._read_stamped_version(conn) == 9
+    assert await M._read_stamped_version(conn) == M.TARGET_VERSION
     assert await M._count(conn, "synapse") == len(expected)  # migrated exactly once
     assert await M._count(conn, M.BACKUP_TABLE) == len(expected)
 
@@ -301,6 +301,6 @@ async def test_fresh_db_is_target_version_directly_no_backup() -> None:
     info = await conn.query("INFO FOR DB")
     sdef = (info.get("tables", {}) or {}).get("synapse", "")
     assert "TYPE RELATION" in str(sdef)
-    assert await M._read_stamped_version(conn) == 9
+    assert await M._read_stamped_version(conn) == M.TARGET_VERSION
     # no migration ran -> no backup table rows
     assert await M._count(conn, M.BACKUP_TABLE) == 0

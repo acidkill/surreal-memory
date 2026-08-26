@@ -7,7 +7,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 SCHEMA_SQL = """
 -- ============================================================
@@ -137,6 +137,13 @@ DEFINE FIELD synced         ON change_log TYPE bool DEFAULT false;
 DEFINE FIELD sequence       ON change_log TYPE int;
 DEFINE INDEX idx_changelog_brain  ON change_log FIELDS brain_id;
 DEFINE INDEX idx_changelog_seq    ON change_log FIELDS brain_id, sequence;
+-- v10: without this, every count filtered on `synced` degrades to a full read of
+-- the brain's change_log, because the planner has to fetch the field from each
+-- row. Measured on a large log: an equivalent count filtered on a field the
+-- existing composite index covers was well over an order of magnitude faster than
+-- the same count filtered on `synced`. That is the difference between the dashboard's sync card
+-- answering and appearing to hang.
+DEFINE INDEX idx_changelog_synced ON change_log FIELDS brain_id, synced;
 
 -- Devices (sync device registry)
 DEFINE TABLE device SCHEMAFULL;

@@ -82,3 +82,96 @@ class TestConfiguredTTL:
         monkeypatch.setenv("SURREAL_MEMORY_DASHBOARD_CACHE_TTL", "not-a-number")
         mod = importlib.import_module("surreal_memory.server.dashboard_cache")
         assert mod._configured_ttl() == mod._DEFAULT_TTL_SECONDS
+
+
+class TestHealthReportCache:
+    """The health page paid the full diagnostics cost on every single load.
+
+    ``/api/dashboard/stats`` cached the expensive part from 2.7.4 onward, but
+    ``/api/dashboard/health`` called ``DiagnosticsEngine.analyze`` directly, so
+    on a large brain it paid a full multi-second analyze every time, not just when
+    cold, while ``/stats`` served the identical computation from cache.
+    The two now share one cached report, so they cannot disagree either.
+    """
+
+    @staticmethod
+    def _reload():
+        """Clear the shared cache WITHOUT reloading the module.
+
+        importlib.reload rebinds the module's cache singletons, which other
+        tests already hold references to -- it made an unrelated uncertainty
+        cache test fail depending on execution order.
+        """
+        import surreal_memory.server.routes.dashboard_api as api
+
+        api._GRADE_CACHE.clear()
+        return api
+
+    async def test_second_call_does_not_recompute(self, monkeypatch) -> None:
+        api = self._reload()
+        calls = {"n": 0}
+
+        class _Report:
+            grade = "B"
+            purity_score = 71.5
+
+        async def _fake_analyze(self, brain_id):
+            calls["n"] += 1
+            return _Report()
+
+        monkeypatch.setattr(
+            "surreal_memory.engine.diagnostics.DiagnosticsEngine.analyze",
+            _fake_analyze,
+        )
+
+        first = await api._cached_health_report(object(), "brain-a")
+        second = await api._cached_health_report(object(), "brain-a")
+
+        assert calls["n"] == 1, "the second load recomputed a multi-second analyze"
+        assert first is second
+
+    async def test_grade_and_health_share_one_report(self, monkeypatch) -> None:
+        """Two endpoints recomputing the same analyze can also disagree."""
+        api = self._reload()
+        calls = {"n": 0}
+
+        class _Report:
+            grade = "C"
+            purity_score = 55.0
+
+        async def _fake_analyze(self, brain_id):
+            calls["n"] += 1
+            return _Report()
+
+        monkeypatch.setattr(
+            "surreal_memory.engine.diagnostics.DiagnosticsEngine.analyze",
+            _fake_analyze,
+        )
+
+        await api._cached_health_report(object(), "brain-b")
+        grade, purity = await api._cached_grade_purity(object(), "brain-b")
+
+        assert calls["n"] == 1, "grade/purity must reuse the cached health report"
+        assert (grade, purity) == ("C", 55.0)
+
+    async def test_separate_brains_do_not_share_an_entry(self, monkeypatch) -> None:
+        api = self._reload()
+        seen = []
+
+        class _Report:
+            grade = "A"
+            purity_score = 90.0
+
+        async def _fake_analyze(self, brain_id):
+            seen.append(brain_id)
+            return _Report()
+
+        monkeypatch.setattr(
+            "surreal_memory.engine.diagnostics.DiagnosticsEngine.analyze",
+            _fake_analyze,
+        )
+
+        await api._cached_health_report(object(), "brain-a")
+        await api._cached_health_report(object(), "brain-b")
+
+        assert seen == ["brain-a", "brain-b"], "one brain's health served another's"

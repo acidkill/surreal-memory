@@ -5,6 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.7.0] — 2026-08-26 — the change log stops growing, and the dashboard stops waiting on it
+
+The dashboard's sync card could take minutes to answer, and the health page paid a
+full diagnostics pass on every load. Three independent causes, none of which was
+visible in the values these endpoints returned — they were correct, just expensive.
+
+### Fixed
+
+- `get_change_log_stats` inlines `brain_id` instead of parameterising it. SurrealDB's
+  planner only uses the `brain_id` index for an inline literal; a parameterised
+  comparison silently degrades to a full scan. The helper and its rationale already
+  existed in the storage layer — this read path had simply never adopted it.
+- The same read no longer runs a separate aggregate per counter. `total` and `pending`
+  are counted; `synced` is derived by subtraction. Beyond removing a scan, this makes
+  a class of nonsense impossible rather than merely unlikely: the counters were not
+  read atomically, so the endpoint could report more pending rows than total rows.
+- `prune_synced_changes` returns the number of rows it deleted instead of a hardcoded
+  `0`. The in-memory backend had always counted correctly, so backend parity looked
+  healthy while the production backend reported nothing.
+- `/api/dashboard/health` is served from the same cached diagnostics report as the
+  overview's grade, instead of recomputing a multi-second analysis on every request.
+  Two endpoints independently recomputing one analysis could also disagree.
+- The migration registry is pinned to explicit version constants. It previously keyed
+  the 8→9 entry on `TARGET_VERSION`, so bumping the schema re-registered that
+  migration as 8→10 and left 9→10 missing — a v8 database would have been stamped
+  with the new version without ever running its DDL.
+
+### Added
+
+- `collapse_pending_updates()` on the storage interface, wired into consolidation.
+  The change log had no unconditional growth control: its only retention path
+  required rows to have been synced, so on a brain whose sync never completes
+  nothing ever removed a row, and the endpoint that would have shown the growth was
+  itself too slow to load at that size — the defect hid its own symptom.
+  Collapsing superseded pending `update` rows is lossless, because replication
+  converges on the newest payload per entity. `insert`/`delete` rows and synced
+  rows are never touched. Bounded per pass, and hitting the bound is reported
+  rather than smoothed over.
+- Schema v10: `change_log` is indexed on `(brain_id, synced)`. Without it, every
+  count filtered on `synced` had to fetch the field from every row, which is what
+  made the sync card's read expensive even after the index-eligibility fix.
+
 ## [3.6.2] — 2026-08-16 — the dashboard sees the last two consolidation counters
 
 A Stage-2 API pass against the running service found `ConsolidationResponse` carrying 18 of the

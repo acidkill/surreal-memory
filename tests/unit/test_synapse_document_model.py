@@ -25,8 +25,10 @@ _SCHEMA = re.sub(r"[ \t]+", " ", SCHEMA_SQL)
 
 
 class TestSynapseRelationModel:
-    def test_schema_version_is_8(self) -> None:
-        assert SCHEMA_VERSION == 9
+    def test_schema_version_is_current(self) -> None:
+        # Renamed: the old name said 8 while asserting 9, so it stopped
+        # describing what it checked the first time the schema moved.
+        assert SCHEMA_VERSION == 10
 
     def test_synapse_is_native_relation(self) -> None:
         assert "DEFINE TABLE synapse TYPE RELATION IN neuron OUT neuron SCHEMAFULL" in _DDL

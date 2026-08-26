@@ -39,6 +39,14 @@ logger = logging.getLogger(__name__)
 # the pass reports the total and flags the truncation instead of hiding it.
 _DEDUP_MAX_ANCHORS = 2000
 
+# How many superseded change-log rows one consolidation pass may remove. A log
+# that has never been pruned can hold millions; deleting them all in one pass
+# would turn a routine consolidation into a multi-minute stall. The pass is
+# idempotent, so a backlog drains over consecutive runs — and hitting this cap
+# is reported, not smoothed over, so a draining backlog cannot be mistaken for a
+# finished one.
+_CHANGE_LOG_COLLAPSE_CAP = 200_000
+
 
 def _summary_cluster_key_from_ids(fiber_ids: Iterable[str]) -> str:
     """Stable identity of a summary cluster: a hash of its sorted source fiber ids.
@@ -187,6 +195,15 @@ class ConsolidationReport:
     query_patterns_learned: int = 0
     action_events_pruned: int = 0
     retrieval_traces_pruned: int = 0
+    change_log_collapsed: int = 0
+    """Superseded pending change-log updates removed this run.
+
+    The change log is the one table with no upper bound on growth: its only
+    retention path required rows to have been synced, so on a brain whose sync
+    never completed nothing was ever removed. Reporting the collapse here is
+    what makes that growth visible at all -- the dashboard card that would have
+    shown it was itself too slow to load while the table was large.
+    """
     duplicates_found: int = 0
     new_alias_links: int = 0
     """ALIAS edges actually created this run.
@@ -382,6 +399,20 @@ class ConsolidationReport:
             line += self._dedup_window_note()
         return line
 
+    def _change_log_collapse_line(self) -> str:
+        """Render the change-log collapse, and say so when the pass was cut short.
+
+        A bounded pass that hit its ceiling has NOT finished the job, and a
+        backlog draining over several runs looks identical to a completed run
+        unless the truncation is stated. Same reasoning as the dedup census
+        line: a number alone cannot distinguish "done" from "gave up here".
+        """
+        line = f"{self.change_log_collapsed} superseded updates removed"
+        remaining = int(self.extra.get("change_log_pending_after", 0) or 0)
+        if self.extra.get("change_log_collapse_truncated"):
+            line += f" [pass capped; {remaining} pending rows remain, next run continues]"
+        return line
+
     def _dedup_window_note(self) -> str:
         """Describe the census WINDOW, not just the cap.
 
@@ -421,6 +452,7 @@ class ConsolidationReport:
             f"  Habits learned: {self.habits_learned}",
             f"  Query patterns learned: {self.query_patterns_learned}",
             f"  Action events pruned: {self.action_events_pruned}",
+            f"  Change log collapsed: {self._change_log_collapse_line()}",
             f"  Duplicate anchors: {self._alias_link_line()}",
             f"  Semantic synapses: {self._semantic_synapse_line()}",
             f"  Memories promoted (type): {self.memories_promoted}",
@@ -1079,6 +1111,34 @@ class ConsolidationEngine:
                     report.retrieval_traces_pruned = pruned_traces
             except Exception:
                 logger.debug("Retrieval trace pruning skipped", exc_info=True)
+
+        # Collapse superseded pending change-log updates.
+        #
+        # This is the ONLY retention path for a brain whose sync never completes.
+        # prune_synced_changes can only remove rows that were successfully synced,
+        # so where sync is configured but never lands, nothing ever removed a row
+        # and the table grew without bound -- and the dashboard card that would
+        # have revealed it was itself too slow to load at that size, so the defect
+        # hid its own symptom. Collapsing is lossless: replication converges on the
+        # newest payload per entity, so superseded updates cannot change the
+        # outcome for any peer, at any sync position.
+        if not dry_run and hasattr(self._storage, "collapse_pending_updates"):
+            try:
+                collapsed = await self._storage.collapse_pending_updates(
+                    max_rows=_CHANGE_LOG_COLLAPSE_CAP
+                )
+                report.change_log_collapsed = collapsed
+                if collapsed:
+                    logger.info("Collapsed %d superseded change-log updates", collapsed)
+                if collapsed >= _CHANGE_LOG_COLLAPSE_CAP:
+                    report.extra["change_log_collapse_truncated"] = True
+                    try:
+                        stats = await self._storage.get_change_log_stats()
+                        report.extra["change_log_pending_after"] = int(stats.get("pending", 0) or 0)
+                    except Exception:
+                        logger.debug("Change-log stats unavailable after collapse", exc_info=True)
+            except Exception:
+                logger.debug("Change-log collapse skipped", exc_info=True)
 
     async def _merge(
         self,

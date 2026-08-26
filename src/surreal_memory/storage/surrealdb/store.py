@@ -187,6 +187,21 @@ def _prefer_ws_transport(url: str) -> str:
 # the statement batch fails.
 _BATCH_WRITE_CHUNK = 500
 
+# Ceiling on rows one collapse_pending_updates pass may delete. The first run
+# against a neglected log faces millions of rows; deleting them in a single pass
+# would stall the consolidation that called it. The pass is idempotent and runs
+# on every consolidation, so a backlog drains over several runs instead of one
+# long stall -- and the caller reports the truncation rather than presenting a
+# partial pass as a finished one.
+_COLLAPSE_MAX_ROWS = 200_000
+
+# Delete batch for the collapse. Much larger than _BATCH_WRITE_CHUNK because
+# these statements carry only record ids — no payloads, no vectors — so the
+# request body stays small while the round-trip count drops by an order of
+# magnitude. At the write chunk size, draining a large backlog spent nearly all
+# its wall-clock on per-statement latency rather than on deleting.
+_COLLAPSE_DELETE_CHUNK = 5_000
+
 # Backoff grid for the reconnect retry in _query. A dropped transport usually
 # needs a moment before it accepts a new connection, so the first retry is
 # immediate and the next two wait.
@@ -2861,14 +2876,104 @@ class SurrealDBStorage(
         return count
 
     async def prune_synced_changes(self, older_than_days: int = 30) -> int:
-        brain_id = self._get_brain_id()
-        await self._query(
-            "DELETE FROM change_log WHERE brain_id = $brain_id AND synced = true "
-            "AND changed_at < time::ago($days, 'd')",
-            brain_id=brain_id,
+        """Delete synced changes older than N days. Returns the count deleted.
+
+        This used to ``return 0`` unconditionally while deleting an arbitrary
+        number of rows. The in-memory backend counted correctly, so backend
+        parity looked fine and the production backend reported nothing -- the
+        same recorded-but-invisible class the consolidation counters were fixed
+        for. SurrealDB's ``DELETE`` does not report a row count, so the count is
+        taken first; a row deleted by a concurrent writer between the two
+        statements would be counted here without being deleted by us, which is
+        a far smaller lie than a constant zero.
+        """
+        lit = _brain_literal(self._get_brain_id())
+        where = f"brain_id = {lit} AND synced = true AND changed_at < time::ago($days, 'd')"
+        counted = await self._query(
+            f"SELECT count() AS c FROM change_log WHERE {where} GROUP ALL",
             days=older_than_days,
         )
-        return 0
+        doomed = int(counted[0].get("c", 0) or 0) if counted else 0
+        if not doomed:
+            return 0
+        await self._query(f"DELETE FROM change_log WHERE {where}", days=older_than_days)
+        return doomed
+
+    async def collapse_pending_updates(self, max_rows: int = _COLLAPSE_MAX_ROWS) -> int:
+        """Drop pending ``update`` rows that a newer pending update supersedes.
+
+        The change log is a replication journal, and replication converges on
+        the NEWEST payload per entity. Repeated ``update`` rows for one entity
+        therefore carry exactly as much information as the last one: a peer
+        replaying all of them and a peer replaying only the newest reach the
+        same state. Where consolidation re-weights edges on every pass, these
+        superseded rows come to dominate the table -- tens of them per edge --
+        and nothing else removes them.
+
+        The winner is chosen WITHIN the batch this pass reads, not by a global
+        aggregate. That is both cheaper and equally safe: the row surviving each
+        batch is the newest one *in* it, and the globally newest row is by
+        definition never older than any batch-local maximum -- so it either sits
+        outside the batch untouched, or is the batch maximum and survives. It
+        can never be the row deleted. A global ``GROUP BY`` over the whole table
+        would give the same answer while scanning every row to get it, which on
+        a large backlog cost more than the deletes themselves. Repeated passes
+        converge, because each pass strictly reduces the number of superseded
+        rows.
+
+        Deliberately narrow, because the safety argument does not extend:
+
+        * ``insert``/``delete`` are NEVER collapsed. They are not
+          idempotent-by-latest, and dropping an ``insert`` would leave a peer
+          applying an update to an entity it has never seen.
+        * ``synced = true`` rows are NEVER touched. Delivered history is
+          governed by :meth:`prune_synced_changes`; running two retention
+          policies over one table is how a table ends up with neither.
+
+        Bounded by ``max_rows`` per pass so a first run against a large backlog
+        cannot turn into a multi-minute stall. The return value is the number
+        actually deleted, and the caller reports truncation rather than
+        presenting a partial pass as a finished one.
+        """
+        lit = _brain_literal(self._get_brain_id())
+        scope = f"brain_id = {lit} AND operation = 'update' AND synced = false"
+
+        # No ORDER BY: which superseded rows a capped pass removes is immaterial
+        # (they are all redundant), while sorting is not — the filter includes
+        # `operation`, which no index covers, so the sort would be paid over
+        # every matching row.
+        candidates = await self._query(
+            f"SELECT id, entity_type, entity_id, sequence FROM change_log WHERE {scope} LIMIT $cap",
+            cap=max_rows,
+        )
+        if not candidates:
+            return 0
+
+        newest: dict[tuple[str, str], int] = {}
+        for row in candidates:
+            key = (str(row.get("entity_type", "")), str(row.get("entity_id", "")))
+            seq = int(row.get("sequence", 0) or 0)
+            if seq > newest.get(key, -1):
+                newest[key] = seq
+
+        # Keep the raw RecordID the driver handed back: stringifying it turns
+        # `change_log:abc` into a plain string, and `WHERE id IN $ids` then
+        # matches nothing at all while still reporting a successful delete.
+        doomed: list[Any] = [
+            row.get("id")
+            for row in candidates
+            if row.get("id") is not None
+            and int(row.get("sequence", 0) or 0)
+            != newest.get((str(row.get("entity_type", "")), str(row.get("entity_id", ""))), -1)
+        ]
+        if not doomed:
+            return 0
+
+        deleted = 0
+        for chunk in _chunked(doomed, _COLLAPSE_DELETE_CHUNK):
+            await self._query("DELETE change_log WHERE id IN $ids", ids=chunk)
+            deleted += len(chunk)
+        return deleted
 
     async def seed_change_log(self, device_id: str = "") -> dict[str, int]:
         brain_id = self._get_brain_id()
@@ -2906,35 +3011,51 @@ class SurrealDBStorage(
         return counts
 
     async def get_change_log_stats(self) -> dict[str, Any]:
-        brain_id = self._get_brain_id()
+        """Return ``total``/``pending``/``synced``/``last_sequence`` for this brain.
+
+        Three properties of this query text are load-bearing, and none of them
+        show up in the numbers it returns. All were measured on a large
+        ``change_log``:
+
+        1. ``brain_id`` is INLINED, not parameterised. SurrealDB's planner only
+           uses the ``brain_id`` index for an inline literal (see
+           ``_brain_literal``): roughly 25x slower parameterised than inlined.
+        2. The counts filter on ``synced``, which is only cheap because
+           ``idx_changelog_synced`` (schema v10) covers it. Filtering on an
+           unindexed field forces the planner to fetch it from every row -- the
+           same count was well over an order of magnitude slower before that index existed. Do not assume the
+           ``brain_id`` index alone is enough; it is not.
+        3. ``synced`` is DERIVED as ``total - pending`` rather than counted.
+           A third scan to learn what subtraction already gives is waste, and
+           three non-atomic aggregates could disagree with each other -- which is
+           how this endpoint once reported ``pending`` greater than ``total``.
+           Deriving it makes that arithmetic impossible rather than unlikely.
+        """
+        lit = _brain_literal(self._get_brain_id())
         total_rows = await self._query(
-            "SELECT count() AS c FROM change_log WHERE brain_id = $bid GROUP ALL",
-            bid=brain_id,
+            f"SELECT count() AS c FROM change_log WHERE brain_id = {lit} GROUP ALL"
         )
         pending_rows = await self._query(
-            "SELECT count() AS c FROM change_log WHERE brain_id = $bid AND synced = false GROUP ALL",
-            bid=brain_id,
-        )
-        synced_rows = await self._query(
-            "SELECT count() AS c FROM change_log WHERE brain_id = $bid AND synced = true GROUP ALL",
-            bid=brain_id,
+            f"SELECT count() AS c FROM change_log WHERE brain_id = {lit} "
+            "AND synced = false GROUP ALL"
         )
         last_seq_rows = await self._query(
-            "SELECT sequence FROM change_log WHERE brain_id = $bid ORDER BY sequence DESC LIMIT 1",
-            bid=brain_id,
+            f"SELECT sequence FROM change_log WHERE brain_id = {lit} ORDER BY sequence DESC LIMIT 1"
         )
 
-        def _cnt(rows: list[Any]) -> int:
-            return int(rows[0].get("c", 0)) if rows else 0
+        def _count(rows: list[Any]) -> int:
+            return int(rows[0].get("c", 0) or 0) if rows else 0
 
-        def _max(rows: list[Any]) -> int:
-            return int(rows[0].get("sequence", 0)) if rows else 0
+        total = _count(total_rows)
+        # Clamp: a row synced between the two scans would otherwise push pending
+        # above total and hand the dashboard a negative "synced".
+        pending = min(_count(pending_rows), total)
 
         return {
-            "total": _cnt(total_rows),
-            "pending": _cnt(pending_rows),
-            "synced": _cnt(synced_rows),
-            "last_sequence": _max(last_seq_rows),
+            "total": total,
+            "pending": pending,
+            "synced": total - pending,
+            "last_sequence": int(last_seq_rows[0].get("sequence", 0)) if last_seq_rows else 0,
         }
 
     # ================================================================

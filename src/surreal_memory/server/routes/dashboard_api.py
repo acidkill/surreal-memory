@@ -27,19 +27,31 @@ _GRADE_CACHE = TTLCache()
 _UNCERTAINTY_CACHE = TTLCache()
 
 
-async def _cached_grade_purity(storage: NeuralStorage, brain_name: str) -> tuple[str, float]:
-    """Return (grade, purity) for a brain, cached per brain for the TTL window."""
-    key = f"grade:{brain_name}"
+async def _cached_health_report(storage: NeuralStorage, brain_name: str) -> Any:
+    """Return the full diagnostics report for a brain, cached per brain.
+
+    The whole report is cached, not just the grade: ``/health`` used to call
+    ``DiagnosticsEngine.analyze`` directly on every request while ``/stats``
+    served the same computation from cache. On a large brain that cost a multi-second analyze
+    per health load — and not only when cold, since nothing was memoised. Two
+    endpoints independently recomputing one analysis can also disagree with each
+    other; sharing the entry removes that possibility as well as the cost.
+    """
+    key = f"health:{brain_name}"
     cached = _GRADE_CACHE.get(key)
     if cached is not None:
-        grade, purity = cached
-        return str(grade), float(purity)
+        return cached
     from surreal_memory.engine.diagnostics import DiagnosticsEngine
 
     report = await DiagnosticsEngine(storage).analyze(brain_name)
-    result = (report.grade, report.purity_score)
-    _GRADE_CACHE.set(key, result)
-    return result
+    _GRADE_CACHE.set(key, report)
+    return report
+
+
+async def _cached_grade_purity(storage: NeuralStorage, brain_name: str) -> tuple[str, float]:
+    """Return (grade, purity) for a brain, cached per brain for the TTL window."""
+    report = await _cached_health_report(storage, brain_name)
+    return str(report.grade), float(report.purity_score)
 
 
 router = APIRouter(
@@ -375,15 +387,18 @@ async def switch_brain(
 async def get_health(
     storage: Annotated[NeuralStorage, Depends(get_storage)],
 ) -> HealthReport:
-    """Run full diagnostics on the active brain."""
-    from surreal_memory.engine.diagnostics import DiagnosticsEngine
+    """Run full diagnostics on the active brain (served from the TTL cache).
+
+    Shares the cached report with the overview's grade/purity, so the health
+    page no longer pays a full multi-second analyze on every load — see
+    ``_cached_health_report``.
+    """
     from surreal_memory.unified_config import get_config
 
     brain_name = get_config().current_brain
 
     try:
-        diag = DiagnosticsEngine(storage)
-        report = await diag.analyze(brain_name)
+        report = await _cached_health_report(storage, brain_name)
     except Exception as exc:
         logger.warning("Diagnostics failed for brain %s: %s", brain_name, exc)
         return HealthReport(grade="F", purity_score=0.0)

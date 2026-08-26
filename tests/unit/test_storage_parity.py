@@ -41,6 +41,10 @@ _CONTRACT = (
     "save_drift_cluster",
     "get_drift_clusters",
     "resolve_drift_cluster",
+    # The change log's only unconditional growth control. Present on one backend
+    # and inherited-inert on the other would mean the table grows without bound
+    # exactly where it already did: the production backend.
+    "collapse_pending_updates",
 )
 
 # SharedStorage is a thin HTTP client against a remote server, with no local
