@@ -5,7 +5,7 @@
 
 **Current state**: v3.5.1 — 57 MCP tools, 7200+ tests, neuroscience engine (10 brain-inspired algorithms), tiered memory loading (HOT/WARM/COLD).
 
-**Storage**: SurrealDB is the only persistent backend — schema v9 — and `storage_backend`
+**Storage**: SurrealDB is the only persistent backend — schema v10 — and `storage_backend`
 defaults to it. `#141` removed the SQLite backend entirely; selecting `storage_backend = "sqlite"`
 is now a hard `ValueError`, not a fallback. InMemory remains, opt-in only, for trying the tool
 without running a database — it has no schema to version. Earlier revisions of this line described
