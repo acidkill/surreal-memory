@@ -200,7 +200,12 @@ _COLLAPSE_MAX_ROWS = 200_000
 # request body stays small while the round-trip count drops by an order of
 # magnitude. At the write chunk size, draining a large backlog spent nearly all
 # its wall-clock on per-statement latency rather than on deleting.
-_COLLAPSE_DELETE_CHUNK = 5_000
+_COLLAPSE_DELETE_CHUNK = 1_000
+
+# Record ids are inlined into batched DELETE statements, so they are validated
+# against this charset first. Ids come from the database, but "the database gave
+# it to me" is not a safety argument for string-building a statement.
+_CHANGE_LOG_ID_SAFE = re.compile(r"^change_log:[A-Za-z0-9_⟨⟩-]+$")
 
 # Backoff grid for the reconnect retry in _query. A dropped transport usually
 # needs a moment before it accepts a new connection, so the first retry is
@@ -2959,19 +2964,28 @@ class SurrealDBStorage(
         # Keep the raw RecordID the driver handed back: stringifying it turns
         # `change_log:abc` into a plain string, and `WHERE id IN $ids` then
         # matches nothing at all while still reporting a successful delete.
-        doomed: list[Any] = [
-            row.get("id")
+        doomed: list[str] = [
+            str(row["id"])
             for row in candidates
             if row.get("id") is not None
+            # Ids are inlined into DELETE statements, so each one is validated
+            # against a strict charset first rather than trusted because it came
+            # back from the database.
+            and _CHANGE_LOG_ID_SAFE.match(str(row["id"]))
             and int(row.get("sequence", 0) or 0)
             != newest.get((str(row.get("entity_type", "")), str(row.get("entity_id", ""))), -1)
         ]
         if not doomed:
             return 0
 
+        # Delete by primary key, batched as separate statements, NOT with
+        # `WHERE id IN $ids`. The IN form does not scale: a list of a few
+        # thousand ids stops returning entirely, while the same ids as
+        # individual keyed deletes complete in one round-trip in milliseconds.
         deleted = 0
         for chunk in _chunked(doomed, _COLLAPSE_DELETE_CHUNK):
-            await self._query("DELETE change_log WHERE id IN $ids", ids=chunk)
+            statements = "".join(f"DELETE {rid};" for rid in chunk)
+            await self._query(statements)
             deleted += len(chunk)
         return deleted
 
