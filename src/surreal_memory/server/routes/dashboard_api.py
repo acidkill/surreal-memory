@@ -18,7 +18,13 @@ logger = logging.getLogger(__name__)
 # Full diagnostics (grade/purity) aggregates over the whole synapse graph — a few
 # seconds on a large brain. The grade is slow-moving, so cache it per brain for a
 # short window; the overview's counts are computed live (cheap) around it.
-_GRADE_CACHE = TTLCache()
+# Diagnostics gets its OWN window, far longer than the shared default. The
+# report costs tens of seconds on a large brain, so a 60 s entry expired before
+# most visitors came back: the cache existed but only paid off during continuous
+# use, and anyone opening the dashboard occasionally paid full price every time.
+# A health grade does not meaningfully move within five minutes.
+_HEALTH_TTL_SECONDS = 300.0
+_GRADE_CACHE = TTLCache(ttl=_HEALTH_TTL_SECONDS)
 
 # Brain-wide uncertainty overview is bounded/cheap, but cached per brain for a short
 # window anyway to keep the dashboard's polling off the storage hot path (same
@@ -313,9 +319,7 @@ async def list_brains_api(
                 grade = "F"
                 purity = 0.0
                 try:
-                    from surreal_memory.engine.diagnostics import DiagnosticsEngine
-
-                    report = await DiagnosticsEngine(brain_storage).analyze(name)
+                    report = await _cached_health_report(brain_storage, name)
                     grade = report.grade
                     purity = report.purity_score
                 except Exception:
@@ -1498,11 +1502,8 @@ async def get_config_status(
 
     # ── 6. Orphan Rate ──────────────────────────────────
     try:
-        from surreal_memory.engine.diagnostics import DiagnosticsEngine
-
         brain_name = cfg.current_brain
-        diag = DiagnosticsEngine(storage)
-        report = await diag.analyze(brain_name)
+        report = await _cached_health_report(storage, brain_name)
         orphan_pct = round(report.orphan_rate * 100, 1)
 
         if report.orphan_rate > 0.20:
@@ -1723,9 +1724,7 @@ async def get_storage_status(
         logger.debug("Storage status: get_stats failed", exc_info=True)
 
     try:
-        from surreal_memory.engine.diagnostics import DiagnosticsEngine
-
-        report = await DiagnosticsEngine(storage).analyze(brain_name)
+        report = await _cached_health_report(storage, brain_name)
         health_grade = report.grade
     except Exception:
         logger.debug("Storage status: diagnostics failed", exc_info=True)

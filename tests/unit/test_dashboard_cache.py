@@ -175,3 +175,61 @@ class TestHealthReportCache:
         await api._cached_health_report(object(), "brain-b")
 
         assert seen == ["brain-a", "brain-b"], "one brain's health served another's"
+
+
+class TestNoEndpointRecomputesDiagnosticsDirectly:
+    """One cached report, or four endpoints paying for it separately.
+
+    `/health` was given a cached diagnostics report, but `/brains`,
+    `/config-status` and `/storage/status` each kept calling
+    `DiagnosticsEngine.analyze` directly — so the expensive analysis ran once
+    per endpoint per load instead of once per brain per TTL window. Fixing them
+    one at a time is what left three behind the first time, so this is a scan,
+    not four separate assertions.
+    """
+
+    def test_analyze_is_only_called_through_the_cache(self) -> None:
+        import ast
+        import pathlib
+
+        path = (
+            pathlib.Path(__file__).resolve().parents[2]
+            / "src/surreal_memory/server/routes/dashboard_api.py"
+        )
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+
+        offenders = []
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)):
+                continue
+            if node.name == "_cached_health_report":
+                continue  # the one place allowed to compute it
+            for inner in ast.walk(node):
+                # Only DiagnosticsEngine — EvolutionEngine.analyze is a
+                # different, unrelated analysis with its own cost profile.
+                if (
+                    isinstance(inner, ast.Call)
+                    and isinstance(inner.func, ast.Attribute)
+                    and inner.func.attr == "analyze"
+                    and isinstance(inner.func.value, ast.Call)
+                    and getattr(inner.func.value.func, "id", "") == "DiagnosticsEngine"
+                ):
+                    offenders.append(f"{node.name}:{inner.lineno}")
+
+        assert not offenders, (
+            "these handlers recompute diagnostics instead of using "
+            f"_cached_health_report: {offenders}"
+        )
+
+
+class TestHealthReportTTL:
+    def test_diagnostics_ttl_is_long_enough_to_ever_hit(self) -> None:
+        """A 60 s window cannot amortise a multi-second report.
+
+        With the shared default, a dashboard visited less often than once a
+        minute missed every time and paid full price on every load — the cache
+        existed but only helped during continuous use.
+        """
+        from surreal_memory.server.routes.dashboard_api import _HEALTH_TTL_SECONDS
+
+        assert _HEALTH_TTL_SECONDS >= 300
