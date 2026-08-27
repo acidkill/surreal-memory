@@ -5,6 +5,49 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.8.0] — 2026-08-27 — the dashboard answers, and what it reports stops lying
+
+Every dashboard endpoint that recomputed a multi-second analysis on each request now
+serves it from a shared cached report, and three defects that made stored state quietly
+disagree with reality are fixed.
+
+### Added
+
+- `smem prune-orphan-states` — reports, and on `--apply` removes, `neuron_state` rows whose
+  neuron is gone. Deliberately an explicit command rather than a consolidation stage: it
+  deletes on the strength of a neuron/state comparison, and normalising only one side of
+  that comparison empties the table. It defaults to reporting.
+- Per-pass decay telemetry (`[decay_telemetry]`, off by default). One aggregate row per
+  decay pass — never a row per edge, since the pass touches every synapse and per-edge rows
+  are the write pattern that grew the change log without bound. Records the weight
+  distribution either side of the pass, why each skipped synapse was skipped, and the knobs
+  the pass ran with, because a distribution is uninterpretable without them.
+- `smem_transplant` accepts `min_salience`. The engine validated and applied it all along;
+  no MCP caller could set it, so every transplant ran unfiltered.
+
+### Fixed
+
+- `/api/dashboard/health`, `/brains`, `/config-status` and `/storage/status` each called
+  the diagnostics engine directly, so one analysis ran once per endpoint per page load
+  instead of once per brain per window. They now share one cached report — which also
+  removes the possibility of two endpoints disagreeing about the same brain.
+- The diagnostics cache has its own TTL instead of the shared 60 s default. A report
+  costing tens of seconds cannot amortise inside a minute: anyone opening the dashboard
+  less often than that missed every time and paid full price.
+- `/api/dashboard/evolution` recomputed on every request, and its analysis fetched the
+  synapse metadata blob for a metric no caller reads, ran the maturation scan twice, and
+  re-fetched stats its caller had already retrieved.
+- `add_neuron` swallowed a failed `neuron_state` insert and still reported success. A
+  neuron without a state row looks permanently un-accessed: it never receives the
+  activation boost and is a standing candidate for dead-neuron pruning, for a reason
+  nothing logged.
+- `smem_edit` refreshed `content_hash` and the embedding on a content edit but left
+  `metadata["_structure"]` describing the previous text, which recall reads back. It is now
+  recomputed — and removed, not merely overwritten, when the new content has no structure.
+- `activate_from_multiple` started one traversal per anchor set with no bound, so
+  concurrent traversals grew with caller input rather than with anything the system
+  controls.
+
 ## [3.7.0] — 2026-08-26 — the change log stops growing, and the dashboard stops waiting on it
 
 The dashboard's sync card could take minutes to answer, and the health page paid a
