@@ -219,6 +219,24 @@ class InMemoryStorage(
         brain_id = self._get_brain_id()
         self._states[brain_id][state.neuron_id] = state
 
+    def _orphaned_state_ids(self, max_rows: int) -> list[str]:
+        brain_id = self._get_brain_id()
+        states = self._states[brain_id]
+        neurons = self._neurons[brain_id]
+        return [nid for nid in states if nid not in neurons][:max_rows]
+
+    async def count_orphaned_neuron_states(self, max_rows: int = 50_000) -> int:
+        """Count states whose neuron is gone, without deleting."""
+        return len(self._orphaned_state_ids(max_rows))
+
+    async def prune_orphaned_neuron_states(self, max_rows: int = 50_000) -> int:
+        """Drop states whose neuron is gone (parity with the SurrealDB backend)."""
+        states = self._states[self._get_brain_id()]
+        orphans = self._orphaned_state_ids(max_rows)
+        for nid in orphans:
+            del states[nid]
+        return len(orphans)
+
     async def get_all_neuron_states(self) -> list[NeuronState]:
         brain_id = self._get_brain_id()
         return list(self._states[brain_id].values())

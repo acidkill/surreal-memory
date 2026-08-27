@@ -1085,7 +1085,23 @@ class SurrealDBStorage(
         try:
             await conn.insert("neuron_state", state_data)
         except Exception:
-            pass
+            # WARNING and re-raise, not `pass`: a neuron without its state row
+            # looks permanently un-accessed, so it never gets the activation
+            # boost and is a standing candidate for dead-neuron pruning. Letting
+            # add_neuron return success here made a failed write and a completed
+            # one indistinguishable after the fact. The neuron row is removed
+            # first so the caller's retry does not collide with a half-written
+            # pair (#174).
+            logger.warning("neuron_state insert failed for %s", neuron.id, exc_info=True)
+            try:
+                await self._query(f"DELETE neuron:{sid}")
+            except Exception:
+                logger.warning(
+                    "could not roll back neuron %s after its state write failed",
+                    neuron.id,
+                    exc_info=True,
+                )
+            raise
 
         # Record change
         await self._record_change_internal("neuron", neuron.id, "insert", neuron)
@@ -1145,7 +1161,14 @@ class SurrealDBStorage(
             try:
                 await conn.insert("neuron_state", chunk)
             except Exception:
-                pass
+                # A swallowed failure here loses a whole chunk of states at once,
+                # not a single row. No rollback: the neurons are already written
+                # in bulk above and unwinding them partially would be a worse
+                # outcome than a loud failure the caller can retry (#174).
+                logger.warning(
+                    "neuron_state batch insert failed for %d rows", len(chunk), exc_info=True
+                )
+                raise
 
         if record_change:
             await self._record_changes_bulk("neuron", "insert", neurons)
@@ -1463,6 +1486,66 @@ class SurrealDBStorage(
             if await self.delete_neuron(nid):
                 count += 1
         return count
+
+    async def _find_orphaned_neuron_states(self, max_rows: int) -> list[Any]:
+        """Record ids of neuron_state rows whose neuron no longer exists.
+
+        The two sides spell the same neuron differently and comparing them raw
+        marks EVERY state as an orphan: a record id is ``neuron:<uuid>`` with
+        ``-`` folded to ``_`` by ``_to_surreal_id``, while ``neuron_state``
+        keeps the original dashed uuid. Both sides go through the same fold.
+        Getting this wrong empties the table — it has happened.
+
+        ``brain_id`` is inlined, not parameterised: the planner only uses the
+        index for a literal (see ``_brain_literal``).
+        """
+        lit = _brain_literal(self._get_brain_id())
+        rows = await self._query(
+            f"SELECT id, neuron_id FROM neuron_state WHERE brain_id = {lit} LIMIT $cap",
+            cap=max_rows,
+        )
+        if not rows:
+            return []
+
+        live = await self._query(f"SELECT VALUE id FROM neuron WHERE brain_id = {lit}")
+        live_ids = {_to_surreal_id(str(r).split(":", 1)[-1].strip("`")) for r in live}
+
+        return [
+            row["id"]
+            for row in rows
+            if row.get("id") is not None
+            and _to_surreal_id(str(row.get("neuron_id", ""))) not in live_ids
+        ]
+
+    async def count_orphaned_neuron_states(self, max_rows: int = 50_000) -> int:
+        """Count orphaned states WITHOUT deleting anything.
+
+        Exists so the destructive command can default to reporting: this
+        comparison decides what gets deleted, so it must be inspectable before
+        it is acted on.
+        """
+        return len(await self._find_orphaned_neuron_states(max_rows))
+
+    async def prune_orphaned_neuron_states(self, max_rows: int = 50_000) -> int:
+        """Delete neuron_state rows whose neuron no longer exists.
+
+        Orphans are not inert: ``apply_decay`` iterates
+        ``get_all_neuron_states()``, so each one is decay computed for a neuron
+        that is gone, and it inflates any per-pass count taken from that loop.
+
+        Deliberately NOT wired into consolidation. It deletes on the strength of
+        a comparison whose failure mode is emptying the table, so it runs only
+        when a human asks for it — see ``smem prune-orphan-states``.
+        """
+        doomed = await self._find_orphaned_neuron_states(max_rows)
+        if not doomed:
+            return 0
+
+        deleted = 0
+        for chunk in _chunked(doomed, _COLLAPSE_DELETE_CHUNK):
+            await self._query("".join(f"DELETE {rid};" for rid in chunk))
+            deleted += len(chunk)
+        return deleted
 
     async def has_neuron_by_content_hash(self, content_hash: int) -> bool:
         brain_id = self._get_brain_id()

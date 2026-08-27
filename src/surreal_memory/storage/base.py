@@ -1892,6 +1892,25 @@ class NeuralStorage(ABC):
         """
         raise NotImplementedError
 
+    async def count_orphaned_neuron_states(self, max_rows: int = 50_000) -> int:
+        """Count neuron_state rows whose neuron is gone, without deleting.
+
+        Returns:
+            Count of orphaned rows.
+        """
+        raise NotImplementedError
+
+    async def prune_orphaned_neuron_states(self, max_rows: int = 50_000) -> int:
+        """Delete neuron_state rows whose neuron no longer exists.
+
+        Orphans inflate every pass over ``get_all_neuron_states()`` — notably
+        the decay loop, which then computes decay for neurons that are gone.
+
+        Returns:
+            Count of rows deleted.
+        """
+        raise NotImplementedError
+
     async def prune_synced_changes(self, older_than_days: int = 30) -> int:
         """Delete synced changes older than N days.
 

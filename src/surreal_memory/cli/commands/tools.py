@@ -1130,6 +1130,65 @@ def lifecycle(
     run_async(_lifecycle())
 
 
+def prune_orphan_states(
+    brain: Annotated[str | None, typer.Option("--brain", "-b", help="Brain to inspect")] = None,
+    apply: Annotated[
+        bool, typer.Option("--apply", help="Actually delete (default is a dry run)")
+    ] = False,
+    limit: Annotated[
+        int, typer.Option("--limit", "-l", help="Max rows to examine in one pass")
+    ] = 50_000,
+) -> None:
+    """Report — and optionally delete — neuron_state rows whose neuron is gone.
+
+    Orphans are not inert: the decay pass iterates every state row, so each one
+    is decay computed for a neuron that no longer exists, and it inflates any
+    count taken from that loop.
+
+    This is deliberately a separate, explicitly invoked command rather than part
+    of consolidation. It deletes rows based on a neuron/state comparison, and a
+    mistake in that comparison empties the table: the two sides spell the same
+    neuron differently (record ids fold ``-`` to ``_``), and comparing them
+    unnormalised marks every live state as an orphan. It is not something that
+    should run unattended on a schedule.
+
+    Defaults to a dry run — pass --apply to delete.
+
+    Examples:
+        smem prune-orphan-states              # report only
+        smem prune-orphan-states --apply      # delete them
+        smem prune-orphan-states -b work -l 1000
+    """
+
+    async def _prune() -> None:
+        config = get_config()
+        brain_name = resolve_brain(brain, config)
+        storage = await get_storage(config, brain_name=brain_name)
+
+        if not hasattr(storage, "prune_orphaned_neuron_states"):
+            typer.echo("This storage backend does not track neuron states separately.")
+            return
+
+        if not apply:
+            typer.echo(f"Brain '{brain_name}': counting orphaned neuron_state rows...")
+            orphans = await storage.count_orphaned_neuron_states(max_rows=limit)
+            typer.echo("")
+            typer.echo(f"Orphaned neuron_state rows found: {orphans}")
+            if orphans:
+                typer.echo("")
+                typer.echo("Nothing was deleted. Re-run with --apply to remove them.")
+            return
+
+        typer.echo(f"Brain '{brain_name}': deleting orphaned neuron_state rows...")
+        removed = await storage.prune_orphaned_neuron_states(max_rows=limit)
+        typer.echo("")
+        typer.echo(f"Deleted {removed} orphaned neuron_state rows.")
+        if removed == limit:
+            typer.echo("Hit the per-pass limit — re-run to continue.")
+
+    run_async(_prune())
+
+
 def register(app: typer.Typer) -> None:
     """Register tool commands on the app."""
     app.command()(mcp)
@@ -1146,3 +1205,4 @@ def register(app: typer.Typer) -> None:
     app.command()(doctor)
     app.command()(setup)
     app.command()(lifecycle)
+    app.command(name="prune-orphan-states")(prune_orphan_states)
