@@ -41,9 +41,30 @@ async def _content_refreshed(storage: NeuralStorage, neuron: Neuron, new_content
     """
     from dataclasses import replace as dc_replace
 
+    from surreal_memory.extraction.structure_detector import detect_structure
     from surreal_memory.utils.simhash import simhash
 
     meta = dict(neuron.metadata)
+
+    # _structure is derived from the content exactly like content_hash is, and
+    # recall reads it back to answer with the memory's fields. Leaving it behind
+    # meant an edited memory kept describing text that no longer exists.
+    #
+    # Removed, not merely overwritten: when the new content has no structure at
+    # all, an overwrite-on-hit would preserve the previous fields — the worst
+    # case, because recall would then surface fields present nowhere.
+    structure = detect_structure(new_content)
+    if structure.is_structured:
+        meta["_structure"] = {
+            "format": structure.format.value,
+            "fields": [
+                {"name": f.name, "value": f.value, "type": f.field_type} for f in structure.fields
+            ],
+            "confidence": structure.confidence,
+        }
+    else:
+        meta.pop("_structure", None)
+
     updated = dc_replace(
         neuron, content=new_content, content_hash=simhash(new_content), metadata=meta
     )

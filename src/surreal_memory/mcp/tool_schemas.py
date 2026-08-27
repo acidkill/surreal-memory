@@ -965,6 +965,15 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "items": {"type": "string"},
                     "description": "Memory types to filter (fact, decision, etc.)",
                 },
+                "min_salience": {
+                    "type": "number",
+                    "minimum": 0.0,
+                    "maximum": 1.0,
+                    "description": (
+                        "Minimum salience a fiber must have to be transplanted "
+                        "(0.0-1.0, default 0.0 = unfiltered)"
+                    ),
+                },
                 "strategy": {
                     "type": "string",
                     "enum": [

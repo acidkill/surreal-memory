@@ -387,10 +387,16 @@ class EvolutionHandler:
         except ValueError:
             return {"error": f"Invalid strategy: {strategy_str}"}
 
-        filt = TransplantFilter(
-            tags=frozenset(tags) if tags else None,
-            memory_types=frozenset(memory_types) if memory_types else None,
-        )
+        try:
+            filt = TransplantFilter(
+                tags=frozenset(tags) if tags else None,
+                memory_types=frozenset(memory_types) if memory_types else None,
+                min_salience=float(args.get("min_salience", 0.0)),
+            )
+        except (TypeError, ValueError) as exc:
+            # TransplantFilter validates the range itself; surface that as an
+            # answer rather than letting it escape as a tool crash.
+            return {"error": f"Invalid min_salience: {exc}"}
 
         try:
             result = await transplant(
