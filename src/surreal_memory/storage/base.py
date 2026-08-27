@@ -487,8 +487,13 @@ class NeuralStorage(ABC):
         """
         ...
 
-    async def get_all_synapses(self) -> list[Synapse]:
+    async def get_all_synapses(self, include_metadata: bool = True) -> list[Synapse]:
         """Get all synapses for the current brain.
+
+        Args:
+            include_metadata: When False, backends may omit the per-synapse
+                metadata blob. Callers that never read it should pass False —
+                on a large brain the blob dominates the transfer.
 
         Returns:
             List of all synapses

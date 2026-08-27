@@ -46,15 +46,12 @@ class TopologyMetrics:
         knowledge_density: SEMANTIC synapses per neuron (NOT 0-1, raw ratio).
             Structural edges are excluded so this agrees with the connectivity
             figure smem_health reports for the same brain.
-        enriched_synapse_ratio: Fraction of synapses created by
-            ENRICH consolidation (have ``_enriched`` metadata).
     """
 
     clustering_coefficient: float
     largest_component_ratio: float
     density: float
     knowledge_density: float
-    enriched_synapse_ratio: float
 
 
 async def compute_topology(
@@ -62,6 +59,7 @@ async def compute_topology(
     brain_id: str,
     *,
     _preloaded_synapses: Sequence[SynapseLike] | None = None,
+    _preloaded_stats: dict[str, Any] | None = None,
 ) -> TopologyMetrics:
     """Compute graph topology metrics for a brain.
 
@@ -74,8 +72,11 @@ async def compute_topology(
         brain_id: Brain identifier.
         _preloaded_synapses: Optional pre-fetched synapse list to avoid
             redundant storage calls when called from EvolutionEngine.
+        _preloaded_stats: Optional pre-fetched stats dict. The only caller
+            already fetches these; re-fetching them here ran the count()
+            aggregates a second time to learn nothing new.
     """
-    stats = await storage.get_stats(brain_id)
+    stats = _preloaded_stats if _preloaded_stats is not None else await storage.get_stats(brain_id)
     neuron_count = stats.get("neuron_count", 0)
     synapse_count = stats.get("synapse_count", 0)
 
@@ -85,7 +86,6 @@ async def compute_topology(
             largest_component_ratio=0.0,
             density=0.0,
             knowledge_density=0.0,
-            enriched_synapse_ratio=0.0,
         )
 
     all_synapses: Sequence[SynapseLike] = (
@@ -107,12 +107,6 @@ async def compute_topology(
     semantic_synapse_count = sum(1 for s in all_synapses if not _is_structural(s))
     knowledge_density = semantic_synapse_count / max(1, neuron_count)
 
-    # ── Enriched synapse ratio ───────────────────────────────
-    enriched_count = sum(
-        1 for s in all_synapses if getattr(s, "metadata", None) and s.metadata.get("_enriched")
-    )
-    enriched_ratio = enriched_count / max(1, len(all_synapses))
-
     # ── Largest connected component ──────────────────────────
     lcc_ratio = _largest_component_ratio(all_synapses, neuron_count)
 
@@ -124,7 +118,6 @@ async def compute_topology(
         largest_component_ratio=lcc_ratio,
         density=min(1.0, density),
         knowledge_density=knowledge_density,
-        enriched_synapse_ratio=enriched_ratio,
     )
 
 

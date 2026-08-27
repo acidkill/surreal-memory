@@ -747,6 +747,30 @@ class TestEvolutionEngine:
         assert mock_storage.get_all_synapses.call_count == 1
         # get_fibers called once (pre-fetched, passed to activity + decay)
         assert mock_storage.get_fibers.call_count == 1
+        # find_maturations called once — it used to run twice, once for the stage
+        # distribution and once for the maturation ratios, each a paged full scan
+        # of the maturation table.
+        assert mock_storage.find_maturations.call_count == 1
+        # get_stats called once — compute_topology used to fetch it a second time
+        # even though the caller had already done so, doubling the count()
+        # aggregates for no new information.
+        assert mock_storage.get_stats.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_synapse_metadata_is_not_fetched(self, mock_storage: AsyncMock) -> None:
+        """The metadata blob is dead weight on this path.
+
+        It was only ever read to derive enriched_synapse_ratio, which no caller
+        consumed. Dragging it along meant transferring a blob per row across the
+        whole synapse table on every evolution read.
+        """
+        engine = EvolutionEngine(mock_storage)
+        await engine.analyze("brain-1")
+
+        _, kwargs = mock_storage.get_all_synapses.call_args
+        assert kwargs.get("include_metadata") is False, (
+            "evolution must not pull the synapse metadata blob it never reads"
+        )
 
     @pytest.mark.asyncio
     async def test_full_integration(self, mock_storage: AsyncMock) -> None:

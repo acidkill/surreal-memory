@@ -202,18 +202,39 @@ class TestNoEndpointRecomputesDiagnosticsDirectly:
         for node in ast.walk(tree):
             if not isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)):
                 continue
-            if node.name == "_cached_health_report":
-                continue  # the one place allowed to compute it
+            if node.name in {"_cached_health_report", "_cached_evolution"}:
+                continue  # the two places allowed to compute an analysis
+
+            # Track engines bound to a local first: the handlers write
+            # `engine = EvolutionEngine(storage)` and then `engine.analyze(...)`,
+            # so matching only the inline `Engine(...).analyze(...)` form misses
+            # them entirely — which is exactly how this scan passed while
+            # /evolution still recomputed on every request.
+            engines = {"DiagnosticsEngine", "EvolutionEngine"}
+            bound: set[str] = set()
             for inner in ast.walk(node):
-                # Only DiagnosticsEngine — EvolutionEngine.analyze is a
-                # different, unrelated analysis with its own cost profile.
                 if (
+                    isinstance(inner, ast.Assign)
+                    and isinstance(inner.value, ast.Call)
+                    and getattr(inner.value.func, "id", "") in engines
+                ):
+                    for target in inner.targets:
+                        if isinstance(target, ast.Name):
+                            bound.add(target.id)
+
+            for inner in ast.walk(node):
+                if not (
                     isinstance(inner, ast.Call)
                     and isinstance(inner.func, ast.Attribute)
                     and inner.func.attr == "analyze"
-                    and isinstance(inner.func.value, ast.Call)
-                    and getattr(inner.func.value.func, "id", "") == "DiagnosticsEngine"
                 ):
+                    continue
+                receiver = inner.func.value
+                inline = isinstance(receiver, ast.Call) and (
+                    getattr(receiver.func, "id", "") in engines
+                )
+                via_local = isinstance(receiver, ast.Name) and receiver.id in bound
+                if inline or via_local:
                     offenders.append(f"{node.name}:{inner.lineno}")
 
         assert not offenders, (

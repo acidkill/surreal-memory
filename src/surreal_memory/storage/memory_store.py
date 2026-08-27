@@ -341,7 +341,9 @@ class InMemoryStorage(
 
         return result
 
-    async def get_all_synapses(self) -> list[Synapse]:
+    async def get_all_synapses(self, include_metadata: bool = True) -> list[Synapse]:
+        # Accepted for interface parity; the in-memory buffer holds whole
+        # objects, so there is no projection to narrow.
         return await self.get_synapses()
 
     async def update_synapse(self, synapse: Synapse) -> None:

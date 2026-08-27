@@ -8,7 +8,20 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from surreal_memory.server.routes.dashboard_api import router
+from surreal_memory.server.routes.dashboard_api import _EVOLUTION_CACHE, router
+
+
+@pytest.fixture(autouse=True)
+def _clear_evolution_cache():
+    """Every test here analyses the same brain name.
+
+    Without this the first test's report would be served to all the others, and
+    the mocks they set up would never be reached — the suite would pass while
+    asserting nothing.
+    """
+    _EVOLUTION_CACHE.clear()
+    yield
+    _EVOLUTION_CACHE.clear()
 
 
 def _make_app() -> FastAPI:

@@ -32,6 +32,11 @@ _GRADE_CACHE = TTLCache(ttl=_HEALTH_TTL_SECONDS)
 # a fresh conflict/expiry may take up to the TTL to appear).
 _UNCERTAINTY_CACHE = TTLCache()
 
+# Evolution shares the diagnostics window, not the 60 s default: its analysis is
+# the same order of cost, and the metrics it reports (semantic ratio, topology
+# coherence, proficiency) move on a scale of hours.
+_EVOLUTION_CACHE = TTLCache(ttl=_HEALTH_TTL_SECONDS)
+
 
 async def _cached_health_report(storage: NeuralStorage, brain_name: str) -> Any:
     """Return the full diagnostics report for a brain, cached per brain.
@@ -51,6 +56,29 @@ async def _cached_health_report(storage: NeuralStorage, brain_name: str) -> Any:
 
     report = await DiagnosticsEngine(storage).analyze(brain_name)
     _GRADE_CACHE.set(key, report)
+    return report
+
+
+async def _cached_evolution(storage: NeuralStorage, brain_name: str) -> Any:
+    """Return the brain-evolution report, cached per brain.
+
+    Keyed on the storage's ACTIVE brain, not on ``brain_name``: EvolutionEngine
+    takes a brain_id but most of its reads go through the storage instance's own
+    current brain, so keying on the argument alone could serve one brain's report
+    for another. Same reasoning as the uncertainty cache.
+
+    ``BrainEvolution`` is a frozen dataclass of tuples, so unlike the uncertainty
+    payload it needs no defensive copy on the way in or out.
+    """
+    scope = getattr(storage, "current_brain_id", None) or brain_name
+    key = f"evolution:{scope}:{brain_name}"
+    cached = _EVOLUTION_CACHE.get(key)
+    if cached is not None:
+        return cached
+    from surreal_memory.engine.brain_evolution import EvolutionEngine
+
+    report = await EvolutionEngine(storage).analyze(brain_name)
+    _EVOLUTION_CACHE.set(key, report)
     return report
 
 
@@ -757,15 +785,13 @@ class EvolutionResponse(BaseModel):
 async def get_evolution(
     storage: Annotated[NeuralStorage, Depends(get_storage)],
 ) -> EvolutionResponse:
-    """Get evolution dynamics for the active brain."""
-    from surreal_memory.engine.brain_evolution import EvolutionEngine
+    """Get evolution dynamics for the active brain (served from the TTL cache)."""
     from surreal_memory.unified_config import get_config
 
     brain_name = get_config().current_brain
 
     try:
-        engine = EvolutionEngine(storage)
-        evo = await engine.analyze(brain_name)
+        evo = await _cached_evolution(storage, brain_name)
     except Exception as exc:
         logger.warning("Evolution analysis failed for brain %s: %s", brain_name, exc)
         raise HTTPException(status_code=500, detail="Evolution analysis failed")

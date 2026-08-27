@@ -14,12 +14,12 @@ from surreal_memory.engine.topology_analysis import (
 )
 
 
-def _mock_synapse(source_id: str, target_id: str, enriched: bool = False) -> MagicMock:
+def _mock_synapse(source_id: str, target_id: str) -> MagicMock:
     """Create a mock synapse with source/target IDs."""
     s = MagicMock()
     s.source_id = source_id
     s.target_id = target_id
-    s.metadata = {"_enriched": True} if enriched else {}
+    s.metadata = {}
     return s
 
 
@@ -45,7 +45,6 @@ class TestTopologyMetrics:
             largest_component_ratio=0.8,
             density=0.1,
             knowledge_density=3.0,
-            enriched_synapse_ratio=0.2,
         )
         with pytest.raises(AttributeError):
             tm.density = 0.9  # type: ignore[misc]
@@ -62,7 +61,6 @@ class TestEmptyBrain:
         assert result.largest_component_ratio == 0.0
         assert result.density == 0.0
         assert result.knowledge_density == 0.0
-        assert result.enriched_synapse_ratio == 0.0
 
 
 class TestLargestComponentRatio:
@@ -166,26 +164,6 @@ class TestClusteringCoefficient:
         coeff = _clustering_coefficient(synapses)
         # Should complete without hanging and return a bounded value
         assert 0.0 <= coeff <= 1.0
-
-
-class TestEnrichedRatio:
-    """Tests for enriched synapse ratio."""
-
-    @pytest.mark.asyncio
-    async def test_enriched_synapses_counted(self, mock_storage: AsyncMock) -> None:
-        """Enriched synapses are counted correctly."""
-        synapses = [
-            _mock_synapse("a", "b", enriched=True),
-            _mock_synapse("b", "c", enriched=False),
-            _mock_synapse("c", "a", enriched=True),
-        ]
-        mock_storage.get_stats = AsyncMock(
-            return_value={"neuron_count": 3, "synapse_count": 3, "fiber_count": 0}
-        )
-        mock_storage.get_all_synapses = AsyncMock(return_value=synapses)
-
-        result = await compute_topology(mock_storage, "brain-1")
-        assert abs(result.enriched_synapse_ratio - 2 / 3) < 0.01
 
 
 class TestKnowledgeDensity:

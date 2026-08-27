@@ -185,12 +185,20 @@ class EvolutionEngine:
         """
         now = utcnow()
 
-        # Parallel fetch: brain metadata, stats, synapses, fibers
-        brain, stats, all_synapses, all_fibers = await asyncio.gather(
+        # Parallel fetch: brain metadata, stats, synapses, fibers, maturations.
+        #
+        # Two things here are deliberate and easy to undo by accident:
+        #   * synapses are fetched WITHOUT their metadata blob — nothing on this
+        #     path reads it, and on a large brain it dominates the transfer.
+        #   * maturations are fetched ONCE and handed to both consumers below.
+        #     They used to be fetched separately by _compute_stage_progress and
+        #     _compute_maturation, each a paged full scan of the same table.
+        brain, stats, all_synapses, all_fibers, all_maturations = await asyncio.gather(
             self._storage.get_brain(brain_id),
             self._storage.get_stats(brain_id),
-            self._storage.get_all_synapses(),
+            self._storage.get_all_synapses(include_metadata=False),
             self._storage.get_fibers(limit=10000),
+            self._storage.find_maturations(),
         )
         brain_name = brain.name if brain else "unknown"
         neuron_count = stats.get("neuron_count", 0)
@@ -203,13 +211,14 @@ class EvolutionEngine:
             reinforcement_days,
             fibers_semantic,
             fibers_episodic,
-        ) = await self._compute_maturation()
+        ) = self._compute_maturation(all_maturations)
 
         # Topology metrics (pass pre-fetched synapses)
         topo = await compute_topology(
             self._storage,
             brain_id,
             _preloaded_synapses=all_synapses,  # type: ignore[arg-type]
+            _preloaded_stats=stats,
         )
         topology_coherence = topo.clustering_coefficient * 0.5 + topo.largest_component_ratio * 0.5
         knowledge_density = topo.knowledge_density
@@ -236,7 +245,7 @@ class EvolutionEngine:
         )
 
         # Stage distribution and semantic progress
-        stage_dist, closest, gate_blockers = await self._compute_stage_progress(now)
+        stage_dist, closest, gate_blockers = self._compute_stage_progress(now, all_maturations)
 
         return BrainEvolution(
             brain_id=brain_id,
@@ -265,9 +274,10 @@ class EvolutionEngine:
 
     # ── Internal computations ────────────────────────────────
 
-    async def _compute_stage_progress(
+    def _compute_stage_progress(
         self,
         now: datetime,
+        all_maturations: Sequence[Any],
     ) -> tuple[StageDistribution, tuple[SemanticProgress, ...], dict[str, int]]:
         """Compute stage distribution, closest-to-semantic fibers, and gate blockers.
 
@@ -284,8 +294,6 @@ class EvolutionEngine:
             _MIN_REHEARSAL_COUNT,
             classify_episodic_blocker,
         )
-
-        all_maturations = await self._storage.find_maturations()
 
         counts = {
             MemoryStage.SHORT_TERM: 0,
@@ -376,15 +384,15 @@ class EvolutionEngine:
         progress_items.sort(key=lambda p: p.progress_pct, reverse=True)
         return stage_dist, tuple(progress_items[:3]), gate_blockers
 
-    async def _compute_maturation(
+    def _compute_maturation(
         self,
+        all_maturations: Sequence[Any],
     ) -> tuple[float, float, int, int]:
         """Compute maturation metrics from MaturationRecord data.
 
         Returns:
             (semantic_ratio, avg_reinforcement_days, semantic_count, episodic_count)
         """
-        all_maturations = await self._storage.find_maturations()
         if not all_maturations:
             return 0.0, 0.0, 0, 0
 
