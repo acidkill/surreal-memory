@@ -68,6 +68,7 @@ _BRAIN_SCOPED_TABLES: tuple[str, ...] = (
     "change_log",
     "co_activations",
     "cognitive_state",
+    "decay_pass",
     "compression_backups",
     "depth_priors",
     "device",
@@ -1516,6 +1517,56 @@ class SurrealDBStorage(
             if row.get("id") is not None
             and _to_surreal_id(str(row.get("neuron_id", ""))) not in live_ids
         ]
+
+    async def add_decay_pass(self, record: dict[str, Any]) -> None:
+        """Persist one per-pass decay telemetry row.
+
+        One row per pass, never per edge — the pass touches every synapse, so a
+        per-edge row is the write pattern that grew change_log without bound.
+        """
+        payload = dict(record)
+        payload["brain_id"] = self._get_brain_id()
+        payload.setdefault("ran_at", utcnow())
+        conn = self._ensure_conn()
+        await conn.insert("decay_pass", payload)
+
+    async def find_decay_passes(self, limit: int = 100) -> list[dict[str, Any]]:
+        """Return recent decay passes, newest first."""
+        lit = _brain_literal(self._get_brain_id())
+        rows = await self._query(
+            f"SELECT * FROM decay_pass WHERE brain_id = {lit} ORDER BY ran_at DESC LIMIT $limit",
+            limit=limit,
+        )
+        return [dict(r) for r in rows]
+
+    async def prune_decay_passes(self, retention_days: int = 90, max_records: int = 2000) -> int:
+        """Drop telemetry past the retention window or beyond the record cap.
+
+        Counted before and after rather than trusting DELETE, which reports no
+        row count — the same reason prune_synced_changes counts first.
+        """
+        lit = _brain_literal(self._get_brain_id())
+        before = await self._count_decay_passes(lit)
+
+        if retention_days > 0:
+            await self._query(
+                f"DELETE decay_pass WHERE brain_id = {lit} AND ran_at < time::ago($days, 'd')",
+                days=retention_days,
+            )
+        if max_records > 0:
+            await self._query(
+                f"DELETE decay_pass WHERE brain_id = {lit} AND id NOT IN "
+                f"(SELECT VALUE id FROM decay_pass WHERE brain_id = {lit} "
+                "ORDER BY ran_at DESC LIMIT $keep)",
+                keep=max_records,
+            )
+        return max(0, before - await self._count_decay_passes(lit))
+
+    async def _count_decay_passes(self, brain_literal: str) -> int:
+        rows = await self._query(
+            f"SELECT count() AS c FROM decay_pass WHERE brain_id = {brain_literal} GROUP ALL"
+        )
+        return int(rows[0].get("c", 0) or 0) if rows else 0
 
     async def count_orphaned_neuron_states(self, max_rows: int = 50_000) -> int:
         """Count orphaned states WITHOUT deleting anything.

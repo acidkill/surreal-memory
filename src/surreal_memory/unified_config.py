@@ -535,6 +535,36 @@ class WriteGateConfig:
 
 
 @dataclass(frozen=True)
+class DecayTelemetryConfig:
+    """Per-pass decay telemetry.
+
+    OFF by default. This records ONE aggregate row per decay pass — never a row
+    per edge. A row per edge is the write pattern that let ``change_log`` grow
+    without bound, and the decay pass touches every synapse, so per-edge rows
+    would reintroduce exactly that problem under a new name.
+    """
+
+    enabled: bool = False
+    retention_days: int = 90
+    max_records: int = 2000
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "retention_days": self.retention_days,
+            "max_records": self.max_records,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> DecayTelemetryConfig:
+        return cls(
+            enabled=bool(data.get("enabled", False)),
+            retention_days=int(data.get("retention_days", 90)),
+            max_records=int(data.get("max_records", 2000)),
+        )
+
+
+@dataclass(frozen=True)
 class TraceConfig:
     """Retrieval-trace telemetry configuration (schema v9, opt-in).
 
@@ -1804,6 +1834,7 @@ class UnifiedConfig:
         "tool_tier",
         "response",
         "trace",
+        "decay_telemetry",
         "reasoning_training",
         "cli",
     )
@@ -1882,6 +1913,7 @@ class UnifiedConfig:
 
     # Retrieval-trace telemetry (schema v9, opt-in; neutral default = off)
     trace: TraceConfig = field(default_factory=TraceConfig)
+    decay_telemetry: DecayTelemetryConfig = field(default_factory=DecayTelemetryConfig)
 
     # Reasoning-training (mining reasoning traces + injection; opt-in, off by default)
     reasoning_training: ReasoningTrainingConfig = field(default_factory=ReasoningTrainingConfig)
@@ -1984,6 +2016,7 @@ class UnifiedConfig:
             response=ResponseConfig.from_dict(data.get("response", {})),
             budget=BudgetRetrievalConfig.from_dict(data.get("budget", {})),
             trace=TraceConfig.from_dict(data.get("trace", {})),
+            decay_telemetry=DecayTelemetryConfig.from_dict(data.get("decay_telemetry", {})),
             reasoning_training=_load_reasoning_settings(data.get("reasoning_training", {})),
             json_output=data.get("cli", {}).get("json_output", False),
             default_depth=data.get("cli", {}).get("default_depth"),
@@ -2248,6 +2281,12 @@ class UnifiedConfig:
             f"sample_rate = {self.trace.sample_rate}",
             f"retention_days = {self.trace.retention_days}",
             f"max_traces = {self.trace.max_traces}",
+            "",
+            "# Per-pass decay telemetry (opt-in; off by default)",
+            "[decay_telemetry]",
+            f"enabled = {'true' if self.decay_telemetry.enabled else 'false'}",
+            f"retention_days = {self.decay_telemetry.retention_days}",
+            f"max_records = {self.decay_telemetry.max_records}",
             "",
             *self._reasoning_toml_lines(),
             "",

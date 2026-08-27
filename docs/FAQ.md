@@ -556,7 +556,7 @@ Surreal-Memory is designed for **AI agent memory** — not as a general-purpose 
 
 | Aspect | Status |
 |--------|--------|
-| **Test suite** | 7200+ tests; CI gate 65% coverage, release gate 67% |
+| **Test suite** | 7300+ tests; CI gate 65% coverage, release gate 67% |
 | **Security** | Input validation, ReDoS protection, activation queue caps, sensitive content detection |
 | **Stability** | 51+ releases, used daily by the maintainers in production AI workflows |
 | **Scalability** | Tested up to 5,000 neurons with sub-ms latency; designed for agent-scale data, not big data |

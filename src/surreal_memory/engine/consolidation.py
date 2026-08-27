@@ -195,6 +195,7 @@ class ConsolidationReport:
     query_patterns_learned: int = 0
     action_events_pruned: int = 0
     retrieval_traces_pruned: int = 0
+    decay_passes_pruned: int = 0
     change_log_collapsed: int = 0
     """Superseded pending change-log updates removed this run.
 
@@ -452,6 +453,7 @@ class ConsolidationReport:
             f"  Habits learned: {self.habits_learned}",
             f"  Query patterns learned: {self.query_patterns_learned}",
             f"  Action events pruned: {self.action_events_pruned}",
+            f"  Decay telemetry pruned: {self.decay_passes_pruned}",
             f"  Change log collapsed: {self._change_log_collapse_line()}",
             f"  Duplicate anchors: {self._alias_link_line()}",
             f"  Semantic synapses: {self._semantic_synapse_line()}",
@@ -1111,6 +1113,24 @@ class ConsolidationEngine:
                     report.retrieval_traces_pruned = pruned_traces
             except Exception:
                 logger.debug("Retrieval trace pruning skipped", exc_info=True)
+
+        # Prune decay telemetry. Runs even when telemetry is currently disabled,
+        # so turning it off still cleans up what it accumulated — same reasoning
+        # as the retrieval-trace prune above.
+        if not dry_run and hasattr(self._storage, "prune_decay_passes"):
+            try:
+                from surreal_memory.unified_config import get_config
+
+                dt_cfg = get_config().decay_telemetry
+                pruned_passes = await self._storage.prune_decay_passes(
+                    retention_days=dt_cfg.retention_days,
+                    max_records=dt_cfg.max_records,
+                )
+                if pruned_passes > 0:
+                    logger.info("Pruned %d decay telemetry rows", pruned_passes)
+                    report.decay_passes_pruned = pruned_passes
+            except Exception:
+                logger.debug("Decay telemetry pruning skipped", exc_info=True)
 
         # Collapse superseded pending change-log updates.
         #

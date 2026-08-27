@@ -23,6 +23,21 @@ if TYPE_CHECKING:
     from surreal_memory.storage.base import NeuralStorage
 
 
+# Bucket edges for the weight distribution. Denser near zero because that is
+# where the prune threshold sits and where a mis-tuned rate does its damage.
+_WEIGHT_BUCKETS = (0.01, 0.05, 0.1, 0.25, 0.5, 0.75)
+
+
+def _weight_bucket(weight: float) -> str:
+    """Label the bucket a weight falls into, e.g. "0.05-0.1"."""
+    low = 0.0
+    for edge in _WEIGHT_BUCKETS:
+        if weight < edge:
+            return f"{low:g}-{edge:g}"
+        low = edge
+    return f"{low:g}-1"
+
+
 @dataclass
 class DecayReport:
     """Report of decay operation results."""
@@ -36,6 +51,32 @@ class DecayReport:
     duration_ms: float = 0.0
     reference_time: datetime = field(default_factory=utcnow)
 
+    # Why a processed synapse was not decayed. Without these, "processed" and
+    # "decayed" differ by an unexplained number and no one can tell a healthy
+    # pass (most edges simply not due yet) from a starved one (a gate stuck shut).
+    synapses_skipped_pinned: int = 0
+    synapses_skipped_idle_gate: int = 0
+    synapses_skipped_bookmark: int = 0
+
+    # Weight distribution across the synapses this pass actually decayed, before
+    # and after. Buckets rather than rows: the question these answer is "is the
+    # decay rate sane", which is a shape, not a per-edge history.
+    weight_before: dict[str, int] = field(default_factory=dict)
+    weight_after: dict[str, int] = field(default_factory=dict)
+
+    # The knobs this pass ran with. A distribution is uninterpretable without
+    # them — the same shape means different things at different decay rates.
+    config_snapshot: dict[str, float] = field(default_factory=dict)
+
+    def record_weights(self, before: float, after: float) -> None:
+        """Bucket one decayed synapse's weight, before and after."""
+        self.weight_before[_weight_bucket(before)] = (
+            self.weight_before.get(_weight_bucket(before), 0) + 1
+        )
+        self.weight_after[_weight_bucket(after)] = (
+            self.weight_after.get(_weight_bucket(after), 0) + 1
+        )
+
     def summary(self) -> str:
         """Generate human-readable summary."""
         lines = [
@@ -44,6 +85,18 @@ class DecayReport:
             f"  Synapses: {self.synapses_decayed}/{self.synapses_processed} decayed, {self.synapses_pruned} pruned",
             f"  Duration: {self.duration_ms:.1f}ms",
         ]
+        skipped = (
+            self.synapses_skipped_pinned
+            + self.synapses_skipped_idle_gate
+            + self.synapses_skipped_bookmark
+        )
+        if skipped:
+            lines.append(
+                f"  Synapses skipped: {skipped} "
+                f"({self.synapses_skipped_pinned} pinned, "
+                f"{self.synapses_skipped_idle_gate} not idle long enough, "
+                f"{self.synapses_skipped_bookmark} already charged)"
+            )
         return "\n".join(lines)
 
 
@@ -194,6 +247,7 @@ class DecayManager:
         for synapse in synapses:
             # Skip synapses connected to pinned neurons
             if synapse.source_id in pinned_neuron_ids or synapse.target_id in pinned_neuron_ids:
+                report.synapses_skipped_pinned += 1
                 continue
 
             # Eligibility gate: how long this synapse has been *idle*. Deliberately
@@ -214,6 +268,7 @@ class DecayManager:
             idle_days = (reference_time - idle_since).total_seconds() / 86400
 
             if idle_days < self.min_age_days:
+                report.synapses_skipped_idle_gate += 1
                 continue
 
             # Charge only the stretch no earlier run has billed, starting from the decay
@@ -255,6 +310,7 @@ class DecayManager:
             if days_elapsed <= 0:
                 # Bookmark already at/after this reference time: nothing unbilled left
                 # (re-run of the same window, or a backdated reference_time).
+                report.synapses_skipped_bookmark += 1
                 continue
 
             # Decay synapse weight
@@ -271,6 +327,7 @@ class DecayManager:
 
             if new_weight < synapse.weight:
                 report.synapses_decayed += 1
+                report.record_weights(synapse.weight, new_weight)
 
                 if new_weight < self.prune_threshold:
                     report.synapses_pruned += 1
@@ -287,8 +344,56 @@ class DecayManager:
                     decayed_synapse = synapse.decay(decay_factor, now=reference_time)
                     await storage.update_synapse(decayed_synapse)
 
+        report.config_snapshot = {
+            "decay_rate": self.decay_rate,
+            "prune_threshold": self.prune_threshold,
+            "min_age_days": self.min_age_days,
+        }
         report.duration_ms = (time.perf_counter() - start_time) * 1000
+        await self._record_pass(storage, report, dry_run)
         return report
+
+    async def _record_pass(
+        self, storage: NeuralStorage, report: DecayReport, dry_run: bool
+    ) -> None:
+        """Persist one aggregate telemetry row, if telemetry is enabled.
+
+        Opt-in and fail-soft, in that order. Telemetry that can break the decay
+        pass it observes is worse than no telemetry, so every failure here is
+        logged and swallowed — this is the one place where swallowing is the
+        correct call, because the caller has nothing to do about it and the
+        operation itself succeeded.
+        """
+        try:
+            from surreal_memory.unified_config import get_config
+
+            if not get_config().decay_telemetry.enabled:
+                return
+            if not hasattr(storage, "add_decay_pass"):
+                return
+            await storage.add_decay_pass(
+                {
+                    "ran_at": report.reference_time,
+                    "duration_ms": report.duration_ms,
+                    "dry_run": dry_run,
+                    "counters": {
+                        "neurons_processed": report.neurons_processed,
+                        "neurons_decayed": report.neurons_decayed,
+                        "neurons_pruned": report.neurons_pruned,
+                        "synapses_processed": report.synapses_processed,
+                        "synapses_decayed": report.synapses_decayed,
+                        "synapses_pruned": report.synapses_pruned,
+                        "synapses_skipped_pinned": report.synapses_skipped_pinned,
+                        "synapses_skipped_idle_gate": report.synapses_skipped_idle_gate,
+                        "synapses_skipped_bookmark": report.synapses_skipped_bookmark,
+                    },
+                    "weight_before": dict(report.weight_before),
+                    "weight_after": dict(report.weight_after),
+                    "config_snapshot": dict(report.config_snapshot),
+                }
+            )
+        except Exception:
+            logger.debug("Decay telemetry write skipped", exc_info=True)
 
     async def consolidate(
         self,

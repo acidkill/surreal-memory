@@ -12,7 +12,7 @@ Core idea: memories are stored as typed neurons connected by 41 typed synapses (
 
 No embedding API calls needed for core recall — it's pure algorithmic graph traversal. Embeddings are optional for semantic (vector) search (supports Ollama, sentence-transformers, Gemini, OpenAI). Core encode + recall costs $0.00 per query.
 
-Backed by SurrealDB's multi-model engine (document + graph + vector HNSW in one database — no separate vector store). 57 MCP tools, 7200+ tests, 67%+ CI coverage, Python 3.11+, MIT.
+Backed by SurrealDB's multi-model engine (document + graph + vector HNSW in one database — no separate vector store). 57 MCP tools, 7300+ tests, 67%+ CI coverage, Python 3.11+, MIT.
 
 All Pro-tier features (HNSW vector search, smart merge, 5-tier compression, sleep consolidation) are free via the bundled community plugin — no license keys.
 

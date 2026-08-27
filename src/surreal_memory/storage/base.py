@@ -1897,6 +1897,26 @@ class NeuralStorage(ABC):
         """
         raise NotImplementedError
 
+    async def add_decay_pass(self, record: dict[str, Any]) -> None:
+        """Persist one per-pass decay telemetry row.
+
+        Telemetry must never break the operation it observes: implementations
+        and callers are expected to fail soft.
+        """
+        raise NotImplementedError
+
+    async def find_decay_passes(self, limit: int = 100) -> list[dict[str, Any]]:
+        """Return recent decay passes, newest first."""
+        raise NotImplementedError
+
+    async def prune_decay_passes(self, retention_days: int = 90, max_records: int = 2000) -> int:
+        """Drop decay telemetry beyond the retention window or the record cap.
+
+        Returns:
+            Count of rows deleted.
+        """
+        raise NotImplementedError
+
     async def count_orphaned_neuron_states(self, max_rows: int = 50_000) -> int:
         """Count neuron_state rows whose neuron is gone, without deleting.
 

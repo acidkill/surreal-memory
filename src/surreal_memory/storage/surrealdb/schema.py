@@ -125,6 +125,24 @@ DEFINE FIELD updated_at  ON brain TYPE datetime DEFAULT time::now();
 -- Removed unique index on name - multiple brains can have same name
 
 -- Change log (for multi-device sync)
+-- Per-pass decay telemetry (opt-in). ONE row per decay pass, never per edge:
+-- the pass touches every synapse, so per-edge rows would recreate the unbounded
+-- growth that change_log suffered. Purely additive, so no SCHEMA_VERSION bump —
+-- ensure_schema is idempotent and runs before apply_migrations on every start.
+DEFINE TABLE decay_pass SCHEMAFULL;
+DEFINE FIELD brain_id        ON decay_pass TYPE string;
+DEFINE FIELD ran_at          ON decay_pass TYPE datetime DEFAULT time::now();
+DEFINE FIELD duration_ms     ON decay_pass TYPE float DEFAULT 0f;
+DEFINE FIELD dry_run         ON decay_pass TYPE bool DEFAULT false;
+DEFINE FIELD counters        ON decay_pass TYPE object FLEXIBLE;
+DEFINE FIELD weight_before   ON decay_pass TYPE object FLEXIBLE;
+DEFINE FIELD weight_after    ON decay_pass TYPE object FLEXIBLE;
+DEFINE FIELD config_snapshot ON decay_pass TYPE object FLEXIBLE;
+DEFINE INDEX idx_decay_brain ON decay_pass FIELDS brain_id;
+-- Time index from day one: every query here filters on when a pass ran, and an
+-- unindexed filter column means a full read of the table (schema v10's lesson).
+DEFINE INDEX idx_decay_ran   ON decay_pass FIELDS brain_id, ran_at;
+
 DEFINE TABLE change_log SCHEMAFULL;
 DEFINE FIELD brain_id      ON change_log TYPE string;
 DEFINE FIELD entity_type   ON change_log TYPE string;

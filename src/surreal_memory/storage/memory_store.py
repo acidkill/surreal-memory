@@ -38,7 +38,15 @@ from surreal_memory.storage.memory_pinning import InMemoryPinningMixin
 from surreal_memory.storage.memory_reviews import InMemoryReviewsMixin
 from surreal_memory.storage.memory_sync_ops import InMemorySyncMixin
 from surreal_memory.storage.memory_watch_state import InMemoryWatchStateMixin
-from surreal_memory.utils.timeutils import utcnow
+from surreal_memory.utils.timeutils import ensure_naive_utc, utcnow
+
+
+def _pass_ran_at(record: dict[str, Any]) -> datetime:
+    """Timestamp of a decay-pass row, tolerant of a missing or naive value."""
+    value = record.get("ran_at")
+    if isinstance(value, datetime):
+        return ensure_naive_utc(value)
+    return utcnow()
 
 
 class InMemoryStorage(
@@ -64,6 +72,7 @@ class InMemoryStorage(
         self._synapses: dict[str, dict[str, Synapse]] = defaultdict(dict)
         self._fibers: dict[str, dict[str, Fiber]] = defaultdict(dict)
         self._states: dict[str, dict[str, NeuronState]] = defaultdict(dict)
+        self._decay_passes: dict[str, list[dict[str, Any]]] = defaultdict(list)
         self._typed_memories: dict[str, dict[str, TypedMemory]] = defaultdict(dict)
         self._projects: dict[str, dict[str, Project]] = defaultdict(dict)
         self._training_files: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
@@ -218,6 +227,22 @@ class InMemoryStorage(
     async def update_neuron_state(self, state: NeuronState) -> None:
         brain_id = self._get_brain_id()
         self._states[brain_id][state.neuron_id] = state
+
+    async def add_decay_pass(self, record: dict[str, Any]) -> None:
+        self._decay_passes[self._get_brain_id()].append(dict(record))
+
+    async def find_decay_passes(self, limit: int = 100) -> list[dict[str, Any]]:
+        rows = self._decay_passes[self._get_brain_id()]
+        return [dict(r) for r in reversed(rows)][:limit]
+
+    async def prune_decay_passes(self, retention_days: int = 90, max_records: int = 2000) -> int:
+        rows = self._decay_passes[self._get_brain_id()]
+        cutoff = utcnow() - timedelta(days=retention_days)
+        kept = [r for r in rows if _pass_ran_at(r) >= cutoff]
+        kept = kept[-max_records:] if max_records > 0 else kept
+        removed = len(rows) - len(kept)
+        self._decay_passes[self._get_brain_id()] = kept
+        return removed
 
     def _orphaned_state_ids(self, max_rows: int) -> list[str]:
         brain_id = self._get_brain_id()
