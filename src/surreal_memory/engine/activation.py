@@ -21,6 +21,13 @@ logger = logging.getLogger(__name__)
 # Safety cap: maximum queue entries to prevent memory exhaustion on dense graphs
 _MAX_QUEUE_SIZE = 50_000
 
+# Ceiling on activation traversals running at once in activate_from_multiple.
+# Each traversal walks the graph and hits storage, so an unbounded fan-out scales
+# concurrent load with caller input rather than with anything the system controls.
+# Matches _BATCH_FETCH_CONCURRENCY in the SurrealDB store, which bounds the same
+# class of fan-out one layer down.
+_MAX_CONCURRENT_ACTIVATIONS = 16
+
 
 @dataclass
 class ActivationTrace:
@@ -402,12 +409,24 @@ class SpreadingActivation:
         if not anchor_sets:
             return {}, []
 
-        # Activate from each set in parallel
-        tasks = [
-            self.activate(anchors, max_hops, anchor_activations=anchor_activations)
-            for anchors in anchor_sets
-            if anchors
-        ]
+        # Activate from each set in parallel, but BOUNDED. Gathering one
+        # traversal per anchor set meant simultaneous traversals — and pending
+        # asyncio tasks — grew directly with the number of inputs: 512 anchor
+        # sets produced 512 concurrent activations (#181). Each traversal walks
+        # the graph and hits storage, so the ceiling is what keeps a large
+        # multi-anchor recall from stampeding the backend.
+        #
+        # The bound throttles the work; it does not drop any of it. Every anchor
+        # set is still processed, just not all at the same instant.
+        semaphore = asyncio.Semaphore(_MAX_CONCURRENT_ACTIVATIONS)
+
+        async def _bounded(
+            anchors: list[str],
+        ) -> tuple[dict[str, ActivationResult], ActivationTrace]:
+            async with semaphore:
+                return await self.activate(anchors, max_hops, anchor_activations=anchor_activations)
+
+        tasks = [_bounded(anchors) for anchors in anchor_sets if anchors]
         raw_results = list(await asyncio.gather(*tasks)) if tasks else []
 
         if not raw_results:
