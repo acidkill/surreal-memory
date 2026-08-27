@@ -675,6 +675,7 @@ Transplant memories between brains by tags/types.
 | `source_brain` | string | Yes | — | Name of the source brain to extract from |
 | `tags` | array[string] | No | — | Tags to filter — fibers matching ANY tag will be included |
 | `memory_types` | array[string] | No | — | Memory types to filter (fact, decision, etc.) |
+| `min_salience` | number | No | — | Minimum salience a fiber must have to be transplanted (0.0-1.0, default 0.0 = unfiltered) |
 | `strategy` | string (`prefer_local`, `prefer_remote`, `prefer_recent`, `prefer_stronger`) | No | default: prefer_local | Conflict resolution strategy (default: prefer_local) |
 | `compact` | boolean | No | — | Return compact response (strip metadata hints, truncate lists). Saves 60-80% tokens. |
 | `token_budget` | integer | No | — | Max tokens for response. Progressively strips content to fit budget. |
