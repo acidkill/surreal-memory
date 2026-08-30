@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.8.1] — 2026-08-30 — a memory stops being findable by text it no longer contains
+
+Compression is meant to be either reversible or honest. Two defects made it neither: the
+snapshot that destructive compression takes before overwriting content never reached the
+database, and every path that replaced a neuron's content re-saved the fingerprint and
+embedding of the text it had just deleted.
+
+### Fixed
+
+- `save_neuron_snapshot` wrote a `datetime` into a column the schema declares as a string,
+  so a SCHEMAFULL backend refused the write. The only caller wraps the save in a fail-soft
+  `except`, so nothing surfaced: destructive compression replaced a neuron's content while
+  the snapshot meant to protect it silently never existed, leaving content recovery with
+  nothing to restore from. The read path already parsed either representation, so callers
+  are unaffected.
+- The compression engine's compress, decompress and recover paths, and instruction
+  refinement, replaced a neuron's `content` without recomputing `content_hash`, the stored
+  embedding, or `metadata["_structure"]` — so a memory stayed retrievable by text that had
+  been deleted, and could not be repaired by a missing-only reindex, because the vector was
+  never empty. This is the same class fixed for `smem_edit` in 3.8.0, applied to the call
+  sites outside the MCP layer.
+- Refreshing is batched rather than per neuron: compression walks every neuron of a fiber
+  under a time budget, and identical text is embedded once and fanned out, so a fiber costs
+  one brain lookup and one embedding call rather than a provider round-trip per neuron. A
+  provider returning fewer vectors than it was given is rejected before any of them is
+  assigned, since a positional assignment over a short list would leave the tail neurons
+  holding stale vectors with neither an error nor a warning.
+- A neuron compressed to the graph-only tier carries a placeholder for content, so anything
+  derived from it is one constant shared across the store. Correct derived fields therefore
+  made a latent problem reachable: consumers comparing those fields would pair unrelated
+  tombstones with each other, or canonicalise a genuine new memory onto one. The placeholder
+  now carries the codebase's existing no-fingerprint sentinel, and the consumers of
+  content-derived fields — the deduplication census, the save-time deduplication pipeline,
+  interference detection, semantic discovery, recall anchor selection, entity reuse and
+  novelty scoring — skip placeholder content rather than fingerprinting it.
+
 ## [3.8.0] — 2026-08-27 — the dashboard answers, and what it reports stops lying
 
 Every dashboard endpoint that recomputed a multi-second analysis on each request now
