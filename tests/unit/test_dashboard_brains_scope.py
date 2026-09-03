@@ -67,6 +67,18 @@ def _make_client(storage: Any) -> httpx.AsyncClient:
 
 
 class TestListBrainsDoesNotLeakBrainState:
+    @pytest.fixture(autouse=True)
+    def _reset_brains_module_state(self) -> Any:
+        """Each test starts with a cold serve-stale state (isolated contract)."""
+        from surreal_memory.server.routes import dashboard_api
+
+        dashboard_api._BRAINS_LAST_GOOD = None
+        dashboard_api._BRAINS_REFRESHING = False
+        dashboard_api._GRADE_LAST_GOOD.clear()
+        dashboard_api._GRADE_CACHE.clear()
+        yield
+        dashboard_api._BRAINS_REFRESHING = False
+
     """The read-only listing must never mutate the shared storage's brain."""
 
     @pytest.fixture(autouse=True)
@@ -165,10 +177,16 @@ class TestListBrainsDoesNotLeakBrainState:
             resp = await client.get("/api/dashboard/brains")
 
         assert resp.status_code == 200, resp.text
+        # Diagnostics now run in the background; let the scheduled pass finish.
+        import asyncio
+
+        from surreal_memory.server.routes import dashboard_api
+
+        await asyncio.gather(*dashboard_api._BRAINS_REFRESH_TASKS, return_exceptions=True)
         # The bound brain reuses the shared instance; the other one does not.
-        shared_storage.get_stats.assert_awaited_once_with(BOUND_BRAIN)
-        scoped_storage.get_stats.assert_awaited_once_with(OTHER_BRAIN)
-        scoped_storage.close.assert_awaited_once()
+        shared_storage.get_stats.assert_awaited_with(BOUND_BRAIN)
+        scoped_storage.get_stats.assert_awaited_with(OTHER_BRAIN)
+        scoped_storage.close.assert_awaited()
 
     async def test_summaries_carry_per_brain_stats_and_grade(
         self, shared_storage: AsyncMock, scoped_storage: AsyncMock
@@ -178,14 +196,36 @@ class TestListBrainsDoesNotLeakBrainState:
             resp = await client.get("/api/dashboard/brains")
 
         by_name = {row["name"]: row for row in resp.json()}
+        # Counts are live in the response; the grade arrives via the
+        # background diagnostics pass.
         assert by_name[BOUND_BRAIN]["neuron_count"] == 1
         assert by_name[BOUND_BRAIN]["is_active"] is True
         assert by_name[OTHER_BRAIN]["neuron_count"] == 10
         assert by_name[OTHER_BRAIN]["is_active"] is False
-        assert by_name[OTHER_BRAIN]["grade"] == "B"
+
+        import asyncio
+
+        from surreal_memory.server.routes import dashboard_api
+
+        await asyncio.gather(*dashboard_api._BRAINS_REFRESH_TASKS, return_exceptions=True)
+        rows = dashboard_api._BRAINS_LAST_GOOD or []
+        refreshed = {b.name: b.grade for b in rows}
+        assert refreshed[OTHER_BRAIN] == "B"
 
 
 class TestGetStatsDoesNotLeakBrainState:
+    @pytest.fixture(autouse=True)
+    def _reset_brains_module_state(self) -> Any:
+        """Each test starts with a cold serve-stale state (isolated contract)."""
+        from surreal_memory.server.routes import dashboard_api
+
+        dashboard_api._BRAINS_LAST_GOOD = None
+        dashboard_api._BRAINS_REFRESHING = False
+        dashboard_api._GRADE_LAST_GOOD.clear()
+        dashboard_api._GRADE_CACHE.clear()
+        yield
+        dashboard_api._BRAINS_REFRESHING = False
+
     """The overview endpoint's read-only GET must never mutate the shared storage."""
 
     @pytest.fixture(autouse=True)
@@ -304,6 +344,18 @@ class TestGetStatsDoesNotLeakBrainState:
     reason="requires SURREALDB_URL env var pointing to a running SurrealDB",
 )
 class TestListBrainsScopeLive:
+    @pytest.fixture(autouse=True)
+    def _reset_brains_module_state(self) -> Any:
+        """Each test starts with a cold serve-stale state (isolated contract)."""
+        from surreal_memory.server.routes import dashboard_api
+
+        dashboard_api._BRAINS_LAST_GOOD = None
+        dashboard_api._BRAINS_REFRESHING = False
+        dashboard_api._GRADE_LAST_GOOD.clear()
+        dashboard_api._GRADE_CACHE.clear()
+        yield
+        dashboard_api._BRAINS_REFRESHING = False
+
     """The singleton pointer must survive a real request against a real store."""
 
     async def test_request_leaves_the_shared_singleton_on_the_active_brain(self) -> None:
@@ -351,6 +403,18 @@ class TestListBrainsScopeLive:
     reason="requires SURREALDB_URL env var pointing to a running SurrealDB",
 )
 class TestGetStatsScopeLive:
+    @pytest.fixture(autouse=True)
+    def _reset_brains_module_state(self) -> Any:
+        """Each test starts with a cold serve-stale state (isolated contract)."""
+        from surreal_memory.server.routes import dashboard_api
+
+        dashboard_api._BRAINS_LAST_GOOD = None
+        dashboard_api._BRAINS_REFRESHING = False
+        dashboard_api._GRADE_LAST_GOOD.clear()
+        dashboard_api._GRADE_CACHE.clear()
+        yield
+        dashboard_api._BRAINS_REFRESHING = False
+
     """The singleton pointer must survive a real overview request against a
     real store — this is the endpoint that was found still leaking after
     /brains had already been fixed, so it gets the same live proof.

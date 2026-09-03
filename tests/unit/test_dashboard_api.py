@@ -412,3 +412,183 @@ class TestBrainListingUsesActiveBackend:
         entry = next(b for b in resp.json()["brains"] if b["name"] == "legacy-brain")
         assert entry["path"] == str(real_path)
         assert entry["size_bytes"] == 10
+
+
+class _FakeAsyncCtx:
+    """async-with target returning a fixed storage object."""
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+
+    async def __aenter__(self) -> Any:
+        return self._inner
+
+    async def __aexit__(self, *exc: Any) -> None:
+        return None
+
+
+class TestBrainsServeStale:
+    """The Brains table must answer immediately, always.
+
+    With the server remote from its database (k3s pod over WebSocket) a cold
+    DiagnosticsEngine.analyze costs ~100 s. The synchronous endpoint made the
+    overview render "No brains found" with zero counters, because the browser
+    gives up long before the endpoint answers. Contract now:
+
+    * the response returns as soon as per-brain counts are known — never waits
+      for diagnostics (grade/purity stay at the model defaults on a cold pod);
+    * diagnostics always run in the BACKGROUND and upgrade the last-good table
+      in place;
+    * once a table exists, later requests are served from it instantly while a
+      background pass refreshes it.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_state(self) -> None:
+        from surreal_memory.server.routes import dashboard_api
+
+        dashboard_api._BRAINS_LAST_GOOD = None
+        dashboard_api._BRAINS_REFRESHING = False
+        dashboard_api._GRADE_CACHE.clear()
+        dashboard_api._GRADE_LAST_GOOD.clear()
+        dashboard_api._GRADE_REFRESH_KEYS.clear()
+        yield
+        # background tasks from the TestClient's portal may still be pending
+        dashboard_api._BRAINS_REFRESHING = False
+
+    @pytest.fixture()
+    def remote_brain_env(
+        self, monkeypatch: pytest.MonkeyPatch, mock_storage: AsyncMock
+    ) -> AsyncMock:
+        """One brain 'default', stats served from a fast aggregate, no DB."""
+        from surreal_memory.server.routes import dashboard_api
+
+        cfg = MagicMock()
+        cfg.current_brain = "default"
+        monkeypatch.setattr("surreal_memory.unified_config.get_config", lambda: cfg)
+        monkeypatch.setattr(
+            "surreal_memory.unified_config.list_available_brains",
+            AsyncMock(return_value=["default"]),
+        )
+        scope = AsyncMock()
+        scope.get_stats = AsyncMock(
+            return_value={
+                "neuron_count": 10,
+                "synapse_count": 20,
+                "fiber_count": 3,
+                "structural_neuron_count": 0,
+            }
+        )
+        monkeypatch.setattr(
+            dashboard_api, "storage_for_scope", lambda *a, **k: _FakeAsyncCtx(scope)
+        )
+        return mock_storage
+
+    def test_cold_response_never_runs_diagnostics(
+        self,
+        client: TestClient,
+        remote_brain_env: AsyncMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Cold pod: counts only — diagnostics deferred out of the request path.
+
+        The background pass DOES start an analyze (sleeping 30 s here); the
+        assertion is that the request still answers immediately with the
+        counts instead of waiting for it.
+        """
+        import asyncio
+        import time
+
+        calls = {"analyze": 0}
+
+        class _SlowDiagnostics:
+            def __init__(self, *_a: Any, **_k: Any) -> None:
+                pass
+
+            async def analyze(self, *_a: Any, **_k: Any) -> Any:
+                calls["analyze"] += 1
+                await asyncio.sleep(30)  # request must not wait for this
+
+        monkeypatch.setattr("surreal_memory.engine.diagnostics.DiagnosticsEngine", _SlowDiagnostics)
+        t0 = time.monotonic()
+        r = client.get("/api/dashboard/brains")
+        elapsed = time.monotonic() - t0
+        assert r.status_code == 200
+        assert elapsed < 5, f"request blocked {elapsed:.1f}s on background diagnostics"
+        body = r.json()
+        assert body[0]["name"] == "default"
+        assert body[0]["neuron_count"] == 10
+
+    def test_second_request_serves_last_good(
+        self,
+        client: TestClient,
+        remote_brain_env: AsyncMock,
+    ) -> None:
+        from surreal_memory.server.routes import dashboard_api
+
+        with patch("surreal_memory.engine.diagnostics.DiagnosticsEngine"):
+            first = client.get("/api/dashboard/brains")
+            assert first.status_code == 200
+            # Simulate the completed background pass upgrading the grades.
+            from surreal_memory.server.routes.dashboard_api import BrainSummary
+
+            dashboard_api._BRAINS_LAST_GOOD = [
+                BrainSummary(
+                    id="default",
+                    name="default",
+                    neuron_count=10,
+                    synapse_count=20,
+                    fiber_count=3,
+                    grade="D",
+                    purity_score=44.1,
+                    is_active=True,
+                )
+            ]
+            second = client.get("/api/dashboard/brains")
+            assert second.status_code == 200
+            assert second.json()[0]["grade"] == "D"
+
+    def test_last_good_survives_expired_diagnostics_cache(
+        self,
+        client: TestClient,
+        remote_brain_env: AsyncMock,
+    ) -> None:
+        """Serve-stale: an expired diagnostics cache still returns the table."""
+        from surreal_memory.server.routes import dashboard_api
+
+        with patch("surreal_memory.engine.diagnostics.DiagnosticsEngine"):
+            client.get("/api/dashboard/brains")
+            dashboard_api._GRADE_CACHE.clear()  # TTL gone
+            r = client.get("/api/dashboard/brains")
+            assert r.status_code == 200
+            assert r.json()[0]["name"] == "default"
+
+    def test_cached_health_report_serves_stale_and_schedules_refresh(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Expired-but-present report: stale returned, refresh happens once."""
+        import asyncio
+
+        from surreal_memory.engine.diagnostics import DiagnosticsEngine
+        from surreal_memory.server.routes import dashboard_api
+
+        async def _analyze(brain_name: str) -> object:
+            return {"grade": "C"}
+
+        monkeypatch.setattr(DiagnosticsEngine, "analyze", staticmethod(_analyze))
+        key = "health:default"
+        dashboard_api._GRADE_LAST_GOOD[key] = {"grade": "F"}
+
+        async def _scenario() -> tuple[object, int, object]:
+            storage = AsyncMock()
+            first = await dashboard_api._cached_health_report(storage, "default")
+            pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+            await asyncio.gather(*pending, return_exceptions=True)
+            second = await dashboard_api._cached_health_report(storage, "default")
+            return first, len(pending), second
+
+        first, pending_count, second = asyncio.run(_scenario())
+        assert first == {"grade": "F"}  # stale served instantly
+        assert pending_count == 1  # exactly one background refresh
+        assert second == {"grade": "C"}  # refreshed value served after the pass
+        assert dashboard_api._GRADE_LAST_GOOD[key] == {"grade": "C"}  # upgraded

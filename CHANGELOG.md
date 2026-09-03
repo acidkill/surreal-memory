@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.9.1] — 2026-09-03 — the dashboard answers before the diagnostics do
+
+### Fixed
+
+- The dashboard's Brains table and stats cards no longer block on full-brain
+  diagnostics. With the server running away from its database (a k3s pod
+  talking to SurrealDB over WebSocket), a cold
+  `DiagnosticsEngine.analyze` costs ~100 s and a warm one ~10 s — the browser
+  gives up long before either finishes, and the overview rendered "No brains
+  found" over zero counters although the data was fine. `/api/dashboard/brains`
+  now returns as soon as the per-brain counts are known (grade/purity render
+  at their defaults until computed), a previously computed table is served
+  instantly while a single background pass refreshes it, and an expired
+  diagnostics report is served stale and recomputed once in the background.
+  The cache TTL now paces the refresh instead of gating the caller.
+
 ## [3.9.0] — 2026-09-03 — reasoning endpoints may leave the machine, but only when told to
 
 ### Added

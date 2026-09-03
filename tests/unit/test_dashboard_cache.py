@@ -9,7 +9,24 @@ from __future__ import annotations
 
 import importlib
 
+import pytest
+
 from surreal_memory.server.dashboard_cache import TTLCache
+
+
+@pytest.fixture(autouse=True)
+def _reset_dashboard_module_state():
+    """Keep the module-level serve-stale state from leaking between tests."""
+    from surreal_memory.server.routes import dashboard_api
+
+    dashboard_api._BRAINS_LAST_GOOD = None
+    dashboard_api._BRAINS_REFRESHING = False
+    dashboard_api._GRADE_CACHE.clear()
+    dashboard_api._GRADE_LAST_GOOD.clear()
+    dashboard_api._GRADE_REFRESH_KEYS.clear()
+    yield
+    dashboard_api._GRADE_LAST_GOOD.clear()
+    dashboard_api._GRADE_CACHE.clear()
 
 
 class _Clock:
@@ -202,8 +219,13 @@ class TestNoEndpointRecomputesDiagnosticsDirectly:
         for node in ast.walk(tree):
             if not isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)):
                 continue
-            if node.name in {"_cached_health_report", "_cached_evolution"}:
-                continue  # the two places allowed to compute an analysis
+            if node.name in {
+                "_cached_health_report",
+                "_cached_evolution",
+                "_refresh",
+                "_schedule_grade_refresh",
+            }:
+                continue  # cache entry points + the background refresh task
 
             # Track engines bound to a local first: the handlers write
             # `engine = EvolutionEngine(storage)` and then `engine.analyze(...)`,

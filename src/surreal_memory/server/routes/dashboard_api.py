@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Annotated, Any
@@ -25,6 +26,22 @@ logger = logging.getLogger(__name__)
 # A health grade does not meaningfully move within five minutes.
 _HEALTH_TTL_SECONDS = 300.0
 _GRADE_CACHE = TTLCache(ttl=_HEALTH_TTL_SECONDS)
+
+# Serve-stale-while-revalidate. Since smem 3.9.0 the server can run far away
+# from its database (k3s pod over WebSocket), where a cold
+# DiagnosticsEngine.analyze costs ~100 s and even a warm one ~10 s — far past
+# any browser's patience. The overview rendered "No brains found" and zero
+# counters because the frontend gives up before the endpoint answers. So: any
+# previously computed report is served AT ONCE from _GRADE_LAST_GOOD (which
+# survives the TTL, unlike the TTLCache) while a single background task
+# recomputes it; the TTL only decides how often that refresh happens, never
+# whether the caller blocks. _BRAINS_LAST_GOOD is the same idea for the whole
+# Brains table.
+_GRADE_LAST_GOOD: dict[str, Any] = {}
+_GRADE_REFRESH_KEYS: set[str] = set()
+_BRAINS_LAST_GOOD: list[BrainSummary] | None = None
+_BRAINS_REFRESHING = False
+_BRAINS_REFRESH_TASKS: set[asyncio.Task[None]] = set()
 
 # Brain-wide uncertainty overview is bounded/cheap, but cached per brain for a short
 # window anyway to keep the dashboard's polling off the storage hot path (same
@@ -52,11 +69,53 @@ async def _cached_health_report(storage: NeuralStorage, brain_name: str) -> Any:
     cached = _GRADE_CACHE.get(key)
     if cached is not None:
         return cached
+    stale = _GRADE_LAST_GOOD.get(key)
+    if stale is not None:
+        # Serve the last computed report at once and recompute in the
+        # background; on a remote database a cold analyze runs ~100 s — no
+        # browser waits that long, and serving nothing is what rendered the
+        # overview as "No brains found".
+        _schedule_grade_refresh(storage, brain_name, key)
+        return stale
     from surreal_memory.engine.diagnostics import DiagnosticsEngine
 
     report = await DiagnosticsEngine(storage).analyze(brain_name)
     _GRADE_CACHE.set(key, report)
+    _GRADE_LAST_GOOD[key] = report
     return report
+
+
+def _schedule_grade_refresh(storage: NeuralStorage, brain_name: str, key: str) -> None:
+    """Recompute one diagnostics report in the background, at most once per key.
+
+    A strong reference to the task is kept until it finishes (asyncio discards
+    tasks that only the event loop holds). A failure is logged, never raised —
+    the caller has already been served the stale report.
+    """
+
+    def _done(task: asyncio.Task[Any]) -> None:
+        _GRADE_REFRESH_KEYS.discard(key)
+        if not task.cancelled() and task.exception() is not None:
+            logger.warning(
+                "Background diagnostics refresh failed for brain %s",
+                brain_name,
+                exc_info=task.exception(),
+            )
+
+    if key in _GRADE_REFRESH_KEYS:
+        return
+    _GRADE_REFRESH_KEYS.add(key)
+
+    async def _refresh() -> Any:
+        from surreal_memory.engine.diagnostics import DiagnosticsEngine
+
+        report = await DiagnosticsEngine(storage).analyze(brain_name)
+        _GRADE_CACHE.set(key, report)
+        _GRADE_LAST_GOOD[key] = report
+        return report
+
+    task = asyncio.get_running_loop().create_task(_refresh())
+    task.add_done_callback(_done)
 
 
 async def _cached_evolution(storage: NeuralStorage, brain_name: str) -> Any:
@@ -324,6 +383,11 @@ async def list_brains_api(
     showed the real grade — the F-vs-D mismatch. Run diagnostics per brain here
     too, sequentially — one isolated connection at a time rather than a burst.
 
+    Serve-stale-while-revalidate (see ``_cached_health_report``): the response
+    returns as soon as the counts are known and diagnostics run in the
+    background. On a remote database the synchronous version cost ~100 s cold /
+    ~10 s warm per load, which the frontend answers with "No brains found".
+
     Per-brain diagnostics go through ``storage_for_scope``, never
     ``get_shared_storage(brain_name=...)``: on the SurrealDB backend the latter
     returns the process-wide singleton *after* repointing its brain, so this
@@ -338,20 +402,74 @@ async def list_brains_api(
     cfg = get_config()
     brain_names = await list_available_brains()
     active_name = cfg.current_brain
-    results: list[BrainSummary] = []
 
+    global _BRAINS_LAST_GOOD
+
+    def _refresh_in_background(names: list[str]) -> None:
+        """Compute diagnostics for every brain, updating _BRAINS_LAST_GOOD grades."""
+
+        async def _run() -> None:
+            global _BRAINS_LAST_GOOD
+            for name in names:
+                try:
+                    async with storage_for_scope(storage, name) as brain_storage:
+                        report = await _cached_health_report(brain_storage, name)
+                except Exception:
+                    logger.debug("Background diagnostics failed for brain %s", name, exc_info=True)
+                    continue
+                current = _BRAINS_LAST_GOOD
+                if current is None:
+                    continue
+                _BRAINS_LAST_GOOD = [
+                    (
+                        BrainSummary(
+                            id=b.id,
+                            name=b.name,
+                            neuron_count=b.neuron_count,
+                            synapse_count=b.synapse_count,
+                            fiber_count=b.fiber_count,
+                            grade=report.grade,
+                            purity_score=report.purity_score,
+                            is_active=b.is_active,
+                        )
+                        if b.name == name
+                        else b
+                    )
+                    for b in current
+                ]
+
+        global _BRAINS_REFRESHING
+        if _BRAINS_REFRESHING:
+            return
+        _BRAINS_REFRESHING = True
+
+        def _done(task: asyncio.Task[None]) -> None:
+            global _BRAINS_REFRESHING
+            _BRAINS_REFRESHING = False
+            if not task.cancelled() and task.exception() is not None:
+                logger.warning("Background brains refresh failed", exc_info=task.exception())
+
+        task = asyncio.get_running_loop().create_task(_run())
+        # Strong reference: the event loop discards tasks nobody holds.
+        _BRAINS_REFRESH_TASKS.add(task)
+        task.add_done_callback(_BRAINS_REFRESH_TASKS.discard)
+        task.add_done_callback(_done)
+
+    # Warm path: the whole table from the last successful pass, instantly —
+    # on a remote database a synchronous diagnostics pass costs ~100 s cold,
+    # which the browser answers with "No brains found".
+    if _BRAINS_LAST_GOOD is not None:
+        _refresh_in_background(brain_names)
+        return _BRAINS_LAST_GOOD
+
+    results: list[BrainSummary] = []
     for name in brain_names:
         try:
             async with storage_for_scope(storage, name) as brain_storage:
                 stats = await brain_storage.get_stats(name)
-                grade = "F"
-                purity = 0.0
-                try:
-                    report = await _cached_health_report(brain_storage, name)
-                    grade = report.grade
-                    purity = report.purity_score
-                except Exception:
-                    logger.debug("Diagnostics failed for brain %s", name, exc_info=True)
+            # Diagnostics is the expensive part (~100 s cold over a remote
+            # link): never in the request path. The background pass fills the
+            # grades in; until then the model defaults (F / 0.0) render.
             results.append(
                 BrainSummary(
                     id=name,
@@ -359,8 +477,8 @@ async def list_brains_api(
                     neuron_count=stats.get("neuron_count", 0),
                     synapse_count=stats.get("synapse_count", 0),
                     fiber_count=stats.get("fiber_count", 0),
-                    grade=grade,
-                    purity_score=purity,
+                    grade="F",
+                    purity_score=0.0,
                     is_active=name == active_name,
                 )
             )
@@ -368,6 +486,8 @@ async def list_brains_api(
             logger.warning("Brain summary failed for %s", name, exc_info=True)
             results.append(BrainSummary(id=name, name=name, is_active=name == active_name))
 
+    _BRAINS_LAST_GOOD = results
+    _refresh_in_background(brain_names)
     return results
 
 
