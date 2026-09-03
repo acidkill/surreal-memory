@@ -261,19 +261,26 @@ async def _embedding_dedup(
         try:
             from surreal_memory.unified_config import get_config
 
-            endpoint = get_config().embedding.resolved_endpoint()
+            _cfg = get_config()
+            endpoint = _cfg.embedding.resolved_endpoint()
+            # Same opt-in the distiller and the naming LLM use: a configured
+            # remote gateway qualifies only when the operator widened the
+            # loopback invariant.
+            allow_remote = bool(_cfg.reasoning_training.allow_remote_endpoints)
         except Exception:
             endpoint = os.environ.get("SURREAL_MEMORY_EMBEDDING_ENDPOINT", "")
-        is_local_endpoint = _endpoint_is_loopback(endpoint)
+            allow_remote = False
+        is_local_endpoint = allow_remote or _endpoint_is_loopback(endpoint)
         if provider_name == "ollama":
             from surreal_memory.engine.embedding.ollama_embedding import OllamaEmbedding
 
             embed_provider = OllamaEmbedding(model=model_name)
         elif provider_name in ("openai", "openrouter") and is_local_endpoint:
-            # A local OpenAI-compatible server (e.g. llamastash bge-m3 at
-            # http://127.0.0.1:11435/v1) is GPU-served at ~15ms/embed — as cheap as
-            # Ollama — so use it for higher-quality semantic dedup. Only a *local*
-            # (loopback) endpoint qualifies; remote/cloud bases are skipped below.
+            # An OpenAI-compatible server (e.g. llamastash bge-m3 at
+            # http://127.0.0.1:11435/v1, or a remote gateway allowed via
+            # reasoning_training.allow_remote_endpoints) is cheap enough for
+            # semantic dedup; anything else (heavy local models, other cloud
+            # bases) is skipped below.
             from surreal_memory.engine.embedding.openai_embedding import OpenAIEmbedding
 
             # Hand over the endpoint that was just checked for loopback. Letting

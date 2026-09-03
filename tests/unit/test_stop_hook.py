@@ -353,3 +353,109 @@ class TestEmbeddingDedup:
 
         mock_st.assert_not_called()
         assert result == items
+
+
+class TestEmbeddingDedupRemoteOptIn:
+    """The stop hook's dedup gate follows the same opt-in as the distiller.
+
+    Default: only a loopback embedding endpoint is used. With
+    ``reasoning_training.allow_remote_endpoints`` set, the configured remote
+    endpoint qualifies too — without the opt-in the hook must keep skipping
+    the provider entirely (dedup degrades to simhash, never leaks content).
+    """
+
+    ITEMS = [
+        {"content": "Decision: use SQLite", "confidence": 0.9, "type": "decision"},
+        {"content": "Decision: use SQ Lite", "confidence": 0.8, "type": "decision"},
+    ]
+
+    @staticmethod
+    def _config(allow_remote: bool) -> object:
+        from surreal_memory.unified_config import (
+            EmbeddingSettings,
+            ReasoningTrainingConfig,
+            UnifiedConfig,
+        )
+
+        return UnifiedConfig(
+            embedding=EmbeddingSettings(
+                enabled=True,
+                provider="openai",
+                model="bge-m3",
+                endpoint="https://litellm.example.com/v1",
+            ),
+            reasoning_training=ReasoningTrainingConfig(allow_remote_endpoints=allow_remote),
+        )
+
+    @pytest.mark.asyncio
+    async def test_remote_endpoint_used_when_opt_in_is_set(self) -> None:
+        mock_provider = AsyncMock()
+        mock_provider.embed_batch = AsyncMock(return_value=[[1.0, 0.0], [0.0, 1.0]])
+        mock_provider.similarity = AsyncMock(return_value=0.0)
+
+        with (
+            patch(
+                "surreal_memory.unified_config.get_config",
+                return_value=self._config(allow_remote=True),
+            ),
+            patch(
+                "surreal_memory.engine.semantic_discovery._auto_detect_provider",
+                return_value=("openai", "bge-m3"),
+            ),
+            patch(
+                "surreal_memory.engine.embedding.openai_embedding.OpenAIEmbedding",
+                return_value=mock_provider,
+            ) as mock_openai,
+        ):
+            result = await _embedding_dedup(self.ITEMS)
+
+        mock_openai.assert_called_once()
+        # The endpoint that cleared the gate is the endpoint the client gets.
+        _, kwargs = mock_openai.call_args
+        assert kwargs.get("base_url") == "https://litellm.example.com/v1"
+        assert len(result) == 2
+
+    @pytest.mark.asyncio
+    async def test_remote_endpoint_skipped_without_the_opt_in(self) -> None:
+        with (
+            patch(
+                "surreal_memory.unified_config.get_config",
+                return_value=self._config(allow_remote=False),
+            ),
+            patch(
+                "surreal_memory.engine.semantic_discovery._auto_detect_provider",
+                return_value=("openai", "bge-m3"),
+            ),
+            patch(
+                "surreal_memory.engine.embedding.openai_embedding.OpenAIEmbedding"
+            ) as mock_openai,
+        ):
+            result = await _embedding_dedup(self.ITEMS)
+
+        mock_openai.assert_not_called()
+        assert result == self.ITEMS
+
+    @pytest.mark.asyncio
+    async def test_unreadable_config_falls_back_to_strict_gate(self) -> None:
+        # get_config() raising must behave like the old code: env endpoint
+        # only, loopback rule absolute, remote endpoint skipped.
+        import os
+
+        with (
+            patch(
+                "surreal_memory.unified_config.get_config",
+                side_effect=RuntimeError("config unavailable"),
+            ),
+            patch.dict(os.environ, {"SURREAL_MEMORY_EMBEDDING_ENDPOINT": ""}, clear=False),
+            patch(
+                "surreal_memory.engine.semantic_discovery._auto_detect_provider",
+                return_value=("openai", "bge-m3"),
+            ),
+            patch(
+                "surreal_memory.engine.embedding.openai_embedding.OpenAIEmbedding"
+            ) as mock_openai,
+        ):
+            result = await _embedding_dedup(self.ITEMS)
+
+        mock_openai.assert_not_called()
+        assert result == self.ITEMS

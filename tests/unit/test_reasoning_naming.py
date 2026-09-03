@@ -18,12 +18,17 @@ safe, and each is pinned here:
 from __future__ import annotations
 
 import json
+import logging
+import sys
+import types
 from typing import Any
 
 import pytest
 
 from surreal_memory.engine.reasoning_naming import (
+    LLM_API_KEY_ENV,
     LLM_ENDPOINT_ENV,
+    _make_httpx_poster,
     _run_command_subprocess,
     build_namer,
     resolve_llm_endpoint,
@@ -890,3 +895,208 @@ class TestRealSubprocessRunner:
         code = await _run_command_subprocess(["false"], timeout=5.0)
 
         assert code == 1
+
+
+REMOTE = "https://litellm.example.com/v1"
+
+
+class TestRemoteOptIn:
+    """``allow_remote_endpoints`` widens the loopback invariant — explicitly.
+
+    The default stays exactly as strict as before: a non-loopback endpoint
+    resolves to None and no request is ever made. With the opt-in set, any
+    http(s):// URL with a host is accepted, because an operator who names a
+    remote endpoint in their own config has decided where traces go. Anything
+    that is not http(s) (ftp:, file:, a bare hostname) is still refused even
+    with the opt-in: the flag widens *where*, never *what kind of URL*.
+    """
+
+    def test_remote_endpoint_accepted_with_opt_in(self) -> None:
+        assert resolve_llm_endpoint(REMOTE, allow_remote=True) == REMOTE
+
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            "http://192.168.1.95:11435/v1",
+            "https://generativelanguage.googleapis.com/v1",
+            "http://llm.internal.example.com/v1",
+        ],
+    )
+    def test_remote_hosts_accepted_with_opt_in(self, endpoint: str) -> None:
+        assert resolve_llm_endpoint(endpoint, allow_remote=True) == endpoint.rstrip("/")
+
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            "ftp://litellm.example.com/v1",
+            "file:///etc/passwd",
+            "litellm.example.com/v1",  # no scheme: urlsplit yields no hostname
+        ],
+    )
+    def test_non_http_schemes_refused_even_with_opt_in(self, endpoint: str) -> None:
+        assert resolve_llm_endpoint(endpoint, allow_remote=True) is None
+
+    def test_opt_in_changes_nothing_when_no_endpoint_is_set(self) -> None:
+        assert resolve_llm_endpoint("", allow_remote=True) is None
+
+    def test_env_endpoint_honored_with_opt_in(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(LLM_ENDPOINT_ENV, REMOTE)
+        assert resolve_llm_endpoint(allow_remote=True) == REMOTE
+
+    def test_default_still_refuses_remote(self) -> None:
+        """No positional/keyword regression: the old call shape stays strict."""
+        assert resolve_llm_endpoint(REMOTE) is None
+
+
+class TestRemoteNamerConstruction:
+    """build_namer reads the opt-in from the config, not from a second arg.
+
+    Callers (the distiller, and tests that stub it with ``lambda rt: ...``)
+    keep passing just the config object; everything the opt-in needs travels
+    inside ``ReasoningTrainingConfig``.
+    """
+
+    async def test_namer_built_for_remote_endpoint_with_opt_in(
+        self,
+    ) -> None:
+        transport = _Transport(_completion(_good_json()))
+        namer = build_namer(
+            _config(
+                distill_llm_endpoint=REMOTE,
+                allow_remote_endpoints=True,
+                distill_llm_model="lfm2.5-2.6b",
+            ),
+            post_json=transport,
+        )
+        assert namer is not None
+        await namer.rename(_pattern(), _traces())
+        assert transport.calls[0]["url"] == REMOTE.rstrip("/") + "/chat/completions"
+
+    def test_namer_refused_for_remote_endpoint_without_opt_in(self) -> None:
+        assert (
+            build_namer(_config(distill_llm_endpoint=REMOTE, distill_llm_model="lfm2.5-2.6b"))
+            is None
+        )
+
+    def test_remote_without_api_key_warns_but_builds(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.WARNING):
+            namer = build_namer(
+                _config(
+                    distill_llm_endpoint=REMOTE,
+                    allow_remote_endpoints=True,
+                    distill_llm_model="lfm2.5-2.6b",
+                )
+            )
+        assert namer is not None
+        assert any(LLM_API_KEY_ENV in record.getMessage() for record in caplog.records)
+
+    def test_api_key_env_is_wired_into_the_poster(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(LLM_API_KEY_ENV, "test-key-123")
+        seen: dict[str, Any] = {}
+
+        def fake_factory(key: str) -> Any:
+            seen["key"] = key
+
+            async def _poster(url: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
+                return {}
+
+            return _poster
+
+        monkeypatch.setattr(
+            "surreal_memory.engine.reasoning_naming._make_httpx_poster", fake_factory
+        )
+        namer = build_namer(
+            _config(
+                distill_llm_endpoint=REMOTE,
+                allow_remote_endpoints=True,
+                distill_llm_model="lfm2.5-2.6b",
+            )
+        )
+        assert namer is not None
+        assert seen["key"] == "test-key-123"
+
+    def test_unset_api_key_env_passes_empty_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv(LLM_API_KEY_ENV, raising=False)
+        seen: dict[str, Any] = {}
+
+        def fake_factory(key: str) -> Any:
+            seen["key"] = key
+
+            async def _poster(url: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
+                return {}
+
+            return _poster
+
+        monkeypatch.setattr(
+            "surreal_memory.engine.reasoning_naming._make_httpx_poster", fake_factory
+        )
+        assert (
+            build_namer(_config(distill_llm_endpoint=LOOPBACK, distill_llm_model="lfm2.5-2.6b"))
+            is not None
+        )
+        assert seen["key"] == ""
+
+
+class _StubResponse:
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict[str, Any]:
+        return {"ok": True}
+
+
+class _StubAsyncClient:
+    """Records the kwargs it was built with and the posts it received."""
+
+    last_init: dict[str, Any] = {}
+    last_post: dict[str, Any] = {}
+
+    def __init__(self, **kwargs: Any) -> None:
+        type(self).last_init = dict(kwargs)
+
+    async def __aenter__(self) -> _StubAsyncClient:
+        return self
+
+    async def __aexit__(self, *exc: Any) -> None:
+        return None
+
+    async def post(self, url: str, json: dict[str, Any] | None = None) -> _StubResponse:
+        type(self).last_post = {"url": url, "json": json, "headers": self.last_init.get("headers")}
+        return _StubResponse()
+
+
+class TestMakeHttpxPoster:
+    """The default transport authenticates exactly when a key is configured."""
+
+    async def test_with_key_sends_bearer_header(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake_httpx = types.SimpleNamespace(AsyncClient=_StubAsyncClient)
+        monkeypatch.setitem(sys.modules, "httpx", fake_httpx)
+
+        poster = _make_httpx_poster("test-key-123")
+        await poster("https://litellm.example.com/v1/chat/completions", {"model": "m"}, 5.0)
+
+        headers = _StubAsyncClient.last_post["headers"]
+        assert headers == {"Authorization": "Bearer test-key-123"}
+
+    async def test_without_key_sends_no_authorization_header(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fake_httpx = types.SimpleNamespace(AsyncClient=_StubAsyncClient)
+        monkeypatch.setitem(sys.modules, "httpx", fake_httpx)
+
+        poster = _make_httpx_poster("")
+        await poster("http://127.0.0.1:11435/v1/chat/completions", {"model": "m"}, 5.0)
+
+        headers = _StubAsyncClient.last_post["headers"]
+        assert headers == {} or "Authorization" not in (headers or {})
+
+    async def test_returns_the_parsed_json_object(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake_httpx = types.SimpleNamespace(AsyncClient=_StubAsyncClient)
+        monkeypatch.setitem(sys.modules, "httpx", fake_httpx)
+
+        poster = _make_httpx_poster("")
+        result = await poster("http://127.0.0.1:11435/v1/chat/completions", {}, 5.0)
+
+        assert result == {"ok": True}

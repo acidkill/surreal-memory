@@ -427,7 +427,9 @@ def _warn_remote_endpoint(endpoint: str) -> None:
         "reasoning distiller: embedding endpoint %r is not loopback — "
         "reasoning traces never leave this machine, so classification "
         "falls back to keywords. Point SURREAL_MEMORY_EMBEDDING_ENDPOINT "
-        "or [embedding] endpoint at a local server to enable it.",
+        "or [embedding] endpoint at a local server, or set "
+        "[reasoning_training] allow_remote_endpoints to allow a remote "
+        "gateway.",
         endpoint or "<unset>",
     )
 
@@ -455,8 +457,9 @@ def _get_embedder(config: UnifiedConfig | None = None) -> EmbeddingProvider | No
 
     Only a local Ollama or a loopback OpenAI-compatible endpoint (llamastash
     bge-m3) is used, so distillation stays local + fast and never blocks on a
-    remote/heavy provider. Any failure -> None and the caller falls back to
-    keyword classification + move-set clustering.
+    remote/heavy provider -- unless ``reasoning_training.allow_remote_endpoints``
+    widens the gate to a configured remote http(s) gateway. Any failure -> None
+    and the caller falls back to keyword classification + move-set clustering.
 
     The CONFIGURED provider wins when embeddings are enabled. Deciding by
     environment probe alone meant an unrelated GEMINI_API_KEY export shadowed a
@@ -469,6 +472,10 @@ def _get_embedder(config: UnifiedConfig | None = None) -> EmbeddingProvider | No
     if config is not None and config.embedding.enabled:
         provider = (config.embedding.provider or "").strip().lower()
         endpoint = config.embedding.resolved_endpoint()
+        # The same opt-in the naming LLM uses: remote endpoints (a LiteLLM
+        # gateway commonly serves both roles) are accepted only when the
+        # operator explicitly widened the loopback invariant.
+        allow_remote = bool(getattr(config.reasoning_training, "allow_remote_endpoints", False))
         if provider == "auto":
             provider = ""  # fall through to the probe below
         elif provider == "ollama":
@@ -477,7 +484,7 @@ def _get_embedder(config: UnifiedConfig | None = None) -> EmbeddingProvider | No
             # clear the gate. Checking anything else would validate a string
             # that never reaches the socket.
             ollama_base = endpoint or os.environ.get("OLLAMA_BASE_URL", _OLLAMA_DEFAULT_BASE)
-            if not _endpoint_is_loopback(ollama_base):
+            if not (allow_remote or _endpoint_is_loopback(ollama_base)):
                 _warn_remote_endpoint(ollama_base)
                 return None
             try:
@@ -487,7 +494,9 @@ def _get_embedder(config: UnifiedConfig | None = None) -> EmbeddingProvider | No
             except Exception:
                 logger.debug("reasoning distiller: ollama embedder could not be built")
                 return None
-        elif provider in _LOCAL_SAFE_PROVIDERS and _endpoint_is_loopback(endpoint):
+        elif provider in _LOCAL_SAFE_PROVIDERS and (
+            allow_remote or _endpoint_is_loopback(endpoint)
+        ):
             try:
                 from surreal_memory.engine.embedding.openai_embedding import OpenAIEmbedding
 

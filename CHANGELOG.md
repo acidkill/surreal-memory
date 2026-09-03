@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.9.0] — 2026-09-03 — reasoning endpoints may leave the machine, but only when told to
+
+### Added
+
+- `reasoning_training.allow_remote_endpoints` (default `false`; env
+  `SURREAL_MEMORY_REASONING_ALLOW_REMOTE`) opts the reasoning pipeline out of its
+  loopback-only invariant. With the flag off — the default, and every existing
+  configuration — nothing changes: a non-loopback `distill_llm_endpoint` or embedding
+  endpoint still yields no namer and no embedder, so reasoning traces never leave the
+  machine. With the flag on, the distillation LLM endpoint (naming), the distiller's
+  embedding provider, and the stop hook's semantic dedup accept a configured remote
+  http(s) gateway (e.g. LiteLLM) instead of only loopback servers. The opt-in widens
+  *where* traces may be sent, never what counts as a URL: non-http(s) schemes are
+  refused either way, and the probe fallback that runs without configuration stays
+  loopback-only regardless of the flag.
+- The naming request now authenticates. `SURREAL_MEMORY_LLM_API_KEY` is sent as an
+  `Authorization: Bearer` header to the configured LLM endpoint when set; loopback
+  servers need no key and get no header, exactly as before. A remote endpoint allowed
+  by the opt-in without a key still works but warns at namer build time, since most
+  gateways reject anonymous requests and naming would silently fall back to heuristics
+  once the circuit breaker trips.
+
 ## [3.8.1] — 2026-08-30 — a memory stops being findable by text it no longer contains
 
 Compression is meant to be either reversible or honest. Two defects made it neither: the

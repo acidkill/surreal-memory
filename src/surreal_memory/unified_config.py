@@ -1243,6 +1243,12 @@ class ReasoningTrainingConfig:
     # Loopback OpenAI-compatible base URL, e.g. "http://127.0.0.1:PORT/v1".
     # SURREAL_MEMORY_LLM_ENDPOINT overrides it; a non-loopback value is refused.
     distill_llm_endpoint: str = ""
+    # Opt-in that lets the distillation endpoints (LLM namer + reasoning
+    # embedder) be remote http(s) gateways (e.g. LiteLLM) instead of
+    # loopback-only. The default keeps the invariant that raw reasoning
+    # traces never leave this machine; setting this is a named operator
+    # decision. SURREAL_MEMORY_REASONING_ALLOW_REMOTE overrides it.
+    allow_remote_endpoints: bool = False
     # argv (NOT a shell string) run once after distillation to unload the chat
     # model again, so it does not stay resident between runs. "{model}" is
     # replaced with distill_llm_model. Empty = leave the model loaded.
@@ -1283,6 +1289,7 @@ class ReasoningTrainingConfig:
             "distill_use_llm": self.distill_use_llm,
             "distill_llm_model": self.distill_llm_model,
             "distill_llm_endpoint": self.distill_llm_endpoint,
+            "allow_remote_endpoints": self.allow_remote_endpoints,
             "distill_llm_unload_cmd": list(self.distill_llm_unload_cmd),
             "distill_llm_load_cmd": list(self.distill_llm_load_cmd),
             "redact_secrets": self.redact_secrets,
@@ -1431,6 +1438,7 @@ class ReasoningTrainingConfig:
             distill_llm_endpoint=_sanitize_toml_url(
                 str(data.get("distill_llm_endpoint", "") or "")
             ),
+            allow_remote_endpoints=bool(data.get("allow_remote_endpoints", False)),
             distill_llm_unload_cmd=unload_cmd,
             distill_llm_load_cmd=load_cmd,
             redact_secrets=bool(data.get("redact_secrets", True)),
@@ -1448,6 +1456,7 @@ def _load_reasoning_settings(data: dict[str, Any]) -> ReasoningTrainingConfig:
         SURREAL_MEMORY_REASONING_INJECTION_MAP -> injection_map ("target=source,..." pairs)
         SURREAL_MEMORY_REASONING_EXTRA_DIRS    -> extra_transcript_dirs (comma-separated
                                                   profile roots, e.g. "~/.claude-ZAI")
+        SURREAL_MEMORY_REASONING_ALLOW_REMOTE  -> allow_remote_endpoints (truthy parse)
     """
     base = ReasoningTrainingConfig.from_dict(data)
     overrides: dict[str, Any] = {}
@@ -1459,6 +1468,10 @@ def _load_reasoning_settings(data: dict[str, Any]) -> ReasoningTrainingConfig:
     env_injection = _env_truthy(os.environ.get("SURREAL_MEMORY_REASONING_INJECTION"))
     if env_injection is not None:
         overrides["injection_enabled"] = env_injection
+
+    env_allow_remote = _env_truthy(os.environ.get("SURREAL_MEMORY_REASONING_ALLOW_REMOTE"))
+    if env_allow_remote is not None:
+        overrides["allow_remote_endpoints"] = env_allow_remote
 
     env_models = os.environ.get("SURREAL_MEMORY_REASONING_MODELS")
     if env_models is not None and env_models.strip():
@@ -2050,6 +2063,7 @@ class UnifiedConfig:
             f"distill_use_llm = {'true' if rt.distill_use_llm else 'false'}",
             f'distill_llm_model = "{_sanitize_toml_glob(rt.distill_llm_model)}"',
             f'distill_llm_endpoint = "{_sanitize_toml_url(rt.distill_llm_endpoint)}"',
+            f"allow_remote_endpoints = {'true' if rt.allow_remote_endpoints else 'false'}",
             "distill_llm_unload_cmd = ["
             + ", ".join(f'"{p}"' for p in rt.distill_llm_unload_cmd if _TOML_SAFE_ARGV.match(p))
             + "]",

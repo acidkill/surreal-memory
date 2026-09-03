@@ -751,6 +751,69 @@ class TestGetEmbedderUsesConfig:
 
         assert _get_embedder() is None
 
+    def test_remote_endpoint_built_when_reasoning_allows_remote(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The same opt-in that lets the naming LLM leave the machine also
+        # opens the distiller's embedder gate: one remote endpoint (LiteLLM)
+        # commonly serves both roles, and refusing the embedder while the
+        # namer is allowed would split the feature in half.
+        import dataclasses
+
+        from surreal_memory.unified_config import ReasoningTrainingConfig
+
+        monkeypatch.delenv("SURREAL_MEMORY_EMBEDDING_ENDPOINT", raising=False)
+        seen: dict[str, object] = {}
+        monkeypatch.setattr(
+            "surreal_memory.engine.embedding.openai_embedding.OpenAIEmbedding",
+            lambda model="", base_url=None: seen.update(base_url=base_url) or object(),
+        )
+        from surreal_memory.engine.reasoning_distiller import _get_embedder
+
+        cfg = dataclasses.replace(
+            self._cfg(tmp_path, endpoint="https://litellm.example.com/v1"),
+            reasoning_training=ReasoningTrainingConfig(allow_remote_endpoints=True),
+        )
+        assert _get_embedder(cfg) is not None
+        assert seen["base_url"] == "https://litellm.example.com/v1"
+
+    def test_remote_endpoint_still_refused_without_the_opt_in(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A ReasoningTrainingConfig that exists but keeps the default opt-in
+        # must behave exactly like the strict gate that shipped before.
+        monkeypatch.delenv("SURREAL_MEMORY_EMBEDDING_ENDPOINT", raising=False)
+        from surreal_memory.engine.reasoning_distiller import _get_embedder
+
+        cfg = self._cfg(tmp_path, endpoint="https://litellm.example.com/v1")
+        assert _get_embedder(cfg) is None
+
+    def test_probe_fallback_stays_strict_even_when_opt_in_is_set(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The opt-in gates the CONFIGURED provider choice only. When the probe
+        # fallback picks the provider (embedding disabled in config, provider
+        # detected from the environment), the loopback rule stays absolute —
+        # the probe has no operator intent behind its endpoint.
+        import dataclasses
+
+        from surreal_memory.unified_config import ReasoningTrainingConfig
+
+        monkeypatch.setenv("SURREAL_MEMORY_EMBEDDING_ENDPOINT", "https://litellm.example.com/v1")
+        monkeypatch.setattr(
+            "surreal_memory.engine.semantic_discovery._auto_detect_provider",
+            lambda: ("openai", "bge-m3"),
+        )
+        from surreal_memory.engine.reasoning_distiller import _get_embedder
+
+        cfg = dataclasses.replace(
+            self._cfg(tmp_path, enabled=False),
+            reasoning_training=ReasoningTrainingConfig(allow_remote_endpoints=True),
+        )
+        # enabled=False falls through to the probe, whose endpoint env var is
+        # remote: the probe path stays loopback-only regardless of the opt-in.
+        assert _get_embedder(cfg) is None
+
 
 class TestClusterCosineIsConfigurable:
     """The clustering threshold belongs to the embedder, not to the module.

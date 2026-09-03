@@ -409,6 +409,7 @@ class TestReasoningTrainingConfig:
         "SURREAL_MEMORY_REASONING_INJECTION",
         "SURREAL_MEMORY_REASONING_MODELS",
         "SURREAL_MEMORY_REASONING_INJECTION_MAP",
+        "SURREAL_MEMORY_REASONING_ALLOW_REMOTE",
     )
 
     def _clear_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -425,6 +426,27 @@ class TestReasoningTrainingConfig:
         assert "data-analysis" in rt.categories
         assert rt.min_confidence == 0.2
         assert rt.redact_secrets is True
+        # The remote-endpoint opt-in ships OFF: the loopback invariant is the
+        # default, and only an explicit operator decision widens it.
+        assert rt.allow_remote_endpoints is False
+        assert ReasoningTrainingConfig.from_dict({}).allow_remote_endpoints is False
+
+    def test_allow_remote_endpoints_roundtrip(self) -> None:
+        rt = ReasoningTrainingConfig(allow_remote_endpoints=True)
+        assert ReasoningTrainingConfig.from_dict(rt.to_dict()) == rt
+        assert (
+            ReasoningTrainingConfig.from_dict(
+                {"allow_remote_endpoints": True}
+            ).allow_remote_endpoints
+            is True
+        )
+        # bool() coercion, the same rule every other flag in this section uses.
+        assert (
+            ReasoningTrainingConfig.from_dict(
+                {"allow_remote_endpoints": "yes"}
+            ).allow_remote_endpoints
+            is True
+        )
 
     def test_default_max_trace_chars_is_100k(self) -> None:
         # Bumped 20_000 -> 100_000: content safety, not a real-world cut (no
@@ -489,6 +511,26 @@ class TestReasoningTrainingConfig:
         assert got.min_confidence == 0.35
         assert got.scan_lookback_days == 0
 
+    def test_toml_roundtrip_preserves_allow_remote_endpoints(
+        self, tmp_data_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._clear_env(monkeypatch)
+        rt = ReasoningTrainingConfig(
+            allow_remote_endpoints=True,
+            distill_llm_endpoint="https://litellm.example.com/v1",
+        )
+        UnifiedConfig(data_dir=tmp_data_dir, current_brain="default", reasoning_training=rt).save()
+        reloaded = UnifiedConfig.load(config_path=tmp_data_dir / "config.toml")
+
+        got = reloaded.reasoning_training
+        assert got.allow_remote_endpoints is True
+        assert got.distill_llm_endpoint == "https://litellm.example.com/v1"
+
+        # And the default form emits an explicit false, not a vanished key.
+        UnifiedConfig(data_dir=tmp_data_dir, current_brain="default").save()
+        reloaded_off = UnifiedConfig.load(config_path=tmp_data_dir / "config.toml")
+        assert reloaded_off.reasoning_training.allow_remote_endpoints is False
+
     def test_env_overrides_toml(self, tmp_data_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         self._clear_env(monkeypatch)
         UnifiedConfig(data_dir=tmp_data_dir, current_brain="default").save()  # mining off
@@ -508,6 +550,37 @@ class TestReasoningTrainingConfig:
             ("claude-opus-*", "claude-fable-5"),
             ("claude-haiku-*", "glm-5.2"),
         )
+
+    def test_env_overrides_allow_remote_endpoints(
+        self, tmp_data_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._clear_env(monkeypatch)
+        UnifiedConfig(
+            data_dir=tmp_data_dir,
+            current_brain="default",
+            reasoning_training=ReasoningTrainingConfig(allow_remote_endpoints=True),
+        ).save()
+        # "0" is the falsy spelling: the file says true, the env says no.
+        monkeypatch.setenv("SURREAL_MEMORY_REASONING_ALLOW_REMOTE", "0")
+        cfg = UnifiedConfig.load(config_path=tmp_data_dir / "config.toml")
+        assert cfg.reasoning_training.allow_remote_endpoints is False
+
+        monkeypatch.setenv("SURREAL_MEMORY_REASONING_ALLOW_REMOTE", "true")
+        cfg = UnifiedConfig.load(config_path=tmp_data_dir / "config.toml")
+        assert cfg.reasoning_training.allow_remote_endpoints is True
+
+    def test_empty_allow_remote_env_does_not_override(
+        self, tmp_data_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._clear_env(monkeypatch)
+        UnifiedConfig(
+            data_dir=tmp_data_dir,
+            current_brain="default",
+            reasoning_training=ReasoningTrainingConfig(allow_remote_endpoints=True),
+        ).save()
+        monkeypatch.setenv("SURREAL_MEMORY_REASONING_ALLOW_REMOTE", "")  # empty → ignored
+        cfg = UnifiedConfig.load(config_path=tmp_data_dir / "config.toml")
+        assert cfg.reasoning_training.allow_remote_endpoints is True
 
     def test_empty_env_does_not_override(
         self, tmp_data_dir: Path, monkeypatch: pytest.MonkeyPatch

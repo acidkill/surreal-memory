@@ -20,11 +20,16 @@ retroactively.
 
 Two hard constraints, both mirroring ``reasoning_distiller._get_embedder``:
 
-* **Loopback only.** Trace content is raw model thinking. A non-loopback
-  endpoint yields no namer at all, so no request is ever made. This is an
-  invariant, not a default: there is no configuration that sends thinking to a
-  remote host. (Ingest-time redaction via ``reasoning_miner`` is upstream of
-  this and can be switched off, so the transport guarantee has to stand alone.)
+* **Loopback by default, remote only by explicit opt-in.** Trace content is
+  raw model thinking. A non-loopback endpoint yields no namer at all unless
+  ``reasoning_training.allow_remote_endpoints`` is set (config or the
+  ``SURREAL_MEMORY_REASONING_ALLOW_REMOTE`` env var) -- there is no accidental
+  configuration that sends thinking to a remote host; the opt-in is a named
+  operator decision that also switches on Bearer auth via
+  ``SURREAL_MEMORY_LLM_API_KEY``. Even with the opt-in, only http(s) URLs
+  with a host qualify. (Ingest-time redaction via ``reasoning_miner`` is
+  upstream of this and can be switched off, so the transport guarantee has
+  to stand alone.)
 * **Fail-soft.** Missing endpoint, missing ``httpx``, refused connection,
   timeout, HTTP error, or a model that answers in prose instead of JSON -- every
   one of these falls back to the mechanical naming. Distillation never fails
@@ -70,6 +75,7 @@ logger = logging.getLogger(__name__)
 
 LLM_ENDPOINT_ENV = "SURREAL_MEMORY_LLM_ENDPOINT"
 EMBEDDING_ENDPOINT_ENV = "SURREAL_MEMORY_EMBEDDING_ENDPOINT"
+LLM_API_KEY_ENV = "SURREAL_MEMORY_LLM_API_KEY"
 
 _LOOPBACK_NAMES = frozenset({"localhost", "::1"})
 
@@ -178,17 +184,21 @@ def _is_loopback(host: str | None) -> bool:
         return host in _LOOPBACK_NAMES
 
 
-def resolve_llm_endpoint(configured: str = "") -> str | None:
-    """Return the local LLM base URL to use, or None if there isn't a usable one.
+def resolve_llm_endpoint(configured: str = "", *, allow_remote: bool = False) -> str | None:
+    """Return the LLM base URL to use, or None if there isn't a usable one.
 
     In precedence order: ``SURREAL_MEMORY_LLM_ENDPOINT``, then the
     ``distill_llm_endpoint`` config value, then
-    ``SURREAL_MEMORY_EMBEDDING_ENDPOINT`` -- one local OpenAI-compatible server
+    ``SURREAL_MEMORY_EMBEDDING_ENDPOINT`` -- one OpenAI-compatible server
     commonly serves both embeddings and chat. Env beats config, matching the
     rest of the reasoning settings.
 
-    Whichever source wins, a non-loopback value resolves to None instead of
-    being used: raw reasoning traces do not leave the machine.
+    By default a non-loopback value resolves to None instead of being used:
+    raw reasoning traces do not leave the machine. ``allow_remote=True``
+    (``reasoning_training.allow_remote_endpoints``) is the explicit operator
+    decision that accepts any http(s) URL with a host; it widens *where*
+    traces may be sent, never what counts as a URL -- non-http(s) schemes are
+    refused either way.
     """
     sources = (
         os.environ.get(LLM_ENDPOINT_ENV, ""),
@@ -200,15 +210,33 @@ def resolve_llm_endpoint(configured: str = "") -> str | None:
         if not raw:
             continue
         try:
-            host = urlsplit(raw).hostname
+            parts = urlsplit(raw)
         except ValueError:
             logger.debug("reasoning naming: unparseable LLM endpoint")
             return None
+        if allow_remote:
+            host = parts.hostname
+            if parts.scheme not in ("http", "https") or not host:
+                logger.warning(
+                    "reasoning naming: the configured LLM endpoint (%s) is not an"
+                    " http(s) URL with a host; LLM naming stays off",
+                    raw,
+                )
+                return None
+            if not _is_loopback(host):
+                logger.info(
+                    "reasoning naming: remote LLM endpoint %s allowed by"
+                    " allow_remote_endpoints; reasoning traces WILL leave this"
+                    " machine",
+                    host,
+                )
+            return raw.rstrip("/")
+        host = parts.hostname
         if not _is_loopback(host):
             logger.warning(
                 "reasoning naming: the configured LLM endpoint (%s) is not a loopback"
                 " address; LLM naming stays off (reasoning traces are never sent to a"
-                " remote host)",
+                " remote host without reasoning_training.allow_remote_endpoints)",
                 host,
             )
             return None
@@ -324,17 +352,35 @@ def _build_payload(
     return payload
 
 
-async def _post_json_httpx(url: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
-    """Default transport. ``httpx`` is imported lazily and optional by design."""
+def _make_httpx_poster(api_key: str) -> PostJson:
+    """Build the default transport, authenticating only when *api_key* is set.
+
+    Loopback model servers (llamastash, llama.cpp, Ollama) accept
+    unauthenticated requests, so an empty key sends no ``Authorization``
+    header at all. A remote gateway (LiteLLM, OpenRouter, ...) needs the key
+    and rejects anonymous calls, so the opt-in remote path reads
+    ``SURREAL_MEMORY_LLM_API_KEY`` and sends it as a Bearer token.
+    ``httpx`` is imported lazily and optional by design.
+    """
     import httpx
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        response = await client.post(url, json=payload)
-        response.raise_for_status()
-        result = response.json()
-    if not isinstance(result, dict):
-        raise ValueError("response body was not a JSON object")
-    return result
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+
+    async def _post(url: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
+        async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
+            response = await client.post(url, json=payload)
+            response.raise_for_status()
+            result = response.json()
+        if not isinstance(result, dict):
+            raise ValueError("response body was not a JSON object")
+        return result
+
+    return _post
+
+
+async def _post_json_httpx(url: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
+    """Default unauthenticated transport (loopback servers need no key)."""
+    return await _make_httpx_poster("")(url, payload, timeout)
 
 
 async def _run_command_subprocess(argv: list[str], timeout: float) -> int:
@@ -546,18 +592,23 @@ def build_namer(
     """Build a namer from config, or None when LLM naming is not available.
 
     None is returned -- and distillation silently keeps its heuristic naming --
-    when the flag is off, no local endpoint is configured, the configured
-    endpoint is remote, or no model name is set.
+    when the flag is off, no usable endpoint is configured (loopback by
+    default; a remote http(s) URL only with ``allow_remote_endpoints``), or no
+    model name is set. A remote endpoint without ``SURREAL_MEMORY_LLM_API_KEY``
+    still builds, but warns: most gateways reject anonymous requests, so
+    naming would fall back once the circuit breaker trips.
     """
     if not rt.distill_use_llm:
         return None
 
-    endpoint = resolve_llm_endpoint(rt.distill_llm_endpoint)
+    endpoint = resolve_llm_endpoint(rt.distill_llm_endpoint, allow_remote=rt.allow_remote_endpoints)
     if endpoint is None:
         logger.warning(
-            "reasoning_training.distill_use_llm is on but no usable local LLM endpoint"
-            " is set; set distill_llm_endpoint (or %s) to a loopback OpenAI-compatible"
-            " URL. Using heuristic naming.",
+            "reasoning_training.distill_use_llm is on but no usable LLM endpoint"
+            " is set; set distill_llm_endpoint (or %s) to a loopback"
+            " OpenAI-compatible URL, or enable"
+            " reasoning_training.allow_remote_endpoints to point at a remote"
+            " gateway. Using heuristic naming.",
             LLM_ENDPOINT_ENV,
         )
         return None
@@ -571,10 +622,20 @@ def build_namer(
         )
         return None
 
+    api_key = os.environ.get(LLM_API_KEY_ENV, "").strip()
+    if rt.allow_remote_endpoints and not api_key and not _is_loopback(urlsplit(endpoint).hostname):
+        logger.warning(
+            "reasoning naming: remote LLM endpoint %s is allowed but %s is not"
+            " set; most gateways reject anonymous requests, so naming may fall"
+            " back to heuristics. Set the key to authenticate.",
+            endpoint,
+            LLM_API_KEY_ENV,
+        )
+
     return PatternNamer(
         endpoint,
         model,
-        post_json or _post_json_httpx,
+        post_json or _make_httpx_poster(api_key),
         unload_cmd=tuple(rt.distill_llm_unload_cmd),
         load_cmd=tuple(rt.distill_llm_load_cmd),
         run_command=run_command,
