@@ -815,3 +815,54 @@ class TestAliasLinkSummaryLine:
         report = ConsolidationReport(duplicates_found=12, dry_run=True)
 
         assert report._alias_link_line() == ("12 pairs (census only; links not checked in dry run)")
+
+
+class FakeBrainCursorStorage(FakeAnchorStorage):
+    """FakeAnchorStorage plus the Brain row the dedup cursor lives in."""
+
+    def __init__(self, neurons: list[Neuron], cursor: int = 0) -> None:
+        super().__init__(neurons)
+        from surreal_memory.core.brain import Brain
+
+        self.brain = Brain.create(name="cursor-brain")
+        self.brain.metadata[ConsolidationEngine._DEDUP_CURSOR_KEY] = cursor
+        self.saved_brains: list[object] = []
+
+    async def get_brain(self, brain_id: str) -> object:
+        return self.brain
+
+    async def save_brain(self, brain: object) -> None:
+        self.saved_brains.append(brain)
+
+
+class TestDedupCursorRespectsDryRun:
+    @pytest.mark.asyncio
+    async def test_dry_run_does_not_advance_the_window(self) -> None:
+        """A dry run must leave the census window where it found it.
+
+        The cursor is the only piece of state the census keeps between runs,
+        and advancing it is a write: the next real run starts one window
+        later and the slice this dry run merely *looked at* is skipped, not
+        compared. ``--dry-run`` promised to touch nothing.
+        """
+        storage = FakeBrainCursorStorage([_anchor(f"note {i}") for i in range(7)], cursor=2)
+        engine = ConsolidationEngine(storage, config=ConsolidationConfig(dedup_max_anchors=5))
+        report = ConsolidationReport(dry_run=True)
+
+        await engine._dedup(report, dry_run=True)
+
+        assert report.extra["dedup_anchors_truncated"] is True
+        assert report.extra["dedup_window_start"] == 2, "the census still reads the cursor"
+        assert storage.saved_brains == [], "a dry run wrote the cursor back"
+        assert storage.brain.metadata[ConsolidationEngine._DEDUP_CURSOR_KEY] == 2
+
+    @pytest.mark.asyncio
+    async def test_a_real_run_still_advances_the_window(self) -> None:
+        """Positive control: the rotation itself is not what the dry-run guard removes."""
+        storage = FakeBrainCursorStorage([_anchor(f"note {i}") for i in range(7)], cursor=2)
+        engine = ConsolidationEngine(storage, config=ConsolidationConfig(dedup_max_anchors=5))
+
+        await engine._dedup(ConsolidationReport(), dry_run=False)
+
+        assert len(storage.saved_brains) == 1
+        assert storage.brain.metadata[ConsolidationEngine._DEDUP_CURSOR_KEY] == (2 + 5) % 7

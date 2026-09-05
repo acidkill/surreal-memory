@@ -2454,7 +2454,12 @@ class ConsolidationEngine:
             anchors = window
             report.extra["dedup_anchors_truncated"] = True
             report.extra["dedup_window_start"] = cursor
-            await self._advance_dedup_cursor(cursor, cap, anchors_total)
+            # The cursor is the one piece of state this census keeps between
+            # runs, and moving it is a write. A dry run that advanced it would
+            # make the next real run start a window later, so the slice the dry
+            # run only *looked at* is never compared at all.
+            if not dry_run:
+                await self._advance_dedup_cursor(cursor, cap, anchors_total)
             # INFO, not WARNING: on a brain that has simply outgrown the cap this
             # is a steady state, and every run would raise the same alarm until
             # operators learned to ignore dedup warnings — burying the real
