@@ -273,5 +273,11 @@ def _isolated_home_dir(tmp_path_factory: pytest.TempPathFactory) -> Generator[No
     (surrealmemory_dir / "config.toml").touch()
     mp = pytest.MonkeyPatch()
     mp.setenv("HOME", str(fake_home))
+    # Companion to the $HOME redirect: `run_update_check_background()` in
+    # `cli/update_check.py` short-circuits on this env var, so the suite makes
+    # no PyPI calls even on a runner with egress. `#110`/`#121` closed the
+    # write side; this closes the network side. Individual tests that need to
+    # exercise the update-check code path itself can `monkeypatch.delenv` it.
+    mp.setenv("SURREAL_MEMORY_NO_UPDATE_CHECK", "1")
     yield
     mp.undo()
