@@ -100,6 +100,7 @@ Set these before starting `smem-mcp` (add to `~/.bashrc` or `~/.zshrc`):
 | `SURREALDB_PASS` | — | Your SurrealDB password. Default: `surrealmemory` |
 | `SURREALDB_NS` | — | `surreal_memory` |
 | `SURREALDB_DB` | — | `default` |
+| `SURREALDB_AUTH_LEVEL` | `root` | Scope sign-in uses: `root`, `namespace` or `database`. A user defined `ON DATABASE` needs `database`; a root user needs `root` |
 | `GEMINI_API_KEY` | — | Your Gemini API key |
 | `SURREAL_MEMORY_EMBEDDING_PROVIDER` | — | `gemini` |
 | `SURREAL_MEMORY_EMBEDDING_ENABLED` | `false` | Set to `true` |

@@ -31,6 +31,7 @@ from surreal_memory.storage.surrealdb.activity import SurrealDBActivityMixin
 from surreal_memory.storage.surrealdb.alerts import SurrealDBAlertsMixin
 from surreal_memory.storage.surrealdb.cognitive import SurrealDBCognitiveMixin
 from surreal_memory.storage.surrealdb.compression import SurrealDBCompressionMixin
+from surreal_memory.storage.surrealdb.connection import DEFAULT_AUTH_LEVEL
 from surreal_memory.storage.surrealdb.depth_priors import SurrealDBDepthPriorsMixin
 from surreal_memory.storage.surrealdb.drift import SurrealDBDriftMixin
 from surreal_memory.storage.surrealdb.keyword_entity import SurrealDBKeywordEntityMixin
@@ -570,6 +571,11 @@ class SurrealDBStorage(
         await storage.add_neuron(neuron)
     """
 
+    #: Sign-in scope. A class-level default so an instance built by ``__new__``
+    #: -- which several tests do, seeding only the attributes they drive -- still
+    #: signs in the way a stock installation does.
+    _auth_level: str = DEFAULT_AUTH_LEVEL
+
     def __init__(
         self,
         url: str = "",
@@ -586,6 +592,7 @@ class SurrealDBStorage(
         self._namespace = namespace or settings.namespace
         self._database = database or settings.database
         self._user = user or settings.user
+        self._auth_level = settings.auth_level
         self._password = password or settings.password
         self._embedding_dim = embedding_dim
         self._conn: Any = None
@@ -631,6 +638,7 @@ class SurrealDBStorage(
             AUTH_HINT,
             StorageAuthError,
             is_credential_error,
+            signin_payload,
         )
 
         # A reset anywhere in the connect-and-prepare window is the same
@@ -651,7 +659,15 @@ class SurrealDBStorage(
                 await asyncio.sleep(delay)
             try:
                 self._conn = AsyncSurreal(self._url)
-                await self._conn.signin({"username": self._user, "password": self._password})
+                await self._conn.signin(
+                    signin_payload(
+                        self._user,
+                        self._password,
+                        self._namespace,
+                        self._database,
+                        self._auth_level,
+                    )
+                )
                 await self._conn.use(self._namespace, self._database)
                 # Remember which loop owns this connection before anything runs
                 # on it: the SDK creates its response futures here, and awaiting
@@ -1003,13 +1019,18 @@ class SurrealDBStorage(
             AUTH_HINT,
             StorageAuthError,
             is_credential_error,
+            signin_payload,
         )
 
         previous = self._conn
         previous_loop = self._conn_loop
         conn = AsyncSurreal(self._url)
         try:
-            await conn.signin({"username": self._user, "password": self._password})
+            await conn.signin(
+                signin_payload(
+                    self._user, self._password, self._namespace, self._database, self._auth_level
+                )
+            )
         except Exception as exc:
             if is_credential_error(exc):
                 raise StorageAuthError(
