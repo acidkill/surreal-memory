@@ -116,6 +116,7 @@ async def test_distill_creates_pattern_fiber(tmp_path: Path, no_embedder: None) 
 
     fibers = await storage.find_fibers(metadata_key="_reasoning_pattern", limit=100)
     assert len(fibers) == 1
+    assert fibers[0].pinned is True  # KB-grade: lifecycle must never decay/prune patterns
     md = fibers[0].metadata
     assert md["_reasoning_pattern"] is True
     assert md["_source_model"] == "claude-fable-5"
