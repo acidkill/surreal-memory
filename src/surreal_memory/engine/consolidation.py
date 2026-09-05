@@ -2803,18 +2803,49 @@ class ConsolidationEngine:
         config = CompressionConfig()
         states_updated = 0
 
-        for neuron in neurons:
-            # Retrieve last_accessed_at and access_frequency from neuron metadata
-            # (access_frequency is stored in neuron_states, not neurons directly)
-            last_accessed_raw: str | None = neuron.metadata.get("last_accessed_at")
-            last_accessed_at: datetime | None = None
-            if last_accessed_raw:
-                try:
-                    last_accessed_at = datetime.fromisoformat(last_accessed_raw)
-                except ValueError:
-                    pass
+        # access_frequency and last_activated live on NeuronState (schema.py neuron_state
+        # table), not on neuron.metadata — the dead-neuron / orphan pass in this same
+        # class already knows this (_prune, ~L1000) and prefetches with the exact
+        # pattern below. Without this, access_score and recency_score (0.8 of the heat
+        # weight) were pinned to zero and heat reduced to priority * 0.2.
+        try:
+            states_by_id: dict[str, Any] = {
+                s.neuron_id: s for s in await self._storage.get_all_neuron_states()
+            }
+            use_prefetched_states = True
+        except Exception:
+            _logger.debug(
+                "LIFECYCLE: get_all_neuron_states failed; falling back to a batch fetch",
+                exc_info=True,
+            )
+            states_by_id = {}
+            use_prefetched_states = False
 
-            access_count: int = int(neuron.metadata.get("access_frequency", 0))
+        # Fallback cache. `neurons` is already the whole pass — the paging above
+        # accumulates into one list — so this is a single get_neuron_states_batch
+        # over every id, not one per page, and it is populated on the first miss
+        # and never again. On a brain at the 10 000 cap that one call is the
+        # fallback's whole cost; _prune measures roughly ten seconds per five
+        # thousand ids on the same backend, so budget for it accordingly. The
+        # alternative — one query per neuron — is what this cache exists to avoid.
+        fallback_states: dict[str, Any] = {}
+        fallback_ids: set[str] = set()
+
+        async def _state_for(nid: str) -> Any:
+            nonlocal fallback_states, fallback_ids
+            if use_prefetched_states:
+                return states_by_id.get(nid)
+            if nid not in fallback_ids:
+                fallback_ids = {n.id for n in neurons}
+                fallback_states = await self._storage.get_neuron_states_batch(list(fallback_ids))
+            return fallback_states.get(nid)
+
+        for neuron in neurons:
+            # Real access_frequency / last_activated come from NeuronState; priority
+            # stays on neuron.metadata (that is where the writer puts it).
+            state = await _state_for(neuron.id)
+            last_accessed_at: datetime | None = state.last_activated if state is not None else None
+            access_count: int = state.access_frequency if state is not None else 0
             priority: int = int(neuron.metadata.get("priority", 5))
 
             heat = calculate_heat_score(
