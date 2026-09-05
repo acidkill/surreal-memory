@@ -9,6 +9,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from surreal_memory.core.constants import GRAPH_ONLY_PLACEHOLDER
 from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.engine.dedup.config import DedupConfig
 from surreal_memory.utils.simhash import hamming_distance, simhash
@@ -131,7 +132,7 @@ class DedupPipeline:
         # Filter to anchor neurons only. GRAPH_ONLY tombstones are excluded
         # here, ahead of every tier: legacy ones still carry the SimHash of
         # their DELETED text, so tier 1 could canonicalise a brand-new memory
-        # onto a tombstone - the new fiber would anchor to "[graph-only]" and
+        # onto a tombstone - the new fiber would anchor to GRAPH_ONLY_PLACEHOLDER and
         # its text survive only as an alias neuron. (The FTS analyzer happily
         # tokenises the placeholder into "graph"/"only", so tombstones do turn
         # up in this candidate search.) Same guard the census uses.
@@ -140,7 +141,7 @@ class DedupPipeline:
             for n in candidates
             if n.metadata.get("is_anchor", False)
             and n.type == NeuronType.CONCEPT
-            and n.content != "[graph-only]"
+            and n.content != GRAPH_ONLY_PLACEHOLDER
         ]
 
     def _tier1_simhash(

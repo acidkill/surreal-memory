@@ -12,6 +12,7 @@ import time
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from surreal_memory.core.constants import GRAPH_ONLY_PLACEHOLDER
 from surreal_memory.core.fiber import Fiber
 from surreal_memory.core.neuron import NeuronType
 from surreal_memory.core.synapse import Synapse, SynapseType
@@ -1472,7 +1473,7 @@ class ReflexPipeline:
             # vectors are identical brain-wide - for a query anywhere near that
             # region they would tie with each other and crowd genuine memories
             # out of the top-k anchor slots. Same skip as semantic discovery.
-            if neuron.content == "[graph-only]":
+            if neuron.content == GRAPH_ONLY_PLACEHOLDER:
                 continue
             stored_embedding = neuron.metadata.get("_embedding")
             if stored_embedding and isinstance(stored_embedding, list):

@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
+from surreal_memory.core.constants import GRAPH_ONLY_PLACEHOLDER
 from surreal_memory.core.synapse import Synapse, SynapseType
 from surreal_memory.utils.simhash import hamming_distance, simhash
 
@@ -119,7 +120,7 @@ async def detect_interference(
         # the same Hamming distance from the new memory, and one save could
         # persist a CONTRADICTS edge to all of them at once. The fallback is
         # for real content that merely lost its hash; a placeholder is not that.
-        if candidate.content == "[graph-only]":
+        if candidate.content == GRAPH_ONLY_PLACEHOLDER:
             continue
 
         cand_hash = candidate.content_hash or simhash(candidate.content)

@@ -36,6 +36,7 @@ from dataclasses import replace as dc_replace
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any
 
+from surreal_memory.core.constants import GRAPH_ONLY_PLACEHOLDER
 from surreal_memory.core.fiber import Fiber
 from surreal_memory.core.memory_types import suggest_memory_type
 from surreal_memory.core.neuron import Neuron, NeuronType
@@ -259,7 +260,7 @@ async def _find_similar_entity(storage: NeuralStorage, text: str) -> Neuron | No
                 # carries the SimHash of its deleted text; reusing it here would
                 # bind the new entity reference to a placeholder. Same guard as
                 # the census and the dedup pipeline.
-                if candidate.content == "[graph-only]":
+                if candidate.content == GRAPH_ONLY_PLACEHOLDER:
                     continue
                 if candidate.content_hash and is_near_duplicate(text_hash, candidate.content_hash):
                     return candidate

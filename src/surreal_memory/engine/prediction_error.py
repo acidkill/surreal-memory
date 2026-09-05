@@ -18,6 +18,7 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from surreal_memory.core.constants import GRAPH_ONLY_PLACEHOLDER
 from surreal_memory.engine.pipeline import PipelineContext
 from surreal_memory.utils.simhash import hamming_distance, simhash
 
@@ -139,7 +140,7 @@ async def compute_surprise_bonus(
         # A GRAPH_ONLY tombstone has no content to be surprised by - and a
         # legacy one still carries the SimHash of its deleted text, which would
         # deflate the novelty of a new memory resembling content that is gone.
-        if neuron.content == "[graph-only]":
+        if neuron.content == GRAPH_ONLY_PLACEHOLDER:
             continue
 
         # Contradiction check

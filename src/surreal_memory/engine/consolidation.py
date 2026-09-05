@@ -20,6 +20,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from surreal_memory.core.constants import GRAPH_ONLY_PLACEHOLDER
 from surreal_memory.core.fiber import Fiber
 from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.core.synapse import Synapse, SynapseType
@@ -2517,7 +2518,7 @@ class ConsolidationEngine:
             # near-duplicate-match a genuine memory and persist a false ALIAS
             # edge. Guard on content like every other fingerprint consumer;
             # tombstones stamped with the sentinel are already skipped above.
-            if anchor_a.content == "[graph-only]":
+            if anchor_a.content == GRAPH_ONLY_PLACEHOLDER:
                 continue
 
             for anchor_b in anchors[i + 1 :]:
@@ -2525,7 +2526,7 @@ class ConsolidationEngine:
                     continue
                 if anchor_b.content_hash is None or anchor_b.content_hash == 0:
                     continue
-                if anchor_b.content == "[graph-only]":
+                if anchor_b.content == GRAPH_ONLY_PLACEHOLDER:
                     continue
 
                 if is_near_duplicate(
