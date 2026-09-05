@@ -101,7 +101,7 @@ Proactive brain maintenance configuration.
 | `expiry_cleanup_max_per_run` | `int` | `100` |  |
 | `scheduled_consolidation_enabled` | `bool` | `true` |  |
 | `scheduled_consolidation_interval_hours` | `int` | `24` |  |
-| `scheduled_consolidation_strategies` | `tuple[str, ...]` | `['prune', 'merge', 'enrich']` |  |
+| `scheduled_consolidation_strategies` | `tuple[str, ...]` | `['prune', 'merge', 'mature', 'enrich']` |  |
 | `version_check_enabled` | `bool` | `true` |  |
 | `version_check_interval_hours` | `int` | `24` |  |
 | `decay_enabled` | `bool` | `true` |  |

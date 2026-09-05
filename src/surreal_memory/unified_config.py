@@ -623,7 +623,7 @@ class MaintenanceConfig:
     expiry_cleanup_max_per_run: int = 100
     scheduled_consolidation_enabled: bool = True
     scheduled_consolidation_interval_hours: int = 24
-    scheduled_consolidation_strategies: tuple[str, ...] = ("prune", "merge", "enrich")
+    scheduled_consolidation_strategies: tuple[str, ...] = ("prune", "merge", "mature", "enrich")
     version_check_enabled: bool = True
     version_check_interval_hours: int = 24
     # Auto-decay in serve daemon
@@ -697,7 +697,7 @@ class MaintenanceConfig:
         if isinstance(strategies, list):
             strategies = tuple(strategies)
         sched_strategies = data.get(
-            "scheduled_consolidation_strategies", ("prune", "merge", "enrich")
+            "scheduled_consolidation_strategies", ("prune", "merge", "mature", "enrich")
         )
         if isinstance(sched_strategies, list):
             sched_strategies = tuple(sched_strategies)
