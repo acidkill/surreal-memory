@@ -42,6 +42,7 @@ _GRADE_REFRESH_KEYS: set[str] = set()
 _BRAINS_LAST_GOOD: list[BrainSummary] | None = None
 _BRAINS_REFRESHING = False
 _BRAINS_REFRESH_TASKS: set[asyncio.Task[None]] = set()
+_GRADE_REFRESH_TASKS: set[asyncio.Task[Any]] = set()
 
 # Brain-wide uncertainty overview is bounded/cheap, but cached per brain for a short
 # window anyway to keep the dashboard's polling off the storage hot path (same
@@ -115,6 +116,10 @@ def _schedule_grade_refresh(storage: NeuralStorage, brain_name: str, key: str) -
         return report
 
     task = asyncio.get_running_loop().create_task(_refresh())
+    # Strong reference: the event loop discards tasks nobody holds, exactly as
+    # the brain refresh above already guards against.
+    _GRADE_REFRESH_TASKS.add(task)
+    task.add_done_callback(_GRADE_REFRESH_TASKS.discard)
     task.add_done_callback(_done)
 
 
