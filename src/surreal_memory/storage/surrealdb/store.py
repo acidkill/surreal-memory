@@ -24,7 +24,7 @@ from surreal_memory.core.memory_types import TypedMemory
 from surreal_memory.core.neuron import Neuron, NeuronState, NeuronType
 from surreal_memory.core.project import Project
 from surreal_memory.core.synapse import Direction, Synapse, SynapseType
-from surreal_memory.core.sync_records import DeviceRecord
+from surreal_memory.core.sync_records import ChangeEntry, DeviceRecord
 from surreal_memory.storage.base import NeuralStorage
 from surreal_memory.storage.surrealdb._ids import _safe_brain_id, _to_surreal_id
 from surreal_memory.storage.surrealdb.activity import SurrealDBActivityMixin
@@ -207,6 +207,41 @@ _COLLAPSE_DELETE_CHUNK = 1_000
 # against this charset first. Ids come from the database, but "the database gave
 # it to me" is not a safety argument for string-building a statement.
 _CHANGE_LOG_ID_SAFE = re.compile(r"^change_log:[A-Za-z0-9_⟨⟩-]+$")
+
+# Set the first time a change_log insert fails, so the warning below fires once
+# per process rather than once per entity written.
+_CHANGE_LOG_INSERT_WARNED = False
+
+
+def _row_to_change_entry(row: dict[str, Any]) -> ChangeEntry:
+    """Convert a ``change_log`` row into the record type sync actually consumes.
+
+    ``SyncEngine`` reads ``change.id`` and calls ``change.changed_at.isoformat()``
+    on whatever these readers hand back, and the in-memory backend returns
+    ``ChangeEntry``. Returning ``SyncChange`` here — no ``id``, and a ``str``
+    ``changed_at`` — made both sync paths raise ``AttributeError`` on the only
+    production backend. ``sequence`` arrives as an ``int`` and ``changed_at`` as
+    a ``datetime`` from the SDK; both are coerced anyway, since a row written by
+    an older build may carry either.
+    """
+    changed_at = row.get("changed_at")
+    if not isinstance(changed_at, datetime):
+        try:
+            changed_at = datetime.fromisoformat(str(changed_at))
+        except (TypeError, ValueError):
+            changed_at = utcnow()
+    return ChangeEntry(
+        id=int(row.get("sequence", 0)),
+        brain_id=str(row.get("brain_id", "")),
+        entity_type=str(row.get("entity_type", "")),
+        entity_id=str(row.get("entity_id", "")),
+        operation=str(row.get("operation", "")),
+        device_id=str(row.get("device_id", "")),
+        changed_at=changed_at,
+        payload=row.get("payload") or {},
+        synced=bool(row.get("synced", False)),
+    )
+
 
 # Backoff grid for the reconnect retry in _query. A dropped transport usually
 # needs a moment before it accepts a new connection, so the first retry is
@@ -2870,7 +2905,22 @@ class SurrealDBStorage(
         try:
             await conn.insert("change_log", record)
         except Exception:
-            pass
+            # Fail-soft by contract: sync bookkeeping must never abort the entity
+            # write that already succeeded. But it is not silent any more -- a
+            # change_log that rejects every row leaves sync with nothing to
+            # replay and used to say so nowhere at all. Warned once per process
+            # because this runs on the hot write path (hence _skip_change_log),
+            # so an unconditional warning per entity would be a log flood.
+            global _CHANGE_LOG_INSERT_WARNED
+            if not _CHANGE_LOG_INSERT_WARNED:
+                _CHANGE_LOG_INSERT_WARNED = True
+                logger.warning(
+                    "change_log insert failed; sync has nothing to replay for this write "
+                    "(further failures in this process log at debug)",
+                    exc_info=True,
+                )
+            else:
+                logger.debug("change_log insert failed", exc_info=True)
 
     async def _record_changes_bulk(
         self,
@@ -2927,7 +2977,11 @@ class SurrealDBStorage(
         except Exception:
             # Same fail-soft contract as _record_change_internal: sync bookkeeping
             # must never abort the entity write that already succeeded.
-            logger.debug("change_log bulk insert failed (%d rows)", len(records), exc_info=True)
+            logger.warning(
+                "change_log bulk insert failed (%d rows); sync has nothing to replay for them",
+                len(records),
+                exc_info=True,
+            )
 
     async def record_change(
         self,
@@ -2965,22 +3019,7 @@ class SurrealDBStorage(
             seq=sequence,
             limit=limit,
         )
-        from surreal_memory.sync.protocol import SyncChange
-
-        changes = []
-        for r in rows:
-            changes.append(
-                SyncChange(
-                    sequence=int(r.get("sequence", 0)),
-                    entity_type=str(r.get("entity_type", "")),
-                    entity_id=str(r.get("entity_id", "")),
-                    operation=str(r.get("operation", "")),
-                    device_id=str(r.get("device_id", "")),
-                    changed_at=str(r.get("changed_at", "")),
-                    payload=r.get("payload") or {},
-                )
-            )
-        return changes
+        return [_row_to_change_entry(r) for r in rows]
 
     async def get_unsynced_changes(self, limit: int = 1000) -> list[Any]:
         brain_id = self._get_brain_id()
@@ -2990,20 +3029,7 @@ class SurrealDBStorage(
             brain_id=brain_id,
             limit=limit,
         )
-        from surreal_memory.sync.protocol import SyncChange
-
-        return [
-            SyncChange(
-                sequence=int(r.get("sequence", 0)),
-                entity_type=str(r.get("entity_type", "")),
-                entity_id=str(r.get("entity_id", "")),
-                operation=str(r.get("operation", "")),
-                device_id=str(r.get("device_id", "")),
-                changed_at=str(r.get("changed_at", "")),
-                payload=r.get("payload") or {},
-            )
-            for r in rows
-        ]
+        return [_row_to_change_entry(r) for r in rows]
 
     async def mark_synced(self, up_to_sequence: int) -> int:
         brain_id = self._get_brain_id()
