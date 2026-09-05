@@ -2529,6 +2529,14 @@ class SurrealDBStorage(
         )
         await self.save_brain(brain)
 
+        # Count successful writes per loop. Bare `except: pass` used to swallow
+        # duplicate-id collisions (trivially reachable — `_to_surreal_id` folds
+        # neuron ids to `neuron:<id>` without a brain component, so importing a
+        # snapshot under a fresh name while the original brain still holds those
+        # ids raises straight into these except blocks). The shortfall now
+        # surfaces as a warning; the return type stays `str` so the abstract
+        # method contract in NeuralStorage does not change.
+        neuron_ok = 0
         for nd in snapshot.neurons:
             try:
                 neuron = Neuron(
@@ -2539,9 +2547,19 @@ class SurrealDBStorage(
                     created_at=_parse_datetime(nd.get("created_at")) or utcnow(),
                 )
                 await self.add_neuron(neuron)
+                neuron_ok += 1
             except Exception:
-                pass
+                logger.debug("Skipped unimportable neuron record", exc_info=True)
+        if neuron_ok < len(snapshot.neurons):
+            logger.warning(
+                "Imported %d of %d neurons into brain %r; %d dropped",
+                neuron_ok,
+                len(snapshot.neurons),
+                bid,
+                len(snapshot.neurons) - neuron_ok,
+            )
 
+        synapse_ok = 0
         for sd in snapshot.synapses:
             try:
                 synapse = Synapse(
@@ -2555,9 +2573,19 @@ class SurrealDBStorage(
                     created_at=_parse_datetime(sd.get("created_at")) or utcnow(),
                 )
                 await self.add_synapse(synapse)
+                synapse_ok += 1
             except Exception:
-                pass
+                logger.debug("Skipped unimportable synapse record", exc_info=True)
+        if synapse_ok < len(snapshot.synapses):
+            logger.warning(
+                "Imported %d of %d synapses into brain %r; %d dropped",
+                synapse_ok,
+                len(snapshot.synapses),
+                bid,
+                len(snapshot.synapses) - synapse_ok,
+            )
 
+        fiber_ok = 0
         for fd in snapshot.fibers:
             try:
                 fiber = Fiber(
@@ -2570,8 +2598,17 @@ class SurrealDBStorage(
                     salience=float(fd.get("salience", 0.0)),
                 )
                 await self.add_fiber(fiber)
+                fiber_ok += 1
             except Exception:
-                pass
+                logger.debug("Skipped unimportable fiber record", exc_info=True)
+        if fiber_ok < len(snapshot.fibers):
+            logger.warning(
+                "Imported %d of %d fibers into brain %r; %d dropped",
+                fiber_ok,
+                len(snapshot.fibers),
+                bid,
+                len(snapshot.fibers) - fiber_ok,
+            )
 
         # Restore the side tables the graph does not carry. Snapshots written by
         # versions before these were exported simply have no such keys.

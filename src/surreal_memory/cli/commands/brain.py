@@ -345,17 +345,26 @@ def brain_import(
 
         # Load/create storage and import
         storage = await get_storage(config, brain_name=brain_name)
-        await storage.import_brain(snapshot, storage.brain_id)
-        await storage.close()
+        imported_bid = await storage.import_brain(snapshot, storage.brain_id)
+        # Report the counts the storage actually ended up with, not the counts
+        # the source file said were in the payload. `_to_surreal_id` folds
+        # neuron ids to `neuron:<id>` without a brain component, so importing
+        # under a fresh name can still collide with an existing brain's ids;
+        # `import_brain` now logs the shortfall, and this report tells the
+        # operator what actually landed instead of what the file claimed.
+        try:
+            stats = await storage.get_stats(imported_bid)
+        finally:
+            await storage.close()
 
         if use:
             config.current_brain = brain_name
             config.save()
 
         typer.secho(f"Imported brain: {brain_name}", fg=typer.colors.GREEN)
-        typer.echo(f"  Neurons: {len(data['neurons'])}")
-        typer.echo(f"  Synapses: {len(data['synapses'])}")
-        typer.echo(f"  Fibers: {len(data['fibers'])}")
+        typer.echo(f"  Neurons: {stats['neuron_count']}")
+        typer.echo(f"  Synapses: {stats['synapse_count']}")
+        typer.echo(f"  Fibers: {stats['fiber_count']}")
 
     run_async(_import())
 
