@@ -1,9 +1,9 @@
 """Behavioral regression tests for auto-capture hook idempotency (upstream #80).
 
-Reproduces the defect confirmed manually in ~/expertP/smem-idempotency-80/
-CHECKPOINTS/F1: the Stop and PreCompact hooks re-encode a session summary
-(or fragment) every time they are invoked for the same session, even when
-the effectively-captured text has not changed since the previous call.
+The defect, confirmed manually during development: the Stop and PreCompact
+hooks re-encode a session summary (or fragment) every time they are invoked
+for the same session, even when the effectively-captured text has not
+changed since the previous call.
 
 Every test here runs against a real, isolated in-memory brain (a fresh tmp_path
 HOME) -- never the shared prod brain. Each test uses a unique brain name and
@@ -365,3 +365,183 @@ class TestIdempotencyFuzz:
 
         assert actual_total_saved == expected_total_saved
         assert actual_total_saved == len(seen_options)
+
+
+class TestRejectedContentNotResubmitted:
+    """A refusal must be remembered, not only a save.
+
+    Until this was fixed only *successful* encodes were marked seen, so a
+    fragment the gate turned down came back on every subsequent invocation and
+    was judged -- and logged to ``gate_decision`` -- again. Measured on the live
+    brain 2026-08-08: 499 auto decisions over 24h carried just 134 distinct
+    contents, one fragment appearing 36 times between 07:30 and 17:34. Because
+    the accept rate is computed over those rows, the inflated denominator made
+    the gate look ~4x more hostile than it was (0.39% vs ~1.4%).
+    """
+
+    async def _count_gate_calls(self, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+        """Count every gate decision actually logged, in call order.
+
+        ``log_gate_decision`` is what writes the ``gate_decision`` row, so it is
+        the exact quantity that inflated the denominator -- assert on it rather
+        than on a proxy.
+        """
+        from surreal_memory.engine import gate_telemetry
+
+        calls: list[str] = []
+        real = gate_telemetry.log_gate_decision
+
+        async def counting(*args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+            calls.append(str(kwargs.get("reason", "")))
+            return await real(*args, **kwargs)  # type: ignore[arg-type]
+
+        # The hooks do a function-local ``from ... import log_gate_decision``,
+        # which resolves the attribute at call time -- so patching the module
+        # attribute is enough and no import-order trickery is needed.
+        monkeypatch.setattr(gate_telemetry, "log_gate_decision", counting)
+        return calls
+
+    async def test_stop_hook_does_not_rejudge_rejected_content(
+        self, isolated_brain_gate_enforce: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = await self._count_gate_calls(monkeypatch)
+
+        first = await stop_hook.capture_text(_TEXT_A, project_name=None)
+        assert first["saved"] == 0
+        after_first = len(calls)
+        assert after_first >= 1, "the first call must actually reach the gate"
+
+        second = await stop_hook.capture_text(_TEXT_A, project_name=None)
+        assert second["saved"] == 0
+        assert len(calls) == after_first, (
+            "identical content already refused this session must not be judged "
+            f"again; gate was invoked {len(calls) - after_first} extra time(s)"
+        )
+
+    async def test_pre_compact_honours_refusal_recorded_by_stop(
+        self, isolated_brain_gate_enforce: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """PreCompact must not re-judge a fragment Stop already refused.
+
+        The earlier version of this test fed ``_TEXT_A`` straight to
+        ``flush_text()``, which never reaches the gate at all for that input —
+        the detector finds nothing above the emergency threshold, so the test
+        passed even with the fix entirely removed (``gate_calls=0`` on both
+        sides). This version forces the path: both hooks' detector is patched
+        to return one controlled fragment, the gate is patched to reject it,
+        and the test counts actual gate invocations — Stop must reach it
+        exactly once, PreCompact not at all.
+        """
+        from surreal_memory.engine.quality_scorer import QualityResult
+
+        gate_calls: list[str] = []
+
+        def _rejecting_gate(content: str, **kwargs: object) -> QualityResult:
+            gate_calls.append(content)
+            return QualityResult(
+                score=1, quality="low", rejected=True, rejection_reason="test refusal"
+            )
+
+        # Both hooks resolve check_write_gate via a function-local import, so
+        # patching the source module covers both paths.
+        monkeypatch.setattr(
+            "surreal_memory.engine.quality_scorer.check_write_gate", _rejecting_gate
+        )
+
+        fragment = {
+            "content": "The release manager approved the rollback plan after the incident review.",
+            "confidence": 0.95,
+            "priority": 5,
+            "type": "decision",
+        }
+
+        def _one_fragment(*args: object, **kwargs: object) -> list[dict[str, object]]:
+            return [dict(fragment)]
+
+        monkeypatch.setattr(
+            "surreal_memory.mcp.auto_capture.analyze_text_for_memories", _one_fragment
+        )
+
+        first = await stop_hook.capture_text(fragment["content"], project_name=None)
+        assert first["saved"] == 0
+        after_stop = len(gate_calls)
+        # The stop hook gates the fragment and (after the refusal) its session
+        # summary fallback, so >= 2 gate calls are expected there; what
+        # matters is that the fragment itself reached the gate and was refused.
+        assert after_stop >= 2, (
+            f"the stop hook must reach the gate at least twice (fragment + summary), "
+            f"got {after_stop}: {gate_calls}"
+        )
+
+        second = await pre_compact_hook.flush_text(fragment["content"], project_name=None)
+        assert second["saved"] == 0
+        assert len(gate_calls) == after_stop, (
+            "PreCompact re-judged content the Stop hook had already refused: "
+            f"gate was invoked {len(gate_calls) - after_stop} extra time(s)"
+        )
+
+    async def test_pre_compact_records_its_own_refusal(
+        self, isolated_brain_gate_enforce: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The refusal recording must also live in PreCompact's own reject
+        branch — a fragment PreCompact refuses (Stop never saw it) must not
+        be re-judged on the next PreCompact. Covers the `captured_keys.append`
+        hunk in `pre_compact.py` that the Stop-side test cannot reach."""
+        from surreal_memory.engine.quality_scorer import QualityResult
+
+        gate_calls: list[str] = []
+
+        def _rejecting_gate(content: str, **kwargs: object) -> QualityResult:
+            gate_calls.append(content)
+            return QualityResult(
+                score=1, quality="low", rejected=True, rejection_reason="test refusal"
+            )
+
+        monkeypatch.setattr(
+            "surreal_memory.engine.quality_scorer.check_write_gate", _rejecting_gate
+        )
+
+        fragment = {
+            "content": "The on-call engineer drained the failed node before the midnight rollout.",
+            "confidence": 0.95,
+            "priority": 5,
+            "type": "fact",
+        }
+
+        def _one_fragment(*args: object, **kwargs: object) -> list[dict[str, object]]:
+            return [dict(fragment)]
+
+        monkeypatch.setattr(
+            "surreal_memory.mcp.auto_capture.analyze_text_for_memories", _one_fragment
+        )
+
+        first = await pre_compact_hook.flush_text(fragment["content"], project_name=None)
+        assert first["saved"] == 0
+        after_first = len(gate_calls)
+        assert after_first >= 1, "the first PreCompact must actually reach the gate"
+
+        second = await pre_compact_hook.flush_text(fragment["content"], project_name=None)
+        assert second["saved"] == 0
+        assert len(gate_calls) == after_first, (
+            "PreCompact re-judged content it had already refused itself: "
+            f"gate was invoked {len(gate_calls) - after_first} extra time(s)"
+        )
+
+    async def test_new_content_still_reaches_the_gate(
+        self, isolated_brain_gate_enforce: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Positive control: suppression must be specific, not a blanket mute.
+
+        Without this, a bug that silenced *everything* after the first call would
+        pass both assertions above.
+        """
+        calls = await self._count_gate_calls(monkeypatch)
+
+        await stop_hook.capture_text(_TEXT_A, project_name=None)
+        after_first = len(calls)
+
+        await stop_hook.capture_text(_TEXT_B, project_name=None)
+        assert len(calls) > after_first, (
+            "different content must still be judged -- the refusal cache is "
+            "keyed on content, not on 'anything already tried'"
+        )

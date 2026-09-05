@@ -83,6 +83,26 @@ def content_key(content: str) -> str:
     return hashlib.md5(norm.encode("utf-8")).hexdigest()
 
 
+def rejected_key(ck: str, min_score: int) -> str:
+    """Key marking a candidate the write gate REJECTED at ``min_score``.
+
+    Rejected candidates were never marked as seen, so every Stop/PreCompact
+    re-submitted them to the gate for as long as the transcript tail carried
+    them. Measured 2026-08-08: 499 auto decisions in 24h held only 134 distinct
+    contents (one fragment judged 36 times), inflating the gate's denominator
+    ~3.7x and making the observed accept rate look several times worse than it
+    was (0.39% on rows vs ~1.4% on distinct content).
+
+    Namespaced by the threshold **on purpose**: marking a rejection as a plain
+    seen-key would silence that content for the rest of the session even if the
+    threshold were lowered afterwards -- trading duplicate noise for silent
+    loss, which is the worse failure. Because the key embeds the score it was
+    judged against, changing ``auto_capture_min_score`` stops matching these
+    keys and every previously-rejected candidate gets a fresh hearing.
+    """
+    return f"rej{min_score}:{ck}"
+
+
 def _load_all() -> dict[str, Any]:
     path = _state_path()
     if not path.exists():
