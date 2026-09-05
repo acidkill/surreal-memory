@@ -1006,6 +1006,15 @@ class CompressionEngine:
         try:
             brain = await self._storage.get_brain(self._storage.current_brain_id or "")
         except Exception:
+            # Fail-soft on purpose: the refresh helper re-fetches per fiber, so the
+            # pass still completes. It is logged all the same, because two
+            # consequences are otherwise invisible: the one-lookup-per-pass
+            # optimisation quietly degrades to one lookup per fiber with nothing to
+            # explain the slowdown, and a persistent storage fault reaches the
+            # operator as a content_refresh warning blaming the embedding provider.
+            logger.warning(
+                "Brain pre-fetch failed; falling back to a per-fiber lookup", exc_info=True
+            )
             brain = None
 
         for idx, fiber in enumerate(fibers):
