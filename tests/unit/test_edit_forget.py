@@ -105,6 +105,220 @@ class TestNmemEdit:
         storage.update_typed_memory.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_edit_type_change_recomputes_ttl(self) -> None:
+        """Regression: changing `type` must recompute `expires_at` from
+        DEFAULT_EXPIRY_DAYS[new_type] relative to now, or clear it when the
+        new type has no default expiry.
+
+        Before this fix, `_edit` swapped `memory_type` but left the old
+        type's TTL on the record. A DECISION (default 90d) edited to FACT
+        (default None) still expired ~90d out; going the other way, a FACT
+        edited to TODO or ERROR (default 30d each) never picked up their
+        finite expiry and persisted indefinitely.
+        """
+        from surreal_memory.core.fiber import Fiber
+        from surreal_memory.core.memory_types import MemoryType, Priority, TypedMemory
+
+        server = _make_server()
+        storage = AsyncMock()
+        storage.current_brain_id = "brain-1"
+
+        # Start as DECISION with a finite expiry (mirroring what remember_handler
+        # would set via expires_in_days=DEFAULT_EXPIRY_DAYS[DECISION]=90).
+        typed_mem = TypedMemory.create(
+            fiber_id="fiber-1",
+            memory_type=MemoryType.DECISION,
+            priority=Priority.NORMAL,
+            source="test",
+            expires_in_days=90,
+        )
+        assert typed_mem.expires_at is not None, "sanity: expires_in_days=90 must give expires_at"
+
+        fiber = Fiber.create(
+            neuron_ids={"neuron-1"},
+            synapse_ids=set(),
+            anchor_neuron_id="neuron-1",
+            fiber_id="fiber-1",
+        )
+
+        storage.get_typed_memory = AsyncMock(return_value=typed_mem)
+        storage.get_fiber = AsyncMock(return_value=fiber)
+        storage.get_neuron = AsyncMock(return_value=None)
+        storage.update_typed_memory = AsyncMock()
+        server.get_storage = AsyncMock(return_value=storage)
+
+        # Edit DECISION -> FACT. FACT has DEFAULT_EXPIRY_DAYS[FACT] = None.
+        result = await server.call_tool("smem_edit", {"memory_id": "fiber-1", "type": "fact"})
+        assert result["status"] == "edited"
+
+        storage.update_typed_memory.assert_awaited_once()
+        (updated_tm,) = storage.update_typed_memory.call_args.args
+        assert updated_tm.memory_type == MemoryType.FACT
+        assert updated_tm.expires_at is None, (
+            "changing type DECISION -> FACT (FACT has no default expiry) must "
+            f"clear expires_at, but it is {updated_tm.expires_at!r} (the old "
+            "DECISION 90-day clock)"
+        )
+
+    @pytest.mark.asyncio
+    async def test_edit_type_change_picks_up_finite_expiry(self) -> None:
+        """The extend_expiry direction: FACT (no default TTL) edited to TODO
+        (default 30d) must gain a finite, future expiry — the half of the
+        original bug the PR itself called the worse one, previously untested."""
+        from surreal_memory.core.fiber import Fiber
+        from surreal_memory.core.memory_types import MemoryType, Priority, TypedMemory
+        from surreal_memory.utils.timeutils import utcnow
+
+        server = _make_server()
+        storage = AsyncMock()
+        storage.current_brain_id = "brain-1"
+
+        typed_mem = TypedMemory.create(
+            fiber_id="fiber-1",
+            memory_type=MemoryType.FACT,
+            priority=Priority.NORMAL,
+            source="test",
+        )
+        assert typed_mem.expires_at is None, "sanity: FACT starts without an expiry"
+
+        fiber = Fiber.create(
+            neuron_ids={"neuron-1"},
+            synapse_ids=set(),
+            anchor_neuron_id="neuron-1",
+            fiber_id="fiber-1",
+        )
+
+        storage.get_typed_memory = AsyncMock(return_value=typed_mem)
+        storage.get_fiber = AsyncMock(return_value=fiber)
+        storage.get_neuron = AsyncMock(return_value=None)
+        storage.update_typed_memory = AsyncMock()
+        server.get_storage = AsyncMock(return_value=storage)
+
+        result = await server.call_tool("smem_edit", {"memory_id": "fiber-1", "type": "todo"})
+        assert result["status"] == "edited"
+
+        storage.update_typed_memory.assert_awaited_once()
+        (updated_tm,) = storage.update_typed_memory.call_args.args
+        assert updated_tm.memory_type == MemoryType.TODO
+        assert updated_tm.expires_at is not None, (
+            "FACT -> TODO must pick up TODO's finite default expiry"
+        )
+        assert updated_tm.expires_at > utcnow(), (
+            f"the new expiry must be in the future, got {updated_tm.expires_at!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_edit_type_change_does_not_resurrect_soft_deleted(self) -> None:
+        """Regression: `_forget` soft-deletes by setting `expires_at=utcnow()`;
+        a subsequent type change must NOT recompute the TTL — that would turn
+        a deliberately forgotten memory into an immortal (or 90-day) one."""
+        from datetime import timedelta
+        from types import SimpleNamespace
+
+        from surreal_memory.core.fiber import Fiber
+        from surreal_memory.core.memory_types import MemoryType, Priority, TypedMemory
+        from surreal_memory.utils.timeutils import utcnow
+
+        server = _make_server()
+        storage = AsyncMock()
+        storage.current_brain_id = "brain-1"
+
+        # Exactly what _forget writes for a soft delete.
+        tombstone_at = utcnow()
+        typed_mem = TypedMemory.create(
+            fiber_id="fiber-1",
+            memory_type=MemoryType.DECISION,
+            priority=Priority.NORMAL,
+            source="test",
+            expires_in_days=90,
+        )
+        from dataclasses import replace as dc_replace
+
+        typed_mem = dc_replace(typed_mem, expires_at=tombstone_at)
+
+        fiber = Fiber.create(
+            neuron_ids={"neuron-1"},
+            synapse_ids=set(),
+            anchor_neuron_id="neuron-1",
+            fiber_id="fiber-1",
+        )
+
+        storage.get_typed_memory = AsyncMock(return_value=typed_mem)
+        storage.get_fiber = AsyncMock(return_value=fiber)
+        storage.get_neuron = AsyncMock(return_value=SimpleNamespace(ephemeral=False))
+        storage.update_typed_memory = AsyncMock()
+        server.get_storage = AsyncMock(return_value=storage)
+
+        result = await server.call_tool("smem_edit", {"memory_id": "fiber-1", "type": "fact"})
+        assert result["status"] == "edited"
+
+        storage.update_typed_memory.assert_awaited_once()
+        (updated_tm,) = storage.update_typed_memory.call_args.args
+        assert updated_tm.memory_type == MemoryType.FACT, "type change itself still applies"
+        assert updated_tm.expires_at is not None, (
+            "soft-deleted memory must keep its tombstone expiry; recomputing "
+            "the TTL on a type change would resurrect it"
+        )
+        assert updated_tm.expires_at <= tombstone_at + timedelta(seconds=1), (
+            "tombstone expiry must remain in the past (or the exact _forget instant), "
+            f"got {updated_tm.expires_at!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_edit_type_change_preserves_ephemeral_ttl(self) -> None:
+        """Regression: an ephemeral memory (anchor neuron flagged
+        `ephemeral=True` by remember_handler, default 1d TTL) must keep its
+        short expiry when its type changes — clearing it would make an
+        "auto-expires" memory immortal."""
+        from types import SimpleNamespace
+
+        from surreal_memory.core.fiber import Fiber
+        from surreal_memory.core.memory_types import MemoryType, Priority, TypedMemory
+
+        server = _make_server()
+        storage = AsyncMock()
+        storage.current_brain_id = "brain-1"
+
+        # remember_handler: ephemeral=True + no explicit expires_days → 1 day.
+        typed_mem = TypedMemory.create(
+            fiber_id="fiber-1",
+            memory_type=MemoryType.DECISION,
+            priority=Priority.NORMAL,
+            source="test",
+            expires_in_days=1,
+        )
+        original_expiry = typed_mem.expires_at
+        assert original_expiry is not None
+
+        fiber = Fiber.create(
+            neuron_ids={"neuron-1"},
+            synapse_ids=set(),
+            anchor_neuron_id="neuron-1",
+            fiber_id="fiber-1",
+        )
+
+        storage.get_typed_memory = AsyncMock(return_value=typed_mem)
+        storage.get_fiber = AsyncMock(return_value=fiber)
+        storage.get_neuron = AsyncMock(return_value=SimpleNamespace(ephemeral=True))
+        storage.update_typed_memory = AsyncMock()
+        server.get_storage = AsyncMock(return_value=storage)
+
+        result = await server.call_tool("smem_edit", {"memory_id": "fiber-1", "type": "fact"})
+        assert result["status"] == "edited"
+
+        storage.update_typed_memory.assert_awaited_once()
+        (updated_tm,) = storage.update_typed_memory.call_args.args
+        assert updated_tm.memory_type == MemoryType.FACT, "type change itself still applies"
+        assert updated_tm.expires_at is not None, (
+            "ephemeral memory must keep its finite expiry; clearing it on a "
+            "type change would make it immortal"
+        )
+        assert updated_tm.expires_at == original_expiry, (
+            f"ephemeral expiry must be preserved verbatim, got {updated_tm.expires_at!r} "
+            f"(was {original_expiry!r})"
+        )
+
+    @pytest.mark.asyncio
     async def test_edit_content_updates_anchor_neuron(self) -> None:
         from surreal_memory.core.memory_types import MemoryType, Priority, TypedMemory
         from surreal_memory.core.neuron import Neuron, NeuronType
