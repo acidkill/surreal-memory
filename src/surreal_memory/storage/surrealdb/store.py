@@ -208,6 +208,10 @@ _COLLAPSE_DELETE_CHUNK = 1_000
 # it to me" is not a safety argument for string-building a statement.
 _CHANGE_LOG_ID_SAFE = re.compile(r"^change_log:[A-Za-z0-9_⟨⟩-]+$")
 
+# Set the first time a change_log insert fails, so the warning below fires once
+# per process rather than once per entity written.
+_CHANGE_LOG_INSERT_WARNED = False
+
 # Backoff grid for the reconnect retry in _query. A dropped transport usually
 # needs a moment before it accepts a new connection, so the first retry is
 # immediate and the next two wait.
@@ -2870,7 +2874,22 @@ class SurrealDBStorage(
         try:
             await conn.insert("change_log", record)
         except Exception:
-            pass
+            # Fail-soft by contract: sync bookkeeping must never abort the entity
+            # write that already succeeded. But it is not silent any more -- a
+            # change_log that rejects every row leaves sync with nothing to
+            # replay and used to say so nowhere at all. Warned once per process
+            # because this runs on the hot write path (hence _skip_change_log),
+            # so an unconditional warning per entity would be a log flood.
+            global _CHANGE_LOG_INSERT_WARNED
+            if not _CHANGE_LOG_INSERT_WARNED:
+                _CHANGE_LOG_INSERT_WARNED = True
+                logger.warning(
+                    "change_log insert failed; sync has nothing to replay for this write "
+                    "(further failures in this process log at debug)",
+                    exc_info=True,
+                )
+            else:
+                logger.debug("change_log insert failed", exc_info=True)
 
     async def _record_changes_bulk(
         self,
@@ -2927,7 +2946,11 @@ class SurrealDBStorage(
         except Exception:
             # Same fail-soft contract as _record_change_internal: sync bookkeeping
             # must never abort the entity write that already succeeded.
-            logger.debug("change_log bulk insert failed (%d rows)", len(records), exc_info=True)
+            logger.warning(
+                "change_log bulk insert failed (%d rows); sync has nothing to replay for them",
+                len(records),
+                exc_info=True,
+            )
 
     async def record_change(
         self,

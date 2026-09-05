@@ -149,7 +149,16 @@ DEFINE FIELD entity_type   ON change_log TYPE string;
 DEFINE FIELD entity_id     ON change_log TYPE string;
 DEFINE FIELD operation     ON change_log TYPE string;
 DEFINE FIELD device_id     ON change_log TYPE string DEFAULT '';
-DEFINE FIELD payload        ON change_log TYPE option<object>;
+-- FLEXIBLE, and OVERWRITE rather than a plain DEFINE. change_log is SCHEMAFULL,
+-- so without FLEXIBLE a nested payload is rejected outright with
+-- "Found field 'payload.content', but no such field exists for table
+-- 'change_log'" and the row never lands. OVERWRITE is what carries the fix to
+-- databases that already exist: a plain re-DEFINE of a field that is already
+-- there raises "The field 'payload' already exists", which ensure_schema
+-- swallows at debug (see its docstring on DEFINE INDEX), so the change would
+-- otherwise reach fresh databases only. OVERWRITE is accepted whether or not
+-- the field exists, which keeps this idempotent on both.
+DEFINE FIELD OVERWRITE payload ON change_log TYPE option<object> FLEXIBLE;
 DEFINE FIELD changed_at     ON change_log TYPE datetime DEFAULT time::now();
 DEFINE FIELD synced         ON change_log TYPE bool DEFAULT false;
 DEFINE FIELD sequence       ON change_log TYPE int;
