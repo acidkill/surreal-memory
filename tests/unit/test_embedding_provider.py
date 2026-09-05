@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 import sys
 import types
@@ -25,7 +26,10 @@ class MockEmbeddingProvider(EmbeddingProvider):
 
     async def embed(self, text: str) -> list[float]:
         """Simple deterministic embedding based on text hash."""
-        h = hash(text) % 1000
+        # blake2b rather than hash(): the built-in is salted per interpreter, so the
+        # vectors — and any collisions between them — change from one run to the next.
+        digest = hashlib.blake2b(text.encode("utf-8"), digest_size=8).digest()
+        h = int.from_bytes(digest, "big") % 1000
         vec = [(h + i) / 1000.0 for i in range(self._dim)]
         # Normalize
         norm = math.sqrt(sum(v * v for v in vec))
@@ -132,6 +136,23 @@ class TestEmbeddingProvider:
         v1 = await provider.embed("text a")
         v2 = await provider.embed("text b")
         assert v1 != v2
+
+    @pytest.mark.asyncio
+    async def test_embedding_does_not_depend_on_the_hash_seed(self) -> None:
+        """The same text must embed the same way in every interpreter.
+
+        The built-in hash() is salted per process, so a mock built on it returns
+        different vectors — and collides between different texts — depending on
+        PYTHONHASHSEED. These constants pin the values; they fail on a salted hash
+        under every seed but the one that happened to produce them.
+        """
+        provider = MockEmbeddingProvider(dim=4)
+        assert await provider.embed("text a") == pytest.approx(
+            [0.4964469643895588, 0.49881099755331865, 0.5011750307170785, 0.5035390638808382]
+        )
+        assert await provider.embed("text b") == pytest.approx(
+            [0.49896989968480343, 0.4996562406747413, 0.5003425816646792, 0.501028922654617]
+        )
 
 
 # ── Cosine similarity tests ─────────────────────────────────────
