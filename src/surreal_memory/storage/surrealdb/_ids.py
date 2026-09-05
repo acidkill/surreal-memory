@@ -45,6 +45,28 @@ def _to_surreal_id(record_id: str) -> str:
     )
 
 
+def _record_id_part(record_id: str) -> str:
+    """Bare id part of a record id, as ``_to_surreal_id`` would have produced it.
+
+    The inverse direction of the choke point above, and the reason it belongs
+    here rather than being spelled out per mixin: SurrealDB renders a record id
+    whose id part contains **no letter** in its quoted form —
+    ``alerts:⟨1122334455667788⟩`` — and a plain ``split(":")[-1]`` hands those
+    guillemets back to the caller. Feeding that back into ``_to_surreal_id``
+    maps them to underscores, so the id no longer addresses its own row: the
+    lookup misses and the caller is told the record does not exist.
+
+    Measured on SurrealDB 3.2.0: the quoted form appears for ``0001``,
+    ``1122334455667788``, ``12_34`` and ``_123``, but not for ``a1``,
+    ``123abc``, ``1_2a`` or ``_a1`` — i.e. exactly when the id carries no
+    letter. Ids minted as ``str(uuid4())`` almost always carry one; ids minted
+    as ``uuid4().hex[:16]`` (alerts) are letter-free about once in 1150.
+    """
+    if ":" in record_id:
+        record_id = record_id.rsplit(":", 1)[1]
+    return record_id.strip("⟨⟩`")
+
+
 def _safe_brain_id(brain_id: str) -> str:
     """Validate a brain id before it is inlined raw into a record id / SurQL.
 
