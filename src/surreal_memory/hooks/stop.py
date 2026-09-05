@@ -501,12 +501,16 @@ async def capture_text(text: str, project_name: str | None = None) -> dict[str, 
                 logger.debug("Failed to save stop-hook memory", exc_info=True)
                 continue
 
-        # Always save a session summary if no patterns were detected. Skipped
+        # Fall back to a session summary if no patterns were detected. Skipped
         # when every detected fragment was duplicate-filtered above -- that
         # case already has an accurate "duplicate" status; falling through
         # here would silently replace it with a brand-new summary save.
+        #
+        # Off by default (auto.capture_session_summary): the "summary" is the last
+        # ~10 transcript lines verbatim, which on a real chat is harness markers and
+        # half-sentences, not knowledge. See AutoConfig for the measured numbers.
         summary_had_candidate = False
-        if not saved and not all_candidates_were_duplicates:
+        if config.auto.capture_session_summary and not saved and not all_candidates_were_duplicates:
             summary = _extract_session_summary(text)
             if summary:
                 summary_had_candidate = True

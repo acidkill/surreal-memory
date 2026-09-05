@@ -83,6 +83,20 @@ class AutoConfig:
     capture_insights: bool = True
     capture_preferences: bool = True
     min_confidence: float = 0.7
+    # Fallback in the Stop hook that manufactures a candidate out of the last ~10
+    # lines of the transcript when pattern extraction found nothing. It is a
+    # truncation, not a summary, so on a real chat transcript it yields harness
+    # markers and half-sentences. Measured on a production brain over 24 h: 96 of
+    # 158 write-gate rejections (61 %) originated in this path alone -- entries such
+    # as "Session activity: <task-notification>" or "Session activity: Writing
+    # objects:". Default off because on a stock installation nothing stops that
+    # output: WriteGateConfig defaults to enabled=False / mode="off", so the gate
+    # does not reject it -- it is stored as a CONTEXT memory. Where the gate IS
+    # enabled it rejects the same entries and the fallback only produces telemetry
+    # noise, so off is the better default either way. Set true to restore the
+    # previous behaviour; the #80 idempotency regression tests exercise it
+    # deliberately.
+    capture_session_summary: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -94,6 +108,7 @@ class AutoConfig:
             "capture_insights": self.capture_insights,
             "capture_preferences": self.capture_preferences,
             "min_confidence": self.min_confidence,
+            "capture_session_summary": self.capture_session_summary,
         }
 
     @classmethod
@@ -107,6 +122,7 @@ class AutoConfig:
             capture_insights=data.get("capture_insights", True),
             capture_preferences=data.get("capture_preferences", True),
             min_confidence=data.get("min_confidence", 0.7),
+            capture_session_summary=data.get("capture_session_summary", False),
         )
 
 
@@ -2135,6 +2151,7 @@ class UnifiedConfig:
             f"capture_insights = {'true' if self.auto.capture_insights else 'false'}",
             f"capture_preferences = {'true' if self.auto.capture_preferences else 'false'}",
             f"min_confidence = {self.auto.min_confidence}",
+            f"capture_session_summary = {'true' if self.auto.capture_session_summary else 'false'}",
             "",
             "# Eternal context settings",
             "[eternal]",

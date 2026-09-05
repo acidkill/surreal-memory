@@ -82,6 +82,22 @@ def _isolate_storage_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("SURREALDB_PASS", raising=False)
 
 
+def _enable_session_summary() -> None:
+    """Opt this suite into the session-summary fallback, which now defaults off.
+
+    ``_TEXT_A``/``_TEXT_B`` carry no ``Decision:``/``Error:``/``TODO:`` markers on
+    purpose, so pattern extraction finds nothing and the single saved memory is the
+    summary itself -- that is exactly the re-encode this file was written to pin
+    (upstream #80). ``AutoConfig.capture_session_summary`` became False by default
+    because on a production transcript that fallback emits harness markers rather
+    than knowledge; the defect it guards is real either way, so the suite turns the
+    path back on rather than weakening its assertions.
+    """
+    from surreal_memory.unified_config import get_config
+
+    get_config().auto.capture_session_summary = True
+
+
 @pytest.fixture
 async def isolated_brain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     """Point unified_config at a throwaway HOME with a unique brain+session.
@@ -98,6 +114,7 @@ async def isolated_brain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str
     from surreal_memory.unified_config import get_config
 
     get_config(reload=True)
+    _enable_session_summary()
     return brain_name
 
 
@@ -121,6 +138,7 @@ async def isolated_brain_gate_enforce(tmp_path: Path, monkeypatch: pytest.Monkey
     from surreal_memory.unified_config import get_config
 
     get_config(reload=True)
+    _enable_session_summary()
     return brain_name
 
 
@@ -226,6 +244,7 @@ class TestIdempotencyNegativePaths:
         from surreal_memory.unified_config import get_config
 
         get_config(reload=True)
+        _enable_session_summary()
 
         result1 = await stop_hook.capture_text(_TEXT_A, project_name=None)
         assert result1["saved"] == 1
@@ -258,6 +277,17 @@ class TestIdempotencyNegativePaths:
         import os
         import subprocess
         import sys
+
+        # The two racers are separate OS processes, so the in-process opt-in from
+        # _enable_session_summary() does not reach them -- they re-read config.toml
+        # under this test's HOME. Without this the fallback stays off there, both
+        # processes capture nothing, and the assertion below fails for a reason that
+        # has nothing to do with the race it is meant to measure.
+        surrealmemory_dir = tmp_path / ".surrealmemory"
+        surrealmemory_dir.mkdir(parents=True, exist_ok=True)
+        (surrealmemory_dir / "config.toml").write_text(
+            "\n[auto]\ncapture_session_summary = true\n", encoding="utf-8"
+        )
 
         proj_dir = tmp_path / ".claude" / "projects" / "race-test"
         proj_dir.mkdir(parents=True, exist_ok=True)

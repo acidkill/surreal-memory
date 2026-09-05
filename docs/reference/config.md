@@ -63,6 +63,7 @@ Auto-capture configuration for MCP server.
 | `capture_insights` | `bool` | `true` |  |
 | `capture_preferences` | `bool` | `true` |  |
 | `min_confidence` | `float` | `0.7` |  |
+| `capture_session_summary` | `bool` | `false` |  |
 
 ## `[eternal]`
 
