@@ -49,6 +49,11 @@ from surreal_memory.utils.timeutils import utcnow
 
 logger = logging.getLogger(__name__)
 
+# Process-wide counter for the provider-unavailable branch below. The write
+# path encodes in a loop, so an unthrottled WARNING+exc_info per neuron turns
+# a down provider into a log flood; see the branch for the throttling policy.
+_EMBED_UNAVAILABLE_COUNT = 0
+
 
 def _inline_embed_timeout() -> float:
     """Seconds the write path will wait for inline embeddings before giving up.
@@ -544,7 +549,35 @@ class MemoryEncoder:
             )
             return
         except Exception:
-            logger.debug("Inline embedding skipped (provider unavailable)", exc_info=True)
+            # Sibling to the TimeoutError branch above. Both leave the neuron
+            # keyword-only with `smem reindex` as the fix, so both should log
+            # at the same level — provider-down is more common than timeout,
+            # so burying it at DEBUG (invisible under any default config)
+            # meant the more likely failure gave the operator nothing to act
+            # on. But the write path calls this in a loop (train, train-db,
+            # remember_batch all encode many neurons per run), and a WARNING
+            # with a traceback per neuron turned a down provider into a
+            # multi-hundred-line log flood (~1 KiB per record). Throttle:
+            # first occurrence and every 100th warn in full with the
+            # traceback; the rest stay visible at DEBUG with the count.
+            global _EMBED_UNAVAILABLE_COUNT
+            _EMBED_UNAVAILABLE_COUNT += 1
+            if _EMBED_UNAVAILABLE_COUNT == 1 or _EMBED_UNAVAILABLE_COUNT % 100 == 0:
+                logger.warning(
+                    "Inline embedding skipped for %d neuron(s) (provider unavailable) — "
+                    "memory saved keyword-only; run `smem reindex` to back-fill the vectors "
+                    "(occurrence %d in this process).",
+                    len(candidates),
+                    _EMBED_UNAVAILABLE_COUNT,
+                    exc_info=True,
+                )
+            else:
+                logger.debug(
+                    "Inline embedding skipped for %d neuron(s) (provider unavailable) "
+                    "(occurrence %d in this process).",
+                    len(candidates),
+                    _EMBED_UNAVAILABLE_COUNT,
+                )
             return
 
         # Prefer a single batched write (SurrealDB collapses this into one
