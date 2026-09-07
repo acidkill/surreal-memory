@@ -8,6 +8,14 @@ whatever the stored brain config says.
 Design notes:
     - Idempotent: ``--missing-only`` (default) only embeds neurons that lack a
       vector; ``--all`` re-embeds everything.
+    - ``--stale`` re-embeds everything it inspects, compares each fresh vector
+      against the stored one (cosine), and rewrites ONLY neurons whose vectors
+      diverge past ``--threshold`` (default 0.98) — the middle ground between
+      ``--missing-only`` (blind to a vector describing text the neuron no
+      longer contains) and ``--all`` (issue #199). The provider-cost caveat is
+      deliberate: a full sweep costs roughly like ``--all`` in embedding calls;
+      the saving is in writes and in being able to ANSWER whether the recall
+      index matches current content (``--stale --dry-run``).
     - ``--dry-run`` (default off) reports how many neurons *would* be embedded
       and writes nothing.
     - Fail-soft per neuron: a single embedding/update failure never aborts the
@@ -44,6 +52,17 @@ def reindex(
         bool,
         typer.Option("--all", help="Re-embed every neuron (default: only missing vectors)"),
     ] = False,
+    stale: Annotated[
+        bool,
+        typer.Option(
+            "--stale",
+            help="Re-embed, compare against stored vectors, rewrite only diverged ones",
+        ),
+    ] = False,
+    threshold: Annotated[
+        float,
+        typer.Option("--threshold", help="--stale: rewrite when cosine(stored, fresh) < this"),
+    ] = 0.98,
     batch_size: Annotated[
         int,
         typer.Option("--batch-size", help="Neurons per embedding batch"),
@@ -54,29 +73,61 @@ def reindex(
     ] = False,
 ) -> None:
     """Re-embed neurons for the current brain using the effective provider."""
-    run_async(_reindex_async(brain, dry_run, all_neurons, batch_size, json_output))
+    run_async(
+        _reindex_async(brain, dry_run, all_neurons, stale, threshold, batch_size, json_output)
+    )
 
 
-def _needs_embedding(neuron: Any, *, all_neurons: bool) -> bool:
+def _needs_embedding(neuron: Any, *, all_neurons: bool, stale: bool = False) -> bool:
     """Return True when a neuron should be embedded for this run."""
     if not neuron.content.strip():
         return False
+    if stale:
+        # Stale detection is the inverse selection: only neurons that HAVE a
+        # stored vector can carry one that describes text the neuron no longer
+        # contains.
+        return bool(neuron.metadata.get("_embedding"))
     if all_neurons:
         return True
     return not neuron.metadata.get("_embedding")
+
+
+def _cosine_similarity(stored: list[float], fresh: list[float]) -> float:
+    """Cosine similarity of two vectors (numpy when available, pure fallback)."""
+    try:
+        import numpy as np
+
+        a = np.asarray(stored, dtype=np.float64)
+        b = np.asarray(fresh, dtype=np.float64)
+        denom = float(np.linalg.norm(a) * np.linalg.norm(b))
+        return float(np.dot(a, b) / denom) if denom else 0.0
+    except ImportError:  # pragma: no cover - numpy is a soft dependency here
+        dot = sum(x * y for x, y in zip(stored, fresh, strict=True))
+        na = sum(x * x for x in stored) ** 0.5
+        nb = sum(y * y for y in fresh) ** 0.5
+        return dot / (na * nb) if na and nb else 0.0
 
 
 async def _reindex_async(
     brain: str,
     dry_run: bool,
     all_neurons: bool,
-    batch_size: int,
-    json_output: bool,
+    stale: bool = False,
+    threshold: float = 0.98,
+    batch_size: int = _BATCH_SIZE_DEFAULT,
+    json_output: bool = False,
 ) -> None:
     """Async implementation of the reindex command."""
     if batch_size < 1:
         typer.echo("Error: --batch-size must be >= 1", err=True)
         raise typer.Exit(code=1)
+    if stale and all_neurons:
+        typer.echo("Error: --stale and --all are mutually exclusive", err=True)
+        raise typer.Exit(code=1)
+    if not 0.0 < threshold <= 1.0:
+        typer.echo("Error: --threshold must be in (0, 1]", err=True)
+        raise typer.Exit(code=1)
+    mode = "stale" if stale else ("all" if all_neurons else "missing-only")
 
     config = get_config()
     storage = await get_storage(config, brain_name=brain or None)
@@ -107,7 +158,9 @@ async def _reindex_async(
         page_neurons = await storage.find_neurons(limit=page, offset=offset)
         if not page_neurons:
             break
-        candidates.extend(n for n in page_neurons if _needs_embedding(n, all_neurons=all_neurons))
+        candidates.extend(
+            n for n in page_neurons if _needs_embedding(n, all_neurons=all_neurons, stale=stale)
+        )
         offset += len(page_neurons)
         if len(page_neurons) < page:
             break
@@ -121,13 +174,14 @@ async def _reindex_async(
                 "dry_run": True,
                 "provider": provider_name,
                 "model": model_name,
-                "mode": "all" if all_neurons else "missing-only",
+                "mode": mode,
                 "would_embed": to_embed,
+                **({"threshold": threshold} if stale else {}),
             },
             human=(
                 f"[dry-run] provider={provider_name} model={model_name} "
-                f"mode={'all' if all_neurons else 'missing-only'} "
-                f"would embed {to_embed} neuron(s)"
+                f"mode={mode} would embed {to_embed} neuron(s)"
+                + (f" (threshold={threshold})" if stale else "")
             ),
         )
         return
@@ -154,6 +208,7 @@ async def _reindex_async(
 
     embedded = 0
     failed = 0
+    stale_kept_fresh = 0  # --stale: vectors matching current content
     first_error = ""
     consecutive_failures = 0
     aborted = False
@@ -191,6 +246,17 @@ async def _reindex_async(
         consecutive_failures = 0
 
         pairs = [(neuron.id, vector) for neuron, vector in zip(batch, vectors, strict=True)]
+        if stale:
+            kept: list[tuple[str, list[float]]] = []
+            for neuron, (nid, vector) in zip(batch, pairs, strict=True):
+                stored = neuron.metadata.get("_embedding") or []
+                if _cosine_similarity(stored, vector) >= threshold:
+                    stale_kept_fresh += 1
+                    continue
+                kept.append((nid, vector))
+            if not kept:
+                continue
+            pairs = kept
         try:
             await storage.update_neuron_embeddings(pairs)
             embedded += len(pairs)
@@ -207,19 +273,24 @@ async def _reindex_async(
         "dry_run": False,
         "provider": provider_name,
         "model": model_name,
-        "mode": "all" if all_neurons else "missing-only",
+        "mode": mode,
         "embedded": embedded,
         "failed": failed,
     }
+    if stale:
+        payload["kept_fresh"] = stale_kept_fresh
+        payload["threshold"] = threshold
     if first_error:
         payload["error"] = first_error
     if aborted:
         payload["aborted"] = True
-    _emit(
-        json_output,
-        payload,
-        human=f"Embedded {embedded} neuron(s), {failed} failed.",
-    )
+    human = f"Embedded {embedded} neuron(s), {failed} failed."
+    if stale:
+        human = (
+            f"Re-embedded {embedded} stale neuron(s) "
+            f"({stale_kept_fresh} already matched current content), {failed} failed."
+        )
+    _emit(json_output, payload, human=human)
 
     # A run that embedded nothing is a failure, not a quiet success: exiting 0
     # let `smem reindex` report "0 embedded, 4096 failed" while any script or

@@ -1098,6 +1098,8 @@ smem reindex [OPTIONS]
 | `--brain / -b` | text | No | `` | Target brain name (default: current) |
 | `--dry-run` | boolean | No | `False` | Report how many would be embedded; write nothing |
 | `--all` | boolean | No | `False` | Re-embed every neuron (default: only missing vectors) |
+| `--stale` | boolean | No | `False` | Re-embed, compare against stored vectors, rewrite only diverged ones |
+| `--threshold` | float | No | `0.98` | --stale: rewrite when cosine(stored, fresh) < this |
 | `--batch-size` | integer | No | `64` | Neurons per embedding batch |
 | `--json / -j` | boolean | No | `False` | Output as JSON |
 
