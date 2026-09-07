@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -575,7 +576,58 @@ async def handle_message(server: MCPServer, message: dict[str, Any]) -> dict[str
         }
 
 
-_TOOL_CALL_TIMEOUT = 30.0  # seconds
+_TOOL_CALL_TIMEOUT_DEFAULT = 30.0  # seconds
+_TOOL_CALL_TIMEOUT_MAX = 600.0  # seconds
+_TOOL_CALL_TIMEOUT_ENV = "SURREAL_MEMORY_MCP_TOOL_TIMEOUT"
+
+
+def _resolve_tool_call_timeout(raw: str | None) -> float:
+    """Resolve the per-tool-call budget from SURREAL_MEMORY_MCP_TOOL_TIMEOUT.
+
+    A client talking to a remote SurrealDB (e.g. a workstation over wss) can
+    legitimately need more than the default 30 s: recall runs embedding +
+    vector search + rerank across the wire, and a cold pass on a large brain
+    can outlast the default before any cache is warm. The value is in SECONDS
+    (``180``, not ``180000``); values above the ceiling are clamped with a
+    warning so a millisecond typo cannot become a five-hour hang, and invalid
+    values fall back to the default rather than refusing to start.
+    """
+    if raw is None or not raw.strip():
+        return _TOOL_CALL_TIMEOUT_DEFAULT
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(
+            "Ignoring invalid %s=%r (not a number); tool-call timeout stays %.0f s",
+            _TOOL_CALL_TIMEOUT_ENV,
+            raw,
+            _TOOL_CALL_TIMEOUT_DEFAULT,
+        )
+        return _TOOL_CALL_TIMEOUT_DEFAULT
+    if value <= 0:
+        logger.warning(
+            "Ignoring %s=%r (must be positive); tool-call timeout stays %.0f s",
+            _TOOL_CALL_TIMEOUT_ENV,
+            raw,
+            _TOOL_CALL_TIMEOUT_DEFAULT,
+        )
+        return _TOOL_CALL_TIMEOUT_DEFAULT
+    if value > _TOOL_CALL_TIMEOUT_MAX:
+        logger.warning(
+            "%s=%r exceeds the %.0f s ceiling — did you mean seconds, not milliseconds? "
+            "Clamping to %.0f s",
+            _TOOL_CALL_TIMEOUT_ENV,
+            raw,
+            _TOOL_CALL_TIMEOUT_MAX,
+            _TOOL_CALL_TIMEOUT_MAX,
+        )
+        return _TOOL_CALL_TIMEOUT_MAX
+    return value
+
+
+# Literal, not _TOOL_CALL_TIMEOUT_ENV, at the read site: the config-docs env
+# scanner (scripts/gen_config_docs.py) and grep only match a string literal.
+_TOOL_CALL_TIMEOUT = _resolve_tool_call_timeout(os.environ.get("SURREAL_MEMORY_MCP_TOOL_TIMEOUT"))
 _MAX_MESSAGE_SIZE = 10 * 1024 * 1024  # 10 MB
 
 
@@ -636,6 +688,11 @@ def _lazy_init() -> None:
 async def run_mcp_server() -> None:
     """Run the MCP server over stdio."""
     _lazy_init()
+    logger.info(
+        "MCP server %s starting (tool-call timeout: %.0f s)",
+        __version__,
+        _TOOL_CALL_TIMEOUT,
+    )
 
     server = create_mcp_server()
 
