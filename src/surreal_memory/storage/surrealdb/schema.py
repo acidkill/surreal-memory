@@ -611,6 +611,37 @@ def _parse_schema_statements(sql: str) -> list[str]:
     return statements
 
 
+async def _ensure_change_log_schemafull(conn: Any) -> bool:
+    """ALTER a legacy SCHEMALESS ``change_log`` table to SCHEMAFULL.
+
+    Databases that wrote change_log rows before the table was declared in the
+    schema carry an implicit SCHEMALESS table (and an export/import preserves
+    that shape). Field-level FLEXIBLE — which the ``payload`` define below
+    needs — is only valid on a SCHEMAFULL table, so without this conversion
+    every startup logs a schema warning and the field keeps its old shape
+    (issue #230). ``ALTER TABLE … SCHEMAFULL`` is the documented
+    schemaless-to-schemafull transition and keeps existing rows; every column
+    the writer produces is declared, so tightening rejects nothing. Fail-soft
+    by the same contract as the statement loop: a failed probe or ALTER only
+    means the warning persists.
+
+    Returns True when a conversion was attempted and succeeded.
+    """
+    try:
+        rows = await conn.query("INFO FOR DB;")
+        info = rows[0] if isinstance(rows, list) and rows else rows
+        tables = info.get("tables", {}) if isinstance(info, dict) else {}
+        definition = str(tables.get("change_log", "") or "")
+        if "SCHEMALESS" not in definition.upper():
+            return False
+        await conn.query("ALTER TABLE change_log SCHEMAFULL;")
+    except Exception:
+        logger.debug("change_log schemaless probe/ALTER failed", exc_info=True)
+        return False
+    logger.info("Converted legacy SCHEMALESS change_log table to SCHEMAFULL")
+    return True
+
+
 async def ensure_schema(conn: Any, embedding_dim: int = 3072) -> None:
     """Apply schema to SurrealDB. Safe to call multiple times.
 
@@ -640,6 +671,9 @@ async def ensure_schema(conn: Any, embedding_dim: int = 3072) -> None:
         f"FIELDS embedding_vec HNSW DIMENSION {dim} DIST COSINE"
     )
     statements.extend(SYNAPSE_V8_DDL)
+    # Before any change_log field defines: a legacy SCHEMALESS change_log would
+    # reject the payload FLEXIBLE define (issue #230), so converge it first.
+    await _ensure_change_log_schemafull(conn)
     for stmt in statements:
         try:
             await conn.query(stmt + ";")
