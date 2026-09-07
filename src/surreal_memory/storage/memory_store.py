@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import random
 from collections import defaultdict
+from dataclasses import replace
 from datetime import datetime, timedelta
 from typing import Any, Literal
 from uuid import uuid4
@@ -210,7 +211,61 @@ class InMemoryStorage(
 
         del self._neurons[brain_id][neuron_id]
         self._states[brain_id].pop(neuron_id, None)
+
+        # Same contract as the SurrealDB backend (issue #194): no fiber keeps
+        # listing a deleted member; a fiber losing its anchor is soft-forgotten
+        # (typed_memory expires_at, like smem_forget) and tombstoned in metadata.
+        now = utcnow()
+        for fid, fiber in list(self._fibers[brain_id].items()):
+            if neuron_id not in fiber.neuron_ids and fiber.anchor_neuron_id != neuron_id:
+                continue
+            members = fiber.neuron_ids - {neuron_id}
+            updates: dict[str, Any] = {"neuron_ids": members}
+            if fiber.anchor_neuron_id == neuron_id:
+                updates["metadata"] = {
+                    **fiber.metadata,
+                    "_anchor_deleted": now.isoformat(),
+                }
+            self._fibers[brain_id][fid] = replace(fiber, **updates)
+            if fiber.anchor_neuron_id == neuron_id:
+                typed = self._typed_memories[brain_id].get(fid)
+                if typed is not None:
+                    self._typed_memories[brain_id][fid] = replace(typed, expires_at=now)
         return True
+
+    async def repair_fiber_member_drift(self) -> dict[str, int]:
+        """One-off maintenance: shed ids that no longer resolve from all fibers.
+
+        In-memory twin of the SurrealDB method (the storage-parity meta-test
+        keeps the backends symmetrical). Same rules as the delete cascade.
+        """
+        brain_id = self._get_brain_id()
+        stats = {
+            "fibers_scanned": len(self._fibers[brain_id]),
+            "fibers_repaired": 0,
+            "ids_shed": 0,
+            "fibers_expired": 0,
+        }
+        candidate_ids = {n for f in self._fibers[brain_id].values() for n in f.neuron_ids}
+        candidate_ids.update(f.anchor_neuron_id for f in self._fibers[brain_id].values())
+        live = set(self._neurons[brain_id])
+        now = utcnow()
+        for fid, fiber in list(self._fibers[brain_id].items()):
+            shed = {m for m in fiber.neuron_ids if m in live}
+            anchor_dead = fiber.anchor_neuron_id not in live
+            if shed == fiber.neuron_ids and not anchor_dead:
+                continue
+            updates: dict[str, Any] = {"neuron_ids": shed}
+            if anchor_dead:
+                updates["metadata"] = {**fiber.metadata, "_anchor_deleted": now.isoformat()}
+                typed = self._typed_memories[brain_id].get(fid)
+                if typed is not None:
+                    self._typed_memories[brain_id][fid] = replace(typed, expires_at=now)
+                stats["fibers_expired"] += 1
+            self._fibers[brain_id][fid] = replace(fiber, **updates)
+            stats["fibers_repaired"] += 1
+            stats["ids_shed"] += len(fiber.neuron_ids) - len(shed)
+        return stats
 
     # ========== Neuron State Operations ==========
 

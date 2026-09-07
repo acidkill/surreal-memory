@@ -13,6 +13,7 @@ import logging
 import random
 import re
 from collections.abc import Iterator
+from dataclasses import replace as dc_replace
 from datetime import datetime
 from hashlib import sha256
 from typing import Any, Literal, TypeVar
@@ -1529,9 +1530,110 @@ class SurrealDBStorage(
         try:
             await conn.delete(f"neuron:{sid}")
             await self._record_change_internal("neuron", neuron_id, "delete")
-            return True
         except Exception:
             return False
+
+        # Fibers otherwise keep claiming a member that no longer exists (issue
+        # #194): fiber counts drift, prune's orphan-protection set grows
+        # monotonically, and enrichment later mints RELATED_TO edges at the
+        # missing anchor. Fail-soft — a failed cascade must not un-delete.
+        try:
+            await self._shed_neuron_from_fibers(neuron_id)
+        except Exception:
+            logger.warning(
+                "Fiber cascade after neuron delete failed (drift possible)", exc_info=True
+            )
+        return True
+
+    async def _shed_neuron_from_fibers(self, neuron_id: str) -> dict[str, int]:
+        """Remove ``neuron_id`` from every fiber listing it (issue #194).
+
+        A fiber whose ANCHOR is the deleted neuron loses its load-bearing
+        member: it is soft-forgotten the way ``smem_forget`` does it — the
+        typed_memory row's ``expires_at`` is set to now, so it leaves recall
+        immediately — and carries a ``_anchor_deleted`` metadata tombstone
+        (graph-only fibers without a typed row keep at least the marker).
+        Fibers that merely listed the id keep living with the id shed.
+        Returns ``{fibers_repaired, ids_shed, fibers_expired}``.
+        """
+        conn = self._ensure_conn()
+        rows = await self._query(
+            "SELECT id, neuron_ids, anchor_neuron_id, metadata FROM fiber"
+            " WHERE neuron_ids CONTAINS $nid",
+            nid=neuron_id,
+        )
+        stats = {"fibers_repaired": 0, "ids_shed": 0, "fibers_expired": 0}
+        now = utcnow()
+        for row in rows:
+            fid = row.get("id")
+            fiber_id = str(fid).rsplit(":", 1)[-1].strip("⟨⟩`") if fid is not None else ""
+            if not fiber_id:
+                continue
+            members = list(row.get("neuron_ids") or [])
+            shed = [m for m in members if m != neuron_id]
+            update: dict[str, Any] = {"neuron_ids": shed}
+            if row.get("anchor_neuron_id") == neuron_id:
+                metadata = dict(row.get("metadata") or {})
+                metadata["_anchor_deleted"] = now.isoformat()
+                update["metadata"] = metadata
+                typed = await self.get_typed_memory(fiber_id)
+                if typed is not None:
+                    await self.update_typed_memory(dc_replace(typed, expires_at=now))
+                stats["fibers_expired"] += 1
+            await conn.merge(fid, update)
+            await self._record_change_internal("fiber", fiber_id, "update")
+            stats["fibers_repaired"] += 1
+            stats["ids_shed"] += len(members) - len(shed)
+        return stats
+
+    async def repair_fiber_member_drift(self) -> dict[str, int]:
+        """One-off maintenance: shed ids that no longer resolve from all fibers.
+
+        Databases that accumulated dangling ``neuron_ids`` before the delete
+        cascade existed (issue #194) converge here. Applies the same rules as
+        the delete-path cascade: shed dead members, expire fibers whose anchor
+        is dead. Returns ``{fibers_scanned, fibers_repaired, ids_shed,
+        fibers_expired}``.
+        """
+        rows = await self._query("SELECT id, neuron_ids, anchor_neuron_id, metadata FROM fiber")
+        stats = {
+            "fibers_scanned": len(rows),
+            "fibers_repaired": 0,
+            "ids_shed": 0,
+            "fibers_expired": 0,
+        }
+        candidate_ids = {n for r in rows for n in (r.get("neuron_ids") or [])}
+        candidate_ids.update(r.get("anchor_neuron_id") for r in rows if r.get("anchor_neuron_id"))
+        if not candidate_ids:
+            return stats
+        live = set(await self.get_neurons_batch(list(candidate_ids)))
+        conn = self._ensure_conn()
+        now = utcnow()
+        for row in rows:
+            members = list(row.get("neuron_ids") or [])
+            shed = [m for m in members if m in live]
+            anchor = row.get("anchor_neuron_id")
+            anchor_dead = anchor is not None and anchor not in live
+            if len(shed) == len(members) and not anchor_dead:
+                continue
+            fid = row.get("id")
+            fiber_id = str(fid).rsplit(":", 1)[-1].strip("⟨⟩`") if fid is not None else ""
+            if not fiber_id:
+                continue
+            update: dict[str, Any] = {"neuron_ids": shed}
+            if anchor_dead:
+                metadata = dict(row.get("metadata") or {})
+                metadata["_anchor_deleted"] = now.isoformat()
+                update["metadata"] = metadata
+                typed = await self.get_typed_memory(fiber_id)
+                if typed is not None:
+                    await self.update_typed_memory(dc_replace(typed, expires_at=now))
+                stats["fibers_expired"] += 1
+            await conn.merge(fid, update)
+            await self._record_change_internal("fiber", fiber_id, "update")
+            stats["fibers_repaired"] += 1
+            stats["ids_shed"] += len(members) - len(shed)
+        return stats
 
     async def delete_neurons_batch(self, neuron_ids: list[str]) -> int:
         """Delete multiple neurons sequentially.
