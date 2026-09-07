@@ -50,6 +50,17 @@ class _FailingProvider:
         raise RuntimeError("connection refused: bge-m3 endpoint unreachable")
 
 
+@pytest.fixture(autouse=True)
+def _reset_unavailable_counter(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The throttle counter is process-global, so no test here may inherit a
+    count bumped by an earlier test in the same process — the warning the
+    reindex-hint case asserts for only fires on occurrence 1 and every 100th
+    (reproduced with test_inline_embed_timeout.py running first under xdist)."""
+    import surreal_memory.engine.encoder as encoder_mod
+
+    monkeypatch.setattr(encoder_mod, "_EMBED_UNAVAILABLE_COUNT", 0)
+
+
 @pytest.mark.asyncio
 async def test_provider_unavailable_logs_warning_with_reindex_hint(
     monkeypatch: Any, caplog: pytest.LogCaptureFixture
