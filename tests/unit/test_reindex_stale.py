@@ -27,17 +27,11 @@ def _unit(v: list[float]) -> list[float]:
 
 class TestHelpers:
     def test_stale_selection_is_the_inverse(self) -> None:
-        with_vec = Neuron.create(
-            type=NeuronType.CONCEPT, content="x", neuron_id="a"
-        )
+        with_vec = Neuron.create(type=NeuronType.CONCEPT, content="x", neuron_id="a")
         with_vec.metadata["_embedding"] = [0.1, 0.2]
-        without_vec = Neuron.create(
-            type=NeuronType.CONCEPT, content="x", neuron_id="b"
-        )
+        without_vec = Neuron.create(type=NeuronType.CONCEPT, content="x", neuron_id="b")
         assert reindex_mod._needs_embedding(with_vec, all_neurons=False, stale=True)
-        assert not reindex_mod._needs_embedding(
-            without_vec, all_neurons=False, stale=True
-        )
+        assert not reindex_mod._needs_embedding(without_vec, all_neurons=False, stale=True)
 
     def test_cosine_identical_vectors_is_one(self) -> None:
         v = _unit([1.0, 2.0, 3.0])
@@ -55,9 +49,7 @@ class _CannedProvider:
 
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:
         self.calls += 1
-        return [
-            _unit([1.0, 0.0]) if "stale" in t else _unit([0.0, 1.0]) for t in texts
-        ]
+        return [_unit([1.0, 0.0]) if "stale" in t else _unit([0.0, 1.0]) for t in texts]
 
 
 @pytest.mark.asyncio
@@ -87,6 +79,7 @@ async def test_stale_run_rewrites_only_diverged(monkeypatch: pytest.MonkeyPatch)
 
     async def _ret(s: InMemoryStorage) -> InMemoryStorage:
         return s
+
     written: list[tuple[str, list[float]]] = []
 
     async def _capture(pairs: list[tuple[str, list[float]]]) -> None:
@@ -95,8 +88,13 @@ async def test_stale_run_rewrites_only_diverged(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(storage, "update_neuron_embeddings", _capture)
 
     await reindex_mod._reindex_async(
-        brain="", dry_run=False, all_neurons=False, stale=True,
-        threshold=0.98, batch_size=10, json_output=True,
+        brain="",
+        dry_run=False,
+        all_neurons=False,
+        stale=True,
+        threshold=0.98,
+        batch_size=10,
+        json_output=True,
     )
 
     assert [nid for nid, _ in written] == ["n2"], "only the diverged vector is rewritten"
