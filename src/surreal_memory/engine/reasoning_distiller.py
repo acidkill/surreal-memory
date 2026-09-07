@@ -25,7 +25,7 @@ import math
 import os
 import re
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from fnmatch import fnmatch
 from typing import TYPE_CHECKING, Any
 
@@ -408,6 +408,10 @@ async def _materialize_pattern(
             "_reasoning_signature": sig,
         },
     )
+    # Patterns are activated only by injection (which may be OFF); unpinned they
+    # are dead weight to decay/prune and vanish between sessions — pin them like
+    # trained KB (doc_trainer) so lifecycle skips their neurons and fibers.
+    fiber = replace(fiber, pinned=True)
     await storage.add_fiber(fiber)
     return True
 
