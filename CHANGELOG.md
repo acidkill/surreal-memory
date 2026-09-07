@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.9.3] — 2026-09-07 — a slow database deserves a longer fuse
+
+Two fixes for the remote-database topology found while deploying 3.9.2 against
+SurrealDB over wss.
+
+### Fixed
+
+- `SURREAL_MEMORY_MCP_TOOL_TIMEOUT` (seconds) makes the MCP server's per-tool-call
+  budget configurable instead of the hardcoded 30 s. A client talking to a remote
+  SurrealDB can legitimately need more — recall runs embedding + vector search +
+  rerank across the wire — and the fixed budget made `smem_recall` and
+  `smem_context` time out for every desktop client while the same operations
+  succeeded from the CLI. Values above 600 s clamp with a warning (a millisecond
+  typo must not become a five-hour hang), invalid values warn and fall back to
+  the 30 s default, and the effective timeout is logged at server start.
+- `ensure_schema` converges a legacy SCHEMALESS `change_log` table before applying
+  the field definitions: it probes `INFO FOR DB` and runs
+  `ALTER TABLE change_log SCHEMAFULL` — the documented schemaless-to-schemafull
+  transition, keeping existing rows and rejecting nothing the writer produces.
+  Databases that wrote change-log rows before the table was declared in the
+  schema (a shape an export/import preserves) previously warned on every startup
+  and the `payload` field never converged to its declared FLEXIBLE form. Probe
+  and ALTER are fail-soft: a failure preserves the previous behaviour exactly.
+
 ## [3.9.2] — 2026-09-07 — the writes were fine; the bookkeeping around them was not
 
 A batch release: twenty fixes that landed together, most of them in the
