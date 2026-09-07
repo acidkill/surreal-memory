@@ -21,8 +21,23 @@ _STALE_SECONDS = 3600  # 1 hour
 
 
 def _lock_path(brain_id: str = "") -> Path:
-    """Get the lock file path, optionally per-brain."""
-    base = Path.home() / ".surrealmemory"
+    """Get the lock file path, optionally per-brain.
+
+    Honours ``SURREAL_MEMORY_DIR`` like the rest of the data directory does
+    (``cli/config.get_default_data_dir``, ``cli/update_check._get_cache_path``).
+    Hard-coding ``Path.home()`` here made the lock the one piece of state that
+    a redirected data dir could not move: anything run against a throwaway
+    brain still created and deleted files in the operator's real
+    ``~/.surrealmemory``.
+
+    The trade-off is worth naming: two processes pointed at different
+    ``SURREAL_MEMORY_DIR`` values now take different locks and no longer
+    exclude one another. That is the intended reading -- they are working on
+    separate data directories -- but it does mean the lock is per data dir
+    rather than per machine.
+    """
+    env_dir = os.environ.get("SURREAL_MEMORY_DIR")
+    base = Path(env_dir).resolve() if env_dir else Path.home() / ".surrealmemory"
     base.mkdir(parents=True, exist_ok=True)
     safe_name = brain_id.replace("/", "_").replace("\\", "_") if brain_id else ""
     filename = f"consolidation-{safe_name}.lock" if safe_name else "consolidation.lock"

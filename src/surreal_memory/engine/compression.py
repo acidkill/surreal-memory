@@ -26,6 +26,7 @@ from datetime import datetime
 from enum import IntEnum, StrEnum
 from typing import TYPE_CHECKING, Any
 
+from surreal_memory.core.constants import GRAPH_ONLY_PLACEHOLDER
 from surreal_memory.utils.content_refresh import content_refreshed, contents_refreshed
 from surreal_memory.utils.timeutils import ensure_naive_utc, utcnow
 
@@ -728,7 +729,7 @@ class CompressionEngine:
             brain_id = self._storage.current_brain_id or ""
             now_iso = utcnow().isoformat()
             for neuron in neurons.values():
-                if neuron.content and neuron.content != "[graph-only]":
+                if neuron.content and neuron.content != GRAPH_ONLY_PLACEHOLDER:
                     try:
                         await self._storage.save_neuron_snapshot(
                             neuron_id=neuron.id,
@@ -750,10 +751,10 @@ class CompressionEngine:
             # Neurons already carrying the placeholder with the sentinel hash
             # are done - re-deriving their fields would only spend a provider
             # call on a known result.
-            pending_clear = [n for n in neurons.values() if n.content != "[graph-only]"]
+            pending_clear = [n for n in neurons.values() if n.content != GRAPH_ONLY_PLACEHOLDER]
             # The placeholder is a tombstone, not content, so it gets the
             # codebase's "no meaningful fingerprint" sentinel rather than
-            # simhash("[graph-only]"). That SimHash is one constant for every
+            # simhash(GRAPH_ONLY_PLACEHOLDER). That SimHash is one constant for every
             # graph-only anchor, and the consolidation census compares anchors
             # by Hamming distance - identical fingerprints would read as a
             # near-duplicate pair and persist a false "duplicate of" edge
@@ -761,7 +762,7 @@ class CompressionEngine:
             refreshed = [
                 dc_replace(n, content_hash=0)
                 for n in await contents_refreshed(
-                    self._storage, [(n, "[graph-only]") for n in pending_clear], brain=brain
+                    self._storage, [(n, GRAPH_ONLY_PLACEHOLDER) for n in pending_clear], brain=brain
                 )
             ]
             # Tombstones written before this change carry the SimHash of their
@@ -771,7 +772,7 @@ class CompressionEngine:
             refreshed.extend(
                 dc_replace(n, content_hash=0)
                 for n in neurons.values()
-                if n.content == "[graph-only]" and n.content_hash != 0
+                if n.content == GRAPH_ONLY_PLACEHOLDER and n.content_hash != 0
             )
             for cleared in refreshed:
                 try:
@@ -1006,6 +1007,15 @@ class CompressionEngine:
         try:
             brain = await self._storage.get_brain(self._storage.current_brain_id or "")
         except Exception:
+            # Fail-soft on purpose: the refresh helper re-fetches per fiber, so the
+            # pass still completes. It is logged all the same, because two
+            # consequences are otherwise invisible: the one-lookup-per-pass
+            # optimisation quietly degrades to one lookup per fiber with nothing to
+            # explain the slowdown, and a persistent storage fault reaches the
+            # operator as a content_refresh warning blaming the embedding provider.
+            logger.warning(
+                "Brain pre-fetch failed; falling back to a per-fiber lookup", exc_info=True
+            )
             brain = None
 
         for idx, fiber in enumerate(fibers):

@@ -63,6 +63,7 @@ Auto-capture configuration for MCP server.
 | `capture_insights` | `bool` | `true` |  |
 | `capture_preferences` | `bool` | `true` |  |
 | `min_confidence` | `float` | `0.7` |  |
+| `capture_session_summary` | `bool` | `false` |  |
 
 ## `[eternal]`
 
@@ -101,7 +102,7 @@ Proactive brain maintenance configuration.
 | `expiry_cleanup_max_per_run` | `int` | `100` |  |
 | `scheduled_consolidation_enabled` | `bool` | `true` |  |
 | `scheduled_consolidation_interval_hours` | `int` | `24` |  |
-| `scheduled_consolidation_strategies` | `tuple[str, ...]` | `['prune', 'merge', 'enrich']` |  |
+| `scheduled_consolidation_strategies` | `tuple[str, ...]` | `['prune', 'merge', 'mature', 'enrich']` |  |
 | `version_check_enabled` | `bool` | `true` |  |
 | `version_check_interval_hours` | `int` | `24` |  |
 | `decay_enabled` | `bool` | `true` |  |
@@ -386,7 +387,7 @@ places, the environment wins.
 | `SURREAL_MEMORY_API_KEY` | `src/surreal_memory/unified_config.py` |
 | `SURREAL_MEMORY_BRAIN` | `src/surreal_memory/cli/_helpers.py`, `src/surreal_memory/cli/commands/brain.py`, `src/surreal_memory/unified_config.py` |
 | `SURREAL_MEMORY_DASHBOARD_CACHE_TTL` | `src/surreal_memory/server/dashboard_cache.py` |
-| `SURREAL_MEMORY_DIR` | `src/surreal_memory/cli/config.py`, `src/surreal_memory/cli/update_check.py`, `src/surreal_memory/engine/reasoning_injection.py`, +3 more |
+| `SURREAL_MEMORY_DIR` | `src/surreal_memory/cli/config.py`, `src/surreal_memory/cli/update_check.py`, `src/surreal_memory/engine/reasoning_injection.py`, +4 more |
 | `SURREAL_MEMORY_DISABLE_SUPERSEDED_FILTER` | `src/surreal_memory/mcp/recall_handler.py` |
 | `SURREAL_MEMORY_EMBEDDING_API_KEY` | `src/surreal_memory/engine/embedding/bge_m3_embedding.py` |
 | `SURREAL_MEMORY_EMBEDDING_DIMENSION` | `src/surreal_memory/engine/embedding/bge_m3_embedding.py`, `src/surreal_memory/unified_config.py` |
@@ -398,6 +399,7 @@ places, the environment wins.
 | `SURREAL_MEMORY_HOST` | `src/surreal_memory/utils/config.py` |
 | `SURREAL_MEMORY_HUB_URL` | `src/surreal_memory/unified_config.py` |
 | `SURREAL_MEMORY_INLINE_EMBED_TIMEOUT` | `src/surreal_memory/engine/encoder.py` |
+| `SURREAL_MEMORY_NO_UPDATE_CHECK` | `src/surreal_memory/cli/update_check.py` |
 | `SURREAL_MEMORY_REASONING_ALLOW_REMOTE` | `src/surreal_memory/unified_config.py` |
 | `SURREAL_MEMORY_REASONING_EXTRA_DIRS` | `src/surreal_memory/unified_config.py` |
 | `SURREAL_MEMORY_REASONING_INJECTION` | `src/surreal_memory/unified_config.py` |

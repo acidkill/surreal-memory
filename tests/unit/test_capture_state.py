@@ -14,6 +14,7 @@ from surreal_memory.hooks.capture_state import (
     content_key,
     load_seen,
     mark_seen,
+    rejected_key,
     session_key,
 )
 
@@ -156,3 +157,56 @@ class TestFailOpen:
         blocker.write_text("x", encoding="utf-8")
         monkeypatch.setenv("SURREAL_MEMORY_DIR", str(blocker / "nested"))
         mark_seen("any-session", ["hash1"])  # must not raise
+
+
+class TestRejectedKey:
+    """Gate refusals are remembered too -- but only for the threshold that refused.
+
+    Rejected candidates used to be left unmarked, so the hooks re-submitted them
+    to the gate on every invocation. Measured on production 2026-08-08: 499 auto
+    decisions in 24h carried only 134 distinct contents (one fragment judged 36
+    times), inflating the gate's denominator ~3.7x.
+    """
+
+    def test_rejected_key_differs_from_plain_key(self) -> None:
+        ck = content_key("Decision: c remains explicitly open and unresolved")
+        assert rejected_key(ck, 5) != ck, (
+            "a refusal must not be recorded as an acceptance -- otherwise lowering "
+            "the threshold could never revive the content"
+        )
+
+    def test_rejected_key_is_threshold_scoped(self) -> None:
+        ck = content_key("Insight: the harvester stalled on shard three")
+        assert rejected_key(ck, 5) != rejected_key(ck, 4)
+
+    def test_rejected_key_is_stable(self) -> None:
+        ck = content_key("Error: flush_batch named the remote file from a stale counter")
+        assert rejected_key(ck, 5) == rejected_key(ck, 5)
+
+    def test_refusal_suppresses_at_same_threshold(self, isolated_state_dir: Path) -> None:
+        ck = content_key("Decision: b is blocked awaiting human authorization")
+        mark_seen("sess-a", [rejected_key(ck, 5)])
+        seen = load_seen("sess-a")
+        assert rejected_key(ck, 5) in seen
+
+    def test_refusal_expires_when_threshold_changes(self, isolated_state_dir: Path) -> None:
+        """The whole point of scoping: a lowered bar must give a second hearing.
+
+        Marking a refusal as a plain seen-key would silence that content for the
+        rest of the session even after the operator lowered the threshold --
+        trading duplicate noise for silent loss, which is the worse failure.
+        """
+        ck = content_key("Decision: b is blocked awaiting human authorization")
+        mark_seen("sess-b", [rejected_key(ck, 5)])
+        seen = load_seen("sess-b")
+        assert ck not in seen
+        assert rejected_key(ck, 4) not in seen, (
+            "after the threshold moved 5->4 the candidate must be judged again"
+        )
+
+    def test_accepted_key_survives_threshold_change(self, isolated_state_dir: Path) -> None:
+        """Acceptance is unconditional -- it must not be revived by a threshold move."""
+        ck = content_key("Insight: rclone token rotation confirmed on every mount")
+        mark_seen("sess-c", [ck])
+        seen = load_seen("sess-c")
+        assert ck in seen

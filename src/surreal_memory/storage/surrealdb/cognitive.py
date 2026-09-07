@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
-from surreal_memory.storage.surrealdb._ids import _to_surreal_id
+from surreal_memory.storage.surrealdb._ids import _record_id_part, _to_surreal_id
 from surreal_memory.utils.timeutils import utcnow
 
 logger = logging.getLogger(__name__)
@@ -188,9 +188,11 @@ class SurrealDBCognitiveMixin:
             return
 
         conn = self._ensure_conn()
-        sid = f"{_to_surreal_id(brain_id)}_{_to_surreal_id(neuron_id)}"
+        # Merge by the id the SELECT above returned, for the same reason the
+        # upsert path does: a recomputed sid misses a row whose id still carries
+        # an older brain prefix, and the merge then silently writes nothing.
         await conn.merge(
-            f"cognitive_state:{sid}",
+            existing[0]["id"],
             {
                 "confidence": _clamp_confidence(confidence),
                 "evidence_for_count": int(evidence_for_count),
@@ -391,7 +393,7 @@ class SurrealDBCognitiveMixin:
         results: list[dict[str, Any]] = []
         for r in rows:
             raw_id = str(r.get("id", ""))
-            gap_id = raw_id.split(":")[-1] if ":" in raw_id else raw_id
+            gap_id = _record_id_part(raw_id)
             results.append(
                 {
                     "id": gap_id,
@@ -411,12 +413,18 @@ class SurrealDBCognitiveMixin:
         sid = _to_surreal_id(gap_id)
 
         rows = await self._query(
+            # Rebuild the record id in SurrealQL rather than comparing `id`
+            # with a "knowledge_gaps:<sid>" *string*: `id` holds a record id,
+            # so the string form is unconditionally false and this lookup
+            # returned None for every gap that existed. Same trap as the
+            # typed_memory / fiber / alerts lookups in this package.
             "SELECT id, topic, detected_at, detection_source,"
             " related_neuron_ids, resolved_at, resolved_by_neuron_id, priority"
             " FROM knowledge_gaps"
-            " WHERE brain_id = $brain_id AND id = $rid LIMIT 1",
+            " WHERE brain_id = $brain_id AND id = type::record('knowledge_gaps', $sid)"
+            " LIMIT 1",
             brain_id=brain_id,
-            rid=f"knowledge_gaps:{sid}",
+            sid=sid,
         )
         if not rows:
             return None
@@ -424,7 +432,7 @@ class SurrealDBCognitiveMixin:
         r = rows[0]
         raw_id = str(r.get("id", ""))
         return {
-            "id": raw_id.split(":")[-1] if ":" in raw_id else raw_id,
+            "id": _record_id_part(raw_id),
             "topic": str(r.get("topic", "")),
             "detected_at": _parse_datetime(r.get("detected_at")),
             "detection_source": str(r.get("detection_source", "")),
@@ -445,16 +453,17 @@ class SurrealDBCognitiveMixin:
 
         existing = await self._query(
             "SELECT id FROM knowledge_gaps"
-            " WHERE brain_id = $brain_id AND id = $rid AND resolved_at IS NONE LIMIT 1",
+            " WHERE brain_id = $brain_id AND id = type::record('knowledge_gaps', $sid)"
+            " AND resolved_at IS NONE LIMIT 1",
             brain_id=brain_id,
-            rid=f"knowledge_gaps:{sid}",
+            sid=sid,
         )
         if not existing:
             return False
 
         conn = self._ensure_conn()
         await conn.merge(
-            f"knowledge_gaps:{sid}",
+            existing[0]["id"],
             {
                 "resolved_at": utcnow(),
                 "resolved_by_neuron_id": resolved_by_neuron_id,

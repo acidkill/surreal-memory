@@ -291,8 +291,23 @@ class TestScheduledConsolidationConfig:
         assert cfg.scheduled_consolidation_strategies == (
             "prune",
             "merge",
+            "mature",
             "enrich",
         )
+
+    def test_defaults_include_mature(self) -> None:
+        """`mature` is the only strategy that advances EPISODIC → SEMANTIC; leaving
+        it out of the scheduled-consolidation default meant `smem serve` never
+        promoted anything, since its `_consolidation_loop` has no op-triggered
+        `auto_consolidate` fallback. Guards against a silent regression back to a
+        default tuple that would leave the HTTP daemon quietly non-maturing."""
+        cfg = MaintenanceConfig()
+        assert "mature" in cfg.scheduled_consolidation_strategies
+        # Same guarantee via the from_dict fallback path — HTTP daemon rebuilds
+        # MaintenanceConfig from a dict on every reload, so the fallback matters
+        # just as much as the field default.
+        restored = MaintenanceConfig.from_dict({})
+        assert "mature" in restored.scheduled_consolidation_strategies
 
     def test_roundtrip(self) -> None:
         """to_dict/from_dict preserves scheduled consolidation fields."""
@@ -316,5 +331,6 @@ class TestScheduledConsolidationConfig:
         assert restored.scheduled_consolidation_strategies == (
             "prune",
             "merge",
+            "mature",
             "enrich",
         )

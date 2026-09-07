@@ -20,6 +20,7 @@ import math
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from surreal_memory.core.constants import GRAPH_ONLY_PLACEHOLDER
 from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.core.synapse import Synapse, SynapseType
 from surreal_memory.engine.edge_identity import deterministic_edge_id
@@ -392,7 +393,7 @@ async def discover_semantic_synapses(
                 # Linking them would persist a false SIMILAR_TO edge on every
                 # consolidation pass; the dedup census skips these anchors for
                 # the same reason (their content_hash carries the 0 sentinel).
-                if n.content == "[graph-only]":
+                if n.content == GRAPH_ONLY_PLACEHOLDER:
                     continue
                 emb = n.metadata.get("_embedding")
                 if emb:

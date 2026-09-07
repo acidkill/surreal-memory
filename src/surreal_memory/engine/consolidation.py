@@ -20,6 +20,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from surreal_memory.core.constants import GRAPH_ONLY_PLACEHOLDER
 from surreal_memory.core.fiber import Fiber
 from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.core.synapse import Synapse, SynapseType
@@ -2454,7 +2455,12 @@ class ConsolidationEngine:
             anchors = window
             report.extra["dedup_anchors_truncated"] = True
             report.extra["dedup_window_start"] = cursor
-            await self._advance_dedup_cursor(cursor, cap, anchors_total)
+            # The cursor is the one piece of state this census keeps between
+            # runs, and moving it is a write. A dry run that advanced it would
+            # make the next real run start a window later, so the slice the dry
+            # run only *looked at* is never compared at all.
+            if not dry_run:
+                await self._advance_dedup_cursor(cursor, cap, anchors_total)
             # INFO, not WARNING: on a brain that has simply outgrown the cap this
             # is a steady state, and every run would raise the same alarm until
             # operators learned to ignore dedup warnings — burying the real
@@ -2517,7 +2523,7 @@ class ConsolidationEngine:
             # near-duplicate-match a genuine memory and persist a false ALIAS
             # edge. Guard on content like every other fingerprint consumer;
             # tombstones stamped with the sentinel are already skipped above.
-            if anchor_a.content == "[graph-only]":
+            if anchor_a.content == GRAPH_ONLY_PLACEHOLDER:
                 continue
 
             for anchor_b in anchors[i + 1 :]:
@@ -2525,7 +2531,7 @@ class ConsolidationEngine:
                     continue
                 if anchor_b.content_hash is None or anchor_b.content_hash == 0:
                     continue
-                if anchor_b.content == "[graph-only]":
+                if anchor_b.content == GRAPH_ONLY_PLACEHOLDER:
                     continue
 
                 if is_near_duplicate(
@@ -2803,18 +2809,49 @@ class ConsolidationEngine:
         config = CompressionConfig()
         states_updated = 0
 
-        for neuron in neurons:
-            # Retrieve last_accessed_at and access_frequency from neuron metadata
-            # (access_frequency is stored in neuron_states, not neurons directly)
-            last_accessed_raw: str | None = neuron.metadata.get("last_accessed_at")
-            last_accessed_at: datetime | None = None
-            if last_accessed_raw:
-                try:
-                    last_accessed_at = datetime.fromisoformat(last_accessed_raw)
-                except ValueError:
-                    pass
+        # access_frequency and last_activated live on NeuronState (schema.py neuron_state
+        # table), not on neuron.metadata — the dead-neuron / orphan pass in this same
+        # class already knows this (_prune, ~L1000) and prefetches with the exact
+        # pattern below. Without this, access_score and recency_score (0.8 of the heat
+        # weight) were pinned to zero and heat reduced to priority * 0.2.
+        try:
+            states_by_id: dict[str, Any] = {
+                s.neuron_id: s for s in await self._storage.get_all_neuron_states()
+            }
+            use_prefetched_states = True
+        except Exception:
+            _logger.debug(
+                "LIFECYCLE: get_all_neuron_states failed; falling back to a batch fetch",
+                exc_info=True,
+            )
+            states_by_id = {}
+            use_prefetched_states = False
 
-            access_count: int = int(neuron.metadata.get("access_frequency", 0))
+        # Fallback cache. `neurons` is already the whole pass — the paging above
+        # accumulates into one list — so this is a single get_neuron_states_batch
+        # over every id, not one per page, and it is populated on the first miss
+        # and never again. On a brain at the 10 000 cap that one call is the
+        # fallback's whole cost; _prune measures roughly ten seconds per five
+        # thousand ids on the same backend, so budget for it accordingly. The
+        # alternative — one query per neuron — is what this cache exists to avoid.
+        fallback_states: dict[str, Any] = {}
+        fallback_ids: set[str] = set()
+
+        async def _state_for(nid: str) -> Any:
+            nonlocal fallback_states, fallback_ids
+            if use_prefetched_states:
+                return states_by_id.get(nid)
+            if nid not in fallback_ids:
+                fallback_ids = {n.id for n in neurons}
+                fallback_states = await self._storage.get_neuron_states_batch(list(fallback_ids))
+            return fallback_states.get(nid)
+
+        for neuron in neurons:
+            # Real access_frequency / last_activated come from NeuronState; priority
+            # stays on neuron.metadata (that is where the writer puts it).
+            state = await _state_for(neuron.id)
+            last_accessed_at: datetime | None = state.last_activated if state is not None else None
+            access_count: int = state.access_frequency if state is not None else 0
             priority: int = int(neuron.metadata.get("priority", 5))
 
             heat = calculate_heat_score(

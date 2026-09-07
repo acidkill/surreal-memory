@@ -176,6 +176,22 @@ def _print_update_notice(current: str, latest: str) -> None:
 
 
 def run_update_check_background() -> None:
-    """Launch update check in a daemon thread. Non-blocking, fire-and-forget."""
+    """Launch update check in a daemon thread. Non-blocking, fire-and-forget.
+
+    Short-circuits when ``SURREAL_MEMORY_NO_UPDATE_CHECK`` is truthy under the
+    repo's canonical env-var convention (`1/true/yes/on`, case-insensitive —
+    the same ``_env_truthy`` used for ``SURREAL_MEMORY_EMBEDDING_ENABLED``,
+    ``SURREAL_MEMORY_SYNC_ENABLED``, ``SURREAL_MEMORY_REASONING_*``).
+    Anything else — including ``off``, ``no``, ``0``, ``false`` — means the
+    update check runs, so an env var that LOOKS like a switch never silently
+    disables the check the way an inverted convention would. The pytest
+    session sets it to ``"1"`` in ``tests/conftest.py::_isolated_home_dir``
+    alongside the ``$HOME`` redirect, so the suite makes no PyPI calls even
+    on a runner with egress.
+    """
+    from surreal_memory.unified_config import _env_truthy
+
+    if _env_truthy(os.environ.get("SURREAL_MEMORY_NO_UPDATE_CHECK")):
+        return
     thread = threading.Thread(target=_check_and_notify, daemon=True)
     thread.start()

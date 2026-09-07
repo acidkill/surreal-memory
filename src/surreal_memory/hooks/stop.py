@@ -352,7 +352,13 @@ async def capture_text(text: str, project_name: str | None = None) -> dict[str, 
     from surreal_memory.core.memory_types import MemoryType, Priority, TypedMemory
     from surreal_memory.engine.dedup.factory import build_dedup_pipeline
     from surreal_memory.engine.encoder import MemoryEncoder
-    from surreal_memory.hooks.capture_state import content_key, load_seen, mark_seen, session_key
+    from surreal_memory.hooks.capture_state import (
+        content_key,
+        load_seen,
+        mark_seen,
+        rejected_key,
+        session_key,
+    )
     from surreal_memory.mcp.auto_capture import analyze_text_for_memories
     from surreal_memory.safety.input_firewall import check_content
 
@@ -406,9 +412,18 @@ async def capture_text(text: str, project_name: str | None = None) -> dict[str, 
         captured_keys: list[str] = []
         had_candidate = bool(eligible)
         duplicate_skipped = False
+        # Suppress both what we already stored and what the gate already turned
+        # down at this threshold -- otherwise a rejected fragment is re-judged on
+        # every turn for as long as it survives in the transcript tail.
+        gate_min_score = config.write_gate.auto_capture_min_score
         if seen and eligible:
             before = len(eligible)
-            eligible = [it for it in eligible if content_key(it["content"]) not in seen]
+            eligible = [
+                it
+                for it in eligible
+                if content_key(it["content"]) not in seen
+                and rejected_key(content_key(it["content"]), gate_min_score) not in seen
+            ]
             duplicate_skipped = len(eligible) < before
         # All originally-detected fragments were duplicates (none survived the
         # filter above) -- nothing left to even attempt the gate/encode loop,
@@ -464,6 +479,9 @@ async def capture_text(text: str, project_name: str | None = None) -> dict[str, 
                             gate_result.rejection_reason,
                         )
                         gate_rejected = True
+                        # Remember the refusal, not just the save: without this the
+                        # next turn re-submits the identical fragment to the gate.
+                        captured_keys.append(rejected_key(content_key(content), gate_min_score))
                         continue
 
                 redacted_content, matches, _ = auto_redact_content(
@@ -501,16 +519,23 @@ async def capture_text(text: str, project_name: str | None = None) -> dict[str, 
                 logger.debug("Failed to save stop-hook memory", exc_info=True)
                 continue
 
-        # Always save a session summary if no patterns were detected. Skipped
+        # Fall back to a session summary if no patterns were detected. Skipped
         # when every detected fragment was duplicate-filtered above -- that
         # case already has an accurate "duplicate" status; falling through
         # here would silently replace it with a brand-new summary save.
+        #
+        # Off by default (auto.capture_session_summary): the "summary" is the last
+        # ~10 transcript lines verbatim, which on a real chat is harness markers and
+        # half-sentences, not knowledge. See AutoConfig for the measured numbers.
         summary_had_candidate = False
-        if not saved and not all_candidates_were_duplicates:
+        if config.auto.capture_session_summary and not saved and not all_candidates_were_duplicates:
             summary = _extract_session_summary(text)
             if summary:
                 summary_had_candidate = True
-                if content_key(summary) in seen:
+                if (
+                    content_key(summary) in seen
+                    or rejected_key(content_key(summary), gate_min_score) in seen
+                ):
                     duplicate_skipped = True
                     summary = None  # type: ignore[assignment]
             if summary and len(summary) > 30:
@@ -542,6 +567,8 @@ async def capture_text(text: str, project_name: str | None = None) -> dict[str, 
                             gate_result.rejection_reason,
                         )
                         gate_rejected = True
+                        # Key must be taken before `summary` is cleared below.
+                        captured_keys.append(rejected_key(content_key(summary), gate_min_score))
                         summary = None  # type: ignore[assignment]
 
                 if summary:

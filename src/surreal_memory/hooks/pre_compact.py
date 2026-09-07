@@ -129,7 +129,13 @@ async def flush_text(text: str, project_name: str | None = None) -> dict[str, An
     from surreal_memory.core.memory_types import MemoryType, Priority, TypedMemory
     from surreal_memory.engine.dedup.factory import build_dedup_pipeline
     from surreal_memory.engine.encoder import MemoryEncoder
-    from surreal_memory.hooks.capture_state import content_key, load_seen, mark_seen, session_key
+    from surreal_memory.hooks.capture_state import (
+        content_key,
+        load_seen,
+        mark_seen,
+        rejected_key,
+        session_key,
+    )
     from surreal_memory.mcp.auto_capture import analyze_text_for_memories
     from surreal_memory.safety.input_firewall import check_content
     from surreal_memory.safety.sensitive import auto_redact_content
@@ -186,9 +192,18 @@ async def flush_text(text: str, project_name: str | None = None) -> dict[str, An
         seen = load_seen(skey)
         captured_keys: list[str] = []
         duplicate_skipped = False
+        # Suppress both what we already stored and what the gate already turned
+        # down at this threshold -- shared seen-set with the Stop hook, so a
+        # rejection recorded there must silence the candidate here too.
+        gate_min_score = config.write_gate.auto_capture_min_score
         if seen:
             before = len(boosted)
-            boosted = [it for it in boosted if content_key(it["content"]) not in seen]
+            boosted = [
+                it
+                for it in boosted
+                if content_key(it["content"]) not in seen
+                and rejected_key(content_key(it["content"]), gate_min_score) not in seen
+            ]
             duplicate_skipped = len(boosted) < before
 
         if not boosted:
@@ -250,6 +265,9 @@ async def flush_text(text: str, project_name: str | None = None) -> dict[str, An
                             gate_result.rejection_reason,
                         )
                         gate_rejected = True
+                        # Remember the refusal, not just the save: without this the
+                        # next compaction re-submits the identical fragment.
+                        captured_keys.append(rejected_key(content_key(content), gate_min_score))
                         continue
 
                 redacted_content, matches, _ = auto_redact_content(
