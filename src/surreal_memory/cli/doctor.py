@@ -1125,12 +1125,20 @@ def _run_surrealdb_version_probe() -> str:
 
     from surrealdb import AsyncSurreal
 
-    from surreal_memory.storage.surrealdb.connection import SurrealSettings
+    from surreal_memory.storage.surrealdb.connection import SurrealSettings, signin_payload
 
     async def _probe() -> str:
         settings = SurrealSettings.from_env()
         conn = AsyncSurreal(settings.url)
-        await conn.signin({"username": settings.user, "password": settings.password})
+        await conn.signin(
+            signin_payload(
+                settings.user,
+                settings.password,
+                settings.namespace,
+                settings.database,
+                settings.auth_level,
+            )
+        )
         return str(await asyncio.wait_for(conn.version(), timeout=5))
 
     return run_async(_probe())
@@ -1218,12 +1226,20 @@ def run_synapse_migration_command(action: str, *, json_output: bool = False) -> 
     from surrealdb import AsyncSurreal
 
     from surreal_memory.storage.surrealdb import migrations as migrations_mod
-    from surreal_memory.storage.surrealdb.connection import SurrealSettings
+    from surreal_memory.storage.surrealdb.connection import SurrealSettings, signin_payload
 
     async def _run() -> dict[str, Any]:
         settings = SurrealSettings.from_env()
         conn = AsyncSurreal(settings.url)
-        await conn.signin({"username": settings.user, "password": settings.password})
+        await conn.signin(
+            signin_payload(
+                settings.user,
+                settings.password,
+                settings.namespace,
+                settings.database,
+                settings.auth_level,
+            )
+        )
         await conn.use(settings.namespace, settings.database)
 
         if action == "status":
