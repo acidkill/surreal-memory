@@ -373,6 +373,10 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "type": "boolean",
                     "description": "Include full conflict details in response (default: false). When false, only has_conflicts flag and conflict_count are returned.",
                 },
+                "reconsolidate": {
+                    "type": "boolean",
+                    "description": "Allow this recall to reconsolidate the top matched memories (default: true). Set false for a read-only probe: recall also strengthens fibers and flushes deferred writes by design — speculative callers that should not leave traces pass false. The per-brain reconsolidation_enabled switch remains the global source of truth.",
+                },
                 "include_superseded": {
                     "type": "boolean",
                     "description": "Include superseded facts (those with valid_until set) in recall. Default false: superseded facts are hard-filtered out. Set true to see the full history. Ignored when valid_at is given (point-in-time filtering takes over).",

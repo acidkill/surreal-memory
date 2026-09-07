@@ -326,6 +326,9 @@ class RecallHandler:
         tags = _parse_tags(args)
         include_citations = args.get("include_citations", True)
         clean_for_prompt = bool(args.get("clean_for_prompt", False))
+        reconsolidate = args.get("reconsolidate", True)
+        if not isinstance(reconsolidate, bool):
+            return {"error": "reconsolidate must be a boolean"}
         min_trust: float | None = None
         raw_min_trust = args.get("min_trust")
         if raw_min_trust is not None:
@@ -411,6 +414,7 @@ class RecallHandler:
             tags=tags,
             session_id=f"mcp-{id(self)}",
             exclude_ephemeral=permanent_only,
+            reconsolidate=reconsolidate,
         )
 
         # Passive auto-capture on long queries
