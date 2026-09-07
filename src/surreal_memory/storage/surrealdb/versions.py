@@ -1,4 +1,12 @@
-"""SurrealDB versions storage mixin (compressed brain snapshots)."""
+"""SurrealDB versions storage mixin (compressed brain snapshots).
+
+Single-version lookups rebuild the record id in SurrealQL with
+``type::record('brain_versions', $sid)``. Comparing ``id`` with a
+``"brain_versions:<sid>"`` *string* is unconditionally false — ``id`` holds a
+record id — so ``get_version`` and ``delete_version`` could never find a row,
+and every restore/diff path in ``engine/brain_versioning.py`` saw an empty
+result. Same trap as the ``typed_memory`` / ``alerts`` lookups in this package.
+"""
 
 from __future__ import annotations
 
@@ -11,7 +19,7 @@ from datetime import datetime
 from typing import Any
 
 from surreal_memory.engine.brain_versioning import BrainVersion
-from surreal_memory.storage.surrealdb._ids import _to_surreal_id
+from surreal_memory.storage.surrealdb._ids import _record_id_part, _to_surreal_id
 from surreal_memory.utils.timeutils import utcnow
 
 logger = logging.getLogger(__name__)
@@ -62,7 +70,7 @@ def _row_to_version(row: dict[str, Any]) -> BrainVersion:
         metadata = dict(metadata_raw or {})
 
     raw_id = str(row.get("id", ""))
-    vid = raw_id.split(":")[-1] if ":" in raw_id else raw_id
+    vid = _record_id_part(raw_id)
 
     return BrainVersion(
         id=vid,
@@ -121,9 +129,14 @@ class SurrealDBVersionsMixin:
             await conn.insert("brain_versions", record_data)
         except Exception:
             try:
-                await conn.delete(f"brain_versions:{sid}")
+                # Rebuild the id in SurrealQL rather than handing the SDK a
+                # "brain_versions:<sid>" string: a letter-free sid comes back
+                # as a *numeric* record id there, so the delete would clear a
+                # different, absent record without raising, and the retry below
+                # would hit the same collision. See _ids._record_id_part.
+                await self._query("DELETE type::record('brain_versions', $sid)", sid=sid)
             except Exception:
-                pass
+                logger.debug("version insert retry: delete of the clashing row failed")
             await conn.insert("brain_versions", record_data)
 
     async def get_version(
@@ -134,9 +147,10 @@ class SurrealDBVersionsMixin:
         """Get a version and its decompressed snapshot JSON by ID."""
         sid = _to_surreal_id(version_id)
         rows = await self._query(
-            "SELECT * FROM brain_versions WHERE brain_id = $brain_id AND id = $rid LIMIT 1",
+            "SELECT * FROM brain_versions WHERE brain_id = $brain_id"
+            " AND id = type::record('brain_versions', $sid) LIMIT 1",
             brain_id=brain_id,
-            rid=f"brain_versions:{sid}",
+            sid=sid,
         )
         if not rows:
             return None
@@ -181,16 +195,21 @@ class SurrealDBVersionsMixin:
         """Delete a specific version. Returns True if a row was deleted."""
         sid = _to_surreal_id(version_id)
         existing = await self._query(
-            "SELECT id FROM brain_versions WHERE brain_id = $brain_id AND id = $rid LIMIT 1",
+            "SELECT id FROM brain_versions WHERE brain_id = $brain_id"
+            " AND id = type::record('brain_versions', $sid) LIMIT 1",
             brain_id=brain_id,
-            rid=f"brain_versions:{sid}",
+            sid=sid,
         )
         if not existing:
             return False
 
         conn = self._ensure_conn()
-        rid = str(existing[0].get("id", ""))
+        rid = existing[0].get("id")
         if not rid:
             return False
+        # The id object the query returned, rather than an id rebuilt from
+        # ``sid``: a letter-free sid rebuilt as ``f"brain_versions:{sid}"``
+        # parses as a *numeric* record id and addresses a different, absent
+        # row -- the delete then reports success having removed nothing.
         await conn.delete(rid)
         return True

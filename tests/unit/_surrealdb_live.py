@@ -50,6 +50,8 @@ LIVE_TEST_BRAIN_NAMES = frozenset(
         "kw-df-batch-live-4b8d2e",  # test_surrealdb_keyword_df_live.py
         "zz-dashboard-brains-scope-live",  # test_dashboard_brains_scope.py (list_brains_api)
         "zz-dashboard-stats-scope-live",  # test_dashboard_brains_scope.py (get_stats)
+        "alerts-recordid-live",  # test_surrealdb_alerts_recordid_live.py
+        "record-id-lookups-live",  # test_surrealdb_record_id_lookups_live.py
     }
 )
 
