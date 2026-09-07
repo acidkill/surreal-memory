@@ -5,6 +5,95 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.9.2] — 2026-09-07 — the writes were fine; the bookkeeping around them was not
+
+A batch release: twenty fixes that landed together, most of them in the
+bookkeeping around the graph rather than the graph itself — change-log rows that
+never landed, lookups that compared a record id against a string, a sign-in that
+could not reach a database-scoped user, and a lifecycle score that read the
+wrong table.
+
+### Fixed
+
+- `change_log.payload` is now `option<object> FLEXIBLE`, re-DEFINED with
+  `OVERWRITE` so existing databases migrate too. `change_log` is SCHEMAFULL, and
+  without `FLEXIBLE` SurrealDB rejected a nested payload outright — while both
+  writers swallowed the error, so every neuron, synapse and fiber write produced
+  no change-log row and sync had nothing to replay. A failed insert now warns
+  once per process instead of passing silently.
+- The SurrealDB change readers (`get_changes_since`, `get_unsynced_changes`)
+  return `ChangeEntry`, the record type `SyncEngine` actually consumes. They
+  used to hand back `SyncChange` — no `id`, and a `str` `changed_at` — which
+  made both sync paths raise `AttributeError` on the only production backend.
+- Single-record lookups address rows by record id, not by a rebuilt string.
+  `alerts`, `knowledge_gaps` and `brain_versions` compared `id` against a
+  `"table:⟨id⟩"` *string*, which is unconditionally false against a record-id
+  column — `mark_alerts_seen`, `mark_alert_acknowledged`, `get_alert`,
+  `get_version` and `delete_version` could never find their rows. The follow-up
+  writes reuse the `id` object the SELECT returned, because a letter-free id
+  part rebuilt as a string parses as a *numeric* record id and addresses a
+  different, absent row.
+- `SURREALDB_AUTH_LEVEL` (`root` — the default, `namespace`, or `database`)
+  scopes the sign-in payload. A user defined `ON DATABASE` only authenticates
+  when sign-in carries the namespace and the database, and a root user only when
+  it carries neither; `smem doctor`'s SurrealDB probes build the same payload.
+  Stock installations are unchanged.
+- Brain import surfaces per-loop drops instead of swallowing them, and
+  `smem brain import` reports the counts the database actually ended up with
+  rather than what the snapshot file claimed — importing under a fresh name can
+  still collide with an existing brain's ids, but the shortfall now warns.
+- `PUT /memory/neurons/{id}` refreshes `content_hash` and the stored embedding
+  when `content` changes — the last write path without the `content_refreshed`
+  helper. A metadata-replacing PUT carries the old `_embedding` key forward so
+  the helper can refresh it rather than persisting the old vector against the
+  new text.
+- `smem_edit` recomputes `expires_at` from the new type's default TTL when
+  `type` changes — a DECISION edited to FACT no longer keeps a 90-day clock, a
+  FACT edited to TODO finally gains one — without reviving soft-deleted memories
+  or clearing an ephemeral's TTL.
+- LIFECYCLE reads `access_frequency` and `last_activated` from `NeuronState`,
+  where they are actually stored; the heat score's access and recency weights
+  (0.8 combined) were pinned to zero for every neuron.
+- A consolidation dry run no longer advances the dedup census window — the slice
+  it merely looked at stays comparable by the next real run.
+- The consolidation lock honours `SURREAL_MEMORY_DIR` like the rest of the data
+  directory, so a redirected install no longer touches `~/.surrealmemory`.
+- The scheduled-consolidation default strategies include `mature` — without it,
+  `smem serve`'s daemon never promoted EPISODIC memories to SEMANTIC.
+- ReasoningBank pattern fibers are pinned like trained KB, so decay and prune
+  cannot eat them between sessions.
+- The provider-unavailable embed skip logs at WARNING with the `smem reindex`
+  hint — the same visibility as the timeout branch — throttled to the first and
+  every 100th occurrence so a down provider cannot flood the log.
+- The compression pass logs a failed brain pre-fetch instead of silently
+  degrading to one lookup per fiber.
+- The write gate remembers its refusals, not only its saves: rejection keys are
+  namespaced by threshold, so a rejected fragment is not re-judged on every
+  Stop, and lowering `auto_capture_min_score` still grants a fresh hearing.
+- Listing previews (`smem list`, `smem cleanup --dry-run`) show a fiber's
+  essence when its anchor carries the `[graph-only]` tombstone instead of
+  printing the tombstone as if it were the memory; the literal is now the shared
+  `GRAPH_ONLY_PLACEHOLDER` constant everywhere.
+- The update check honours `SURREAL_MEMORY_NO_UPDATE_CHECK` under the canonical
+  truthiness convention, and the test suite sets it so pytest makes no PyPI
+  calls.
+- The mock embedding provider derives its vectors from blake2b rather than the
+  per-process salted `hash()` — the Python 3.11 suite no longer fails at random
+  on vector collisions, and the encoder's unavailable-skip tests stop inheriting
+  a process-global throttle count, so the suite is order-stable under xdist.
+- The dashboard's background grade refresh keeps a strong task reference (the
+  event loop could otherwise drop it mid-flight), and the live tests drain the
+  refresh tasks on the owning loop instead of hanging teardown for 120 s.
+
+### Changed
+
+- The Stop hook's session-summary fallback now defaults to **off**
+  (`auto.capture_session_summary`). The "summary" is the last ~10 transcript
+  lines verbatim — harness markers and half-sentences on a real transcript;
+  measured on a production brain, 96 of 158 write-gate rejections over 24 h
+  (61 %) originated in this one path. Set `capture_session_summary = true` to
+  restore the previous behaviour.
+
 ## [3.9.1] — 2026-09-03 — the dashboard answers before the diagnostics do
 
 ### Fixed
