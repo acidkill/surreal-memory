@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -120,21 +121,41 @@ class TestAgentTagInjection:
 class TestConsolidationLock:
     """Test file-based consolidation lock.
 
-    _lock_path() is a real, fixed file under ~/.surrealmemory/ shared across
-    the whole process tree — not test-isolated. Under pytest-xdist's default
-    per-test scheduling, two of these tests can land on different worker
-    processes and race on that one file (reproduced live: a different subset
-    fails each full-suite run, 100% pass in isolation). xdist_group pins the
-    whole class to one worker, same fix as the aiosqlite leak-guard pair.
+    _lock_path() ignored SURREAL_MEMORY_DIR and derived its directory from
+    Path.home() alone. When #74 added xdist_group here, that made these tests
+    share one real lock file across the process tree and race on it, exactly as
+    the note it left said. #121 then gave the suite a session-scoped $HOME
+    redirect for unrelated reasons, which hands every xdist worker its own home
+    and therefore its own lock file -- so the race has not been reachable since,
+    and the note quietly stopped describing the present.
+
+    What the redirect does not do is make the intent explicit: a test that
+    relies on $HOME being someone else's problem is one refactor away from
+    writing into a real home again. The fixture below points SURREAL_MEMORY_DIR
+    at a per-test directory and the first test asserts the redirection, because
+    the failure mode is silent. xdist_group is kept as a guard against shared
+    state being reintroduced.
     """
 
     @pytest.fixture(autouse=True)
-    def _cleanup_lock(self) -> None:
-        """Remove lock file before/after each test."""
+    def _cleanup_lock(self, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        """Point the lock at a per-test directory, and leave nothing behind."""
+        monkeypatch.setenv("SURREAL_MEMORY_DIR", str(tmp_path))
         lock = _lock_path()
         lock.unlink(missing_ok=True)
         yield  # type: ignore[misc]
         lock.unlink(missing_ok=True)
+
+    def test_lock_lives_in_the_configured_data_dir(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """SURREAL_MEMORY_DIR must move the lock, like it moves everything else.
+
+        The autouse fixture already redirects it; this asserts the redirection
+        rather than assuming it, because the failure mode is silent — the lock
+        simply appears in the real home directory instead.
+        """
+        assert _lock_path().parent == tmp_path.resolve()
+        assert _lock_path("some-brain").parent == tmp_path.resolve()
+        assert Path.home() / ".surrealmemory" != _lock_path().parent
 
     def test_acquire_fresh_lock(self) -> None:
         """Should acquire lock when no lock exists."""
