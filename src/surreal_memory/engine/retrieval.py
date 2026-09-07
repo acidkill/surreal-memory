@@ -241,6 +241,7 @@ class ReflexPipeline:
         tags: set[str] | None = None,
         session_id: str | None = None,
         exclude_ephemeral: bool = False,
+        reconsolidate: bool = True,
     ) -> RetrievalResult:
         """
         Execute the retrieval pipeline.
@@ -785,8 +786,15 @@ class ReflexPipeline:
             except Exception:
                 logger.debug("Deferred write flush failed (non-critical)", exc_info=True)
 
-        # Post-recall reconsolidation: recalled memories absorb current context
-        if getattr(self._config, "reconsolidation_enabled", True) and fibers_matched:
+        # Post-recall reconsolidation: recalled memories absorb current context.
+        # Per-call opt-out (False) makes recall a genuinely read-only probe for
+        # speculative callers; the per-brain reconsolidation_enabled switch stays
+        # the global source of truth (issue #198).
+        if (
+            reconsolidate
+            and getattr(self._config, "reconsolidation_enabled", True)
+            and fibers_matched
+        ):
             try:
                 from surreal_memory.engine.reconsolidation import reconsolidate_on_recall
 

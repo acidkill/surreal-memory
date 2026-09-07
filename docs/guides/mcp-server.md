@@ -724,6 +724,20 @@ come from each tool's own schema.
 | `smem_visualize` | Generate charts from memory data |
 | `smem_watch` | Watch directories for file changes and auto-ingest into memory |
 
+### Recall writes by design
+
+`smem_recall` is not a read-only operation. By design, an activation-based
+memory strengthens what was activated: every recall flushes deferred writes
+(fiber conductivity, Hebbian strengthening) and — when it matches fibers —
+**reconsolidates** the top five matched memories so they absorb the query
+context. This is intended behaviour (see `reconsolidation.py`), gated globally
+by the per-brain `reconsolidation_enabled` switch (`BrainConfig`, default
+`true`).
+
+Speculative callers (agent harnesses probing several times per turn) that
+must not leave traces pass `reconsolidate: false` on the call — a read-only
+probe that skips the reconsolidation step for that invocation only.
+
 ---
 
 ## Tool Tiers
