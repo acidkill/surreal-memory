@@ -32,7 +32,9 @@ Two layers of coverage per endpoint, mirroring test_route_hub.py:
 
 from __future__ import annotations
 
+import asyncio
 import os
+from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -345,6 +347,27 @@ class TestGetStatsDoesNotLeakBrainState:
 )
 class TestListBrainsScopeLive:
     @pytest.fixture(autouse=True)
+    async def _drain_background_refreshes(self) -> AsyncIterator[None]:
+        """Let the route's background refreshes finish before the loop goes away.
+
+        `/api/dashboard/brains` serves stale data and refreshes behind the
+        request, so a task is still querying the store when the test returns.
+        pytest-asyncio then tears the function-scoped loop down and cancels that
+        task itself; most of the time it stops at once, and occasionally it is
+        inside the SDK's receive path and the loop waits on it until
+        pytest-timeout fires at 120 s. Draining the tasks here — on the loop
+        that owns them — keeps the teardown deterministic.
+        """
+        yield
+        from surreal_memory.server.routes import dashboard_api
+
+        pending = dashboard_api._BRAINS_REFRESH_TASKS | dashboard_api._GRADE_REFRESH_TASKS
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.wait(pending, timeout=10)
+
+    @pytest.fixture(autouse=True)
     def _reset_brains_module_state(self) -> Any:
         """Each test starts with a cold serve-stale state (isolated contract)."""
         from surreal_memory.server.routes import dashboard_api
@@ -403,6 +426,27 @@ class TestListBrainsScopeLive:
     reason="requires SURREALDB_URL env var pointing to a running SurrealDB",
 )
 class TestGetStatsScopeLive:
+    @pytest.fixture(autouse=True)
+    async def _drain_background_refreshes(self) -> AsyncIterator[None]:
+        """Let the route's background refreshes finish before the loop goes away.
+
+        `/api/dashboard/brains` serves stale data and refreshes behind the
+        request, so a task is still querying the store when the test returns.
+        pytest-asyncio then tears the function-scoped loop down and cancels that
+        task itself; most of the time it stops at once, and occasionally it is
+        inside the SDK's receive path and the loop waits on it until
+        pytest-timeout fires at 120 s. Draining the tasks here — on the loop
+        that owns them — keeps the teardown deterministic.
+        """
+        yield
+        from surreal_memory.server.routes import dashboard_api
+
+        pending = dashboard_api._BRAINS_REFRESH_TASKS | dashboard_api._GRADE_REFRESH_TASKS
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.wait(pending, timeout=10)
+
     @pytest.fixture(autouse=True)
     def _reset_brains_module_state(self) -> Any:
         """Each test starts with a cold serve-stale state (isolated contract)."""
