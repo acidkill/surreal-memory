@@ -8,6 +8,7 @@ hit within TTL, miss after expiry, disable via ttl=0 / env, and invalidation.
 from __future__ import annotations
 
 import importlib
+import unittest.mock
 
 import pytest
 
@@ -276,3 +277,49 @@ class TestHealthReportTTL:
         from surreal_memory.server.routes.dashboard_api import _HEALTH_TTL_SECONDS
 
         assert _HEALTH_TTL_SECONDS >= 300
+
+
+class TestBackgroundRefreshKeepsItsTask:
+    """The scheduler promises a strong reference; asyncio only keeps a weak one.
+
+    `_schedule_grade_refresh` says in its own docstring that "a strong reference
+    to the task is kept until it finishes", because the loop discards tasks
+    nobody holds. The brain refresh alongside it does exactly that with a
+    module-level set; the grade refresh kept the task in a local that went out
+    of scope the moment the function returned.
+    """
+
+    @pytest.mark.asyncio
+    async def test_scheduled_refresh_is_held_until_it_finishes(self) -> None:
+        import asyncio
+
+        from surreal_memory.server.routes import dashboard_api
+
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        class _SlowEngine:
+            def __init__(self, storage: object) -> None:
+                self._storage = storage
+
+            async def analyze(self, brain_name: str) -> str:
+                started.set()
+                await release.wait()
+                return "report"
+
+        with unittest.mock.patch(
+            "surreal_memory.engine.diagnostics.DiagnosticsEngine", _SlowEngine
+        ):
+            dashboard_api._GRADE_REFRESH_KEYS.discard("brain:key")
+            dashboard_api._schedule_grade_refresh(object(), "brain", "brain:key")
+            await asyncio.wait_for(started.wait(), timeout=5)
+
+            assert dashboard_api._GRADE_REFRESH_TASKS, (
+                "the running refresh must be referenced somewhere other than the "
+                "event loop, or it can be garbage-collected mid-flight"
+            )
+
+            release.set()
+            await asyncio.wait(set(dashboard_api._GRADE_REFRESH_TASKS), timeout=5)
+
+        assert not dashboard_api._GRADE_REFRESH_TASKS, "a finished task must be dropped"
