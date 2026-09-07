@@ -173,6 +173,12 @@ async def find_cross_cluster_links(
         )
         cluster_anchors.append(best_fiber.anchor_neuron_id)
 
+    # Anchors are fiber members resolved lazily; a deleted anchor would turn
+    # every enrichment pass into a factory of RELATED_TO edges pointing at
+    # missing rows (issue #194). Drop dead anchors up front.
+    anchor_probe = await storage.get_neurons_batch([a for a in cluster_anchors if a is not None])
+    live_anchors = set(anchor_probe)
+
     # Check existing synapses between cluster anchors
     existing_synapses = await storage.get_synapses_paged(type=SynapseType.RELATED_TO)
     existing_pairs: set[tuple[str, str]] = set()
@@ -194,6 +200,10 @@ async def find_cross_cluster_links(
 
             anchor_a = cluster_anchors[i]
             anchor_b = cluster_anchors[j]
+            if anchor_a is None or anchor_b is None:
+                continue
+            if anchor_a not in live_anchors or anchor_b not in live_anchors:
+                continue
             if anchor_a == anchor_b:
                 continue
             if (anchor_a, anchor_b) in existing_pairs:

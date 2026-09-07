@@ -54,6 +54,7 @@ LIVE_TEST_BRAIN_NAMES = frozenset(
         "record-id-lookups-live",  # test_surrealdb_record_id_lookups_live.py
         "change-log-payload-live",  # test_surrealdb_change_log_payload_live.py
         "sync-change-entry-live",  # test_surrealdb_sync_change_entry_live.py
+        "delete-cascade-live",  # test_delete_neuron_cascade_live.py
     }
 )
 
