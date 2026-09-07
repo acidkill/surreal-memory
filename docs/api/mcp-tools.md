@@ -126,6 +126,7 @@ Query memories by semantic search with confidence ranking.
 | `valid_at` | string | No | — | ISO datetime string to filter memories valid at that point in time (e.g. '2026-02-01T12:00:00') |
 | `near` | object | No | — | Geospatial hard filter — keep only memories whose location is within radius_m metres of (lat, lon). Memories without ... |
 | `include_conflicts` | boolean | No | default: false | Include full conflict details in response (default: false). When false, only has_conflicts flag and conflict_count ar... |
+| `reconsolidate` | boolean | No | default: true | Allow this recall to reconsolidate the top matched memories (default: true). Set false for a read-only probe: recall ... |
 | `include_superseded` | boolean | No | — | Include superseded facts (those with valid_until set) in recall. Default false: superseded facts are hard-filtered ou... |
 | `trace` | boolean | No | — | Persist a retrieval trace for this recall and return its trace_id (telemetry — what fed the answer). Works even when ... |
 | `include_uncertainty` | boolean | No | — | Attach an 'uncertainty' block summarising how much to trust the answer (contradictions, superseded facts, low confide... |
