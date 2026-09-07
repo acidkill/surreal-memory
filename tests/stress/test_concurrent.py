@@ -81,7 +81,7 @@ class TestMaintenanceCounter:
         # 20 concurrent increment calls — since _increment_op_counter
         # is synchronous (no await), asyncio.gather runs them sequentially.
         async def increment() -> int:
-            return handler._increment_op_counter()
+            return await handler._increment_op_counter()
 
         results = await asyncio.gather(*[increment() for _ in range(20)])
 
@@ -103,8 +103,8 @@ class TestMaintenanceCounter:
             h1 = MaintenanceHandler.__new__(MaintenanceHandler)
             h2 = MaintenanceHandler.__new__(MaintenanceHandler)
 
-            h1._increment_op_counter()
-            h1._increment_op_counter()
+            await h1._increment_op_counter()
+            await h1._increment_op_counter()
 
             # h2 does NOT see h1's increments — each instance has its own counter
             assert h1._op_count == 2

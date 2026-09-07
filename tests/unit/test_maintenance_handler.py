@@ -289,10 +289,8 @@ class TestOperationCounter:
         storage = _make_storage()
         server = _FakeServer(storage)
         assert server._op_count == 0
-        server._increment_op_counter()
-        assert server._op_count == 1
-        server._increment_op_counter()
-        assert server._op_count == 2
+        assert await server._increment_op_counter() == 1
+        assert await server._increment_op_counter() == 2
 
     @pytest.mark.asyncio
     async def test_should_check_at_interval(self) -> None:
@@ -302,8 +300,8 @@ class TestOperationCounter:
 
         checks = []
         for _ in range(15):
-            server._increment_op_counter()
-            checks.append(server._should_check_health())
+            total = await server._increment_op_counter()
+            checks.append(server._should_check_health(total))
 
         # Should be True at positions 4, 9, 14 (op_count 5, 10, 15)
         assert checks[4] is True

@@ -97,22 +97,71 @@ class MaintenanceHandler:
     """
 
     _op_count: int = 0
+    # Persistent pulse accounting (issue #222): _op_base seeds lazily from the
+    # brain's metadata so the modulo runs on the TOTAL work a brain has seen,
+    # not this process's slice; short-lived MCP sessions then pulse too.
+    _op_base: int | None = None
     _last_pulse: HealthPulse | None = None
     _last_consolidation_at: datetime | None = None
     _last_dream_at: datetime | None = None
     _effective_check_interval: int | None = None
     _consolidation_task: asyncio.Task[None] | None = None
 
-    def _increment_op_counter(self) -> int:
-        self._op_count += 1
-        return self._op_count
+    _PERSISTED_OP_KEY = "_maintenance_op_count"
 
-    def _should_check_health(self) -> bool:
+    async def _increment_op_counter(self) -> int:
+        """Advance the op counter and return the brain-wide total.
+
+        The in-process counter is seeded from (and periodically flushed to) the
+        brain's metadata (issue #222): pulsing used to depend on how work was
+        distributed across processes — 100 sessions x 24 operations produced
+        zero pulses while one session of 2400 produced 96. Persistence is
+        fail-soft: on any storage error the counter degrades to per-process,
+        which is the previous behaviour, never an outage.
+        """
+        self._op_count += 1
+        total = self._op_count + await self._seed_op_base()
+        # Persist on EVERY op: a flush cadence would drop exactly the slice a
+        # short-lived session contributed (session of 24 ops flushes nothing —
+        # the original bug in a new coat). The brain row is tiny and this path
+        # already persists the remembered/recalled entities, so one small
+        # save_brain per op is noise next to them.
+        await self._persist_op_total(total)
+        return total
+
+    async def _seed_op_base(self) -> int:
+        if self._op_base is not None:
+            return self._op_base
+        try:
+            storage = await self.get_storage()  # type: ignore[attr-defined]
+            brain = await storage.get_brain(storage.brain_id or "")
+            raw = (brain.metadata.get(self._PERSISTED_OP_KEY, 0) or 0) if brain else 0
+            self._op_base = int(raw)
+        except Exception:
+            logger.debug("op-counter seed failed; per-process fallback", exc_info=True)
+            self._op_base = 0
+        return self._op_base
+
+    async def _persist_op_total(self, total: int) -> None:
+        try:
+            storage = await self.get_storage()  # type: ignore[attr-defined]
+            brain = await storage.get_brain(storage.brain_id or "")
+            if brain is None:
+                return
+            brain.metadata[self._PERSISTED_OP_KEY] = int(total)
+            await storage.save_brain(brain)
+            self._op_base = int(total)
+            self._op_count = 0
+        except Exception:
+            logger.debug("op-counter persist failed; per-process fallback", exc_info=True)
+
+    def _should_check_health(self, total: int | None = None) -> bool:
         cfg: MaintenanceConfig = self.config.maintenance  # type: ignore[attr-defined]
         if not cfg.enabled:
             return False
         interval = self._effective_check_interval or cfg.check_interval
-        return self._op_count > 0 and self._op_count % interval == 0
+        count = self._op_count if total is None else total
+        return count > 0 and count % interval == 0
 
     async def _health_pulse(self) -> HealthPulse | None:
         """Run a cheap health check using get_stats().
@@ -426,7 +475,7 @@ class MaintenanceHandler:
         )
         logger.info(
             "Health degradation detected (op #%d): %s [%s]",
-            self._op_count,
+            (self._op_base or 0) + self._op_count,
             pulse.hints[0].message,
             pulse.hints[0].severity,
         )
@@ -438,11 +487,14 @@ class MaintenanceHandler:
         Called from _remember() and _recall() in the server.
         Returns a HealthPulse if a check was performed, None otherwise.
         """
-        self._increment_op_counter()
+        total = await self._increment_op_counter()
 
-        if not self._should_check_health():
+        if not self._should_check_health(total):
             return None
 
+        # The pulse boundary is the durable sync point: a restart resumes the
+        # modulo from the flushed total instead of restarting at zero.
+        await self._persist_op_total(total)
         pulse = await self._health_pulse()
         if pulse is not None:
             self._fire_health_trigger(pulse)
