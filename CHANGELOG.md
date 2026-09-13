@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.10.0] — 2026-09-13 — reusable strategy quality becomes an injection gate
+
+Reasoning-pattern confidence measures how strongly a trace cluster supports a
+pattern; it does not measure whether the resulting prose is complete,
+transferable, or free of project-specific context. This release gives those
+properties their own explicit quality contract.
+
+### Added
+
+- LLM pattern naming now returns a reusable verdict, a bounded quality score,
+  and short quality reasons alongside the title, description, and strategy.
+- `reasoning_training.injection_min_quality` independently gates injection by
+  naming quality. The default is `0.7`; confidence remains a separate cluster
+  support threshold.
+- Every pattern has a reversible injection override exposed through
+  `PATCH /api/dashboard/reasoning/patterns/{pattern_id}/injection` and the
+  Reasoning dashboard. Disabling a pattern preserves it for inspection and
+  later re-enabling.
+- Pattern list responses, `smem reasoning patterns`, and `smem_reasoning`
+  expose quality, reusability, naming method, reasons, and injection state.
+
+### Changed
+
+- The naming prompt now requires a complete, self-contained procedure in one
+  language and removes people, clients, projects, repositories, paths,
+  filenames, URLs, identifiers, run numbers, and incident-specific values.
+- Deterministic validation rejects generic mechanical titles, raw `Moves:`
+  strategies, unfinished prose, and recognizable context-specific identifiers.
+- New heuristic-fallback patterns remain inspectable but are not injected until
+  they receive reusable quality metadata. Existing patterns without the new
+  metadata retain their prior behavior until rebuilt or manually disabled.
+- The Reasoning dashboard shows quality scores, non-reusable state, quality
+  reasons, the global minimum-quality setting, and the per-pattern override.
+
 ## [3.9.4] — 2026-09-13 — remote recall takes the indexed path
 
 Remote recall no longer spends most of its time scanning and serially repeating
