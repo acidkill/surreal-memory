@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.9.4] — 2026-09-13 — remote recall takes the indexed path
+
+Remote recall no longer spends most of its time scanning and serially repeating
+queries that SurrealDB can answer directly. This patch targets deployments where
+the database and inference services run across the network.
+
+### Fixed
+
+- Small neuron-state batches now fetch deterministic record ids directly with
+  bounded concurrency. The previous `brain_id` plus `neuron_id IN` query took
+  roughly 2.1–2.4 seconds for five rows on the production remote database;
+  direct record reads return the same rows in milliseconds. Large consolidation
+  batches retain the set query to keep request fan-out bounded.
+- Fiber expansion now runs independent anchor lookups concurrently, preserves
+  input order and per-anchor limits, and uses `idx_fiber_neurons` over
+  `neuron_ids.*` plus `brain_id`. Schema convergence creates the index for
+  existing databases, and the membership query explicitly selects it.
+- Exact-content neuron lookups explicitly select `idx_neuron_content`. On the
+  production dataset, the optimizer otherwise chose the type index and spent
+  about 2.2 seconds on an exact ACTION lookup that the content index answered in
+  milliseconds.
+- Reflex fallback and classic discovery now honor the requested recall depth.
+  `instant` recall stops after one hop instead of walking the configured maximum.
+- CLI freshness collection fetches matched fibers concurrently instead of
+  serially adding one network round trip per result.
+
+### Performance
+
+- Production `smem recall` improved from roughly 23–40 seconds to 7.14 seconds
+  wall time, with the measured retrieval phase at 3.12 seconds.
+- A fresh MCP process completed initialize and `smem_recall` in 9.60 seconds,
+  including process startup.
+
 ## [3.9.3] — 2026-09-07 — a slow database deserves a longer fuse
 
 Two fixes for the remote-database topology found while deploying 3.9.2 against
