@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from unittest.mock import patch
 
 import pytest
 
@@ -119,16 +120,20 @@ class TestQueryFlow:
         pipeline = ReflexPipeline(storage_with_memories, brain.config)
 
         # Instant (shallow)
-        instant = await pipeline.query(
-            "Who?", depth=DepthLevel.INSTANT, reference_time=datetime(2024, 2, 4, 16, 0)
-        )
+        with patch.object(pipeline, "_reflex_query", wraps=pipeline._reflex_query) as reflex_spy:
+            instant = await pipeline.query(
+                "Who?", depth=DepthLevel.INSTANT, reference_time=datetime(2024, 2, 4, 16, 0)
+            )
         assert instant.depth_used == DepthLevel.INSTANT
+        assert reflex_spy.await_args.kwargs["max_hops"] == 1
 
         # Deep
-        deep = await pipeline.query(
-            "Why?", depth=DepthLevel.DEEP, reference_time=datetime(2024, 2, 4, 16, 0)
-        )
+        with patch.object(pipeline, "_reflex_query", wraps=pipeline._reflex_query) as reflex_spy:
+            deep = await pipeline.query(
+                "Why?", depth=DepthLevel.DEEP, reference_time=datetime(2024, 2, 4, 16, 0)
+            )
         assert deep.depth_used == DepthLevel.DEEP
+        assert reflex_spy.await_args.kwargs["max_hops"] == brain.config.max_spread_hops
 
     @pytest.mark.asyncio
     @pytest.mark.xfail(reason="Sufficiency gate may reject thin signal in InMemoryStorage")

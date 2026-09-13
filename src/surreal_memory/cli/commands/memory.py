@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from typing import TYPE_CHECKING, Annotated, Any
 
 if TYPE_CHECKING:
     from surreal_memory.cli.storage import PersistentStorage
+    from surreal_memory.core.fiber import Fiber
 
 import typer
 
@@ -386,8 +388,14 @@ async def _gather_freshness(
     """Collect freshness warnings and oldest age from matched fibers."""
     warnings: list[str] = []
     oldest_age = 0
-    for fiber_id in fiber_ids:
-        fiber = await storage.get_fiber(fiber_id)
+    semaphore = asyncio.Semaphore(16)
+
+    async def _fetch_one(fiber_id: str) -> Fiber | None:
+        async with semaphore:
+            return await storage.get_fiber(fiber_id)
+
+    fibers = await asyncio.gather(*(_fetch_one(fiber_id) for fiber_id in fiber_ids))
+    for fiber in fibers:
         if fiber:
             freshness = evaluate_freshness(fiber.created_at)
             if freshness.warning:

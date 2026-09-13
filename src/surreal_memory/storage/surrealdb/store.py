@@ -156,6 +156,13 @@ _BRAIN_ID_SAFE = re.compile(r"^[a-zA-Z0-9_.\-]+$")
 # sockets).
 _BATCH_FETCH_CONCURRENCY = 16
 
+# Small neuron-state lookups sit directly on recall's graph traversal hot path.
+# SurrealDB 3.2.x takes seconds to satisfy ``neuron_id IN $ids`` even when the
+# composite index is selected, while direct record-id reads complete in
+# milliseconds. Keep the set-based query for consolidation-sized pages, where
+# thousands of individual RPCs would cost more than the scan-like index path.
+_DIRECT_STATE_FETCH_LIMIT = 256
+
 
 def _prefer_ws_transport(url: str) -> str:
     """Rewrite http(s):// URLs to ws(s):// for the SDK connection.
@@ -1353,8 +1360,15 @@ class SurrealDBStorage(
         # (dashboard graph/timeline). It is ~4-8 KB/row, so dragging it over tens of
         # thousands of rows is the single biggest dashboard slowdown after a re-embed.
         projection = "SELECT *" if include_embedding else "SELECT * OMIT embedding_vec"
+        # With both ``type`` and exact ``content`` predicates SurrealDB 3.2.x picks
+        # idx_neuron_type, then scans that whole type partition to filter content.
+        # The content index is selective for this query shape (2.2 s -> 2 ms on
+        # the production brain), so direct the planner to the index that carries
+        # both brain_id and content. Parameter binding remains unchanged.
+        index_hint = " WITH INDEX idx_neuron_content" if content_exact is not None else ""
         rows = await self._query(
-            f"{projection} FROM neuron WHERE {where} ORDER BY id LIMIT {int(limit)} START {int(offset)}",
+            f"{projection} FROM neuron{index_hint} WHERE {where}"
+            f" ORDER BY id LIMIT {int(limit)} START {int(offset)}",
             **params,
         )
         return [_row_to_neuron(r) for r in rows]
@@ -1799,10 +1813,31 @@ class SurrealDBStorage(
         page; ids are param-bound (injection-safe). Chunked so an oversized id
         list can't build a pathologically large statement.
         """
-        result: dict[str, NeuronState] = {}
         if not neuron_ids:
-            return result
+            return {}
         brain_id = self._get_brain_id()
+
+        if len(neuron_ids) <= _DIRECT_STATE_FETCH_LIMIT:
+            semaphore = asyncio.Semaphore(_BATCH_FETCH_CONCURRENCY)
+
+            async def _fetch_one(nid: str) -> tuple[str, NeuronState | None]:
+                sid = _to_surreal_id(nid)
+                async with semaphore:
+                    try:
+                        rows = await self._query(
+                            f"SELECT * FROM neuron_state:state_{sid} WHERE brain_id = $brain_id",
+                            brain_id=brain_id,
+                        )
+                    except Exception:
+                        return nid, None
+                if rows:
+                    return nid, _row_to_neuron_state(rows[0])
+                return nid, None
+
+            pairs = await asyncio.gather(*(_fetch_one(nid) for nid in neuron_ids))
+            return {nid: state for nid, state in pairs if state is not None}
+
+        result: dict[str, NeuronState] = {}
         chunk = 5000
         for start in range(0, len(neuron_ids), chunk):
             ids = list(neuron_ids[start : start + chunk])
@@ -2366,7 +2401,7 @@ class SurrealDBStorage(
         params: dict[str, Any] = {"brain_id": brain_id}
 
         if contains_neuron:
-            conditions.append("$contains_neuron IN neuron_ids")
+            conditions.append("neuron_ids CONTAINS $contains_neuron")
             params["contains_neuron"] = contains_neuron
         if min_salience is not None:
             conditions.append("salience >= $min_salience")
@@ -2402,7 +2437,10 @@ class SurrealDBStorage(
         where = " AND ".join(conditions)
         # Over-fetch when a Python post-filter (time/metadata_key/near) further narrows.
         fetch_limit = min(int(limit) * 3, 3000) if (near is not None or tags) else int(limit)
-        rows = await self._query(f"SELECT * FROM fiber WHERE {where} LIMIT {fetch_limit}", **params)
+        index_hint = " WITH INDEX idx_fiber_neurons" if contains_neuron else ""
+        rows = await self._query(
+            f"SELECT * FROM fiber{index_hint} WHERE {where} LIMIT {fetch_limit}", **params
+        )
 
         fibers = [_row_to_fiber(r) for r in rows]
 
@@ -3856,10 +3894,23 @@ class SurrealDBStorage(
         limit_per_neuron: int = 10,
         tags: set[str] | None = None,
     ) -> list[Fiber]:
+        if not neuron_ids:
+            return []
+
+        semaphore = asyncio.Semaphore(_BATCH_FETCH_CONCURRENCY)
+
+        async def _fetch_one(nid: str) -> list[Fiber]:
+            async with semaphore:
+                return await self.find_fibers(
+                    contains_neuron=nid,
+                    limit=limit_per_neuron,
+                    tags=tags,
+                )
+
+        batches = await asyncio.gather(*(_fetch_one(nid) for nid in neuron_ids))
         seen: set[str] = set()
         results: list[Fiber] = []
-        for nid in neuron_ids:
-            fibers = await self.find_fibers(contains_neuron=nid, limit=limit_per_neuron, tags=tags)
+        for fibers in batches:
             for f in fibers:
                 if f.id not in seen:
                     seen.add(f.id)

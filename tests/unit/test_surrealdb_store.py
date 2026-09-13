@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -537,3 +538,100 @@ class TestConnectionErrorDetection:
         from surreal_memory.storage.surrealdb.store import _is_connection_error
 
         assert not _is_connection_error(TimeoutError("query exceeded 30s"))
+
+
+class TestRecallBatchReadPaths:
+    """Small recall fan-outs use direct records; large maintenance pages stay set-based."""
+
+    @pytest.mark.asyncio
+    async def test_small_neuron_state_batch_uses_direct_record_ids(self):
+        from surreal_memory.storage.surrealdb.store import SurrealDBStorage
+
+        storage = SurrealDBStorage()
+        storage.set_brain("default")
+        storage._query = AsyncMock(return_value=[])
+
+        await storage.get_neuron_states_batch(["first-id", "second-id"])
+
+        queries = [call.args[0] for call in storage._query.await_args_list]
+        assert set(queries) == {
+            "SELECT * FROM neuron_state:state_first_id WHERE brain_id = $brain_id",
+            "SELECT * FROM neuron_state:state_second_id WHERE brain_id = $brain_id",
+        }
+        assert all(" IN " not in query for query in queries)
+
+    @pytest.mark.asyncio
+    async def test_large_neuron_state_batch_keeps_set_based_query(self):
+        from surreal_memory.storage.surrealdb.store import (
+            _DIRECT_STATE_FETCH_LIMIT,
+            SurrealDBStorage,
+        )
+
+        storage = SurrealDBStorage()
+        storage.set_brain("default")
+        storage._query = AsyncMock(return_value=[])
+        ids = [f"n-{i}" for i in range(_DIRECT_STATE_FETCH_LIMIT + 1)]
+
+        await storage.get_neuron_states_batch(ids)
+
+        storage._query.assert_awaited_once()
+        assert "neuron_id IN $ids" in storage._query.await_args.args[0]
+        assert storage._query.await_args.kwargs["ids"] == ids
+
+    @pytest.mark.asyncio
+    async def test_fiber_batch_pipelines_independent_anchor_queries(self):
+        from surreal_memory.storage.surrealdb.store import SurrealDBStorage
+
+        storage = SurrealDBStorage()
+        started = 0
+        all_started = asyncio.Event()
+
+        async def _find_fibers(**_kwargs):
+            nonlocal started
+            started += 1
+            if started == 3:
+                all_started.set()
+            await all_started.wait()
+            return []
+
+        storage.find_fibers = _find_fibers
+
+        assert (
+            await asyncio.wait_for(storage.find_fibers_batch(["one", "two", "three"]), timeout=1)
+            == []
+        )
+        assert started == 3
+
+    @pytest.mark.asyncio
+    async def test_fiber_membership_lookup_forces_array_element_index(self):
+        from surreal_memory.storage.surrealdb.store import SurrealDBStorage
+
+        storage = SurrealDBStorage()
+        storage.set_brain("default")
+        storage._query = AsyncMock(return_value=[])
+
+        await storage.find_fibers(contains_neuron="anchor-id", limit=10)
+
+        query = storage._query.await_args.args[0]
+        assert "FROM fiber WITH INDEX idx_fiber_neurons" in query
+        assert "neuron_ids CONTAINS $contains_neuron" in query
+
+    @pytest.mark.asyncio
+    async def test_exact_content_lookup_forces_selective_content_index(self):
+        from surreal_memory.core.neuron import NeuronType
+        from surreal_memory.storage.surrealdb.store import SurrealDBStorage
+
+        storage = SurrealDBStorage()
+        storage.set_brain("default")
+        storage._query = AsyncMock(return_value=[])
+
+        await storage.find_neurons(
+            type=NeuronType.ACTION,
+            content_exact="ask_what",
+            limit=1,
+        )
+
+        query = storage._query.await_args.args[0]
+        assert "FROM neuron WITH INDEX idx_neuron_content" in query
+        assert "type = 'action'" in query
+        assert "content = $content_exact" in query

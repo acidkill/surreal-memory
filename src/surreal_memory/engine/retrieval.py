@@ -419,6 +419,7 @@ class ReflexPipeline:
                     anchor_sets,
                     reference_time,
                     anchor_activations=anchor_activations,
+                    max_hops=self._depth_to_hops(depth),
                 )
             # Merge: PPR primary, reflex fills gaps (dampened 0.6x)
             activations = dict(ppr_activations)
@@ -440,6 +441,7 @@ class ReflexPipeline:
                 anchor_sets,
                 reference_time,
                 anchor_activations=anchor_activations,
+                max_hops=self._depth_to_hops(depth),
             )
         else:
             # Classic spreading activation
@@ -1142,6 +1144,7 @@ class ReflexPipeline:
         anchor_sets: list[list[str]],
         reference_time: datetime,
         anchor_activations: dict[str, float] | None = None,
+        max_hops: int | None = None,
     ) -> tuple[dict[str, ActivationResult], list[str], list[CoActivation]]:
         """
         Execute hybrid reflex + classic activation.
@@ -1151,6 +1154,8 @@ class ReflexPipeline:
         2. Run limited classic BFS to discover neurons outside fibers (coverage)
         3. Merge results: reflex activations are primary, classic fills gaps
         """
+        effective_hops = self._config.max_spread_hops if max_hops is None else max_hops
+
         # Get all fibers containing any anchor neurons (batch query)
         all_anchors = [a for anchors in anchor_sets for a in anchors]
         fibers = await self._storage.find_fibers_batch(all_anchors, limit_per_neuron=10)
@@ -1159,7 +1164,7 @@ class ReflexPipeline:
         if not fibers:
             activations, intersections = await self._activator.activate_from_multiple(
                 anchor_sets,
-                max_hops=self._config.max_spread_hops,
+                max_hops=effective_hops,
                 anchor_activations=anchor_activations,
             )
             return activations, intersections, []
@@ -1173,7 +1178,7 @@ class ReflexPipeline:
         )
 
         # --- Phase 2: Limited classic BFS (discovery) ---
-        discovery_hops = max(1, self._config.max_spread_hops // 2)
+        discovery_hops = max(1, effective_hops // 2)
         classic_activations, classic_intersections = await self._activator.activate_from_multiple(
             anchor_sets,
             max_hops=discovery_hops,
