@@ -494,6 +494,7 @@ export interface ReasoningConfig {
   max_traces_total: number
   min_cluster_support: number
   min_confidence: number
+  injection_min_quality: number
   min_patterns_per_category: number
   injection_max_patterns: number
   injection_max_chars: number
@@ -565,6 +566,7 @@ export interface ReasoningConfigUpdate {
   max_traces_total?: number
   min_cluster_support?: number
   min_confidence?: number
+  injection_min_quality?: number
   min_patterns_per_category?: number
   injection_max_patterns?: number
   injection_max_chars?: number
@@ -597,6 +599,11 @@ export interface PatternSummary {
   confidence: number
   frequency: number
   signature: string
+  injection_enabled: boolean
+  reusable: boolean
+  quality_score: number
+  naming_method: string
+  quality_reasons: string[]
 }
 
 export interface PatternDetail extends PatternSummary {

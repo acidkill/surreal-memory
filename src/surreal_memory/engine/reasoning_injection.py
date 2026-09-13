@@ -186,7 +186,18 @@ async def build_injection_context(
             _PATTERN_FETCH_LIMIT,
             source,
         )
-    candidates = [f for f in fibers if f.metadata.get("_source_model") == source]
+    candidates = [
+        f
+        for f in fibers
+        if f.metadata.get("_source_model") == source
+        and float(f.metadata.get("_reasoning_confidence", 0.0) or 0.0) >= rt.min_confidence
+        and not bool(f.metadata.get("_reasoning_injection_disabled", False))
+        # Legacy patterns predate quality metadata. Preserve their current
+        # behavior until an operator rebuilds or explicitly disables them.
+        and bool(f.metadata.get("_reasoning_reusable", True))
+        and float(f.metadata.get("_reasoning_quality_score", 1.0) or 0.0)
+        >= rt.injection_min_quality
+    ]
     if not candidates:
         return ""
 

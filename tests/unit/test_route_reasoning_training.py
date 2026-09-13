@@ -108,6 +108,7 @@ def mock_storage() -> AsyncMock:
     storage.find_fibers = AsyncMock(return_value=[])
     storage.get_fiber = AsyncMock(return_value=None)
     storage.delete_fiber = AsyncMock(return_value=True)
+    storage.update_fiber_metadata = AsyncMock()
     storage.delete_reasoning_traces_by_model = AsyncMock(return_value=0)
     return storage
 
@@ -599,12 +600,37 @@ def test_get_pattern_detail(client: TestClient, mock_storage: AsyncMock) -> None
     assert data["title"] == "verify"
     assert data["strategy"] == "verify -> check"
     assert data["description"] == "medoid description"
+    assert data["injection_enabled"] is True
+    assert data["reusable"] is True
+    assert data["quality_score"] == 1.0
+    assert data["naming_method"] == "legacy"
 
 
 def test_get_pattern_404_for_non_pattern(client: TestClient, mock_storage: AsyncMock) -> None:
     mock_storage.get_fiber.return_value = _fiber("x", "m", "c", pattern=False)
     resp = client.get("/api/dashboard/reasoning/patterns/x")
     assert resp.status_code == 404
+
+
+def test_toggle_pattern_injection(client: TestClient, mock_storage: AsyncMock) -> None:
+    fiber = _fiber("p1", "claude-fable-5", "debugging")
+    mock_storage.get_fiber.return_value = fiber
+
+    resp = client.patch("/api/dashboard/reasoning/patterns/p1/injection", json={"enabled": False})
+
+    assert resp.status_code == 200
+    assert resp.json()["injection_enabled"] is False
+    saved = mock_storage.update_fiber_metadata.await_args.args
+    assert saved[0] == "p1"
+    assert saved[1]["_reasoning_pattern"] is True
+    assert saved[1]["_reasoning_injection_disabled"] is True
+
+
+def test_toggle_pattern_injection_404(client: TestClient, mock_storage: AsyncMock) -> None:
+    mock_storage.get_fiber.return_value = None
+    resp = client.patch("/api/dashboard/reasoning/patterns/nope/injection", json={"enabled": True})
+    assert resp.status_code == 404
+    mock_storage.update_fiber_metadata.assert_not_awaited()
 
 
 def test_delete_pattern(client: TestClient, mock_storage: AsyncMock) -> None:

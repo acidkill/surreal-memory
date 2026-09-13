@@ -181,6 +181,7 @@ A running server serves the same schema interactively at `/docs` (Swagger) and
 | `GET` | `/api/dashboard/reasoning/patterns` | List learned patterns |
 | `DELETE` | `/api/dashboard/reasoning/patterns/{pattern_id}` | Delete one learned pattern |
 | `GET` | `/api/dashboard/reasoning/patterns/{pattern_id}` | Get one pattern's detail |
+| `PATCH` | `/api/dashboard/reasoning/patterns/{pattern_id}/injection` | Enable or disable one pattern for injection |
 | `GET` | `/api/dashboard/reasoning/status` | Reasoning-training status |
 | `DELETE` | `/api/dashboard/reasoning/traces` | Wipe staged traces for a model |
 

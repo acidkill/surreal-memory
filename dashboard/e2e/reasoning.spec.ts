@@ -33,6 +33,7 @@ const STATUS_BODY = {
     max_traces_total: 20000,
     min_cluster_support: 3,
     min_confidence: 0.2,
+    injection_min_quality: 0.7,
     min_patterns_per_category: 3,
     injection_max_patterns: 5,
     injection_max_chars: 4000,
@@ -91,6 +92,11 @@ const PATTERNS_BODY = {
       confidence: 1.0,
       frequency: 3,
       signature: "sig1",
+      injection_enabled: true,
+      reusable: true,
+      quality_score: 0.9,
+      naming_method: "llm",
+      quality_reasons: ["complete and transferable"],
     },
   ],
   total: 1,
@@ -183,5 +189,28 @@ test.describe("U8 Reasoning Training page", () => {
     await expect(
       page.getByRole("heading", { level: 1, name: "Reasoning Training" }),
     ).toBeVisible()
+  })
+
+  test("pattern injection can be disabled without deleting it", async ({ page }) => {
+    await installMocks(page)
+    let submitted: unknown = null
+    await page.route("**/api/dashboard/reasoning/patterns/p1/injection", async (route) => {
+      submitted = route.request().postDataJSON()
+      await route.fulfill(
+        json({
+          ...PATTERNS_BODY.patterns[0],
+          injection_enabled: false,
+        }),
+      )
+    })
+    await page.goto("/ui/reasoning")
+
+    const toggle = page.getByRole("checkbox", {
+      name: "Allow restate then verify for injection",
+    })
+    await expect(toggle).toBeChecked({ timeout: 20_000 })
+    await toggle.click()
+
+    await expect.poll(() => submitted).toEqual({ enabled: false })
   })
 })

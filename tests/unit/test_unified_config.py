@@ -425,6 +425,7 @@ class TestReasoningTrainingConfig:
         assert "debugging" in rt.categories
         assert "data-analysis" in rt.categories
         assert rt.min_confidence == 0.2
+        assert rt.injection_min_quality == 0.7
         assert rt.redact_secrets is True
         # The remote-endpoint opt-in ships OFF: the loopback invariant is the
         # default, and only an explicit operator decision widens it.
@@ -477,6 +478,16 @@ class TestReasoningTrainingConfig:
     def test_from_dict_clamps_min_confidence(self) -> None:
         assert ReasoningTrainingConfig.from_dict({"min_confidence": 5}).min_confidence == 1.0
         assert ReasoningTrainingConfig.from_dict({"min_confidence": -1}).min_confidence == 0.0
+
+    def test_from_dict_clamps_injection_min_quality(self) -> None:
+        assert (
+            ReasoningTrainingConfig.from_dict({"injection_min_quality": 5}).injection_min_quality
+            == 1.0
+        )
+        assert (
+            ReasoningTrainingConfig.from_dict({"injection_min_quality": -1}).injection_min_quality
+            == 0.0
+        )
 
     def test_from_dict_injection_map_dict_and_list_forms(self) -> None:
         from_dict = ReasoningTrainingConfig.from_dict(

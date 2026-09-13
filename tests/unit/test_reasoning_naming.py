@@ -87,7 +87,16 @@ def _good_json(
     description: str = "Establish the current state, then make one scoped change.",
     strategy: str = "1. Read the target. 2. Edit. 3. Re-read to verify.",
 ) -> str:
-    return json.dumps({"title": title, "description": description, "strategy": strategy})
+    return json.dumps(
+        {
+            "title": title,
+            "description": description,
+            "strategy": strategy,
+            "reusable": True,
+            "quality_score": 0.9,
+            "quality_reasons": ["complete and transferable"],
+        }
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -262,6 +271,44 @@ class TestSuccessfulRename:
         assert renamed["title"] == "Read before editing"
         assert renamed["description"].startswith("Establish the current state")
         assert renamed["strategy"].startswith("1. Read the target.")
+        assert renamed["reusable"] is True
+        assert renamed["quality_score"] == 0.9
+        assert renamed["naming_method"] == "llm"
+        assert renamed["quality_reasons"] == ["complete and transferable"]
+
+    async def test_context_specific_output_is_not_reusable(self, namer_factory) -> None:
+        namer, _ = namer_factory(
+            _completion(
+                _good_json(
+                    strategy="1. Open /home/toni/project/config.toml. 2. Verify RUN-42.",
+                )
+            )
+        )
+
+        renamed = await namer.rename(_pattern(), _traces())
+
+        assert renamed["reusable"] is False
+        assert renamed["quality_score"] == 0.49
+        assert "context_specific_identifier" in renamed["quality_reasons"]
+
+    async def test_legacy_three_field_output_is_named_but_not_quality_approved(
+        self, namer_factory
+    ) -> None:
+        body = json.dumps(
+            {
+                "title": "Read before editing",
+                "description": "Establish the current state.",
+                "strategy": "1. Read. 2. Edit. 3. Verify.",
+            }
+        )
+        namer, _ = namer_factory(_completion(body))
+
+        renamed = await namer.rename(_pattern(), _traces())
+
+        assert renamed["title"] == "Read before editing"
+        assert renamed["reusable"] is False
+        assert renamed["quality_score"] == 0.0
+        assert renamed["quality_reasons"] == ["quality_fields_missing"]
 
     async def test_identity_and_statistics_survive_the_rename(self, namer_factory) -> None:
         """Renaming must not make a known pattern look like a new one."""

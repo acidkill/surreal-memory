@@ -1248,6 +1248,10 @@ class ReasoningTrainingConfig:
     # silently outperforms the embedding path it is supposed to back up.
     cluster_cosine: float = 0.75
     min_confidence: float = 0.2
+    # Minimum independent quality score required for injection. Confidence
+    # measures cluster support; quality measures whether the named strategy is
+    # complete and reusable outside the traces that produced it.
+    injection_min_quality: float = 0.7
     min_patterns_per_category: int = 3
     injection_max_patterns: int = 5
     injection_max_chars: int = 4000
@@ -1299,6 +1303,7 @@ class ReasoningTrainingConfig:
             "min_cluster_support": self.min_cluster_support,
             "cluster_cosine": self.cluster_cosine,
             "min_confidence": self.min_confidence,
+            "injection_min_quality": self.injection_min_quality,
             "min_patterns_per_category": self.min_patterns_per_category,
             "injection_max_patterns": self.injection_max_patterns,
             "injection_max_chars": self.injection_max_chars,
@@ -1361,6 +1366,13 @@ class ReasoningTrainingConfig:
             min_confidence = max(0.0, min(float(data.get("min_confidence", 0.2)), 1.0))
         except (ValueError, TypeError):
             min_confidence = 0.2
+
+        try:
+            injection_min_quality = max(
+                0.0, min(float(data.get("injection_min_quality", 0.7)), 1.0)
+            )
+        except (ValueError, TypeError):
+            injection_min_quality = 0.7
 
         # Floor at 0.05: single-linkage clustering collapses into one giant
         # component once the threshold drops near the corpus baseline, which
@@ -1446,6 +1458,7 @@ class ReasoningTrainingConfig:
             min_cluster_support=_int("min_cluster_support", 3, 1, 100_000),
             cluster_cosine=cluster_cosine,
             min_confidence=min_confidence,
+            injection_min_quality=injection_min_quality,
             min_patterns_per_category=_int("min_patterns_per_category", 3, 1, 100_000),
             injection_max_patterns=_int("injection_max_patterns", 5, 1, 1000),
             injection_max_chars=_int("injection_max_chars", 4000, 1, 1_000_000),

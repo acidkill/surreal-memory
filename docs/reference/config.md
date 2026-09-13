@@ -342,6 +342,7 @@ Reasoning-training configuration (mining reasoning traces + injection).
 | `min_cluster_support` | `int` | `3` |  |
 | `cluster_cosine` | `float` | `0.75` |  |
 | `min_confidence` | `float` | `0.2` |  |
+| `injection_min_quality` | `float` | `0.7` | Minimum naming quality for injection; legacy patterns without quality metadata remain eligible until rebuilt or disabled. |
 | `min_patterns_per_category` | `int` | `3` |  |
 | `injection_max_patterns` | `int` | `5` |  |
 | `injection_max_chars` | `int` | `4000` |  |

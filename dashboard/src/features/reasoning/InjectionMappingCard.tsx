@@ -126,6 +126,36 @@ export function InjectionMappingCard({ status }: Props) {
           <span>{t("reasoning.injectionEnabled")}</span>
         </label>
 
+        <label className="flex items-center gap-3">
+          <span>{t("reasoning.injectionMinQuality")}</span>
+          <input
+            key={status.config.injection_min_quality}
+            type="number"
+            min="0"
+            max="1"
+            step="0.05"
+            defaultValue={status.config.injection_min_quality}
+            onBlur={(e) => {
+              const value = Number(e.target.value)
+              if (Number.isFinite(value) && value >= 0 && value <= 1) {
+                updateConfig.mutate(
+                  { injection_min_quality: value },
+                  {
+                    onSuccess: () => toast.success(t("reasoning.configSaved")),
+                    onError: (err) =>
+                      toast.error(apiErrorMessage(err, t("reasoning.configSaveFailed"))),
+                  },
+                )
+              }
+            }}
+            className="w-20 rounded-md border border-border bg-background px-2 py-1.5 font-mono text-xs"
+            aria-label={t("reasoning.injectionMinQuality")}
+          />
+          <span className="text-xs text-muted-foreground">
+            {t("reasoning.injectionMinQualityHint")}
+          </span>
+        </label>
+
         <div className="space-y-2">
           <p className="text-xs font-medium text-muted-foreground">
             {t("reasoning.injectionMap")}

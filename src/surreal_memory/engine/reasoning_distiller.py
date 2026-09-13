@@ -338,6 +338,12 @@ def _build_pattern(
         "confidence": round(confidence, 4),
         "frequency": size,
         "signature": signature,
+        # Mechanical naming remains useful for inspection and idempotency but
+        # has not passed the reusable-strategy quality contract.
+        "reusable": False,
+        "quality_score": 0.0,
+        "naming_method": "heuristic",
+        "quality_reasons": ["heuristic_fallback"],
     }
 
 
@@ -406,6 +412,10 @@ async def _materialize_pattern(
             "_reasoning_frequency": pattern["frequency"],
             "_reasoning_confidence": pattern["confidence"],
             "_reasoning_signature": sig,
+            "_reasoning_reusable": bool(pattern.get("reusable", False)),
+            "_reasoning_quality_score": float(pattern.get("quality_score", 0.0) or 0.0),
+            "_reasoning_naming_method": str(pattern.get("naming_method", "heuristic")),
+            "_reasoning_quality_reasons": list(pattern.get("quality_reasons", [])),
         },
     )
     # Patterns are activated only by injection (which may be OFF); unpinned they

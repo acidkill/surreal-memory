@@ -12,6 +12,7 @@ import {
   useDeletePatternsByModel,
   useDeleteReasoningPattern,
   useReasoningPatterns,
+  useUpdatePatternInjection,
 } from "@/api/hooks/useReasoning"
 import type { PatternSummary } from "@/api/types"
 
@@ -38,6 +39,7 @@ export function PatternsTable({ detectedModels, categories }: Props) {
   )
   const deletePattern = useDeleteReasoningPattern()
   const deleteByModel = useDeletePatternsByModel()
+  const updateInjection = useUpdatePatternInjection()
 
   const total = data?.total ?? 0
   const patterns = data?.patterns ?? []
@@ -148,6 +150,12 @@ export function PatternsTable({ detectedModels, categories }: Props) {
                   <th className="py-2 pr-3 text-right font-medium">
                     {t("reasoning.colFrequency")}
                   </th>
+                  <th className="py-2 pr-3 text-right font-medium">
+                    {t("reasoning.colQuality")}
+                  </th>
+                  <th className="py-2 pr-3 text-center font-medium">
+                    {t("reasoning.colInjection")}
+                  </th>
                   <th className="py-2 font-medium" />
                 </tr>
               </thead>
@@ -163,6 +171,37 @@ export function PatternsTable({ detectedModels, categories }: Props) {
                       {Math.round(p.confidence * 100)}%
                     </td>
                     <td className="py-2 pr-3 text-right font-mono">{p.frequency}</td>
+                    <td
+                      className="py-2 pr-3 text-right font-mono"
+                      title={p.quality_reasons.join("; ")}
+                    >
+                      {Math.round(p.quality_score * 100)}%
+                      {!p.reusable && (
+                        <Badge variant="secondary" className="ml-2">
+                          {t("reasoning.notReusable")}
+                        </Badge>
+                      )}
+                    </td>
+                    <td className="py-2 pr-3 text-center">
+                      <input
+                        type="checkbox"
+                        checked={p.injection_enabled}
+                        disabled={updateInjection.isPending}
+                        onChange={(e) =>
+                          updateInjection.mutate(
+                            { id: p.id, enabled: e.target.checked },
+                            {
+                              onSuccess: () =>
+                                toast.success(t("reasoning.patternInjectionSaved")),
+                              onError: () =>
+                                toast.error(t("reasoning.patternInjectionSaveFailed")),
+                            },
+                          )
+                        }
+                        aria-label={t("reasoning.patternInjectionLabel", { title: p.title })}
+                        className="size-4 cursor-pointer"
+                      />
+                    </td>
                     <td className="py-2 text-right">
                       <Button
                         variant="ghost"

@@ -116,6 +116,11 @@ class ReasoningHandler:
                     "title": md.get("_reasoning_title", ""),
                     "confidence": md.get("_reasoning_confidence", 0.0),
                     "frequency": md.get("_reasoning_frequency", 0),
+                    "injection_enabled": not bool(md.get("_reasoning_injection_disabled", False)),
+                    "reusable": bool(md.get("_reasoning_reusable", True)),
+                    "quality_score": float(md.get("_reasoning_quality_score", 1.0) or 0.0),
+                    "naming_method": md.get("_reasoning_naming_method", "legacy"),
+                    "quality_reasons": md.get("_reasoning_quality_reasons", []),
                 }
             )
         rows.sort(

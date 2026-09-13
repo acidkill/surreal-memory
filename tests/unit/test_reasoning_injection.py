@@ -62,6 +62,7 @@ async def _add_pattern(
     strategy: str,
     confidence: float,
     frequency: int,
+    **metadata: object,
 ) -> None:
     neuron = Neuron.create(type=NeuronType.CONCEPT, content=title)
     await storage.add_neuron(neuron)
@@ -80,6 +81,7 @@ async def _add_pattern(
             "_reasoning_confidence": confidence,
             "_reasoning_frequency": frequency,
             "_reasoning_signature": title,
+            **metadata,
         },
     )
     await storage.add_fiber(fiber)
@@ -196,6 +198,95 @@ async def test_build_block_renders_ranked(tmp_path: Path) -> None:
     assert "planning: plan" in block
     # Higher confidence*frequency ranks first.
     assert block.index("debugging: verify") < block.index("planning: plan")
+
+
+async def test_build_block_filters_patterns_below_min_confidence(tmp_path: Path) -> None:
+    storage = InMemoryStorage()
+    storage.set_brain(BRAIN)
+    await _add_pattern(
+        storage, "claude-fable-5", "planning", "below threshold", "reject me", 0.4999, 100
+    )
+    await _add_pattern(storage, "claude-fable-5", "planning", "at threshold", "keep me", 0.5, 1)
+    cfg = _ucfg(
+        tmp_path,
+        min_confidence=0.5,
+        injection_map=(("claude-opus-*", "claude-fable-5"),),
+    )
+
+    block = await build_injection_context(storage, "claude-opus-4-8", cfg)
+
+    assert "below threshold" not in block
+    assert "at threshold" in block
+
+
+async def test_build_block_applies_quality_reusability_and_manual_override(
+    tmp_path: Path,
+) -> None:
+    storage = InMemoryStorage()
+    storage.set_brain(BRAIN)
+    common = (storage, "claude-fable-5", "planning")
+    await _add_pattern(
+        *common,
+        "quality pass",
+        "keep me",
+        1.0,
+        3,
+        _reasoning_reusable=True,
+        _reasoning_quality_score=0.8,
+    )
+    await _add_pattern(
+        *common,
+        "quality fail",
+        "reject low quality",
+        1.0,
+        3,
+        _reasoning_reusable=True,
+        _reasoning_quality_score=0.69,
+    )
+    await _add_pattern(
+        *common,
+        "not reusable",
+        "reject context-bound",
+        1.0,
+        3,
+        _reasoning_reusable=False,
+        _reasoning_quality_score=1.0,
+    )
+    await _add_pattern(
+        *common,
+        "manually disabled",
+        "reject override",
+        1.0,
+        3,
+        _reasoning_reusable=True,
+        _reasoning_quality_score=1.0,
+        _reasoning_injection_disabled=True,
+    )
+    cfg = _ucfg(
+        tmp_path,
+        injection_min_quality=0.7,
+        injection_map=(("claude-opus-*", "claude-fable-5"),),
+    )
+
+    block = await build_injection_context(storage, "claude-opus-4-8", cfg)
+
+    assert "quality pass" in block
+    assert "quality fail" not in block
+    assert "not reusable" not in block
+    assert "manually disabled" not in block
+
+
+async def test_build_block_keeps_legacy_patterns_without_quality_metadata(tmp_path: Path) -> None:
+    storage = InMemoryStorage()
+    storage.set_brain(BRAIN)
+    await _add_pattern(storage, "claude-fable-5", "planning", "legacy", "keep", 1.0, 3)
+    cfg = _ucfg(
+        tmp_path,
+        injection_min_quality=0.9,
+        injection_map=(("claude-opus-*", "claude-fable-5"),),
+    )
+
+    assert "legacy" in await build_injection_context(storage, "claude-opus-4-8", cfg)
 
 
 async def test_injection_disabled_returns_empty(tmp_path: Path) -> None:

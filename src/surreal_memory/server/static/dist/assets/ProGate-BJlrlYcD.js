@@ -1,1 +1,0 @@
-import{j as t}from"./vendor-query-Dqzxu-Kf.js";import"./vendor-react-BfuodpLv.js";import{f as o}from"./index-epJzEqw-.js";function i({children:r,label:s}){const{t:a}=o();return t.jsx(t.Fragment,{children:r})}export{i as P};

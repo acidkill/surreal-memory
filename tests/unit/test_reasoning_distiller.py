@@ -124,6 +124,10 @@ async def test_distill_creates_pattern_fiber(tmp_path: Path, no_embedder: None) 
     assert md["_reasoning_frequency"] == 3
     assert md["_reasoning_confidence"] == 1.0
     assert md["_reasoning_signature"]
+    assert md["_reasoning_reusable"] is False
+    assert md["_reasoning_quality_score"] == 0.0
+    assert md["_reasoning_naming_method"] == "heuristic"
+    assert md["_reasoning_quality_reasons"] == ["heuristic_fallback"]
     # CONCEPT neuron for the category + EFFECTIVE_FOR synapse exist.
     cat_neuron = await storage.find_neurons(content_exact="reasoning_category:debugging", limit=1)
     assert cat_neuron
@@ -467,7 +471,14 @@ class _SpyNamer:
 
     async def rename(self, pattern: dict, cluster_traces: list[dict]) -> dict:
         self.renamed += 1
-        return {**pattern, "title": f"llm-named-{self.renamed}"}
+        return {
+            **pattern,
+            "title": f"llm-named-{self.renamed}",
+            "reusable": True,
+            "quality_score": 0.9,
+            "naming_method": "llm",
+            "quality_reasons": ["complete and transferable"],
+        }
 
     async def release(self) -> None:
         self.released += 1
@@ -494,6 +505,12 @@ class TestLLMNamingIsWiredIn:
         fibers = await storage.find_fibers(metadata_key="_reasoning_pattern", limit=100)
         titles = [str(f.metadata.get("_reasoning_title", "")) for f in fibers]
         assert any(t.startswith("llm-named") for t in titles)
+        named = next(
+            f for f in fibers if str(f.metadata.get("_reasoning_title", "")).startswith("llm-named")
+        )
+        assert named.metadata["_reasoning_reusable"] is True
+        assert named.metadata["_reasoning_quality_score"] == 0.9
+        assert named.metadata["_reasoning_naming_method"] == "llm"
 
     async def test_the_model_is_released_when_the_run_finishes(
         self, tmp_path: Path, no_embedder: None, monkeypatch: pytest.MonkeyPatch

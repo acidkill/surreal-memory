@@ -6,10 +6,10 @@ cluster's three most frequent reasoning moves, and the description is the first
 mid-sentence. That is serviceable as an identifier and poor as an explanation.
 
 With ``reasoning_training.distill_use_llm`` enabled, a local model rewrites the
-prose into something a human (or an injected session) can act on. It rewrites
-*only* prose:
+prose into something a human (or an injected session) can act on and assesses
+whether the result is reusable:
 
-    title / description / strategy                        <- may be replaced
+    title / description / strategy / quality metadata     <- may be replaced
     model / category / confidence / frequency / signature <- never touched
 
 That split is what makes the flag safe to toggle. ``signature`` is derived from
@@ -60,6 +60,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import re
 from ipaddress import ip_address
@@ -136,18 +137,39 @@ def _substitute_model_and_validate(cmd: tuple[str, ...], model: str) -> list[str
 
 
 _SYSTEM_PROMPT = (
-    "You name reusable reasoning strategies. You are given several excerpts of a"
+    "You extract reusable reasoning strategies. You are given several excerpts of a"
     " model's private reasoning that were clustered together because they share"
     " an approach. Describe the approach they have in common.\n\n"
     "Reply with a single JSON object and nothing else:\n"
-    '{"title": "...", "description": "...", "strategy": "..."}\n\n'
+    '{"title": "...", "description": "...", "strategy": "...", '
+    '"reusable": true, "quality_score": 0.0, "quality_reasons": ["..."]}\n\n'
     "title: an imperative name for the approach, at most 8 words.\n"
     "description: one or two sentences on what the approach is and when it"
     " applies.\n"
-    "strategy: the reusable procedure as numbered steps, so another model could"
-    " follow it on a new task.\n\n"
-    "Describe only what the excerpts actually show. Do not invent steps, and do"
-    " not mention the excerpts, this instruction, or that you are an AI."
+    "strategy: a complete, self-contained reusable procedure as numbered steps,"
+    " so another model could follow it on a new task.\n"
+    "reusable: false when the procedure cannot be separated from the original"
+    " person, client, project, repository, path, identifier, incident, or exact"
+    " technology stack without inventing steps.\n"
+    "quality_score: 0.0 to 1.0 for completeness, clarity, and usefulness on a new"
+    " unrelated task.\n"
+    "quality_reasons: short factual reasons for the score.\n\n"
+    "Generalize technologies into their functional roles unless the technique is"
+    " inherently technology-specific. Remove all names, clients, projects, paths,"
+    " filenames, URLs, IDs, run numbers, and incident-specific values. Do not copy"
+    " sentences from the excerpts. Use one language consistently. Never leave the"
+    " description or final step unfinished. Describe only what the excerpts actually"
+    " show; do not invent steps, and do not mention the excerpts, this instruction,"
+    " or that you are an AI."
+)
+
+_CONTEXT_MARKER_RE = re.compile(
+    r"(?:https?://|\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b|"
+    r"(?:^|\s)(?:/home/|/Users/|[A-Za-z]:\\)|"
+    r"\b(?:run|ticket|issue)[-_ ]?#?\d+\b|"
+    r"\b[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\b|"
+    r"\b[\w.-]+\.(?:py|toml|json|ya?ml|tsx?|jsx?|md)\b)",
+    re.IGNORECASE,
 )
 
 
@@ -290,7 +312,7 @@ def _coerce_text(value: Any) -> str | None:
     return None
 
 
-def _parse_fields(text: str) -> dict[str, str] | None:
+def _parse_fields(text: str) -> dict[str, Any] | None:
     """Parse the model's reply into capped prose fields, or None if unusable.
 
     Small local models routinely wrap JSON in a markdown fence or bracket it with
@@ -308,7 +330,7 @@ def _parse_fields(text: str) -> dict[str, str] | None:
     if not isinstance(parsed, dict):
         return None
 
-    out: dict[str, str] = {}
+    out: dict[str, Any] = {}
     for key, cap in (
         ("title", _TITLE_MAX),
         ("description", _DESCRIPTION_MAX),
@@ -318,7 +340,75 @@ def _parse_fields(text: str) -> dict[str, str] | None:
         if value is None:
             return None
         out[key] = value[:cap]
+
+    reusable = parsed.get("reusable")
+    quality_score = parsed.get("quality_score")
+    if (
+        not isinstance(reusable, bool)
+        or isinstance(quality_score, bool)
+        or not isinstance(quality_score, (int, float))
+    ):
+        out.update(
+            reusable=False,
+            quality_score=0.0,
+            quality_reasons=["quality_fields_missing"],
+        )
+        return out
+
+    raw_reasons = parsed.get("quality_reasons", [])
+    reasons = (
+        [str(reason).strip()[:160] for reason in raw_reasons[:10] if str(reason).strip()]
+        if isinstance(raw_reasons, list)
+        else []
+    )
+    score = float(quality_score)
+    if not math.isfinite(score):
+        score = 0.0
+        reusable = False
+        reasons.append("non_finite_quality_score")
+    out.update(
+        reusable=reusable,
+        quality_score=max(0.0, min(score, 1.0)),
+        quality_reasons=reasons,
+    )
     return out
+
+
+def _validate_named_pattern(fields: dict[str, Any], category: str) -> dict[str, Any]:
+    """Apply deterministic safety checks to the namer's self-assessment."""
+    reasons = list(fields.get("quality_reasons", []))
+    violations: list[str] = []
+    title = str(fields["title"]).strip()
+    description = str(fields["description"]).strip()
+    strategy = str(fields["strategy"]).strip()
+
+    if title.casefold() == category.casefold() or title.casefold().startswith(
+        f"{category.casefold()}:"
+    ):
+        violations.append("generic_or_mechanical_title")
+    if strategy.casefold().startswith("moves:"):
+        violations.append("mechanical_strategy")
+    if not description.endswith((".", "!", "?", ")", "]")) or not strategy.endswith(
+        (".", "!", "?", ")", "]")
+    ):
+        violations.append("unfinished_prose")
+    if _CONTEXT_MARKER_RE.search(f"{title}\n{description}\n{strategy}"):
+        violations.append("context_specific_identifier")
+
+    for violation in violations:
+        if violation not in reasons:
+            reasons.append(violation)
+    reusable = bool(fields.get("reusable", False)) and not violations
+    score = float(fields.get("quality_score", 0.0) or 0.0)
+    if violations:
+        score = min(score, 0.49)
+    return {
+        **fields,
+        "reusable": reusable,
+        "quality_score": round(max(0.0, min(score, 1.0)), 4),
+        "quality_reasons": reasons[:10],
+        "naming_method": "llm",
+    }
 
 
 def _build_payload(
@@ -490,7 +580,7 @@ class PatternNamer:
             return pattern
 
         self._consecutive_failures = 0
-        return {**pattern, **fields}
+        return {**pattern, **_validate_named_pattern(fields, str(pattern.get("category", "")))}
 
     async def acquire(self) -> None:
         """Explicitly load the chat model before the first request, once per run.

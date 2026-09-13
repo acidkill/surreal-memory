@@ -9,6 +9,7 @@ Endpoints (prefix ``/api/dashboard/reasoning``):
 - ``POST /mine``              trigger a one-off mining run in the background (409 if already running)
 - ``GET  /patterns``          list learned pattern fibers (filter by model/category, paginated)
 - ``GET  /patterns/{id}``     one pattern's full detail
+- ``PATCH /patterns/{id}/injection`` toggle one pattern's injection eligibility
 - ``DELETE /patterns/{id}``   delete one pattern
 - ``DELETE /patterns``        delete all patterns for a model
 - ``DELETE /traces``          privacy wipe: delete all staged traces for a model
@@ -183,6 +184,7 @@ class ReasoningConfigUpdate(BaseModel):
     max_traces_total: int | None = Field(None, ge=1, le=10_000_000)
     min_cluster_support: int | None = Field(None, ge=1, le=100_000)
     min_confidence: float | None = Field(None, ge=0.0, le=1.0)
+    injection_min_quality: float | None = Field(None, ge=0.0, le=1.0)
     min_patterns_per_category: int | None = Field(None, ge=1, le=100_000)
     injection_max_patterns: int | None = Field(None, ge=1, le=1000)
     injection_max_chars: int | None = Field(None, ge=1, le=1_000_000)
@@ -225,6 +227,17 @@ class PatternSummary(BaseModel):
     confidence: float
     frequency: int
     signature: str
+    injection_enabled: bool
+    reusable: bool
+    quality_score: float
+    naming_method: str
+    quality_reasons: list[str]
+
+
+class PatternInjectionUpdate(BaseModel):
+    """Reversible per-pattern injection override."""
+
+    enabled: bool
 
 
 class PatternDetail(PatternSummary):
@@ -271,8 +284,9 @@ def _pattern_meta(fiber: Any) -> dict[str, Any]:
     return fiber.metadata if isinstance(fiber.metadata, dict) else {}
 
 
-def _to_summary(fiber: Any) -> PatternSummary:
-    md = _pattern_meta(fiber)
+def _to_summary(fiber: Any, metadata: dict[str, Any] | None = None) -> PatternSummary:
+    md = metadata if metadata is not None else _pattern_meta(fiber)
+    raw_reasons = md.get("_reasoning_quality_reasons", [])
     return PatternSummary(
         id=str(fiber.id),
         source_model=str(md.get("_source_model", "")),
@@ -281,6 +295,12 @@ def _to_summary(fiber: Any) -> PatternSummary:
         confidence=float(md.get("_reasoning_confidence", 0.0) or 0.0),
         frequency=int(md.get("_reasoning_frequency", 0) or 0),
         signature=str(md.get("_reasoning_signature", "")),
+        injection_enabled=not bool(md.get("_reasoning_injection_disabled", False)),
+        # Legacy patterns remain injectable until rebuilt or manually disabled.
+        reusable=bool(md.get("_reasoning_reusable", True)),
+        quality_score=float(md.get("_reasoning_quality_score", 1.0) or 0.0),
+        naming_method=str(md.get("_reasoning_naming_method", "legacy")),
+        quality_reasons=list(raw_reasons) if isinstance(raw_reasons, list) else [],
     )
 
 
@@ -474,6 +494,7 @@ async def update_config(body: ReasoningConfigUpdate) -> dict[str, Any]:
         "max_traces_total",
         "min_cluster_support",
         "min_confidence",
+        "injection_min_quality",
         "min_patterns_per_category",
         "injection_max_patterns",
         "injection_max_chars",
@@ -710,6 +731,31 @@ async def get_pattern(
         description=str(md.get("_reasoning_description", "")),
         summary=str(fiber.summary or ""),
     )
+
+
+@router.patch(
+    "/patterns/{pattern_id}/injection",
+    response_model=PatternSummary,
+    responses={404: {"model": ErrorResponse}},
+    summary="Enable or disable one pattern for injection",
+)
+async def update_pattern_injection(
+    pattern_id: str,
+    body: PatternInjectionUpdate,
+    storage: Annotated[NeuralStorage, Depends(get_storage)],
+    brain: Annotated[Brain, Depends(get_brain)],
+) -> PatternSummary:
+    """Persist a reversible injection override without deleting the pattern."""
+    async with storage_for_scope(storage, _brain_scope(brain)) as scoped:
+        fiber = await scoped.get_fiber(pattern_id)
+        if fiber is None or not _pattern_meta(fiber).get("_reasoning_pattern"):
+            raise HTTPException(status_code=404, detail="Pattern not found")
+        metadata = {
+            **_pattern_meta(fiber),
+            "_reasoning_injection_disabled": not body.enabled,
+        }
+        await scoped.update_fiber_metadata(pattern_id, metadata)
+    return _to_summary(fiber, metadata)
 
 
 @router.delete(

@@ -4,6 +4,7 @@ import type {
   MineRequest,
   MineResponse,
   PatternsListResponse,
+  PatternSummary,
   ReasoningConfig,
   ReasoningConfigUpdate,
   ReasoningConfigUpdateResponse,
@@ -80,6 +81,21 @@ export function useDeleteReasoningPattern() {
     mutationFn: (id: string) =>
       api.delete<ReasoningDeleteResponse>(
         `/api/dashboard/reasoning/patterns/${encodeURIComponent(id)}`,
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: keys.status })
+      queryClient.invalidateQueries({ queryKey: keys.patterns })
+    },
+  })
+}
+
+export function useUpdatePatternInjection() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
+      api.patch<PatternSummary>(
+        `/api/dashboard/reasoning/patterns/${encodeURIComponent(id)}/injection`,
+        { enabled },
       ),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: keys.status })
