@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from datetime import datetime, timedelta
 from typing import Literal
@@ -17,6 +18,7 @@ class InMemoryCollectionsMixin:
     """Mixin providing fiber, typed memory, and project operations."""
 
     _fibers: dict[str, dict[str, Fiber]]
+    _fiber_vecs: dict[str, dict[str, list[float]]]
     _typed_memories: dict[str, dict[str, TypedMemory]]
     _projects: dict[str, dict[str, Project]]
 
@@ -73,6 +75,39 @@ class InMemoryCollectionsMixin:
 
         results.sort(key=lambda f: f.salience, reverse=True)
         return results[:limit]
+
+    async def find_fibers_by_embedding(
+        self,
+        query_embedding: list[float],
+        limit: int = 10,
+    ) -> list[tuple[Fiber, float]]:
+        """Brute-force nearest neighbours over the whole in-memory brain — same shape and
+        cosine scale as `find_neurons_by_embedding`. `NeuralStorage` NEVER leaves this a stub here: `InMemoryStorage` is the test
+        double the suite runs on (`test_inmemory_completeness.py`), so an inherited
+        `NotImplementedError` would silently lose test coverage for the fiber-vector retriever.
+        """
+        query_norm = math.sqrt(sum(c * c for c in query_embedding))
+        if query_norm == 0.0:
+            return []
+        brain_id = self._get_brain_id()
+        vecs = self._fiber_vecs.get(brain_id, {})
+        scored: list[tuple[Fiber, float]] = []
+        for fiber_id, vec in vecs.items():
+            fiber = self._fibers[brain_id].get(fiber_id)
+            if fiber is None or len(vec) != len(query_embedding):
+                continue
+            vec_norm = math.sqrt(sum(c * c for c in vec))
+            if vec_norm == 0.0:
+                continue
+            dot = sum(a * b for a, b in zip(query_embedding, vec, strict=True))
+            scored.append((fiber, dot / (query_norm * vec_norm)))
+        scored.sort(key=lambda pair: pair[1], reverse=True)
+        return scored[:limit]
+
+    async def update_fiber_embeddings(self, pairs: list[tuple[str, list[float]]]) -> None:
+        brain_id = self._get_brain_id()
+        for fiber_id, vector in pairs:
+            self._fiber_vecs[brain_id][fiber_id] = list(vector)
 
     async def find_fibers_batch(
         self,

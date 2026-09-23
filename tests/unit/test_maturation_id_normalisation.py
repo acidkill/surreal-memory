@@ -192,8 +192,13 @@ async def test_find_maturations_returns_ids_that_join_to_fibers() -> None:
 
     records = await store.find_maturations()
 
-    # Fiber ids as _row_to_fiber hands them out (record-id suffix, underscore form).
-    fiber_ids = {_UNDERSCORE, "aaaa1111_2222_3333_4444_555566667777"}
+    # Fiber ids as _row_to_fiber hands them out. Until 2026-09-13 that was the
+    # underscore form, because _row_to_fiber never folded the record id back; since
+    # the fiber-id round-trip fix it is the dash form Fiber.create() minted, and
+    # _canonicalised follows it. The point of the assertion is unchanged: whatever
+    # form Fiber.id carries, find_maturations must hand out the SAME one, or
+    # extract_patterns' ``f.id in maturations`` silently matches nothing.
+    fiber_ids = {_DASH, "aaaa1111-2222-3333-4444-555566667777"}
     assert {m.fiber_id for m in records} == fiber_ids
 
 
