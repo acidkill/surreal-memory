@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -263,3 +265,29 @@ async def test_prune_dry_run_never_mutates_checkpoint_or_graph() -> None:
     assert "edge-1" in storage.synapses
     assert storage.removed_fiber_refs == []
     assert progress.writes == []
+
+
+@pytest.mark.asyncio
+async def test_prune_neuron_candidates_do_not_query_unused_connectivity() -> None:
+    storage = _PruneStorage()
+    storage.synapses = {}
+    neuron = SimpleNamespace(
+        id="old-fiberless-neuron",
+        created_at=REFERENCE_TIME - timedelta(days=30),
+        ephemeral=False,
+    )
+    storage.find_neurons_after_id = AsyncMock(side_effect=[[neuron], []])  # type: ignore[method-assign]
+    storage.find_neurons_by_ids = AsyncMock(side_effect=[[neuron], []])  # type: ignore[method-assign]
+    storage.delete_neurons_batch = AsyncMock(return_value=1)  # type: ignore[method-assign]
+    storage.get_connected_neuron_ids_for = AsyncMock(  # type: ignore[method-assign]
+        side_effect=AssertionError("connectivity must not be queried")
+    )
+    engine = ConsolidationEngine(storage, ConsolidationConfig(prune_isolated_neurons=True))
+    engine._active_strategy = ConsolidationStrategy.PRUNE
+    engine._progress_session = _Progress()  # type: ignore[assignment]
+
+    report = ConsolidationReport()
+    await engine._prune(report, REFERENCE_TIME, dry_run=False)
+
+    assert report.neurons_pruned == 1
+    storage.get_connected_neuron_ids_for.assert_not_awaited()

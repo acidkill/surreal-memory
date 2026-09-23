@@ -1172,7 +1172,6 @@ class ConsolidationEngine:
             "find_neurons_after_id",
             "find_neurons_by_ids",
             "get_neuron_states_batch",
-            "get_connected_neuron_ids_for",
             "delete_synapses_batch",
             "delete_neurons_batch",
         )
@@ -1375,7 +1374,6 @@ class ConsolidationEngine:
                 return []
             neuron_ids = [neuron.id for neuron in neurons]
             pinned = await storage.get_pinned_neuron_ids()
-            connected = await storage.get_connected_neuron_ids_for(neuron_ids)
             fiber_members = await storage.get_fiber_neuron_ids_for(neuron_ids)
             states = await storage.get_neuron_states_batch(neuron_ids)
             eligible: list[str] = []
@@ -1389,9 +1387,6 @@ class ConsolidationEngine:
                 age_days = (reference_time - neuron.created_at).total_seconds() / 86400
                 if age_days < dead_neuron_days:
                     continue
-                # Connected but fiberless neurons are the legacy "dead" path; isolated
-                # neurons are the "orphan" path. Both use the same safety conditions.
-                _ = neuron.id in connected
                 eligible.append(neuron.id)
             return eligible
 
