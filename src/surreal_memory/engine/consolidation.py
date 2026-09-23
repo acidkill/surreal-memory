@@ -2483,7 +2483,10 @@ class ConsolidationEngine:
             report.fibers_merged = fibers_merged
             report.fibers_created = fibers_created
             report.fibers_removed = fibers_removed
-            await _checkpoint("merge_scan", None, ())
+            plan = descriptor.get("plan")
+            if plan is not None:
+                plan["next_index"] += 1
+            await _checkpoint("merge_scan", plan, ())
             report.merge_details.append(
                 MergeDetail(
                     original_fiber_ids=tuple(source_ids),
@@ -2493,82 +2496,162 @@ class ConsolidationEngine:
                 )
             )
 
-        async def _candidate_groups(fibers: list[Fiber]) -> list[list[Fiber]]:
+        def _decode_plan(raw_cursor: Any) -> dict[str, Any]:
+            if not isinstance(raw_cursor, str):
+                raise RuntimeError("merge group manifest is missing")
+            try:
+                plan = json.loads(raw_cursor)
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError("merge group manifest is malformed") from exc
+            if (
+                not isinstance(plan, dict)
+                or plan.get("version") != 2
+                or plan.get("kind") != "plan"
+                or not isinstance(plan.get("groups"), list)
+                or type(plan.get("next_index")) is not int
+                or not 0 <= plan["next_index"] <= len(plan["groups"])
+            ):
+                raise RuntimeError("merge group manifest is incompatible")
+            seen: set[str] = set()
+            for group in plan["groups"]:
+                if not isinstance(group, list) or len(group) < 2:
+                    raise RuntimeError("merge group manifest has an invalid group")
+                group_ids: list[str] = []
+                for member in group:
+                    if (
+                        not isinstance(member, list)
+                        or len(member) != 2
+                        or not isinstance(member[0], str)
+                        or not isinstance(member[1], str)
+                    ):
+                        raise RuntimeError("merge group manifest has an invalid member")
+                    group_ids.append(member[0])
+                if group_ids != sorted(set(group_ids)) or seen.intersection(group_ids):
+                    raise RuntimeError("merge group manifest has duplicate or unordered sources")
+                seen.update(group_ids)
+            return plan
+
+        async def _candidate_groups(
+            fibers: list[Fiber], scan_state: dict[str, Any] | None = None
+        ) -> list[list[Fiber]]:
             fiber_list = sorted(fibers, key=lambda item: item.id)
-            if len(fiber_list) < 2:
+            if len(fiber_list) < 2 and scan_state is None:
                 return []
+            snapshot_hash = _fingerprint([_fiber_fingerprint(fiber) for fiber in fiber_list])
             neuron_to_fibers: dict[str, set[int]] = {}
             for idx, fiber in enumerate(fiber_list):
                 if len(fiber.neuron_ids) > self._config.merge_max_fiber_size:
                     continue
-                for neuron_id in fiber.neuron_ids:
+                for neuron_id in sorted(fiber.neuron_ids):
                     neuron_to_fibers.setdefault(neuron_id, set()).add(idx)
-
+            postings = sorted(neuron_to_fibers)
             uf = UnionFind(len(fiber_list))
-            pair_number = 0
-            # Posting lists and their members must be stable across processes. Stream
-            # pairs into the union-find rather than retaining an arbitrarily truncated
-            # set of candidates (or all O(n²) pairs) in memory. A repeated pair is
-            # harmless: union is idempotent and the overlap rule depends only on its
-            # two immutable fiber snapshots.
-            for neuron_id in sorted(neuron_to_fibers):
+            posting_start = 0
+            pair_start = 0
+            pair_checks = 0
+            if scan_state is not None:
+                parents = scan_state.get("parents")
+                if (
+                    scan_state.get("version") != 2
+                    or scan_state.get("kind") != "scan"
+                    or scan_state.get("snapshot_hash") != snapshot_hash
+                    or not isinstance(parents, list)
+                    or len(parents) != len(fiber_list)
+                    or any(
+                        type(parent) is not int or parent < 0 or parent >= len(parents)
+                        for parent in parents
+                    )
+                    or type(scan_state.get("posting_index")) is not int
+                    or type(scan_state.get("pair_position")) is not int
+                    or type(scan_state.get("pair_checks")) is not int
+                ):
+                    raise RuntimeError(
+                        "merge candidate checkpoint is incompatible or its frozen fiber snapshot changed"
+                    )
+                posting_start = scan_state["posting_index"]
+                pair_start = scan_state["pair_position"]
+                pair_checks = scan_state["pair_checks"]
+                if not 0 <= posting_start <= len(postings) or pair_start < 0 or pair_checks < 0:
+                    raise RuntimeError("merge candidate checkpoint cursor is out of range")
+                posting_size = (
+                    min(100, len(neuron_to_fibers[postings[posting_start]]))
+                    if posting_start < len(postings)
+                    else 0
+                )
+                if pair_start > posting_size * (posting_size - 1) // 2:
+                    raise RuntimeError("merge candidate checkpoint pair position is out of range")
+                uf._parent = parents.copy()
+
+            async def save_scan(next_posting: int, next_pair: int) -> None:
+                await _checkpoint(
+                    "merge_candidate_scan",
+                    {
+                        "version": 2,
+                        "kind": "scan",
+                        "snapshot_hash": snapshot_hash,
+                        "posting_index": next_posting,
+                        "pair_position": next_pair,
+                        "pair_checks": pair_checks,
+                        "parents": uf._parent.copy(),
+                    },
+                )
+
+            if scan_state is None and not dry_run:
+                await save_scan(0, 0)
+            for posting_idx in range(posting_start, len(postings)):
+                neuron_id = postings[posting_idx]
                 indices = neuron_to_fibers[neuron_id]
                 if len(indices) > 100:
+                    pair_start = 0
+                    if (posting_idx + 1) % 1000 == 0 and not dry_run:
+                        await save_scan(posting_idx + 1, 0)
                     continue
                 indices_list = sorted(indices)
+                pair_position = 0
                 for i_pos in range(len(indices_list)):
                     for j_pos in range(i_pos + 1, len(indices_list)):
-                        pair_number += 1
-                        if pair_number % 1000 == 0:
-                            # Candidate groups are not durable until fully formed.
-                            # Never report a resumable pause here: that would restart
-                            # this entire scan and might never reach later postings.
-                            await asyncio.sleep(0)
-                            deadlines = [
-                                deadline
-                                for deadline in (self._strategy_deadline, self._total_deadline)
-                                if deadline is not None
-                            ]
-                            if self._progress_session is not None and (
-                                getattr(self._progress_session, "lease_lost", False)
-                                or (deadlines and min(deadlines) - time.perf_counter() <= 10.0)
-                            ):
-                                raise RuntimeError(
-                                    "merge candidate scan could not finish within its lease/time "
-                                    f"budget after {pair_number} pair checks (posting {neuron_id!r}); "
-                                    "no group was applied or marked complete; optimize or persist "
-                                    "a stable group plan before retrying"
-                                )
+                        if posting_idx == posting_start and pair_position < pair_start:
+                            pair_position += 1
+                            continue
                         left, right = indices_list[i_pos], indices_list[j_pos]
                         first = fiber_list[left]
                         second = fiber_list[right]
-                        if first.metadata.get("_verbatim", False) != second.metadata.get(
-                            "_verbatim", False
+                        if (
+                            first.metadata.get("_verbatim", False)
+                            == second.metadata.get("_verbatim", False)
+                            and not any(
+                                fiber.metadata.get(marker)
+                                for fiber in (first, second)
+                                for marker in ("_habit_pattern", "_reasoning_pattern")
+                            )
+                            and not first.pinned
+                            and not second.pinned
                         ):
-                            continue
-                        if any(
-                            fiber.metadata.get(marker)
-                            for fiber in (first, second)
-                            for marker in ("_habit_pattern", "_reasoning_pattern")
-                        ):
-                            continue
-                        if first.pinned or second.pinned:
-                            continue
-                        union_size = len(first.neuron_ids | second.neuron_ids)
-                        if union_size == 0:
-                            continue
-                        jaccard = len(first.neuron_ids & second.neuron_ids) / union_size
-                        if first.created_at and second.created_at:
-                            time_diff = abs((first.created_at - second.created_at).total_seconds())
-                        else:
-                            time_diff = float("inf")
-                        threshold = (
-                            self._config.merge_overlap_threshold * 0.6
-                            if time_diff < 3600
-                            else self._config.merge_overlap_threshold
-                        )
-                        if jaccard >= threshold:
-                            uf.union(left, right)
+                            union_size = len(first.neuron_ids | second.neuron_ids)
+                            if union_size:
+                                jaccard = len(first.neuron_ids & second.neuron_ids) / union_size
+                                if first.created_at and second.created_at:
+                                    time_diff = abs(
+                                        (first.created_at - second.created_at).total_seconds()
+                                    )
+                                else:
+                                    time_diff = float("inf")
+                                threshold = (
+                                    self._config.merge_overlap_threshold * 0.6
+                                    if time_diff < 3600
+                                    else self._config.merge_overlap_threshold
+                                )
+                                if jaccard >= threshold:
+                                    uf.union(left, right)
+                        pair_checks += 1
+                        pair_position += 1
+                        if pair_checks % 1000 == 0:
+                            await asyncio.sleep(0)
+                            if not dry_run:
+                                await save_scan(posting_idx, pair_position)
+                pair_start = 0
+                if (posting_idx + 1) % 1000 == 0 and not dry_run:
+                    await save_scan(posting_idx + 1, 0)
 
             groups: list[list[Fiber]] = []
             for members in uf.groups().values():
@@ -2588,16 +2671,66 @@ class ConsolidationEngine:
         }
         if not dry_run and phase in resumable_phases:
             descriptor = _decode_descriptor(progress_state.get("cursor"))
+            if descriptor.get("plan") is not None:
+                unit_plan = _decode_plan(_encode_descriptor(descriptor["plan"]))
+                plan_members = unit_plan["groups"][unit_plan["next_index"]]
+                if [member[0] for member in plan_members] != descriptor["source_ids"]:
+                    raise RuntimeError(
+                        "merge pending unit does not match its frozen group manifest"
+                    )
             pending_ids = [str(value) for value in (progress_state.get("pending") or [])]
             if not pending_ids and phase != "merge_deleting_sources":
                 pending_ids = list(descriptor["source_ids"])
             await _finish_unit(descriptor, phase, pending_ids)
+            progress_state = self._strategy_progress_state()
+            phase = str(progress_state.get("phase") or "")
 
-        fibers = await self._all_fibers_paged(
-            created_before=getattr(self._progress_session, "reference_time", None)
-        )
-        groups = await _candidate_groups(fibers)
-        for member_fibers in groups:
+        plan: dict[str, Any] | None = None
+        if not dry_run and phase == "merge_scan" and progress_state.get("cursor"):
+            plan = _decode_plan(progress_state["cursor"])
+
+        groups: list[list[Fiber]] = []
+        if plan is None:
+            fibers = await self._all_fibers_paged(
+                created_before=getattr(self._progress_session, "reference_time", None)
+            )
+            scan_state: dict[str, Any] | None = None
+            if not dry_run and phase == "merge_candidate_scan":
+                raw_cursor = progress_state.get("cursor")
+                if not isinstance(raw_cursor, str):
+                    raise RuntimeError("merge candidate checkpoint cursor is missing")
+                try:
+                    scan_state = json.loads(raw_cursor)
+                except (TypeError, ValueError) as exc:
+                    raise RuntimeError("merge candidate checkpoint cursor is malformed") from exc
+                if not isinstance(scan_state, dict):
+                    raise RuntimeError("merge candidate checkpoint cursor is incompatible")
+            groups = await _candidate_groups(fibers, scan_state)
+            plan = {
+                "version": 2,
+                "kind": "plan",
+                "groups": [
+                    [[fiber.id, _fiber_fingerprint(fiber)] for fiber in group] for group in groups
+                ],
+                "next_index": 0,
+            }
+            if not dry_run:
+                # No source can be modified until the entire group plan is durable.
+                await _checkpoint("merge_scan", plan)
+
+        for group_index in range(plan["next_index"], len(plan["groups"])):
+            members = plan["groups"][group_index]
+            if dry_run:
+                member_fibers = groups[group_index]
+            else:
+                member_fibers = []
+                for fiber_id, signature in members:
+                    current = await self._storage.get_fiber(fiber_id)
+                    if current is None or _fiber_fingerprint(current) != signature:
+                        raise RuntimeError(
+                            f"merge planned source {fiber_id!r} changed before its work unit"
+                        )
+                    member_fibers.append(current)
             if dry_run:
                 source_ids = sorted(fiber.id for fiber in member_fibers)
                 descriptor_id = _fingerprint(source_ids)[:32]
@@ -2615,6 +2748,7 @@ class ConsolidationEngine:
                 continue
 
             descriptor = await _make_descriptor(member_fibers)
+            descriptor["plan"] = plan
             source_ids = list(descriptor["source_ids"])
             await _checkpoint("merge_pending", descriptor, source_ids)
             await _finish_unit(descriptor, "merge_pending", source_ids)

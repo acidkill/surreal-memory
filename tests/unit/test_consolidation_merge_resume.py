@@ -313,9 +313,125 @@ async def test_merge_candidate_scan_deadline_fails_before_any_graph_write() -> N
 
     engine._all_fibers_paged = all_fibers  # type: ignore[method-assign]
     report = ConsolidationReport()
-    with pytest.raises(RuntimeError, match="merge candidate scan could not finish"):
+    with pytest.raises(ConsolidationPausedError, match="budget is down"):
         await engine._merge(report, dry_run=False)
 
     assert report.fibers_created == 0
-    assert progress.writes == []
+    assert progress.strategy_state("merge")["phase"] == "merge_candidate_scan"
     assert not any(fiber.metadata.get("merged_from") for fiber in storage.fibers.values())
+
+
+@pytest.mark.asyncio
+async def test_merge_resumes_candidate_scan_after_fifty_thousand_pairs() -> None:
+    import json
+
+    storage = _FiberStorage(typed=False, matured=False)
+    storage.fibers = {fiber.id: fiber for fiber in _large_disjoint_merge_groups()}
+    progress = _Progress("merge_candidate_scan", 52)
+    engine = _engine(storage, progress)
+
+    async def all_fibers(*, created_before: datetime | None = None) -> list[Fiber]:
+        return list(reversed(storage.fibers.values()))
+
+    engine._all_fibers_paged = all_fibers  # type: ignore[method-assign]
+    with pytest.raises(ConsolidationPausedError, match="simulated merge"):
+        await engine._merge(ConsolidationReport(), dry_run=False)
+
+    saved = progress.strategy_state("merge")
+    scan = json.loads(saved["cursor"])
+    assert saved["phase"] == "merge_candidate_scan"
+    assert scan["pair_checks"] >= 51_000
+    assert len(scan["parents"]) == 1200
+    assert len(storage.fibers) == 1200
+
+    progress.pause_phase = None
+    report = ConsolidationReport()
+    await engine._merge(report, dry_run=False)
+
+    assert report.fibers_merged == 1200
+    assert report.fibers_created == 12
+    assert report.fibers_removed == 1200
+    assert len(storage.fibers) == 12
+    assert progress.strategy_state("merge")["phase"] == "merge_complete"
+    assert len(progress.phase_counts) >= 3
+
+
+@pytest.mark.asyncio
+async def test_merge_retries_crash_in_first_planned_group_then_finishes_remaining() -> None:
+    storage = _FiberStorage(typed=False, matured=False)
+    storage.fibers = {fiber.id: fiber for fiber in _large_disjoint_merge_groups()}
+    storage.crash_after = "add_fiber"
+    progress = _Progress()
+    engine = _engine(storage, progress)
+
+    async def all_fibers(*, created_before: datetime | None = None) -> list[Fiber]:
+        return list(storage.fibers.values())
+
+    engine._all_fibers_paged = all_fibers  # type: ignore[method-assign]
+    with pytest.raises(_SimulatedCrash, match="after add_fiber"):
+        await engine._merge(ConsolidationReport(), dry_run=False)
+
+    assert progress.strategy_state("merge")["phase"] == "merge_pending"
+    report = ConsolidationReport()
+    await engine._merge(report, dry_run=False)
+
+    assert report.fibers_merged == 1200
+    assert report.fibers_created == 12
+    assert report.fibers_removed == 1200
+    assert len(storage.fibers) == 12
+    assert all(fiber.metadata.get("merged_from") for fiber in storage.fibers.values())
+
+
+@pytest.mark.asyncio
+async def test_merge_refuses_changed_fiber_during_checkpointed_candidate_scan() -> None:
+    storage = _FiberStorage(typed=False, matured=False)
+    storage.fibers = {fiber.id: fiber for fiber in _large_disjoint_merge_groups()}
+    progress = _Progress("merge_candidate_scan", 2)
+    engine = _engine(storage, progress)
+
+    async def all_fibers(*, created_before: datetime | None = None) -> list[Fiber]:
+        return list(storage.fibers.values())
+
+    engine._all_fibers_paged = all_fibers  # type: ignore[method-assign]
+    with pytest.raises(ConsolidationPausedError):
+        await engine._merge(ConsolidationReport(), dry_run=False)
+
+    original = storage.fibers["candidate-00-000"]
+    storage.fibers[original.id] = replace(original, summary="changed after checkpoint")
+    with pytest.raises(RuntimeError, match="frozen fiber snapshot changed"):
+        await engine._merge(ConsolidationReport(), dry_run=False)
+
+    assert progress.strategy_state("merge")["phase"] == "merge_candidate_scan"
+    assert not any(fiber.metadata.get("merged_from") for fiber in storage.fibers.values())
+
+
+@pytest.mark.asyncio
+async def test_merge_resumes_next_planned_group_without_repeating_completed_one() -> None:
+    import json
+
+    storage = _FiberStorage(typed=False, matured=False)
+    storage.fibers = {fiber.id: fiber for fiber in _large_disjoint_merge_groups()}
+    progress = _Progress("merge_scan", 2)
+    engine = _engine(storage, progress)
+
+    async def all_fibers(*, created_before: datetime | None = None) -> list[Fiber]:
+        return list(storage.fibers.values())
+
+    engine._all_fibers_paged = all_fibers  # type: ignore[method-assign]
+    with pytest.raises(ConsolidationPausedError):
+        await engine._merge(ConsolidationReport(), dry_run=False)
+
+    plan = json.loads(progress.strategy_state("merge")["cursor"])
+    assert plan["next_index"] == 1
+    assert len(storage.fibers) == 1101
+    first_successor = next(
+        fiber for fiber in storage.fibers.values() if fiber.metadata.get("merged_from")
+    )
+
+    report = ConsolidationReport()
+    await engine._merge(report, dry_run=False)
+    assert first_successor.id in storage.fibers
+    assert len(storage.fibers) == 12
+    assert report.fibers_merged == 1200
+    assert report.fibers_created == 12
+    assert report.fibers_removed == 1200
