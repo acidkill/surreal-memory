@@ -450,6 +450,10 @@ def _parse_neuron_type(value: Any) -> NeuronType:
 def _row_to_neuron(row: dict[str, Any]) -> Neuron:
     """Convert a SurrealDB neuron record to a Neuron."""
     meta = dict(row.get("metadata") or {})
+    # Lifecycle writes use the top-level column. It wins over any legacy copy
+    # in metadata, while older rows without the column retain their metadata.
+    if row.get("lifecycle_state") is not None:
+        meta["lifecycle_state"] = str(row["lifecycle_state"])
     # Surface the stored vector back into metadata so callers (e.g. reindex's
     # --missing-only) can tell whether a neuron already has an embedding.
     embedding_vec = row.get("embedding_vec")
@@ -4221,10 +4225,15 @@ class SurrealDBStorage(
 
     async def update_neuron_lifecycle(self, neuron_id: str, lifecycle_state: str) -> None:
         sid = _to_surreal_id(neuron_id)
-        try:
-            await self._conn.merge(f"neuron:{sid}", {"lifecycle_state": lifecycle_state})
-        except Exception:
-            pass
+        brain_id = self._get_brain_id()
+        rows = await self._query(
+            f"UPDATE neuron:{sid} SET lifecycle_state = $lifecycle_state "
+            "WHERE brain_id = $brain_id RETURN AFTER",
+            lifecycle_state=lifecycle_state,
+            brain_id=brain_id,
+        )
+        if not rows:
+            raise LookupError(f"Neuron {neuron_id} not found in brain {brain_id}")
 
     async def update_neuron_frozen(self, neuron_id: str, frozen: bool) -> None:
         sid = _to_surreal_id(neuron_id)
