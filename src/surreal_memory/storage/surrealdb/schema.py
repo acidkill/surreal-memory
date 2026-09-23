@@ -7,7 +7,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 SCHEMA_SQL = """
 -- ============================================================
@@ -560,6 +560,38 @@ DEFINE FIELD resolved_at   ON drift_clusters TYPE option<datetime>;
 DEFINE INDEX idx_dclu_brain   ON drift_clusters FIELDS brain_id;
 DEFINE INDEX idx_dclu_id      ON drift_clusters FIELDS brain_id, cluster_id UNIQUE;
 DEFINE INDEX idx_dclu_status  ON drift_clusters FIELDS brain_id, status;
+
+-- Durable state for cross-process, resumable consolidation. Progress and lease
+-- are brain-scoped; checkpoint/counter objects evolve with format_version.
+DEFINE TABLE IF NOT EXISTS consolidation_progress SCHEMAFULL;
+DEFINE FIELD brain_id                 ON consolidation_progress TYPE string;
+DEFINE FIELD run_id                   ON consolidation_progress TYPE string;
+DEFINE FIELD schema_version           ON consolidation_progress TYPE int;
+DEFINE FIELD engine_version            ON consolidation_progress TYPE string;
+DEFINE FIELD format_version           ON consolidation_progress TYPE int;
+DEFINE FIELD requested_strategies     ON consolidation_progress TYPE array<string>;
+DEFINE FIELD completed_strategies     ON consolidation_progress TYPE array<string>;
+DEFINE FIELD options_fingerprint      ON consolidation_progress TYPE string;
+DEFINE FIELD reference_time           ON consolidation_progress TYPE datetime;
+DEFINE FIELD status                   ON consolidation_progress TYPE string;
+DEFINE FIELD current_strategy         ON consolidation_progress TYPE option<string>;
+DEFINE FIELD phase                    ON consolidation_progress TYPE string;
+DEFINE FIELD cursor                   ON consolidation_progress TYPE option<string>;
+DEFINE FIELD strategy_states          ON consolidation_progress TYPE object FLEXIBLE;
+DEFINE FIELD counters                 ON consolidation_progress TYPE object FLEXIBLE;
+DEFINE FIELD owner_token              ON consolidation_progress TYPE string;
+DEFINE FIELD started_at               ON consolidation_progress TYPE datetime;
+DEFINE FIELD updated_at               ON consolidation_progress TYPE datetime;
+DEFINE FIELD last_error               ON consolidation_progress TYPE option<string>;
+DEFINE INDEX idx_cprog_brain_status   ON consolidation_progress FIELDS brain_id, status;
+DEFINE INDEX idx_cprog_brain_run      ON consolidation_progress FIELDS brain_id, run_id;
+
+DEFINE TABLE IF NOT EXISTS consolidation_lease SCHEMAFULL;
+DEFINE FIELD brain_id                 ON consolidation_lease TYPE string;
+DEFINE FIELD owner_token              ON consolidation_lease TYPE string;
+DEFINE FIELD acquired_at              ON consolidation_lease TYPE datetime;
+DEFINE FIELD expires_at               ON consolidation_lease TYPE datetime;
+DEFINE INDEX idx_clease_brain         ON consolidation_lease FIELDS brain_id UNIQUE;
 """
 
 
@@ -586,6 +618,7 @@ SYNAPSE_V8_DDL: list[str] = [
     "DEFINE FIELD last_activated ON synapse TYPE option<datetime>",
     "DEFINE FIELD reinforced_count ON synapse TYPE int DEFAULT 0",
     "DEFINE INDEX idx_synapse_brain ON synapse FIELDS brain_id",
+    "DEFINE INDEX idx_synapse_brain_created ON synapse FIELDS brain_id, created_at",
     "DEFINE INDEX idx_synapse_in ON synapse FIELDS brain_id, in",
     "DEFINE INDEX idx_synapse_out ON synapse FIELDS brain_id, out",
     "DEFINE INDEX idx_synapse_type ON synapse FIELDS brain_id, type",
@@ -595,51 +628,50 @@ SYNAPSE_V8_DDL: list[str] = [
 def _parse_schema_statements(sql: str) -> list[str]:
     """Split a SurrealQL schema script into executable statements.
 
-    Comment LINES are stripped inside each ``;``-separated chunk. The previous
-    approach — dropping any whole chunk whose stripped text *started* with
-    ``--`` — silently discarded every statement that sits directly under an
-    explanatory comment block: all 26 ``DEFINE TABLE`` statements and, since
-    2.7.4, the ``smem_content`` FULLTEXT analyzer. Without the analyzer the
-    ``idx_neuron_content_fts`` DEFINE fails (and was swallowed below), so the
-    ``@@`` operator behind ``find_neurons`` matched nothing — keyword recall
-    was silently dead on any database relying on ``ensure_schema``.
+    Whole-line comments are removed before semicolon splitting. A semicolon in
+    a comment must not split the comment from its -- prefix, or the comment
+    tail can be mistaken for SQL and invalidate the following definition.
     """
-    statements: list[str] = []
-    for chunk in sql.split(";"):
-        stmt = "\n".join(
-            line for line in chunk.splitlines() if not line.strip().startswith("--")
-        ).strip()
-        if stmt:
-            statements.append(stmt)
-    return statements
+    uncommented_sql = "\n".join(
+        line for line in sql.splitlines() if not line.lstrip().startswith("--")
+    )
+    return [statement.strip() for statement in uncommented_sql.split(";") if statement.strip()]
 
 
-async def _ensure_change_log_schemafull(conn: Any) -> bool:
-    """ALTER a legacy SCHEMALESS ``change_log`` table to SCHEMAFULL.
-
-    Databases that wrote change_log rows before the table was declared in the
-    schema carry an implicit SCHEMALESS table (and an export/import preserves
-    that shape). Field-level FLEXIBLE — which the ``payload`` define below
-    needs — is only valid on a SCHEMAFULL table, so without this conversion
-    every startup logs a schema warning and the field keeps its old shape
-    (issue #230). ``ALTER TABLE … SCHEMAFULL`` is the documented
-    schemaless-to-schemafull transition and keeps existing rows; every column
-    the writer produces is declared, so tightening rejects nothing. Fail-soft
-    by the same contract as the statement loop: a failed probe or ALTER only
-    means the warning persists.
-
-    Returns True when a conversion was attempted and succeeded.
-    """
+async def _get_table_definitions(conn: Any) -> dict[str, Any]:
+    """Return INFO FOR DB table definitions, or an empty map if unavailable."""
     try:
         rows = await conn.query("INFO FOR DB;")
         info = rows[0] if isinstance(rows, list) and rows else rows
         tables = info.get("tables", {}) if isinstance(info, dict) else {}
-        definition = str(tables.get("change_log", "") or "")
-        if "SCHEMALESS" not in definition.upper():
-            return False
+        return dict(tables) if isinstance(tables, dict) else {}
+    except Exception:
+        logger.debug("table-definition probe failed", exc_info=True)
+        return {}
+
+
+async def _ensure_change_log_schemafull(
+    conn: Any, table_definitions: dict[str, Any] | None = None
+) -> bool:
+    """ALTER a legacy SCHEMALESS change_log table to SCHEMAFULL.
+
+    Existing databases may have an implicit SCHEMALESS table from writes made
+    before its schema declaration. FLEXIBLE fields require SCHEMAFULL, so
+    converge the table before applying field definitions. The probe and ALTER
+    are fail-soft to preserve startup's existing behavior.
+
+    Returns True when a conversion was attempted and succeeded.
+    """
+    tables = (
+        table_definitions if table_definitions is not None else await _get_table_definitions(conn)
+    )
+    definition = str(tables.get("change_log", "") or "")
+    if "SCHEMALESS" not in definition.upper():
+        return False
+    try:
         await conn.query("ALTER TABLE change_log SCHEMAFULL;")
     except Exception:
-        logger.debug("change_log schemaless probe/ALTER failed", exc_info=True)
+        logger.debug("change_log schemaless ALTER failed", exc_info=True)
         return False
     logger.info("Converted legacy SCHEMALESS change_log table to SCHEMAFULL")
     return True
@@ -648,53 +680,39 @@ async def _ensure_change_log_schemafull(conn: Any) -> bool:
 async def ensure_schema(conn: Any, embedding_dim: int = 3072) -> None:
     """Apply schema to SurrealDB. Safe to call multiple times.
 
-    The neuron embedding HNSW index dimension is parameterized by ``embedding_dim``
-    so the vector index always matches the configured embedding model (e.g. 1024
-    for bge-m3 via a local OpenAI-compatible server, 3072 for Gemini). SurrealDB
-    rejects vectors whose length differs from the index dimension, so this MUST
-    equal the provider's output dimension.
-
-    Applies the monolithic SCHEMA_SQL first, then the parameterized neuron HNSW
-    index, then the native-RELATION synapse DDL (SYNAPSE_V8_DDL). On an existing
-    v7 database the flat ``synapse`` table still exists, so ``DEFINE TABLE synapse
-    TYPE RELATION`` raises ``AlreadyExistsError`` here and is swallowed — the old
-    table survives until ``apply_migrations`` (migrations.py) converts it. On a
-    fresh database the RELATION table is created directly.
-
-    Note: a plain ``DEFINE INDEX`` errors when the index already exists (swallowed
-    below), so this does NOT change the dimension of an EXISTING index — it only
-    sets it on first creation. Changing a populated index requires an explicit
-    ``REMOVE INDEX`` + re-``DEFINE`` migration.
+    The neuron embedding HNSW index dimension is parameterized by
+    embedding_dim so the vector index matches the configured embedding
+    model. Relation-synapse DDL is applied only when the table is absent or
+    already a RELATION. A legacy flat v7 synapse table is left untouched for
+    apply_migrations to convert; applying RELATION fields to that table
+    first can create invalid intermediate schema.
     """
     dim = int(embedding_dim) if embedding_dim and int(embedding_dim) > 0 else 3072
     logger.info("Applying SurrealDB schema (v%d, embedding_dim=%d)...", SCHEMA_VERSION, dim)
+    table_definitions = await _get_table_definitions(conn)
     statements = _parse_schema_statements(SCHEMA_SQL)
     statements.append(
         "DEFINE INDEX idx_neuron_embedding ON neuron "
         f"FIELDS embedding_vec HNSW DIMENSION {dim} DIST COSINE"
     )
-    # `fiber` has no vector field or
-    # index at all, so the ONLY way to reach a fiber is through one of its neurons as an anchor
-    # — measured +5/49 golden hits when a fiber-level vector retriever exists alongside that.
-    # `fiber` is SCHEMALESS (no `DEFINE FIELD fiber_vec` needed); `fiber_vec` is populated by
-    # `scripts/backfill_fiber_vectors.py`, not at encode time (follow-up, not part of this fix).
+    # fiber_vec is populated by scripts/backfill_fiber_vectors.py; the HNSW
+    # index is harmless on an empty fiber table and remains dimension-specific.
     statements.append(
         f"DEFINE INDEX idx_fiber_vec ON fiber FIELDS fiber_vec HNSW DIMENSION {dim} DIST COSINE"
     )
-    statements.extend(SYNAPSE_V8_DDL)
-    # Before any change_log field defines: a legacy SCHEMALESS change_log would
-    # reject the payload FLEXIBLE define (issue #230), so converge it first.
-    await _ensure_change_log_schemafull(conn)
+
+    synapse_definition = str(table_definitions.get("synapse", "") or "").upper()
+    if not synapse_definition or "TYPE RELATION" in synapse_definition:
+        statements.extend(SYNAPSE_V8_DDL)
+    else:
+        logger.debug("Deferring synapse RELATION DDL until legacy migration completes")
+
+    # Converge old change_log tables before applying their FLEXIBLE payload field.
+    await _ensure_change_log_schemafull(conn, table_definitions)
     for stmt in statements:
         try:
             await conn.query(stmt + ";")
         except Exception as exc:
-            # A bare DEFINE on an existing index/table raises AlreadyExists on
-            # every start (including the flat synapse table blocking the
-            # RELATION re-definition on v7 — the migration handles conversion);
-            # that stays at debug. Anything else used to vanish here — the
-            # dropped-analyzer bug hid behind this very handler — so real
-            # failures are now logged without breaking startup.
             head = stmt.splitlines()[0][:88]
             if "already exists" in str(exc).lower():
                 logger.debug("Schema statement skipped (already exists): %s", head)

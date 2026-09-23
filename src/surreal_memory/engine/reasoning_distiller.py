@@ -25,6 +25,7 @@ import math
 import os
 import re
 from collections import Counter
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, replace
 from fnmatch import fnmatch
 from typing import TYPE_CHECKING, Any
@@ -603,6 +604,7 @@ async def _process_model_batch(
     existing_sigs: set[str],
     budget: int,
     namer: PatternNamer | None = None,
+    pattern_checkpoint: Callable[[Sequence[dict[str, Any]]], Awaitable[None]] | None = None,
 ) -> tuple[int, list[Any]]:
     """Distill one model's trace batch. Returns (patterns_created, consumed_ids).
 
@@ -661,9 +663,15 @@ async def _process_model_batch(
                 # Prose only: the signature is already fixed by the cluster's
                 # trace hashes, so naming cannot fork a pattern into a duplicate.
                 pattern = await namer.rename(pattern, cluster_traces)
+            # Persist the exact post-naming result before any database writes. If
+            # the process stops here, resume applies it before requesting a name.
+            if pattern_checkpoint is not None:
+                await pattern_checkpoint([pattern])
             if await _materialize_pattern(storage, pattern, existing_sigs):
                 existing_sigs.add(pattern["signature"])
                 created += 1
+            if pattern_checkpoint is not None:
+                await pattern_checkpoint([])
         if capped_mid_category:
             break  # do NOT consume this category's traces — revisit next run
         consumed.extend(traces[i]["id"] for i in idxs)
@@ -678,8 +686,14 @@ async def distill_reasoning_patterns(
     embedder: EmbeddingProvider | None = None,
     drain: bool = False,
     progress: ProgressCallback | None = None,
+    pending_patterns: Sequence[dict[str, Any]] = (),
+    pattern_checkpoint: Callable[[Sequence[dict[str, Any]]], Awaitable[None]] | None = None,
 ) -> DistillResult:
     """Distill unprocessed reasoning traces into ReasoningBank pattern fibers.
+
+    Persisted ``pending_patterns`` are materialized before processing fresh traces.
+    Newly named patterns are checkpointed before materialization when
+    ``pattern_checkpoint`` is supplied.
 
     ``storage`` must already be on ``brain_id`` (graph writes use the current
     brain). Distillation is governed by per-model targets
@@ -723,6 +737,20 @@ async def distill_reasoning_patterns(
             existing_by_model[str(source_model)] = existing_by_model.get(str(source_model), 0) + 1
 
     patterns_created = 0
+    # Recover the exact persisted naming result before any fresh batch can make
+    # another external naming request. Signature checks make replay idempotent.
+    for index, pattern in enumerate(pending_patterns):
+        signature = str(pattern["signature"])
+        was_existing = signature in existing_sigs
+        if await _materialize_pattern(storage, pattern, existing_sigs):
+            patterns_created += 1
+        existing_sigs.add(signature)
+        if not was_existing:
+            source_model = str(pattern["model"])
+            existing_by_model[source_model] = existing_by_model.get(source_model, 0) + 1
+        if pattern_checkpoint is not None:
+            await pattern_checkpoint(pending_patterns[index + 1 :])
+
     processed_ids: list[Any] = []
     models = await storage.get_reasoning_trace_models(brain_id)
     if rt.mining_models:
@@ -770,6 +798,7 @@ async def distill_reasoning_patterns(
                     existing_sigs,
                     budget,
                     namer,
+                    pattern_checkpoint,
                 )
                 patterns_created += created
                 budget -= created

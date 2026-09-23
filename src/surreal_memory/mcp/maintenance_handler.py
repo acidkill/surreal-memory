@@ -422,11 +422,19 @@ class MaintenanceHandler:
                 ConsolidationStrategy.ENRICH,
             ]
             delta = await run_with_delta(storage, brain_id, strategies=strategies)
-            logger.info(
-                "Session-end consolidation complete: %s | purity delta: %+.1f",
-                delta.report.summary(),
-                delta.purity_delta,
-            )
+            status = delta.report.extra.get("consolidation_status", "completed")
+            if status == "completed":
+                logger.info(
+                    "Session-end consolidation complete: %s | purity delta: %+.1f",
+                    delta.report.summary(),
+                    delta.purity_delta,
+                )
+            else:
+                logger.warning(
+                    "Session-end consolidation %s: %s",
+                    status,
+                    delta.report.summary(),
+                )
         except Exception:
             logger.error("Session-end consolidation failed", exc_info=True)
         finally:
@@ -442,15 +450,24 @@ class MaintenanceHandler:
             brain_id = _require_brain_id(storage)
             strategies = [ConsolidationStrategy(s) for s in strategy_names]
             delta = await run_with_delta(storage, brain_id, strategies=strategies)
-            logger.info(
-                "Auto-consolidation complete (strategies=%s): %s | purity delta: %+.1f",
-                strategy_names,
-                delta.report.summary(),
-                delta.purity_delta,
-            )
-
-            # Reset adaptive interval after successful consolidation
-            self._effective_check_interval = None
+            status = delta.report.extra.get("consolidation_status", "completed")
+            summary = delta.report.summary()
+            if status == "completed":
+                logger.info(
+                    "Auto-consolidation complete (strategies=%s): %s | purity delta: %+.1f",
+                    strategy_names,
+                    summary,
+                    delta.purity_delta,
+                )
+                # Reset adaptive interval only after the requested work is complete.
+                self._effective_check_interval = None
+            else:
+                logger.warning(
+                    "Auto-consolidation %s (strategies=%s): %s",
+                    status,
+                    strategy_names,
+                    summary,
+                )
         except Exception:
             logger.error("Auto-consolidation failed", exc_info=True)
 

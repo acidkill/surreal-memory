@@ -159,10 +159,10 @@ class TestSanitizerConsolidation:
         await st.insert_tool_events(
             "b1", [{"tool_name": "t", "created_at": "2026-01-01T00:00:00+00:00"}]
         )
-        table, doc = conn.insert.call_args.args
-        assert table == "tool_events"
+        record_id, doc = conn.create.call_args.args
         # The record id came from the single-source folder, not a raw .replace.
-        assert doc["id"] == "SENTINEL"
+        assert record_id == "tool_events:SENTINEL"
+        assert doc["brain_id"] == "b1"
 
 
 # --------------------------------------------------------------------------- #

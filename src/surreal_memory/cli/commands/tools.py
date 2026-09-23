@@ -480,8 +480,10 @@ def consolidate(
             "-s",
             help=(
                 "Consolidation strategy. Valid values: "
-                "prune, merge, summarize, mature, infer, enrich, "
-                "dream, learn_habits, dedup, semantic_link, compress, all. "
+                "prune, merge, summarize, mature, infer, enrich, dream, "
+                "learn_habits, dedup, semantic_link, compress, lifecycle, "
+                "process_tool_events, process_reasoning_traces, learn_reasoning, "
+                "essence_backfill, replay, schema, interference, detect_drift, all. "
                 "Default: all (runs every strategy in dependency order). "
                 "'mature' advances episodic memories to semantic stage."
             ),
@@ -517,6 +519,15 @@ def consolidate(
         dedup         - Link near-duplicates via alias edges (does not merge)
         semantic_link - Add cross-domain semantic connections
         compress      - Compress old low-activation fibers
+        lifecycle     - Apply lifecycle decisions to memories
+        process_tool_events - Ingest buffered tool activity
+        process_reasoning_traces - Ingest reasoning traces
+        learn_reasoning - Distill reasoning patterns
+        essence_backfill - Backfill memory essence metadata
+        replay         - Replay eligible memory sequences
+        schema         - Assimilate inferred schema metadata
+        interference   - Resolve conflicting memory signals
+        detect_drift   - Detect changes in memory clusters
         all           - Run all strategies in dependency order (default)
 
     Examples:
@@ -584,6 +595,7 @@ def consolidate(
             strategies=validated_strategies,
             dry_run=dry_run,
             config=cons_config,
+            on_progress=lambda message: typer.echo(message),
         )
 
         typer.echo("")
@@ -623,7 +635,8 @@ def consolidate(
         # not on the text, so a partially failed pass must not exit 0 just
         # because it now degrades gracefully instead of crashing.
         failed = delta.report.extra.get("failed_strategies")
-        if failed:
+        status = delta.report.extra.get("consolidation_status")
+        if failed or status in {"paused", "blocked", "failed", "lease_lost", "timed_out"}:
             raise typer.Exit(1)
 
     run_async(_consolidate())

@@ -9,6 +9,7 @@ behaviour against a real v3.2.0 DB is covered by the U6 integration test.
 from __future__ import annotations
 
 import sys
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -177,3 +178,200 @@ class TestQueryShapes:
         # NULL-brain_id orphan synapses this fix targets would be skipped again.
         assert "brain_id" not in in_query[0]
         assert "brain_id" not in out_query[0]
+
+
+class TestBatchedPruneQueries:
+    @pytest.mark.asyncio
+    async def test_delete_synapses_batch_chunks_and_preserves_change_log(self):
+        st, _ = _store_with_mock_conn()
+        row = {
+            "id": _FakeRID("synapse", "edge_1"),
+            "in": _FakeRID("neuron", "source_1"),
+            "out": _FakeRID("neuron", "target_1"),
+            "type": "related_to",
+            "weight": 0.1,
+        }
+        st._query = AsyncMock(side_effect=[[row], []])  # type: ignore[method-assign]
+        st._record_changes_bulk = AsyncMock()  # type: ignore[method-assign]
+
+        count = await st.delete_synapses_batch([f"edge-{i}" for i in range(129)])
+
+        assert count == 1
+        assert st._query.await_count == 2
+        first_sql = st._query.await_args_list[0].args[0]
+        first_params = st._query.await_args_list[0].kwargs
+        assert first_sql.startswith("DELETE FROM synapse")
+        assert "brain_id = $brain_id" in first_sql
+        assert "RETURN BEFORE" in first_sql
+        assert "type::record('synapse', $synapse_id_0)" in first_sql
+        assert first_params["synapse_id_0"] == "edge_0"
+        logged = st._record_changes_bulk.await_args.args
+        assert logged[:2] == ("synapse", "delete")
+        assert [synapse.id for synapse in logged[2]] == ["edge-1"]
+
+    @pytest.mark.asyncio
+    async def test_get_synapses_by_ids_uses_bound_record_ids(self):
+        st, _ = _store_with_mock_conn()
+        st._query = AsyncMock(return_value=[])  # type: ignore[method-assign]
+
+        assert await st.get_synapses_by_ids(["edge-1"]) == []
+
+        sql = st._query.await_args.args[0]
+        params = st._query.await_args.kwargs
+        assert "id IN [type::record('synapse', $synapse_id_0)]" in sql
+        assert params["synapse_id_0"] == "edge_1"
+
+    @pytest.mark.asyncio
+    async def test_get_synapses_for_sources_uses_bounded_source_list(self):
+        st, _ = _store_with_mock_conn()
+        st._query = AsyncMock(return_value=[])  # type: ignore[method-assign]
+
+        assert await st.get_synapses_for_sources(["source-1"]) == []
+
+        sql = st._query.await_args.args[0]
+        params = st._query.await_args.kwargs
+        assert "in IN [type::record('neuron', $source_id_0)]" in sql
+        assert params["source_id_0"] == "source_1"
+
+    @pytest.mark.asyncio
+    async def test_target_counts_aggregate_without_returning_synapse_rows(self):
+        st, _ = _store_with_mock_conn()
+        st._query = AsyncMock(
+            return_value=[{"source_id": _FakeRID("neuron", "source_1"), "target_count": 2}]
+        )  # type: ignore[method-assign]
+
+        counts = await st.get_synapse_target_counts_for_sources(["source-1"])
+
+        assert counts == {"source-1": 2}
+        sql = st._query.await_args.args[0]
+        params = st._query.await_args.kwargs
+        assert "array::len(array::group(out)) AS target_count" in sql
+        assert "GROUP BY in" in sql
+        assert "in IN [type::record('neuron', $source_id_0)]" in sql
+        assert params["source_id_0"] == "source_1"
+
+    @pytest.mark.asyncio
+    async def test_synapse_keyset_page_binds_frozen_reference_and_cursor(self):
+        st, _ = _store_with_mock_conn()
+        st._query = AsyncMock(return_value=[])  # type: ignore[method-assign]
+
+        page = await st.get_synapses_after_id(
+            "edge-10",
+            limit=9999,
+            created_before=datetime(2026, 9, 20),
+        )
+
+        assert page == []
+        sql = st._query.await_args.args[0]
+        params = st._query.await_args.kwargs
+        assert "id > type::record('synapse', $cursor_id)" in sql
+        assert "created_at IS NONE OR created_at <= $created_before" in sql
+        assert "ORDER BY id ASC LIMIT 2000" in sql
+        assert params["cursor_id"] == "edge_10"
+
+    @pytest.mark.asyncio
+    async def test_prune_page_uses_projected_tuple_cursor_without_upper_bound(self):
+        st, _ = _store_with_mock_conn()
+        st._query = AsyncMock(return_value=[])  # type: ignore[method-assign]
+
+        cursor_time = datetime(2026, 9, 19, 8, 15)
+        page = await st.get_synapse_prune_page(
+            cursor_time,
+            "edge-10",
+            limit=9999,
+        )
+
+        assert page == []
+        sql = st._query.await_args.args[0]
+        params = st._query.await_args.kwargs
+        assert sql.startswith(
+            "SELECT id, brain_id, in, out, type, weight, direction, metadata, "
+            "created_at, last_activated, reinforced_count FROM synapse"
+        )
+        assert "created_at >= $cursor_time" in sql
+        assert "(created_at > $cursor_time OR (created_at = $cursor_time AND " in sql
+        assert "id > type::record('synapse', $cursor_id)" in sql
+        assert "created_at <= $created_before" not in sql
+        assert "ORDER BY created_at ASC, id ASC LIMIT 2000" in sql
+        assert params["cursor_id"] == "edge_10"
+        assert params["cursor_time"] == cursor_time
+        assert params["brain_id"] == "b1"
+
+    @pytest.mark.asyncio
+    async def test_prune_first_page_uses_creation_time_order(self):
+        st, _ = _store_with_mock_conn()
+        st._query = AsyncMock(return_value=[])  # type: ignore[method-assign]
+
+        await st.get_synapse_prune_page(None, None, limit=100)
+
+        sql = st._query.await_args.args[0]
+        assert "brain_id = $brain_id" in sql
+        assert "ORDER BY created_at ASC, id ASC LIMIT 100" in sql
+        assert "SELECT * FROM synapse" not in sql
+
+    @pytest.mark.asyncio
+    async def test_neuron_keyset_page_omits_embeddings_and_is_brain_scoped(self):
+        st, _ = _store_with_mock_conn()
+        st._query = AsyncMock(return_value=[])  # type: ignore[method-assign]
+
+        page = await st.find_neurons_after_id(
+            "node-10",
+            created_before=datetime(2026, 9, 20),
+            ephemeral=False,
+            include_embedding=False,
+        )
+
+        assert page == []
+        sql = st._query.await_args.args[0]
+        params = st._query.await_args.kwargs
+        assert "SELECT * OMIT embedding_vec FROM neuron" in sql
+        assert 'brain_id = "b1"' in sql
+        assert "id > type::record('neuron', $cursor_id)" in sql
+        assert "created_at IS NONE OR created_at <= $created_before" in sql
+        assert "ephemeral = $ephemeral" in sql
+        assert params["cursor_id"] == "node_10"
+        assert params["ephemeral"] is False
+
+    @pytest.mark.asyncio
+    async def test_get_connected_neuron_ids_for_only_queries_supplied_endpoints(self):
+        st, _ = _store_with_mock_conn()
+        st._query_values = AsyncMock(  # type: ignore[method-assign]
+            side_effect=[[_FakeRID("neuron", "node_1")], []]
+        )
+
+        connected = await st.get_connected_neuron_ids_for(["node-1", "node-2"])
+
+        assert connected == {"node-1"}
+        assert st._query_values.await_count == 2
+        sql = st._query_values.await_args_list[0].args[0]
+        assert "in IN [type::record('neuron', $incoming_id_0)" in sql
+        assert st._query_values.await_args_list[0].kwargs["incoming_id_1"] == "node_2"
+
+    @pytest.mark.asyncio
+    async def test_fiber_membership_is_unbounded_by_a_global_limit(self):
+        st, _ = _store_with_mock_conn()
+        st._query = AsyncMock(  # type: ignore[method-assign]
+            return_value=[{"neuron_ids": ["node-1", "unrequested"]}]
+        )
+
+        protected = await st.get_fiber_neuron_ids_for(["node-1"], min_salience=0.8)
+
+        assert protected == {"node-1"}
+        sql = st._query.await_args.args[0]
+        assert "neuron_ids CONTAINSANY $neuron_ids" in sql
+        assert "salience > $min_salience" in sql
+        assert "LIMIT" not in sql
+
+    @pytest.mark.asyncio
+    async def test_remove_synapse_refs_from_fibers_uses_set_difference_in_chunks(self):
+        st, _ = _store_with_mock_conn()
+        st._query = AsyncMock(return_value=[])  # type: ignore[method-assign]
+        st._record_changes_bulk = AsyncMock()  # type: ignore[method-assign]
+
+        updated = await st.remove_synapse_refs_from_fibers([f"edge-{i}" for i in range(129)])
+
+        assert updated == 0
+        assert st._query.await_count == 2
+        sql = st._query.await_args_list[0].args[0]
+        assert "array::difference(synapse_ids, $synapse_ids)" in sql
+        assert "synapse_ids CONTAINSANY $synapse_ids" in sql

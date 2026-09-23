@@ -113,12 +113,21 @@ class ScheduledConsolidationHandler:
             self._last_consolidation_at = utcnow()
 
             delta = await run_with_delta(storage, brain_id, strategies=strategies)
-            logger.info(
-                "Scheduled consolidation complete (strategies=%s): %s | purity delta: %+.1f",
-                cfg.scheduled_consolidation_strategies,
-                delta.report.summary(),
-                delta.purity_delta,
-            )
+            status = delta.report.extra.get("consolidation_status", "completed")
+            if status == "completed":
+                logger.info(
+                    "Scheduled consolidation complete (strategies=%s): %s | purity delta: %+.1f",
+                    cfg.scheduled_consolidation_strategies,
+                    delta.report.summary(),
+                    delta.purity_delta,
+                )
+            else:
+                logger.warning(
+                    "Scheduled consolidation %s (strategies=%s): %s",
+                    status,
+                    cfg.scheduled_consolidation_strategies,
+                    delta.report.summary(),
+                )
         except Exception:
             logger.error("Scheduled consolidation failed", exc_info=True)
 

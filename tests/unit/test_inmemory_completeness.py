@@ -49,8 +49,30 @@ def test_the_interface_is_non_trivial() -> None:
 
 
 def test_in_memory_storage_implements_every_method() -> None:
+    # These optimized SurrealDB operations and process-durable checkpoints are
+    # intentionally optional; an in-process adapter must not claim durability.
+    optional_capabilities = {
+        "acquire_consolidation_lease",
+        "claim_consolidation_progress",
+        "create_consolidation_progress",
+        "find_neurons_after_id",
+        "get_connected_neuron_ids_for",
+        "get_consolidation_progress",
+        "get_fiber_neuron_ids_for",
+        "get_synapses_after_id",
+        "get_synapses_by_ids",
+        "get_synapses_for_sources",
+        "get_synapse_prune_page",
+        "get_synapse_target_counts_for_sources",
+        "release_consolidation_lease",
+        "remove_synapse_refs_from_fibers",
+        "renew_consolidation_lease",
+        "save_consolidation_progress",
+        "start_consolidation_progress",
+    }
     missing = _inherited_stubs(InMemoryStorage)
 
-    assert not missing, (
-        f"{len(missing)} NeuralStorage method(s) still inherited as stubs: {sorted(missing)}"
+    assert missing == optional_capabilities, (
+        "only the explicitly optional SurrealDB capabilities may remain stubs; "
+        f"missing={sorted(missing)}, expected={sorted(optional_capabilities)}"
     )

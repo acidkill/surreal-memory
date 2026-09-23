@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -11,6 +11,7 @@ from surreal_memory.engine.consolidation_delta import (
     ConsolidationDelta,
     HealthSnapshot,
     _snapshot_from_report,
+    run_with_delta,
 )
 
 
@@ -178,3 +179,25 @@ class TestSnapshotFromReport:
         assert snap.grade == "C"
         assert snap.connectivity == 0.5
         assert snap.neuron_count == 100
+
+
+@pytest.mark.asyncio
+async def test_run_with_delta_forwards_progress_callback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import surreal_memory.engine.consolidation_delta as delta_module
+    from surreal_memory.engine.consolidation import ConsolidationEngine
+    from surreal_memory.engine.diagnostics import DiagnosticsEngine
+
+    monkeypatch.setattr(DiagnosticsEngine, "analyze", AsyncMock(return_value=object()))
+    monkeypatch.setattr(delta_module, "_snapshot_from_report", lambda _: _make_snapshot())
+    engine_run = AsyncMock(return_value=_make_report())
+    monkeypatch.setattr(ConsolidationEngine, "run", engine_run)
+    callback_messages: list[str] = []
+    callback = callback_messages.append
+
+    await run_with_delta(MagicMock(), "default", on_progress=callback)
+
+    engine_run.assert_awaited_once()
+    assert engine_run.await_args is not None
+    assert engine_run.await_args.kwargs["on_progress"] is callback

@@ -437,9 +437,22 @@ class TestInvertedIndexMerge:
             anchor_neuron_id="n2",
             created_at=datetime.now(),
         )
+        fibers_by_id = {fiber_a.id: fiber_a, fiber_b.id: fiber_b}
+
+        async def _add_fiber(fiber):
+            fibers_by_id[fiber.id] = fiber
+
+        async def _delete_fiber(fiber_id):
+            fibers_by_id.pop(fiber_id, None)
+
         mock_storage.get_fibers = AsyncMock(return_value=[fiber_a, fiber_b])
-        mock_storage.add_fiber = AsyncMock()
-        mock_storage.delete_fiber = AsyncMock()
+        mock_storage.add_fiber = AsyncMock(side_effect=_add_fiber)
+        mock_storage.delete_fiber = AsyncMock(side_effect=_delete_fiber)
+        mock_storage.get_fiber = AsyncMock(side_effect=fibers_by_id.get)
+        # Merge snapshots typed-memory and maturity state before deleting sources.
+        mock_storage.get_typed_memories_batch = AsyncMock(return_value={})
+        mock_storage.get_typed_memory = AsyncMock(return_value=None)
+        mock_storage.get_maturation = AsyncMock(return_value=None)
 
         config = ConsolidationConfig(merge_overlap_threshold=0.4)
         engine = ConsolidationEngine(mock_storage, config)

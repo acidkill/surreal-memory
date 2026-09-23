@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from datetime import timedelta
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -476,6 +476,30 @@ class TestAutoConsolidation:
             await asyncio.sleep(0.05)
             mock_run.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_paused_run_is_logged_as_incomplete(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        server = _FakeServer(_make_storage())
+        server._effective_check_interval = 45
+        delta = MagicMock()
+        delta.report.extra = {"consolidation_status": "paused"}
+        delta.report.summary.return_value = "Consolidation paused at prune phase=synapse_scan"
+
+        with (
+            caplog.at_level("WARNING"),
+            patch(
+                "surreal_memory.engine.consolidation_delta.run_with_delta",
+                new_callable=AsyncMock,
+                return_value=delta,
+            ),
+        ):
+            await server._run_auto_consolidation_dynamic(("prune",))
+
+        assert "Auto-consolidation paused" in caplog.text
+        assert "Auto-consolidation complete" not in caplog.text
+        assert server._effective_check_interval == 45
+
 
 # ========== Integration: _check_maintenance ==========
 
@@ -846,6 +870,33 @@ class TestSessionEndConsolidation:
         ) as mock_consol:
             await mock_consol()
             mock_consol.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_paused_session_end_run_is_logged_as_incomplete(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        server = _FakeServer(_make_storage(), MaintenanceConfig(auto_consolidate=True))
+        delta = MagicMock()
+        delta.report.extra = {"consolidation_status": "paused"}
+        delta.report.summary.return_value = "paused at infer phase=neuron_scan"
+
+        with (
+            patch(
+                "surreal_memory.utils.consolidation_lock.acquire_consolidation_lock",
+                return_value=True,
+            ),
+            patch("surreal_memory.utils.consolidation_lock.release_consolidation_lock"),
+            patch(
+                "surreal_memory.engine.consolidation_delta.run_with_delta",
+                new_callable=AsyncMock,
+                return_value=delta,
+            ),
+            caplog.at_level("WARNING"),
+        ):
+            await server.run_session_end_consolidation()
+
+        assert "Session-end consolidation paused" in caplog.text
+        assert "Session-end consolidation complete" not in caplog.text
 
     @pytest.mark.asyncio
     async def test_session_end_skips_when_disabled(self) -> None:

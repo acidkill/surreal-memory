@@ -320,7 +320,13 @@ class LifecycleHandler:
         extra = {
             key: value
             for key, value in delta.report.extra.items()
-            if key.startswith(("alias_", "dedup_", "merge_", "semantic_link_", "summaries_"))
+            if key
+            in {
+                "consolidation_status",
+                "consolidation_progress_messages",
+                "last_checkpoint",
+            }
+            or key.startswith(("alias_", "dedup_", "merge_", "semantic_link_", "summaries_"))
         }
         result["report"] = {
             "duplicates_found": delta.report.duplicates_found,

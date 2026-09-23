@@ -34,6 +34,7 @@ from surreal_memory.storage.surrealdb.alerts import SurrealDBAlertsMixin
 from surreal_memory.storage.surrealdb.cognitive import SurrealDBCognitiveMixin
 from surreal_memory.storage.surrealdb.compression import SurrealDBCompressionMixin
 from surreal_memory.storage.surrealdb.connection import DEFAULT_AUTH_LEVEL
+from surreal_memory.storage.surrealdb.consolidation_state import SurrealDBConsolidationStateMixin
 from surreal_memory.storage.surrealdb.depth_priors import SurrealDBDepthPriorsMixin
 from surreal_memory.storage.surrealdb.drift import SurrealDBDriftMixin
 from surreal_memory.storage.surrealdb.keyword_entity import SurrealDBKeywordEntityMixin
@@ -82,6 +83,8 @@ _BRAIN_SCOPED_TABLES: tuple[str, ...] = (
     "brain_versions",
     "change_log",
     "co_activations",
+    "consolidation_lease",
+    "consolidation_progress",
     "cognitive_state",
     "decay_pass",
     "compression_backups",
@@ -621,6 +624,7 @@ class SurrealDBStorage(
     SurrealDBVersionsMixin,
     SurrealDBKeywordEntityMixin,
     SurrealDBCompressionMixin,
+    SurrealDBConsolidationStateMixin,
     SurrealDBActivityMixin,
     SurrealDBDepthPriorsMixin,
     SurrealDBReasoningTracesMixin,
@@ -1403,6 +1407,39 @@ class SurrealDBStorage(
         )
         return [_row_to_neuron(r) for r in rows]
 
+    async def find_neurons_after_id(
+        self,
+        cursor_id: str | None,
+        *,
+        limit: int = 1000,
+        created_before: datetime | None = None,
+        ephemeral: bool | None = False,
+        include_embedding: bool = False,
+    ) -> list[Neuron]:
+        """Read a stable, bounded neuron keyset page for consolidation scans."""
+        brain_id = self._get_brain_id()
+        conditions = [f"brain_id = {_brain_literal(brain_id)}"]
+        params: dict[str, Any] = {}
+
+        if cursor_id is not None:
+            params["cursor_id"] = _to_surreal_id(cursor_id)
+            conditions.append("id > type::record('neuron', $cursor_id)")
+        if created_before is not None:
+            params["created_before"] = created_before
+            conditions.append("(created_at IS NONE OR created_at <= $created_before)")
+        if ephemeral is not None:
+            conditions.append("ephemeral = $ephemeral")
+            params["ephemeral"] = ephemeral
+
+        page_limit = min(max(int(limit), 1), 2000)
+        projection = "SELECT *" if include_embedding else "SELECT * OMIT embedding_vec"
+        rows = await self._query(
+            f"{projection} FROM neuron WHERE {' AND '.join(conditions)} "
+            f"ORDER BY id ASC LIMIT {page_limit}",
+            **params,
+        )
+        return [_row_to_neuron(row) for row in rows]
+
     async def find_neurons_ranked(
         self,
         content_contains: str,
@@ -2134,6 +2171,238 @@ class SurrealDBStorage(
         rows = await self._query(query_str, **params)
         return [_row_to_synapse(r) for r in rows]
 
+    async def get_synapses_after_id(
+        self,
+        cursor_id: str | None,
+        *,
+        limit: int = 250,
+        created_before: datetime | None = None,
+    ) -> list[Synapse]:
+        """Read a bounded, stable keyset page for resumable consolidation scans."""
+        brain_id = self._get_brain_id()
+        conditions = ["brain_id = $brain_id"]
+        params: dict[str, Any] = {"brain_id": brain_id}
+
+        if cursor_id is not None:
+            params["cursor_id"] = _to_surreal_id(cursor_id)
+            conditions.append("id > type::record('synapse', $cursor_id)")
+        if created_before is not None:
+            # The frozen run reference excludes records created after this scan began.
+            # Preserve legacy rows without a timestamp; they cannot be classified as
+            # post-reference-time inserts.
+            params["created_before"] = created_before
+            conditions.append("(created_at IS NONE OR created_at <= $created_before)")
+
+        page_limit = min(max(int(limit), 1), 2000)
+        rows = await self._query(
+            f"SELECT * FROM synapse WHERE {' AND '.join(conditions)} "
+            f"ORDER BY id ASC LIMIT {page_limit}",
+            **params,
+        )
+        return [_row_to_synapse(row) for row in rows]
+
+    async def get_synapse_prune_page(
+        self,
+        cursor_created_at: datetime | None,
+        cursor_id: str | None,
+        *,
+        limit: int = 250,
+    ) -> list[Synapse]:
+        """Read only prune's required synapse fields using the measured range path.
+
+        The caller enforces its frozen reference time and stops once an ordered
+        page crosses it. Omitting that non-selective upper bound here lets
+        SurrealDB seek from the last committed timestamp instead of rescanning
+        the entire in-range history.
+        """
+        if (cursor_created_at is None) != (cursor_id is None):
+            raise ValueError("prune cursor must contain both created_at and id")
+
+        brain_id = self._get_brain_id()
+        conditions = ["brain_id = $brain_id"]
+        params: dict[str, Any] = {"brain_id": brain_id}
+        if cursor_created_at is not None and cursor_id is not None:
+            params["cursor_time"] = cursor_created_at
+            params["cursor_id"] = _to_surreal_id(cursor_id)
+            # Keep the lower-bound predicate separate so SurrealDB 3.2 can seek
+            # through idx_synapse_brain_created before applying the ID tie-breaker.
+            conditions.extend(
+                [
+                    "created_at >= $cursor_time",
+                    "(created_at > $cursor_time OR "
+                    "(created_at = $cursor_time AND id > type::record('synapse', $cursor_id)))",
+                ]
+            )
+
+        page_limit = min(max(int(limit), 1), 2000)
+        projection = (
+            "id, brain_id, in, out, type, weight, direction, metadata, "
+            "created_at, last_activated, reinforced_count"
+        )
+        rows = await self._query(
+            f"SELECT {projection} FROM synapse WHERE {' AND '.join(conditions)} "
+            f"ORDER BY created_at ASC, id ASC LIMIT {page_limit}",
+            **params,
+        )
+        return [_row_to_synapse(row) for row in rows]
+
+    @staticmethod
+    def _record_id_list(
+        table: str,
+        ids: list[str],
+        prefix: str,
+        params: dict[str, Any],
+    ) -> str:
+        """Build a bound SurrealQL list of record IDs from validated public IDs."""
+        expressions: list[str] = []
+        for index, value in enumerate(ids):
+            key = f"{prefix}_{index}"
+            params[key] = _to_surreal_id(value)
+            expressions.append(f"type::record('{table}', ${key})")
+        return f"[{', '.join(expressions)}]"
+
+    async def get_synapses_by_ids(self, synapse_ids: list[str] | set[str]) -> list[Synapse]:
+        """Fetch a bounded set of synapses in one brain-scoped query."""
+        unique_ids = list(dict.fromkeys(synapse_ids))
+        if not unique_ids:
+            return []
+
+        brain_id = self._get_brain_id()
+        synapses: list[Synapse] = []
+        for start in range(0, len(unique_ids), 256):
+            batch = unique_ids[start : start + 256]
+            params: dict[str, Any] = {"brain_id": brain_id}
+            record_ids = self._record_id_list("synapse", batch, "synapse_id", params)
+            rows = await self._query(
+                f"SELECT * FROM synapse WHERE brain_id = $brain_id AND id IN {record_ids}",
+                **params,
+            )
+            synapses.extend(_row_to_synapse(row) for row in rows)
+        return synapses
+
+    async def get_synapses_for_sources(self, source_ids: list[str] | set[str]) -> list[Synapse]:
+        """Fetch outgoing edges for a bounded source-neuron page."""
+        unique_ids = list(dict.fromkeys(source_ids))
+        if not unique_ids:
+            return []
+
+        brain_id = self._get_brain_id()
+        synapses: list[Synapse] = []
+        for start in range(0, len(unique_ids), 256):
+            batch = unique_ids[start : start + 256]
+            params: dict[str, Any] = {"brain_id": brain_id}
+            record_ids = self._record_id_list("neuron", batch, "source_id", params)
+            rows = await self._query(
+                f"SELECT * FROM synapse WHERE brain_id = $brain_id AND in IN {record_ids}",
+                **params,
+            )
+            synapses.extend(_row_to_synapse(row) for row in rows)
+        return synapses
+
+    async def get_synapse_target_counts_for_sources(
+        self, source_ids: list[str] | set[str]
+    ) -> dict[str, int]:
+        """Count distinct outgoing targets in the database without returning edge rows."""
+        unique_ids = list(dict.fromkeys(source_ids))
+        if not unique_ids:
+            return {}
+
+        brain_id = self._get_brain_id()
+        target_counts: dict[str, int] = {}
+        for start in range(0, len(unique_ids), 256):
+            batch = unique_ids[start : start + 256]
+            params: dict[str, Any] = {"brain_id": brain_id}
+            record_ids = self._record_id_list("neuron", batch, "source_id", params)
+            rows = await self._query(
+                "SELECT in AS source_id, "
+                "array::len(array::group(out)) AS target_count "
+                "FROM synapse WHERE brain_id = $brain_id "
+                f"AND in IN {record_ids} GROUP BY in",
+                **params,
+            )
+            for row in rows:
+                source_id = _endpoint_to_id(row.get("source_id"), None)
+                target_counts[source_id] = int(row.get("target_count") or 0)
+        return target_counts
+
+    async def get_connected_neuron_ids_for(self, neuron_ids: list[str] | set[str]) -> set[str]:
+        """Return only the supplied neuron IDs that still have an incident edge."""
+        unique_ids = list(dict.fromkeys(neuron_ids))
+        if not unique_ids:
+            return set()
+
+        brain_id = self._get_brain_id()
+
+        async def _matching_endpoints(field: str, prefix: str) -> set[str]:
+            params: dict[str, Any] = {"brain_id": brain_id}
+            record_ids = self._record_id_list("neuron", unique_ids, prefix, params)
+            rows = await self._query_values(
+                f"SELECT VALUE {field} FROM synapse "
+                f"WHERE brain_id = $brain_id AND {field} IN {record_ids} GROUP BY {field}",
+                **params,
+            )
+            return {_endpoint_to_id(row, None) for row in rows}
+
+        incoming, outgoing = await asyncio.gather(
+            _matching_endpoints("in", "incoming_id"),
+            _matching_endpoints("out", "outgoing_id"),
+        )
+        return incoming | outgoing
+
+    async def get_fiber_neuron_ids_for(
+        self,
+        neuron_ids: list[str] | set[str],
+        *,
+        min_salience: float | None = None,
+    ) -> set[str]:
+        """Return supplied neuron IDs referenced by fibers, optionally by salience."""
+        candidates = set(neuron_ids)
+        if not candidates:
+            return set()
+
+        conditions = ["brain_id = $brain_id", "neuron_ids CONTAINSANY $neuron_ids"]
+        params: dict[str, Any] = {
+            "brain_id": self._get_brain_id(),
+            "neuron_ids": list(candidates),
+        }
+        if min_salience is not None:
+            conditions.append("salience > $min_salience")
+            params["min_salience"] = min_salience
+
+        rows = await self._query(
+            f"SELECT neuron_ids FROM fiber WHERE {' AND '.join(conditions)}",
+            **params,
+        )
+        return {
+            neuron_id
+            for row in rows
+            for neuron_id in row.get("neuron_ids", [])
+            if neuron_id in candidates
+        }
+
+    async def remove_synapse_refs_from_fibers(self, synapse_ids: list[str] | set[str]) -> int:
+        """Remove pruned edge IDs from every referencing fiber in bounded batches."""
+        unique_ids = list(dict.fromkeys(synapse_ids))
+        if not unique_ids:
+            return 0
+
+        brain_id = self._get_brain_id()
+        updated_count = 0
+        batch_size = 128
+        for start in range(0, len(unique_ids), batch_size):
+            batch = unique_ids[start : start + batch_size]
+            rows = await self._query(
+                "UPDATE fiber SET synapse_ids = array::difference(synapse_ids, $synapse_ids) "
+                "WHERE brain_id = $brain_id AND synapse_ids CONTAINSANY $synapse_ids "
+                "RETURN AFTER",
+                brain_id=brain_id,
+                synapse_ids=batch,
+            )
+            updated = [_row_to_fiber(row) for row in rows]
+            await self._record_changes_bulk("fiber", "update", updated)
+            updated_count += len(updated)
+        return updated_count
+
     async def update_synapse(self, synapse: Synapse) -> None:
         conn = self._ensure_conn()
         sid = _to_surreal_id(synapse.id)
@@ -2162,16 +2431,35 @@ class SurrealDBStorage(
             return False
 
     async def delete_synapses_batch(self, synapse_ids: set[str] | list[str]) -> int:
-        """Delete multiple synapses sequentially.
+        """Delete synapses in bounded server-side batches and append change-log rows.
 
-        See ``delete_neurons_batch`` — concurrent writes conflict under
-        SurrealDB's transaction isolation, unlike concurrent reads.
+        A page is a single SurrealQL DELETE rather than one network round-trip per
+        edge. Returned pre-delete records let the existing change-log contract be
+        preserved exactly; callers can safely retry because deleting a missing ID
+        is a no-op.
         """
-        count = 0
-        for sid in synapse_ids:
-            if await self.delete_synapse(sid):
-                count += 1
-        return count
+        unique_ids = list(dict.fromkeys(synapse_ids))
+        if not unique_ids:
+            return 0
+
+        brain_id = self._get_brain_id()
+        deleted_count = 0
+        batch_size = 128
+        for start in range(0, len(unique_ids), batch_size):
+            batch = unique_ids[start : start + batch_size]
+            params: dict[str, Any] = {"brain_id": brain_id}
+            record_ids = self._record_id_list("synapse", batch, "synapse_id", params)
+            rows = await self._query(
+                "DELETE FROM synapse WHERE brain_id = $brain_id "
+                f"AND id IN {record_ids} RETURN BEFORE",
+                **params,
+            )
+            deleted = [_row_to_synapse(row) for row in rows]
+            if deleted:
+                await self._record_changes_bulk("synapse", "delete", deleted)
+                deleted_count += len(deleted)
+
+        return deleted_count
 
     # ================================================================
     # Graph Traversal

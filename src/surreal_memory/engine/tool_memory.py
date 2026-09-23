@@ -10,9 +10,14 @@ Processing is designed to be idempotent and batched.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import os
+import tempfile
 from collections import defaultdict
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -34,7 +39,7 @@ if TYPE_CHECKING:
         async def get_unprocessed_events(
             self, brain_id: str, limit: int = ...
         ) -> list[dict[str, Any]]: ...
-        async def mark_events_processed(self, brain_id: str, event_ids: list[int]) -> None: ...
+        async def mark_events_processed(self, brain_id: str, event_ids: list[Any]) -> None: ...
         async def find_neurons(self, *, content_exact: str, limit: int = ...) -> list[Neuron]: ...
         async def add_neuron(self, neuron: Any) -> None: ...
         async def get_synapses(
@@ -65,12 +70,13 @@ class IngestResult:
 
 @dataclass(frozen=True)
 class ProcessResult:
-    """Result of processing tool events into neurons/synapses."""
+    """Result of processing one committed tool-event batch."""
 
     neurons_created: int
     synapses_created: int
     synapses_reinforced: int
     events_processed: int
+    last_event_id: str | None = None
 
 
 def _parse_buffer_line(line: str) -> dict[str, Any] | None:
@@ -87,58 +93,130 @@ def _parse_buffer_line(line: str) -> dict[str, Any] | None:
         return None
 
 
+@contextmanager
+def _buffer_lock(buffer_path: Path) -> Iterator[None]:
+    """Coordinate buffer reads/acks with the hook's stable sidecar lock."""
+    lock_path = buffer_path.with_name(f"{buffer_path.name}.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as lock_file:
+        try:
+            import fcntl
+        except ImportError:  # pragma: no cover - Windows fallback is best-effort
+            yield
+            return
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
+def _read_complete_buffer_prefix(buffer_path: Path, max_lines: int) -> tuple[bytes, list[bytes]]:
+    """Snapshot complete oldest lines without racing hook appends or rotation."""
+    if max_lines <= 0:
+        return b"", []
+    with _buffer_lock(buffer_path):
+        try:
+            with buffer_path.open("rb") as stream:
+                lines: list[bytes] = []
+                for _ in range(max_lines):
+                    line = stream.readline()
+                    if not line or not line.endswith(b"\n"):
+                        break
+                    lines.append(line)
+        except OSError:
+            logger.debug("Failed to read tool events buffer", exc_info=True)
+            return b"", []
+    return b"".join(lines), lines
+
+
+def _ack_buffer_prefix(buffer_path: Path, acknowledged_prefix: bytes) -> bool:
+    """Atomically remove only the DB-acknowledged prefix, preserving new appends."""
+    if not acknowledged_prefix:
+        return True
+    temporary_path: str | None = None
+    with _buffer_lock(buffer_path):
+        try:
+            current = buffer_path.read_bytes()
+            if not current.startswith(acknowledged_prefix):
+                return False
+            file_mode = buffer_path.stat().st_mode & 0o777
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                dir=buffer_path.parent,
+                prefix=f".{buffer_path.name}.",
+                delete=False,
+            ) as temporary:
+                temporary_path = temporary.name
+                temporary.write(current[len(acknowledged_prefix) :])
+                temporary.flush()
+                os.fsync(temporary.fileno())
+            os.chmod(temporary_path, file_mode)
+            os.replace(temporary_path, buffer_path)
+            temporary_path = None
+            return True
+        except OSError:
+            logger.debug("Failed to acknowledge tool events buffer prefix", exc_info=True)
+            return False
+        finally:
+            if temporary_path is not None:
+                try:
+                    os.unlink(temporary_path)
+                except OSError:
+                    logger.debug("Failed to remove temporary tool event buffer", exc_info=True)
+
+
 async def ingest_buffer(
     storage: _ToolEventStorage,
     brain_id: str,
     buffer_path: Path,
     max_lines: int = 10000,
 ) -> IngestResult:
-    """Read JSONL buffer file, insert events into tool_events table, truncate buffer.
+    """Read a bounded JSONL prefix, insert idempotently, then acknowledge it.
 
-    Args:
-        storage: Storage backend (must have insert_tool_events method).
-        brain_id: Brain context.
-        buffer_path: Path to the tool_events.jsonl file.
-        max_lines: Max lines to read per ingestion cycle.
-
-    Returns:
-        IngestResult with counts.
+    Stable event IDs make a database commit followed by a process crash safe to
+    retry. The source prefix remains in place until storage acknowledges the
+    insert; concurrent hook appends are preserved when that exact prefix is
+    removed.
     """
-    if not buffer_path.exists():
+    if not buffer_path.exists() or max_lines <= 0:
         return IngestResult(events_ingested=0, events_skipped=0)
 
-    try:
-        raw = buffer_path.read_text(encoding="utf-8")
-    except OSError:
-        logger.debug("Failed to read tool events buffer", exc_info=True)
-        return IngestResult(events_ingested=0, events_skipped=0)
-
-    lines = raw.strip().splitlines()
+    prefix, lines = _read_complete_buffer_prefix(buffer_path, max_lines)
     if not lines:
         return IngestResult(events_ingested=0, events_skipped=0)
 
-    # Cap to max_lines (oldest first)
-    if len(lines) > max_lines:
-        lines = lines[-max_lines:]
-
     events: list[dict[str, Any]] = []
     skipped = 0
-    for line in lines:
+    for index, raw_line in enumerate(lines):
+        try:
+            line = raw_line.rstrip(b"\r\n").decode("utf-8")
+        except UnicodeDecodeError:
+            skipped += 1
+            continue
         parsed = _parse_buffer_line(line)
         if parsed is None:
             skipped += 1
             continue
+        event_id = parsed.get("event_id") or parsed.get("id")
+        if not event_id:
+            legacy_identity = b"\0".join(
+                (brain_id.encode("utf-8"), str(index).encode("ascii"), raw_line)
+            )
+            event_id = hashlib.sha256(legacy_identity).hexdigest()
+        parsed["event_id"] = str(event_id)
         events.append(parsed)
 
     inserted = 0
     if events:
+        # If this raises after some rows committed, don't acknowledge the source
+        # bytes. Stable IDs make the next attempt skip those existing DB rows.
         inserted = await storage.insert_tool_events(brain_id, events)
 
-    # Truncate buffer after successful ingestion
-    try:
-        buffer_path.write_text("", encoding="utf-8")
-    except OSError:
-        logger.debug("Failed to truncate tool events buffer", exc_info=True)
+    if not _ack_buffer_prefix(buffer_path, prefix):
+        logger.warning(
+            "Tool-event buffer changed before acknowledgement; leaving source lines for retry"
+        )
 
     return IngestResult(events_ingested=inserted, events_skipped=skipped)
 
@@ -315,11 +393,9 @@ async def process_events(
                         storage, nid_b, nid_a, SynapseType.USED_WITH
                     )
 
-                if existing_syn:
-                    reinforced = existing_syn.reinforce()
-                    await storage.update_synapse(reinforced)
-                    synapses_reinforced += 1
-                else:
+                if existing_syn is None:
+                    # Keep retries idempotent: if a crash happens before the event
+                    # marker is committed, replay must not reinforce this edge again.
                     synapse = Synapse.create(
                         source_id=nid_a,
                         target_id=nid_b,
@@ -355,11 +431,10 @@ async def process_events(
         existing_syn = await _find_synapse_between(
             storage, tool_nid, task_nid, SynapseType.EFFECTIVE_FOR
         )
-        if existing_syn:
-            reinforced = existing_syn.reinforce()
-            await storage.update_synapse(reinforced)
-            synapses_reinforced += 1
-        else:
+        if existing_syn is None:
+            # Existing edges are intentionally not reinforced here: event markers
+            # and this graph write cannot share a transaction, so a retry must be
+            # a no-op for an edge already created by an interrupted attempt.
             synapse = Synapse.create(
                 source_id=tool_nid,
                 target_id=task_nid,
@@ -379,4 +454,5 @@ async def process_events(
         synapses_created=synapses_created,
         synapses_reinforced=synapses_reinforced,
         events_processed=len(events),
+        last_event_id=str(event_ids[-1]) if event_ids else None,
     )

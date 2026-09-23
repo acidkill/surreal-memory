@@ -155,6 +155,11 @@ async def test_v7_upgrade_preserves_count_ids_endpoints_export_and_merkle() -> N
     await store.initialize()
     store.set_brain(brain.id)
 
+    # v11 checkpoint payloads retain arbitrary strategy-local keys.
+    progress_info = await conn.query("INFO FOR TABLE consolidation_progress")
+    assert "strategy_states" in str(progress_info)
+    assert "FLEXIBLE" in str(progress_info).upper()
+
     # synapse table is now a native RELATION
     info = await conn.query("INFO FOR DB")
     sdef = (info.get("tables", {}) or {}).get("synapse", "")
@@ -233,6 +238,9 @@ async def test_second_initialize_is_noop() -> None:
     store1.set_brain(brain.id)
     count1 = len(await store1.get_all_synapses())
     assert count1 == len(expected)
+    source_id = expected["e1"]["source_id"]
+    # Bridge-retention query returns a DB-side aggregate, not every outgoing edge.
+    assert await store1.get_synapse_target_counts_for_sources([source_id]) == {source_id: 4}
 
     # second connect must not re-migrate or duplicate
     store2 = _store(db)
@@ -288,13 +296,31 @@ async def test_two_parallel_apply_migrations_run_exactly_once() -> None:
 
 
 @pytest.mark.asyncio
+async def test_v10_migration_recovers_partial_schemaless_progress_table() -> None:
+    db = _fresh_db()
+    conn = await _raw_conn(db)
+    await conn.query("DEFINE TABLE consolidation_progress SCHEMALESS;")
+    await conn.query("DEFINE FIELD brain_id ON consolidation_progress TYPE string;")
+
+    await M._migrate_10_to_11(conn)
+
+    info = await conn.query("INFO FOR DB")
+    tables = info.get("tables", {}) if isinstance(info, dict) else {}
+    definition = str(tables.get("consolidation_progress", "") or "")
+    assert "SCHEMAFULL" in definition.upper()
+    progress_info = await conn.query("INFO FOR TABLE consolidation_progress")
+    assert "strategy_states" in str(progress_info)
+    assert "FLEXIBLE" in str(progress_info).upper()
+
+
+@pytest.mark.asyncio
 async def test_fresh_db_is_target_version_directly_no_backup() -> None:
     db = _fresh_db()
     conn = await _raw_conn(db)
     brain = Brain.create(name="fresh-brain")
 
     store = _store(db)
-    await store.initialize()  # fresh DB -> v9 (target) directly, no migration
+    await store.initialize()  # fresh DB -> v11 directly, no migration
     store.set_brain(brain.id)
     await store.save_brain(brain)
 

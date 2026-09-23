@@ -40,6 +40,17 @@ class TestParseSchemaStatements:
         statements = _parse_schema_statements(sql)
         assert statements == ["DEFINE TABLE t SCHEMALESS"]
 
+    def test_semicolon_inside_comment_does_not_prefix_next_statement(self) -> None:
+        sql = (
+            "DEFINE TABLE before SCHEMAFULL;\n"
+            "-- one sentence; a second sentence with another; semicolon\n"
+            "DEFINE TABLE after SCHEMAFULL;\n"
+        )
+        assert _parse_schema_statements(sql) == [
+            "DEFINE TABLE before SCHEMAFULL",
+            "DEFINE TABLE after SCHEMAFULL",
+        ]
+
     def test_no_comment_line_leaks_into_any_statement(self) -> None:
         for stmt in _parse_schema_statements(SCHEMA_SQL):
             for line in stmt.splitlines():

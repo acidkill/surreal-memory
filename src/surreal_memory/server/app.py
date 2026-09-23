@@ -207,10 +207,9 @@ async def _consolidation_loop(
 
             engine = ConsolidationEngine(storage)
             report = await engine.run(strategies=strategies)
-            _logger.info(
-                "Background consolidation complete: %s",
-                report.summary(),
-            )
+            status = report.extra.get("consolidation_status", "completed")
+            log = _logger.info if status == "completed" else _logger.warning
+            log("Background consolidation %s: %s", status, report.summary())
         except asyncio.CancelledError:
             raise
         except Exception:

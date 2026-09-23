@@ -81,6 +81,14 @@ async def test_fresh_database_without_change_log_skips_alter() -> None:
 
 
 @pytest.mark.asyncio
+async def test_flat_legacy_synapse_defers_relation_ddl_to_migration() -> None:
+    conn = _FakeConn(tables={"synapse": "DEFINE TABLE synapse TYPE NORMAL SCHEMALESS"})
+    await ensure_schema(conn, embedding_dim=1024)
+    assert not any("DEFINE TABLE synapse TYPE RELATION" in q for q in conn.queries)
+    assert not any("DEFINE FIELD metadata ON synapse" in q for q in conn.queries)
+
+
+@pytest.mark.asyncio
 async def test_failed_alter_is_fail_soft() -> None:
     conn = _FakeConn(
         tables={"change_log": "DEFINE TABLE change_log TYPE ANY SCHEMALESS"},

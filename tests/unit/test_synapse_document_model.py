@@ -26,9 +26,7 @@ _SCHEMA = re.sub(r"[ \t]+", " ", SCHEMA_SQL)
 
 class TestSynapseRelationModel:
     def test_schema_version_is_current(self) -> None:
-        # Renamed: the old name said 8 while asserting 9, so it stopped
-        # describing what it checked the first time the schema moved.
-        assert SCHEMA_VERSION == 10
+        assert SCHEMA_VERSION == 11
 
     def test_synapse_is_native_relation(self) -> None:
         assert "DEFINE TABLE synapse TYPE RELATION IN neuron OUT neuron SCHEMAFULL" in _DDL
@@ -37,6 +35,9 @@ class TestSynapseRelationModel:
         assert "DEFINE INDEX idx_synapse_in ON synapse FIELDS brain_id, in" in _DDL
         assert "DEFINE INDEX idx_synapse_out ON synapse FIELDS brain_id, out" in _DDL
         assert "DEFINE INDEX idx_synapse_type ON synapse FIELDS brain_id, type" in _DDL
+        assert (
+            "DEFINE INDEX idx_synapse_brain_created ON synapse FIELDS brain_id, created_at" in _DDL
+        )
 
     def test_source_target_fields_removed(self) -> None:
         # The flat document columns are gone: endpoints are the RELATION in/out.

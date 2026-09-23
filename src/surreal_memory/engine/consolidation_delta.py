@@ -11,6 +11,7 @@ Usage:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -184,6 +185,7 @@ async def run_with_delta(
     config: ConsolidationConfig | None = None,
     reference_time: datetime | None = None,
     tier_config: TierConfig | None = None,
+    on_progress: Callable[[str], None] | None = None,
 ) -> ConsolidationDelta:
     """Run consolidation and compute a before/after health delta.
 
@@ -218,6 +220,7 @@ async def run_with_delta(
         strategies=strategies,
         dry_run=dry_run,
         reference_time=reference_time,
+        on_progress=on_progress,
     )
 
     # Step 3: After snapshot

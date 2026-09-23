@@ -177,3 +177,46 @@ async def test_get_tool_stats_clamps_days_to_one_year() -> None:
     # The clamp caps at 365 days, so an absurd `days` produces the same
     # earliest-allowed cutoff as 365 would -- not an even-earlier one.
     assert store_small.captured_cutoffs[0] > store_large.captured_cutoffs[0]
+
+
+class _IdempotentInsertStore(_ToolEventsStore):
+    """Fake CREATE/SELECT connection that rejects an existing primary ID."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.records: dict[str, dict[str, Any]] = {}
+        self.create_attempts = 0
+
+    def _ensure_conn(self) -> Any:
+        store = self
+
+        class _Conn:
+            async def create(self, record_id: str, data: dict[str, Any]) -> None:
+                store.create_attempts += 1
+                if record_id in store.records:
+                    raise RuntimeError("record already exists")
+                store.records[record_id] = dict(data)
+
+            async def select(self, record_id: str) -> dict[str, Any] | None:
+                return store.records.get(record_id)
+
+        return _Conn()
+
+
+async def test_insert_tool_events_replay_uses_stable_primary_id() -> None:
+    store = _IdempotentInsertStore()
+    event = {
+        "event_id": "event-a",
+        "tool_name": "Read",
+        "created_at": "2026-09-23T10:00:00+00:00",
+    }
+
+    assert await store.insert_tool_events("default", [event]) == 1
+    store.records["tool_events:event_a"]["processed"] = True
+
+    assert await store.insert_tool_events("default", [event]) == 0
+
+    assert store.create_attempts == 2
+    assert len(store.records) == 1
+    assert store.records["tool_events:event_a"]["processed"] is True
+    assert store.records["tool_events:event_a"]["event_id"] == "event-a"

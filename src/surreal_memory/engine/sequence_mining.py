@@ -10,7 +10,10 @@ Zero LLM dependency — pure frequency-based pattern detection.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections import defaultdict
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from dataclasses import replace as dc_replace
 from datetime import datetime, timedelta
@@ -59,6 +62,76 @@ class HabitCandidate:
     frequency: int
     avg_duration_seconds: float
     confidence: float
+
+
+HabitProgressCallback = Callable[[list[dict[str, object]], int], Awaitable[None]]
+
+
+def _habit_candidate_manifest(candidates: Sequence[HabitCandidate]) -> list[dict[str, object]]:
+    return [
+        {
+            "steps": list(candidate.steps),
+            "frequency": candidate.frequency,
+            "avg_duration_seconds": candidate.avg_duration_seconds,
+            "confidence": candidate.confidence,
+        }
+        for candidate in candidates
+    ]
+
+
+def _habit_candidates_from_manifest(
+    manifest: Sequence[Mapping[str, object]],
+) -> list[HabitCandidate]:
+    candidates: list[HabitCandidate] = []
+    for item in manifest:
+        steps = item.get("steps")
+        if not isinstance(steps, (list, tuple)):
+            raise ValueError("invalid habit candidate manifest")
+        candidates.append(
+            HabitCandidate(
+                steps=tuple(str(step) for step in steps),
+                frequency=int(str(item["frequency"])),
+                avg_duration_seconds=float(str(item["avg_duration_seconds"])),
+                confidence=float(str(item["confidence"])),
+            )
+        )
+    return candidates
+
+
+def _habit_effect_id(run_id: str, source: str, candidate: HabitCandidate, pair_index: int) -> str:
+    payload = json.dumps(
+        {"run_id": run_id, "source": source, "steps": list(candidate.steps), "pair": pair_index},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _habit_effect_metadata(
+    metadata: Mapping[str, object],
+    effect_id: str | None,
+    effect_run_id: str | None,
+) -> tuple[dict[str, object], bool]:
+    updated = dict(metadata)
+    if effect_id is None:
+        return updated, False
+    run_id = effect_run_id or effect_id
+    stored_run_id = str(updated.get("_habit_effect_run_id") or "")
+    stored_effects = updated.get("_habit_effect_ids")
+    effect_ids = (
+        {str(value) for value in stored_effects}
+        if isinstance(stored_effects, (list, tuple, set)) and stored_run_id == run_id
+        else set()
+    )
+    if stored_run_id == run_id and effect_id in effect_ids:
+        return updated, True
+    effect_ids.add(effect_id)
+    updated.update(
+        _habit_effect_id=effect_id,
+        _habit_effect_run_id=run_id,
+        _habit_effect_ids=sorted(effect_ids),
+    )
+    return updated, False
 
 
 @dataclass(frozen=True)
@@ -229,22 +302,11 @@ async def strengthen_sequential_pair(
     action_a: str,
     action_b: str,
     config: BrainConfig,
+    *,
+    effect_id: str | None = None,
+    effect_run_id: str | None = None,
 ) -> Synapse | None:
-    """Find or create a BEFORE synapse between two action neurons.
-
-    Looks up ACTION neurons by exact content match. If both exist
-    and a BEFORE synapse connects them, reinforces it. Otherwise
-    creates the synapse.
-
-    Args:
-        storage: Storage backend
-        action_a: First action type
-        action_b: Second action type
-        config: Brain configuration
-
-    Returns:
-        The created or reinforced synapse, or None if neurons don't exist
-    """
+    """Find or create a BEFORE synapse with durable per-effect receipts."""
     neurons_a = await storage.find_neurons(content_exact=action_a, type=NeuronType.ACTION)
     neurons_b = await storage.find_neurons(content_exact=action_b, type=NeuronType.ACTION)
 
@@ -253,8 +315,6 @@ async def strengthen_sequential_pair(
 
     neuron_a = neurons_a[0]
     neuron_b = neurons_b[0]
-
-    # Check for existing BEFORE synapse
     existing = await storage.get_synapses(
         source_id=neuron_a.id,
         target_id=neuron_b.id,
@@ -263,7 +323,13 @@ async def strengthen_sequential_pair(
 
     if existing:
         synapse = existing[0]
+        metadata, already_applied = _habit_effect_metadata(
+            synapse.metadata, effect_id, effect_run_id
+        )
+        if already_applied:
+            return synapse
         seq_count = synapse.metadata.get("sequential_count", 0) + 1
+        metadata["sequential_count"] = seq_count
         reinforced = Synapse(
             id=synapse.id,
             source_id=synapse.source_id,
@@ -271,7 +337,7 @@ async def strengthen_sequential_pair(
             type=synapse.type,
             weight=min(1.0, synapse.weight + config.reinforcement_delta),
             direction=synapse.direction,
-            metadata={**synapse.metadata, "sequential_count": seq_count},
+            metadata=metadata,
             reinforced_count=synapse.reinforced_count + 1,
             last_activated=utcnow(),
             created_at=synapse.created_at,
@@ -279,13 +345,14 @@ async def strengthen_sequential_pair(
         await storage.update_synapse(reinforced)
         return reinforced
 
-    # Create new BEFORE synapse
+    create_metadata: dict[str, object] = {"sequential_count": 1, "_habit": True}
+    create_metadata, _ = _habit_effect_metadata(create_metadata, effect_id, effect_run_id)
     synapse = Synapse.create(
         source_id=neuron_a.id,
         target_id=neuron_b.id,
         type=SynapseType.BEFORE,
         weight=config.default_synapse_weight,
-        metadata={"sequential_count": 1, "_habit": True},
+        metadata=create_metadata,
     )
     await storage.add_synapse(synapse)
     return synapse
@@ -295,64 +362,54 @@ async def learn_habits(
     storage: NeuralStorage,
     config: BrainConfig,
     reference_time: datetime,
+    *,
+    run_id: str | None = None,
+    resume_manifest: Sequence[Mapping[str, object]] | None = None,
+    resume_cursor: int = 0,
+    on_progress: HabitProgressCallback | None = None,
 ) -> tuple[list[LearnedHabit], HabitReport]:
-    """Learn habits from action event sequences.
-
-    Full pipeline:
-    1. Get action sequences from last 30 days
-    2. Mine sequential pairs within time window
-    3. Extract habit candidates meeting frequency threshold
-    4. For qualifying candidates: create neurons, synapses, fibers
-    5. Prune old action events (>60 days)
-
-    Args:
-        storage: Storage backend
-        config: Brain configuration
-        reference_time: Current time for age calculations
-
-    Returns:
-        Tuple of (learned habits, report)
-    """
+    """Learn action-log habits, optionally resuming a frozen candidate plan."""
     report = HabitReport()
+    if resume_manifest is not None:
+        candidates = _habit_candidates_from_manifest(resume_manifest)
+    else:
+        since = reference_time - timedelta(days=30)
+        events = await storage.get_action_sequences(since=since)
+        report.sequences_analyzed = len(events)
+        if len(events) < 2:
+            return [], report
 
-    # 1. Get recent action sequences
-    since = reference_time - timedelta(days=30)
-    events = await storage.get_action_sequences(since=since)
-    report.sequences_analyzed = len(events)
+        pairs = mine_sequential_pairs(events, config.sequential_window_seconds)
+        if not pairs:
+            return [], report
+        session_ids = {event.session_id for event in events if event.session_id}
+        total_sessions = max(len(session_ids), 1)
+        candidates = extract_habit_candidates(pairs, config.habit_min_frequency, total_sessions)
+        if not candidates:
+            return [], report
+        existing_steps = await _existing_habit_steps(storage)
+        candidates = [
+            candidate for candidate in candidates if tuple(candidate.steps) not in existing_steps
+        ]
+        if not candidates:
+            return [], report
 
-    if len(events) < 2:
-        return [], report
+    manifest = _habit_candidate_manifest(candidates)
+    if on_progress is not None and resume_manifest is None:
+        await on_progress(manifest, 0)
+    learned = await _materialize_habits(
+        storage,
+        candidates,
+        config,
+        report,
+        source="action_log",
+        run_id=run_id,
+        start_cursor=resume_cursor,
+        on_progress=on_progress,
+    )
 
-    # 2. Mine sequential pairs
-    pairs = mine_sequential_pairs(events, config.sequential_window_seconds)
-    if not pairs:
-        return [], report
-
-    # Count unique sessions for confidence calculation
-    session_ids = {e.session_id for e in events if e.session_id}
-    total_sessions = max(len(session_ids), 1)
-
-    # 3. Extract candidates
-    candidates = extract_habit_candidates(pairs, config.habit_min_frequency, total_sessions)
-    if not candidates:
-        return [], report
-
-    # Idempotency: skip candidates already materialized as habit fibers. Without
-    # this every consolidation run re-created the same habit (e.g. a duplicate
-    # `recall-remember` fiber per run) because nothing consumed the mined events.
-    existing_steps = await _existing_habit_steps(storage)
-    candidates = [c for c in candidates if tuple(c.steps) not in existing_steps]
-    if not candidates:
-        return [], report
-
-    # 4. Materialize qualifying candidates
-    learned = await _materialize_habits(storage, candidates, config, report, source="action_log")
-
-    # 5. Prune old action events (>60 days)
     prune_cutoff = reference_time - timedelta(days=60)
-    pruned = await storage.prune_action_events(prune_cutoff)
-    report.action_events_pruned = pruned
-
+    report.action_events_pruned = await storage.prune_action_events(prune_cutoff)
     return learned, report
 
 
@@ -372,27 +429,26 @@ async def _materialize_habits(
     config: BrainConfig,
     report: HabitReport,
     source: str,
+    *,
+    run_id: str | None = None,
+    start_cursor: int = 0,
+    on_progress: HabitProgressCallback | None = None,
 ) -> list[LearnedHabit]:
-    """Create ACTION neurons + BEFORE synapses + WORKFLOW fibers for candidates.
-
-    Shared by action-log habits (``learn_habits``) and tool-usage habits
-    (``learn_tool_habits``). ``source`` is stored on each fiber as
-    ``_habit_source`` for observability; both remain ``_habit_pattern=True`` so
-    ``smem habits list`` shows them. Mutates *report* (habits_learned,
-    pairs_strengthened).
-    """
+    """Materialize candidates with optional stable effect receipts and checkpoints."""
     learned: list[LearnedHabit] = []
     if not candidates:
         return learned
 
-    # Batch-fetch all unique step names across all candidates
+    manifest = _habit_candidate_manifest(candidates)
     all_steps = {step for candidate in candidates for step in candidate.steps}
     existing_actions = await storage.find_neurons_exact_batch(
         list(all_steps), type=NeuronType.ACTION
     )
 
-    for candidate in candidates:
-        # Ensure ACTION neurons exist for each step
+    for candidate_index, candidate in enumerate(candidates):
+        if candidate_index < start_cursor:
+            continue
+
         neuron_ids: list[str] = []
         for step in candidate.steps:
             if step in existing_actions:
@@ -404,40 +460,60 @@ async def _materialize_habits(
                     metadata={"_habit_action": True},
                 )
                 await storage.add_neuron(neuron)
-                existing_actions[step] = neuron  # Cache for next candidate
+                existing_actions[step] = neuron
                 neuron_ids.append(neuron.id)
 
-        # Create BEFORE synapses between consecutive steps
         sequence_synapses: list[Synapse] = []
-        for i in range(len(neuron_ids) - 1):
+        for pair_index in range(len(neuron_ids) - 1):
+            effect_id = _habit_effect_id(run_id, source, candidate, pair_index) if run_id else None
             synapse = await strengthen_sequential_pair(
                 storage,
-                candidate.steps[i],
-                candidate.steps[i + 1],
+                candidate.steps[pair_index],
+                candidate.steps[pair_index + 1],
                 config,
+                effect_id=effect_id,
+                effect_run_id=run_id,
             )
             if synapse:
                 sequence_synapses.append(synapse)
                 report.pairs_strengthened += 1
 
-        # Create WORKFLOW fiber
         name = heuristic_habit_name(candidate.steps)
-        workflow_fiber = Fiber.create(
-            neuron_ids=set(neuron_ids),
-            synapse_ids={s.id for s in sequence_synapses},
-            anchor_neuron_id=neuron_ids[0],
-            pathway=neuron_ids,
-            summary=name,
-            tags=set(),
-            metadata={
-                "_workflow_actions": list(candidate.steps),
-                "_habit_pattern": True,
-                "_habit_frequency": candidate.frequency,
-                "_habit_confidence": candidate.confidence,
-                "_habit_source": source,
-            },
+        candidate_key = hashlib.sha256(
+            json.dumps(
+                {"source": source, "steps": list(candidate.steps)},
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        workflow_effect_id = f"{run_id}:{source}:{candidate_key}" if run_id else None
+        metadata: dict[str, object] = {
+            "_workflow_actions": list(candidate.steps),
+            "_habit_pattern": True,
+            "_habit_frequency": candidate.frequency,
+            "_habit_confidence": candidate.confidence,
+            "_habit_source": source,
+        }
+        if workflow_effect_id:
+            metadata["_habit_effect_id"] = workflow_effect_id
+        fiber_id = (
+            "habit-" + hashlib.sha256(workflow_effect_id.encode("utf-8")).hexdigest()[:32]
+            if workflow_effect_id
+            else None
         )
-        await storage.add_fiber(workflow_fiber)
+        workflow_fiber = await storage.get_fiber(fiber_id) if fiber_id is not None else None
+        if workflow_fiber is None:
+            workflow_fiber = Fiber.create(
+                neuron_ids=set(neuron_ids),
+                synapse_ids={synapse.id for synapse in sequence_synapses},
+                anchor_neuron_id=neuron_ids[0],
+                pathway=neuron_ids,
+                summary=name,
+                tags=set(),
+                metadata=metadata,
+                fiber_id=fiber_id,
+            )
+            await storage.add_fiber(workflow_fiber)
 
         learned.append(
             LearnedHabit(
@@ -449,6 +525,8 @@ async def _materialize_habits(
             )
         )
         report.habits_learned += 1
+        if on_progress is not None:
+            await on_progress(manifest, candidate_index + 1)
 
     return learned
 
@@ -469,89 +547,94 @@ async def learn_tool_habits(
     storage: NeuralStorage,
     config: BrainConfig,
     reference_time: datetime,
+    *,
+    run_id: str | None = None,
+    resume_manifest: Sequence[Mapping[str, object]] | None = None,
+    resume_cursor: int = 0,
+    on_progress: HabitProgressCallback | None = None,
 ) -> tuple[list[LearnedHabit], HabitReport]:
-    """Learn habits from tool-usage sequences (e.g. Read → Edit → Bash).
-
-    Mirrors ``learn_habits`` but mines the ``tool_events`` buffer instead of the
-    action_log. Tool events carry no session_id, so the whole history is treated
-    as one time-ordered stream, segmented by the sequential window. Same-tool
-    self-pairs (Bash → Bash) are dropped — they are not workflows. Idempotent:
-    candidates whose step-sequence already exists as a ``_habit_pattern`` fiber
-    are skipped, so repeated consolidation runs don't accumulate duplicates.
-    Backends without a tool_events buffer (get_tool_events_for_mining → []) are
-    a graceful no-op.
-    """
+    """Learn tool habits, optionally resuming a frozen candidate plan."""
     from surreal_memory.core.action_event import ActionEvent
 
     report = HabitReport()
-    brain_id = storage.current_brain_id
-    if not brain_id:
-        return [], report
+    if resume_manifest is not None:
+        candidates = _habit_candidates_from_manifest(resume_manifest)
+    else:
+        brain_id = storage.current_brain_id
+        if not brain_id:
+            return [], report
 
-    since = reference_time - timedelta(days=_TOOL_HABIT_LOOKBACK_DAYS)
-    rows = await storage.get_tool_events_for_mining(
-        brain_id, since=since, limit=_TOOL_HABIT_MAX_EVENTS
-    )
-    if len(rows) < 2:
-        return [], report
-
-    # Build one time-ordered ActionEvent stream (tool_name as action_type).
-    events: list[ActionEvent] = []
-    for r in rows:
-        created = r.get("created_at")
-        if isinstance(created, str):
-            try:
-                created = datetime.fromisoformat(created.replace("Z", "+00:00"))
-            except ValueError:
-                continue
-        if not isinstance(created, datetime):
-            continue
-        if created.tzinfo is not None:
-            created = created.replace(tzinfo=None)  # naive UTC (tool events are UTC)
-        tool = str(r.get("tool_name") or "").strip()
-        if not tool:
-            continue
-        events.append(
-            ActionEvent(
-                brain_id=brain_id,
-                session_id=None,
-                action_type=tool,
-                created_at=created,
-            )
+        since = reference_time - timedelta(days=_TOOL_HABIT_LOOKBACK_DAYS)
+        rows = await storage.get_tool_events_for_mining(
+            brain_id, since=since, limit=_TOOL_HABIT_MAX_EVENTS
         )
-    report.sequences_analyzed = len(events)
-    if len(events) < 2:
-        return [], report
+        if len(rows) < 2:
+            return [], report
 
-    pairs = mine_sequential_pairs(events, config.sequential_window_seconds)
-    # Drop self-pairs (Bash → Bash): repetition of one tool is not a workflow.
-    pairs = [p for p in pairs if p.action_a != p.action_b]
-    if not pairs:
-        return [], report
+        events: list[ActionEvent] = []
+        for row in rows:
+            created = row.get("created_at")
+            if isinstance(created, str):
+                try:
+                    created = datetime.fromisoformat(created.replace("Z", "+00:00"))
+                except ValueError:
+                    continue
+            if not isinstance(created, datetime):
+                continue
+            if created.tzinfo is not None:
+                created = created.replace(tzinfo=None)
+            tool = str(row.get("tool_name") or "").strip()
+            if not tool:
+                continue
+            events.append(
+                ActionEvent(
+                    brain_id=brain_id,
+                    session_id=None,
+                    action_type=tool,
+                    created_at=created,
+                )
+            )
+        report.sequences_analyzed = len(events)
+        if len(events) < 2:
+            return [], report
 
-    # Volume-scaled frequency floor: only genuinely habitual tool workflows
-    # qualify on dense streams; small brains keep the configured threshold.
-    effective_min_freq = max(config.habit_min_frequency, len(events) // _TOOL_HABIT_FREQ_DIVISOR)
-    candidates = extract_habit_candidates(pairs, effective_min_freq, total_sessions=1)
-    if not candidates:
-        return [], report
+        pairs = mine_sequential_pairs(events, config.sequential_window_seconds)
+        pairs = [pair for pair in pairs if pair.action_a != pair.action_b]
+        if not pairs:
+            return [], report
 
-    # No session data → extract's confidence degenerates to raw frequency; clamp
-    # to [0, 1] so `smem habits list` doesn't print "Confidence: 93.00".
-    candidates = [
-        dc_replace(c, confidence=min(1.0, c.confidence)) if c.confidence > 1.0 else c
-        for c in candidates
-    ]
+        effective_min_freq = max(
+            config.habit_min_frequency, len(events) // _TOOL_HABIT_FREQ_DIVISOR
+        )
+        candidates = extract_habit_candidates(pairs, effective_min_freq, total_sessions=1)
+        if not candidates:
+            return [], report
+        candidates = [
+            dc_replace(candidate, confidence=min(1.0, candidate.confidence))
+            if candidate.confidence > 1.0
+            else candidate
+            for candidate in candidates
+        ]
 
-    # Idempotency: skip candidates already materialized as habit fibers, so
-    # repeated consolidation doesn't accumulate duplicate tool habits.
-    existing_steps = await _existing_habit_steps(storage)
-    fresh = [c for c in candidates if tuple(c.steps) not in existing_steps]
-    if not fresh:
-        return [], report
+        existing_steps = await _existing_habit_steps(storage)
+        candidates = [
+            candidate for candidate in candidates if tuple(candidate.steps) not in existing_steps
+        ]
+        candidates = candidates[:_TOOL_HABIT_MAX]
+        if not candidates:
+            return [], report
 
-    # Cap to the strongest N (candidates are frequency-sorted) to avoid flooding.
-    fresh = fresh[:_TOOL_HABIT_MAX]
-
-    learned = await _materialize_habits(storage, fresh, config, report, source="tool_events")
+    manifest = _habit_candidate_manifest(candidates)
+    if on_progress is not None and resume_manifest is None:
+        await on_progress(manifest, 0)
+    learned = await _materialize_habits(
+        storage,
+        candidates,
+        config,
+        report,
+        source="tool_events",
+        run_id=run_id,
+        start_cursor=resume_cursor,
+        on_progress=on_progress,
+    )
     return learned, report

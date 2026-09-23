@@ -1,6 +1,6 @@
 """SurrealDB schema migrations for Surreal-Memory.
 
-The only migration today is **v7 -> v8**: the ``synapse`` table stops being a
+The migration chain begins with **v7 -> v8**: the ``synapse`` table stops being a
 flat table (``source_id`` / ``target_id`` string fields) and becomes a native
 ``RELATION`` edge (``in`` / ``out`` RecordID endpoints). Every existing synapse
 id, ``fiber.synapse_ids`` reference, ``change_log`` entry and the Merkle root are
@@ -14,6 +14,11 @@ migrations, the 7->8 step moves data in resumable phases
 ``schema_meta:migration_state`` so a crash resumes from the last saved phase and
 cursor. ``schema_meta:version`` is stamped to 8 only after verification passes,
 so a partially-migrated DB never reads as "done".
+
+Later additive steps advance v8->v9, v9->v10, and v10->v11. The v11 step
+creates durable consolidation progress and lease tables without moving memory
+rows; it promotes a previously auto-created SCHEMALESS progress table before
+defining its FLEXIBLE checkpoint fields.
 
 Version detection (no ``schema_meta:version`` present) is structural, via
 ``INFO FOR DB``: a ``synapse`` table defined ``TYPE RELATION`` is already v8; a
@@ -44,7 +49,8 @@ from surreal_memory.storage.surrealdb.schema import SCHEMA_VERSION, SYNAPSE_V8_D
 
 logger = logging.getLogger(__name__)
 
-TARGET_VERSION = SCHEMA_VERSION  # 10
+TARGET_VERSION = SCHEMA_VERSION  # 11
+VERSION_10 = 10
 SOURCE_VERSION = 7  # flat synapse table (pre 7->8 migration)
 RELATION_SYNAPSE_VERSION = 8  # synapse became a RELATION table in the 7->8 migration
 TYPED_VALIDITY_VERSION = 9  # TypedMemory validity fields + retrieval_trace table
@@ -150,17 +156,11 @@ async def _read_stamped_version(conn: Any) -> int | None:
 async def detect_db_version(conn: Any) -> int:
     """Return the schema version of the connected database.
 
-    Priority order:
-    1. An explicit ``schema_meta:version`` stamp wins (only written AFTER a
-       migration verifies, so it is always trustworthy).
-    2. An in-progress OR failed migration — a ``schema_meta:migration_state``
-       record whose ``phase`` is not ``done`` — reports :data:`SOURCE_VERSION` even
-       if the ``synapse`` table is already RELATION-shaped. The converting phase
-       drops-and-redefines the table BEFORE verification, so a bare RELATION table
-       is NOT proof the migration succeeded; it must be resumed/re-verified.
-    3. Otherwise detect structurally from ``INFO FOR DB``: fresh DBs and
-       already-RELATION synapse tables report :data:`TARGET_VERSION`; a flat
-       (``TYPE NORMAL``) table reports :data:`SOURCE_VERSION`.
+    An explicit version stamp wins, and an unfinished v7->v8 migration forces
+    a full migration re-verification. Otherwise use structural markers:
+    flat synapse is v7; RELATION without retrieval_trace is v8; retrieval_trace
+    without both v11 checkpoint tables is conservatively v9. Replaying the
+    additive 9->10 and 10->11 DDL is safe for an unstamped v10 database.
     """
     stamped = await _read_stamped_version(conn)
     if stamped is not None:
@@ -169,8 +169,7 @@ async def detect_db_version(conn: Any) -> int:
     state = await _get_state(conn)
     if state is not None and state.get("phase") != PHASE_DONE:
         # A migration was started and has not verified — do not trust the table
-        # shape; force a resume so verification runs (and keeps failing loudly on
-        # genuine data loss instead of silently reporting success).
+        # shape; force a resume so verification runs and fails loudly on loss.
         return SOURCE_VERSION
 
     info = await conn.query("INFO FOR DB")
@@ -180,15 +179,24 @@ async def detect_db_version(conn: Any) -> int:
     elif isinstance(info, list) and info and isinstance(info[0], dict):
         tables = info[0].get("tables") or {}
 
-    synapse_def = tables.get("synapse", "") if isinstance(tables, dict) else ""
-    has_trace = isinstance(tables, dict) and "retrieval_trace" in tables
+    if not isinstance(tables, dict):
+        tables = {}
+    synapse_def = str(tables.get("synapse", "") or "").upper()
     if not synapse_def:
-        return TARGET_VERSION  # fresh DB — ensure_schema already built the latest schema
-    if "TYPE RELATION" in str(synapse_def):
-        # Relation synapse = v8 or newer. The v9-only retrieval_trace table tells a
-        # v9 DB apart from a v8 DB that still needs the additive 8->9 migration.
-        return TARGET_VERSION if has_trace else RELATION_SYNAPSE_VERSION
-    return SOURCE_VERSION  # flat/NORMAL table — needs the 7->8 migration
+        return TARGET_VERSION  # fresh DB; ensure_schema already built latest schema
+    if "TYPE RELATION" not in synapse_def:
+        return SOURCE_VERSION
+
+    has_trace = "retrieval_trace" in tables
+    if not has_trace:
+        return RELATION_SYNAPSE_VERSION
+
+    progress_def = str(tables.get("consolidation_progress", "") or "").upper()
+    lease_def = str(tables.get("consolidation_lease", "") or "").upper()
+    has_v11_state = "SCHEMAFULL" in progress_def and "SCHEMAFULL" in lease_def
+    return (
+        TARGET_VERSION if has_v11_state else TYPED_VALIDITY_VERSION
+    )  # flat/NORMAL table — needs the 7->8 migration
 
 
 async def _stamp_version(conn: Any, version: int) -> None:
@@ -587,10 +595,77 @@ async def _migrate_9_to_10(conn: Any) -> None:
             else:
                 logger.error("v10 migration statement failed: %s (%s)", stmt[:80], exc)
                 raise
-    await _stamp_version(conn, TARGET_VERSION)
+    await _stamp_version(conn, VERSION_10)
 
 
 # Registry mirrors sqlite_schema.MIGRATIONS: {(from, to): migrate_callable}.
+_V11_DDL = (
+    "DEFINE INDEX idx_synapse_brain_created ON synapse FIELDS brain_id, created_at",
+    "DEFINE TABLE IF NOT EXISTS consolidation_progress SCHEMAFULL",
+    "DEFINE FIELD brain_id ON consolidation_progress TYPE string",
+    "DEFINE FIELD run_id ON consolidation_progress TYPE string",
+    "DEFINE FIELD schema_version ON consolidation_progress TYPE int",
+    "DEFINE FIELD engine_version ON consolidation_progress TYPE string",
+    "DEFINE FIELD format_version ON consolidation_progress TYPE int",
+    "DEFINE FIELD requested_strategies ON consolidation_progress TYPE array<string>",
+    "DEFINE FIELD completed_strategies ON consolidation_progress TYPE array<string>",
+    "DEFINE FIELD options_fingerprint ON consolidation_progress TYPE string",
+    "DEFINE FIELD reference_time ON consolidation_progress TYPE datetime",
+    "DEFINE FIELD status ON consolidation_progress TYPE string",
+    "DEFINE FIELD current_strategy ON consolidation_progress TYPE option<string>",
+    "DEFINE FIELD phase ON consolidation_progress TYPE string",
+    "DEFINE FIELD cursor ON consolidation_progress TYPE option<string>",
+    "DEFINE FIELD strategy_states ON consolidation_progress TYPE object FLEXIBLE",
+    "DEFINE FIELD counters ON consolidation_progress TYPE object FLEXIBLE",
+    "DEFINE FIELD owner_token ON consolidation_progress TYPE string",
+    "DEFINE FIELD started_at ON consolidation_progress TYPE datetime",
+    "DEFINE FIELD updated_at ON consolidation_progress TYPE datetime",
+    "DEFINE FIELD last_error ON consolidation_progress TYPE option<string>",
+    "DEFINE INDEX idx_cprog_brain_status ON consolidation_progress FIELDS brain_id, status",
+    "DEFINE INDEX idx_cprog_brain_run ON consolidation_progress FIELDS brain_id, run_id",
+    "DEFINE TABLE IF NOT EXISTS consolidation_lease SCHEMAFULL",
+    "DEFINE FIELD brain_id ON consolidation_lease TYPE string",
+    "DEFINE FIELD owner_token ON consolidation_lease TYPE string",
+    "DEFINE FIELD acquired_at ON consolidation_lease TYPE datetime",
+    "DEFINE FIELD expires_at ON consolidation_lease TYPE datetime",
+    "DEFINE INDEX idx_clease_brain ON consolidation_lease FIELDS brain_id UNIQUE",
+)
+
+
+async def _ensure_consolidation_progress_schemafull(conn: Any) -> bool:
+    """Promote a partial legacy progress table before defining FLEXIBLE fields.
+
+    Earlier interrupted initializations may have auto-created this table as
+    SCHEMALESS when a field definition ran after the table DDL failed. ALTER
+    only when INFO FOR DB confirms that state; absent or already-full tables
+    need no conversion.
+    """
+    response = await conn.query("INFO FOR DB;")
+    info = response[0] if isinstance(response, list) and response else response
+    tables = info.get("tables", {}) if isinstance(info, dict) else {}
+    definition = str(tables.get("consolidation_progress", "") or "")
+    if "SCHEMALESS" not in definition.upper():
+        return False
+    await conn.query("ALTER TABLE consolidation_progress SCHEMAFULL;")
+    logger.info("Converted partial consolidation_progress table to SCHEMAFULL")
+    return True
+
+
+async def _migrate_10_to_11(conn: Any) -> None:
+    """Add durable consolidation state and lease tables; no memory rows move."""
+    await _ensure_consolidation_progress_schemafull(conn)
+    for stmt in _V11_DDL:
+        try:
+            await conn.query(stmt + ";")
+        except Exception as exc:
+            if _already_exists(exc):
+                logger.debug("v11 migration statement skipped (already exists): %s", stmt[:80])
+            else:
+                logger.error("v11 migration statement failed: %s (%s)", stmt[:80], exc)
+                raise
+    await _stamp_version(conn, TARGET_VERSION)
+
+
 MIGRATIONS = {
     (SOURCE_VERSION, RELATION_SYNAPSE_VERSION): _migrate_7_to_8,  # (7, 8)
     # Pinned to explicit version constants, NOT to TARGET_VERSION: this entry
@@ -599,7 +674,8 @@ MIGRATIONS = {
     # missing entirely. A v8 database would then have jumped straight to a v10
     # stamp without ever running the v10 DDL.
     (RELATION_SYNAPSE_VERSION, TYPED_VALIDITY_VERSION): _migrate_8_to_9,  # (8, 9)
-    (TYPED_VALIDITY_VERSION, TARGET_VERSION): _migrate_9_to_10,  # (9, 10)
+    (TYPED_VALIDITY_VERSION, VERSION_10): _migrate_9_to_10,  # (9, 10)
+    (VERSION_10, TARGET_VERSION): _migrate_10_to_11,  # (10, 11)
 }
 
 

@@ -69,6 +69,10 @@ class ConsolidationResponse(BaseModel):
     new_alias_links: int = 0
     merge_details: list[MergeDetailResponse]
     dry_run: bool
+    consolidation_status: str = "completed"
+    consolidation_progress_messages: list[str] | None = None
+    last_checkpoint: str | None = None
+    failed_strategies: list[str] | None = None
 
 
 @router.post(
@@ -138,4 +142,10 @@ async def consolidate_brain(
             for d in report.merge_details
         ],
         dry_run=report.dry_run,
+        consolidation_status=str(report.extra.get("consolidation_status", "completed")),
+        consolidation_progress_messages=list(
+            report.extra.get("consolidation_progress_messages", [])
+        ),
+        last_checkpoint=report.extra.get("last_checkpoint"),
+        failed_strategies=list(report.extra.get("failed_strategies", [])),
     )

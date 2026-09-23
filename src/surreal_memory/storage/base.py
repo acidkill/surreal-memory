@@ -186,6 +186,18 @@ class NeuralStorage(ABC):
         """
         ...
 
+    async def find_neurons_after_id(
+        self,
+        cursor_id: str | None,
+        *,
+        limit: int = 1000,
+        created_before: datetime | None = None,
+        ephemeral: bool | None = False,
+        include_embedding: bool = False,
+    ) -> list[Neuron]:
+        """Optional keyset scan used by resumable consolidation backends."""
+        raise NotImplementedError
+
     async def find_neurons_ranked(
         self,
         content_contains: str,
@@ -486,6 +498,44 @@ class NeuralStorage(ABC):
                 break
             offset += len(page)
         return collected
+
+    async def get_synapses_after_id(
+        self,
+        cursor_id: str | None,
+        *,
+        limit: int = 250,
+        created_before: datetime | None = None,
+    ) -> list[Synapse]:
+        """Optional synapse keyset scan for resumable consolidation."""
+        raise NotImplementedError
+
+    async def get_synapse_prune_page(
+        self,
+        cursor_created_at: datetime | None,
+        cursor_id: str | None,
+        *,
+        limit: int = 250,
+    ) -> list[Synapse]:
+        """Read one projected page for prune in stable creation-time/ID order."""
+        raise NotImplementedError
+
+    async def get_synapses_by_ids(self, synapse_ids: list[str] | set[str]) -> list[Synapse]:
+        """Fetch a bounded set of synapses by stable IDs when supported."""
+        raise NotImplementedError
+
+    async def get_synapses_for_sources(self, source_ids: list[str] | set[str]) -> list[Synapse]:
+        """Fetch outgoing synapses for a bounded set of source neurons."""
+        raise NotImplementedError
+
+    async def get_synapse_target_counts_for_sources(
+        self, source_ids: list[str] | set[str]
+    ) -> dict[str, int]:
+        """Count distinct outgoing targets for bounded source-neuron IDs."""
+        raise NotImplementedError
+
+    async def get_connected_neuron_ids_for(self, neuron_ids: list[str] | set[str]) -> set[str]:
+        """Return the supplied neuron IDs that have at least one incident edge."""
+        raise NotImplementedError
 
     @abstractmethod
     async def update_synapse(self, synapse: Synapse) -> None:
@@ -857,6 +907,19 @@ class NeuralStorage(ABC):
             List of fibers
         """
         ...
+
+    async def get_fiber_neuron_ids_for(
+        self,
+        neuron_ids: list[str] | set[str],
+        *,
+        min_salience: float | None = None,
+    ) -> set[str]:
+        """Return supplied neuron IDs represented in fibers, when supported."""
+        raise NotImplementedError
+
+    async def remove_synapse_refs_from_fibers(self, synapse_ids: list[str] | set[str]) -> int:
+        """Remove references to deleted synapses from fibers, when supported."""
+        raise NotImplementedError
 
     # ========== Lifecycle ==========
 
@@ -2541,3 +2604,40 @@ class NeuralStorage(ABC):
     async def watch_get_stats(self) -> dict[str, Any]:
         """Aggregate watch-state stats for the current brain."""
         return {"total_files": 0, "total_neurons": 0, "by_status": {}}
+
+    # Durable consolidation state is optional for adapters that execute the
+    # engine outside the persistent SurrealDB service. Concrete implementations
+    # must override every method before the engine will use this capability.
+    async def get_consolidation_progress(
+        self, brain_id: str | None = None
+    ) -> dict[str, Any] | None:
+        raise NotImplementedError
+
+    async def create_consolidation_progress(self, state: dict[str, Any]) -> dict[str, Any]:
+        raise NotImplementedError
+
+    async def start_consolidation_progress(self, state: dict[str, Any]) -> dict[str, Any]:
+        raise NotImplementedError
+
+    async def claim_consolidation_progress(
+        self, brain_id: str, owner_token: str
+    ) -> dict[str, Any] | None:
+        raise NotImplementedError
+
+    async def save_consolidation_progress(
+        self, brain_id: str, owner_token: str, state: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        raise NotImplementedError
+
+    async def acquire_consolidation_lease(
+        self, brain_id: str, owner_token: str, *, lease_seconds: int = 120
+    ) -> bool:
+        raise NotImplementedError
+
+    async def renew_consolidation_lease(
+        self, brain_id: str, owner_token: str, *, lease_seconds: int = 120
+    ) -> bool:
+        raise NotImplementedError
+
+    async def release_consolidation_lease(self, brain_id: str, owner_token: str) -> bool:
+        raise NotImplementedError

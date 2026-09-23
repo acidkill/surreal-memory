@@ -57,30 +57,36 @@ class SurrealDBToolEventsMixin:
         brain_id: str,
         events: list[dict[str, Any]],
     ) -> int:
-        """Insert raw tool events into the staging table."""
+        """Insert raw tool events with stable record IDs for replay safety."""
         if not events:
             return 0
         conn = self._ensure_conn()
         inserted = 0
         for ev in events:
-            event_id = str(uuid.uuid4())
-            await conn.insert(
-                "tool_events",
-                {
-                    "id": _to_surreal_id(event_id),
-                    "event_id": event_id,
-                    "brain_id": brain_id,
-                    "tool_name": ev.get("tool_name", ""),
-                    "server_name": ev.get("server_name", ""),
-                    "args_summary": str(ev.get("args_summary", ""))[:200],
-                    "success": bool(ev.get("success", True)),
-                    "duration_ms": int(ev.get("duration_ms", 0) or 0),
-                    "session_id": ev.get("session_id", ""),
-                    "task_context": ev.get("task_context", ""),
-                    "processed": False,
-                    "created_at": _as_datetime(ev.get("created_at")),
-                },
-            )
+            event_id = str(ev.get("event_id") or ev.get("id") or uuid.uuid4())
+            record_id = f"tool_events:{_to_surreal_id(event_id)}"
+            record = {
+                "event_id": event_id,
+                "brain_id": brain_id,
+                "tool_name": ev.get("tool_name", ""),
+                "server_name": ev.get("server_name", ""),
+                "args_summary": str(ev.get("args_summary", ""))[:200],
+                "success": bool(ev.get("success", True)),
+                "duration_ms": int(ev.get("duration_ms", 0) or 0),
+                "session_id": ev.get("session_id", ""),
+                "task_context": ev.get("task_context", ""),
+                "processed": False,
+                "created_at": _as_datetime(ev.get("created_at")),
+            }
+            try:
+                await conn.create(record_id, record)
+            except Exception:
+                # CREATE is deliberately not UPSERT: replacing an existing event
+                # would reset processed after a source-buffer replay. A conflict
+                # is success only when this exact stable record already exists.
+                if await conn.select(record_id):
+                    continue
+                raise
             inserted += 1
         return inserted
 

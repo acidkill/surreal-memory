@@ -25,6 +25,9 @@ import logging
 import os
 import sys
 import time
+import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -143,6 +146,7 @@ def _format_event(hook_input: dict[str, Any]) -> dict[str, Any]:
     duration_ms = hook_input.get("duration_ms", 0)
 
     return {
+        "event_id": str(uuid.uuid4()),
         "tool_name": str(tool_name),
         "server_name": str(server_name),
         "args_summary": _truncate_args(tool_input),
@@ -154,27 +158,33 @@ def _format_event(hook_input: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _append_to_buffer(event: dict[str, Any], buffer_path: Path) -> bool:
-    """Append one JSONL line to the buffer file, lock-safe.
+@contextmanager
+def _buffer_lock(buffer_path: Path) -> Iterator[None]:
+    """Lock all readers, appenders, and rotators through one stable sidecar."""
+    try:
+        import fcntl
+    except ImportError:
+        yield
+        return
 
-    Uses fcntl.flock (POSIX) when available.  Falls back to a plain
-    append on platforms that lack flock (Windows, some embedded).
+    lock_path = Path(f"{buffer_path}.lock")
+    with open(lock_path, "a", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
+def _append_to_buffer(event: dict[str, Any], buffer_path: Path) -> bool:
+    """Append one JSONL line to the buffer file under its stable sidecar lock.
+
     Returns True on success, False on failure.
     """
     try:
         buffer_path.parent.mkdir(parents=True, exist_ok=True)
         line = json.dumps(event, ensure_ascii=False, default=str) + "\n"
-        try:
-            import fcntl
-
-            with open(buffer_path, "a", encoding="utf-8") as f:
-                fcntl.flock(f, fcntl.LOCK_EX)
-                try:
-                    f.write(line)
-                finally:
-                    fcntl.flock(f, fcntl.LOCK_UN)
-        except ImportError:
-            # Non-POSIX platform — plain append (best-effort)
+        with _buffer_lock(buffer_path):
             with open(buffer_path, "a", encoding="utf-8") as f:
                 f.write(line)
         return True
@@ -184,16 +194,17 @@ def _append_to_buffer(event: dict[str, Any], buffer_path: Path) -> bool:
 
 def _check_buffer_rotation(buffer_path: Path, max_lines: int = 10000) -> None:
     """Truncate buffer if it exceeds max_lines (keep newest half)."""
-    if not buffer_path.exists():
-        return
     try:
-        content = buffer_path.read_text(encoding="utf-8")
-        lines = content.splitlines()
-        if len(lines) <= max_lines:
-            return
-        # Keep newest half
-        keep = lines[len(lines) // 2 :]
-        buffer_path.write_text("\n".join(keep) + "\n", encoding="utf-8")
+        with _buffer_lock(buffer_path):
+            if not buffer_path.exists():
+                return
+            content = buffer_path.read_text(encoding="utf-8")
+            lines = content.splitlines()
+            if len(lines) <= max_lines:
+                return
+            # Keep newest half
+            keep = lines[len(lines) // 2 :]
+            buffer_path.write_text("\n".join(keep) + "\n", encoding="utf-8")
     except OSError:
         pass
 

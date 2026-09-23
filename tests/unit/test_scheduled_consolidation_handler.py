@@ -233,6 +233,28 @@ class TestRunScheduledConsolidation:
         assert handler._last_consolidation_at is not None  # type: ignore[attr-defined]
 
     @pytest.mark.asyncio
+    async def test_paused_run_is_logged_as_incomplete(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        handler = _make_handler()
+        delta = MagicMock()
+        delta.report.extra = {"consolidation_status": "paused"}
+        delta.report.summary.return_value = "paused at prune phase=synapse_scan"
+
+        with (
+            patch(
+                "surreal_memory.engine.consolidation_delta.run_with_delta",
+                new_callable=AsyncMock,
+                return_value=delta,
+            ),
+            caplog.at_level("WARNING"),
+        ):
+            await handler._run_scheduled_consolidation(handler.config.maintenance)  # type: ignore[attr-defined]
+
+        assert "Scheduled consolidation paused" in caplog.text
+        assert "Scheduled consolidation complete" not in caplog.text
+
+    @pytest.mark.asyncio
     async def test_handles_error_gracefully(self) -> None:
         """Logs error but does not raise on consolidation failure."""
         handler = _make_handler()

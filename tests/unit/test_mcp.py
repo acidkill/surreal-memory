@@ -826,6 +826,44 @@ class TestMCPToolCalls:
         assert "summary" in result
 
     @pytest.mark.asyncio
+    async def test_consolidate_exposes_progress_state(self, server: MCPServer) -> None:
+        mock_storage = AsyncMock()
+        mock_storage._current_brain_id = "test-brain"
+        mock_storage.brain_id = "test-brain"
+        mock_storage.get_brain = AsyncMock(
+            return_value=MagicMock(id="test-brain", name="test", config=MagicMock())
+        )
+
+        mock_delta = MagicMock()
+        mock_delta.to_dict.return_value = {"before": {}, "after": {}, "delta": {}}
+        mock_delta.report.summary.return_value = (
+            "Consolidation paused: prune phase=synapse_scan cursor=synapse:100"
+        )
+        mock_delta.report.extra = {
+            "consolidation_status": "paused",
+            "consolidation_progress_messages": [
+                "Consolidation: prune progress state found - resuming..."
+            ],
+            "last_checkpoint": "prune phase=synapse_scan cursor=synapse:100",
+        }
+
+        with (
+            patch.object(server, "get_storage", return_value=mock_storage),
+            patch(
+                "surreal_memory.engine.consolidation_delta.run_with_delta",
+                new_callable=AsyncMock,
+                return_value=mock_delta,
+            ),
+        ):
+            result = await server.call_tool("smem_consolidate", {})
+
+        assert result["report"]["extra"]["consolidation_status"] == "paused"
+        assert result["report"]["extra"]["last_checkpoint"] == (
+            "prune phase=synapse_scan cursor=synapse:100"
+        )
+        assert "resuming" in result["report"]["extra"]["consolidation_progress_messages"][0]
+
+    @pytest.mark.asyncio
     async def test_consolidate_dry_run(self, server: MCPServer) -> None:
         """Test smem_consolidate with dry_run=true."""
         mock_storage = AsyncMock()

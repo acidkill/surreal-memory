@@ -990,12 +990,18 @@ class InMemoryStorage(
     # ========== Tool Events ==========
 
     async def insert_tool_events(self, brain_id: str, events: list[dict[str, Any]]) -> int:
-        """Store tool events in memory (append to action_events list)."""
-        stamped = [
-            {**event, "id": event.get("id") or uuid4().hex, "processed": False} for event in events
-        ]
-        self._action_events[brain_id].extend(stamped)
-        return len(stamped)
+        """Store tool events in memory with stable-ID deduplication."""
+        stored = self._action_events[brain_id]
+        known_ids = {str(event.get("event_id") or event.get("id")) for event in stored}
+        inserted = 0
+        for event in events:
+            event_id = str(event.get("event_id") or event.get("id") or uuid4().hex)
+            if event_id in known_ids:
+                continue
+            stored.append({**event, "id": event_id, "event_id": event_id, "processed": False})
+            known_ids.add(event_id)
+            inserted += 1
+        return inserted
 
     async def get_unprocessed_events(self, brain_id: str, limit: int = 200) -> list[dict[str, Any]]:
         """Return unprocessed tool events (oldest first), mirroring SurrealDB's shape."""

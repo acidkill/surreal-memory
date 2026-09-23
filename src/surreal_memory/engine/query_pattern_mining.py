@@ -13,8 +13,11 @@ Zero LLM dependency — pure frequency-based topic mining.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from collections import defaultdict
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING
@@ -69,6 +72,76 @@ class QueryPatternCandidate:
     topics: tuple[str, str]
     frequency: int
     confidence: float
+
+
+QueryPatternProgressCallback = Callable[[list[dict[str, object]], int], Awaitable[None]]
+
+
+def _query_candidate_manifest(
+    candidates: Sequence[QueryPatternCandidate],
+) -> list[dict[str, object]]:
+    return [
+        {
+            "topics": list(candidate.topics),
+            "frequency": candidate.frequency,
+            "confidence": candidate.confidence,
+        }
+        for candidate in candidates
+    ]
+
+
+def _query_candidates_from_manifest(
+    manifest: Sequence[Mapping[str, object]],
+) -> list[QueryPatternCandidate]:
+    candidates: list[QueryPatternCandidate] = []
+    for item in manifest:
+        topics = item.get("topics")
+        if not isinstance(topics, (list, tuple)) or len(topics) != 2:
+            raise ValueError("invalid query-pattern candidate manifest")
+        candidates.append(
+            QueryPatternCandidate(
+                topics=(str(topics[0]), str(topics[1])),
+                frequency=int(str(item["frequency"])),
+                confidence=float(str(item["confidence"])),
+            )
+        )
+    return candidates
+
+
+def _query_effect_id(run_id: str, candidate: QueryPatternCandidate) -> str:
+    payload = json.dumps(
+        {"run_id": run_id, "topics": list(candidate.topics)},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _query_effect_metadata(
+    metadata: Mapping[str, object],
+    effect_id: str | None,
+    effect_run_id: str | None,
+) -> tuple[dict[str, object], bool]:
+    updated = dict(metadata)
+    if effect_id is None:
+        return updated, False
+    run_id = effect_run_id or effect_id
+    stored_run_id = str(updated.get("_habit_effect_run_id") or "")
+    stored_effects = updated.get("_habit_effect_ids")
+    effect_ids = (
+        {str(value) for value in stored_effects}
+        if isinstance(stored_effects, (list, tuple, set)) and stored_run_id == run_id
+        else set()
+    )
+    if stored_run_id == run_id and effect_id in effect_ids:
+        return updated, True
+    effect_ids.add(effect_id)
+    updated.update(
+        _habit_effect_id=effect_id,
+        _habit_effect_run_id=run_id,
+        _habit_effect_ids=sorted(effect_ids),
+    )
+    return updated, False
 
 
 @dataclass
@@ -206,75 +279,69 @@ async def learn_query_patterns(
     storage: NeuralStorage,
     config: BrainConfig,
     reference_time: datetime,
+    *,
+    run_id: str | None = None,
+    resume_manifest: Sequence[Mapping[str, object]] | None = None,
+    resume_cursor: int = 0,
+    on_progress: QueryPatternProgressCallback | None = None,
 ) -> QueryPatternReport:
-    """Mine query patterns and materialize as CONCEPT neurons + BEFORE synapses.
-
-    Called during LEARN_HABITS consolidation strategy alongside action habits.
-
-    Args:
-        storage: Storage backend
-        config: Brain configuration
-        reference_time: Current time for freshness
-
-    Returns:
-        Report with mining statistics
-    """
+    """Mine query patterns and resume a frozen per-candidate materialization plan."""
     report = QueryPatternReport()
+    if resume_manifest is not None:
+        candidates = _query_candidates_from_manifest(resume_manifest)
+    else:
+        events = await storage.get_action_sequences(
+            since=reference_time - timedelta(days=_QUERY_PATTERN_WINDOW_DAYS), limit=1000
+        )
+        recall_events = [
+            event for event in events if event.action_type == "recall" and event.action_context
+        ]
+        if len(recall_events) < 3:
+            return report
 
-    # Fetch recall events from a RECENT window. Without `since` the backend orders
-    # ascending and returns the 1000 OLDEST events in the brain's history, so once the
-    # log passes that size no new query ever enters the window and this pass mines a
-    # frozen prefix forever. learn_habits already passes a window; this one did not.
-    events = await storage.get_action_sequences(
-        since=reference_time - timedelta(days=_QUERY_PATTERN_WINDOW_DAYS), limit=1000
-    )
-    recall_events = [e for e in events if e.action_type == "recall" and e.action_context]
+        all_topics: set[str] = set()
+        for event in recall_events:
+            all_topics.update(extract_topics(event.action_context))
+        report.topics_extracted = len(all_topics)
 
-    if len(recall_events) < 3:
-        return report
+        pairs = mine_query_topic_pairs(recall_events)
+        if not pairs:
+            return report
+        session_ids = {event.session_id for event in recall_events if event.session_id}
+        total_sessions = max(len(session_ids), 1)
+        candidates = extract_pattern_candidates(
+            pairs,
+            min_frequency=getattr(config, "query_pattern_min_frequency", 3),
+            total_sessions=total_sessions,
+        )
+        report.pairs_found = len(candidates)
+        if not candidates:
+            return report
 
-    # Extract unique topics
-    all_topics: set[str] = set()
-    for event in recall_events:
-        topics = extract_topics(event.action_context)
-        all_topics.update(topics)
-    report.topics_extracted = len(all_topics)
+    manifest = _query_candidate_manifest(candidates)
+    if on_progress is not None and resume_manifest is None:
+        await on_progress(manifest, 0)
 
-    # Mine pairs
-    pairs = mine_query_topic_pairs(recall_events)
-    if not pairs:
-        return report
-
-    # Count sessions for confidence
-    session_ids = {e.session_id for e in recall_events if e.session_id}
-    total_sessions = max(len(session_ids), 1)
-
-    candidates = extract_pattern_candidates(
-        pairs,
-        min_frequency=getattr(config, "query_pattern_min_frequency", 3),
-        total_sessions=total_sessions,
-    )
-    report.pairs_found = len(candidates)
-
-    if not candidates:
-        return report
-
-    # Materialize patterns
     now = utcnow()
-    for candidate in candidates:
+    for candidate_index, candidate in enumerate(candidates):
+        if candidate_index < resume_cursor:
+            continue
         topic_a, topic_b = candidate.topics
-
-        # Find or create CONCEPT neurons for each topic
         neuron_a = await _get_or_create_concept_neuron(storage, topic_a, now)
         neuron_b = await _get_or_create_concept_neuron(storage, topic_b, now)
 
-        if neuron_a.id == neuron_b.id:
-            continue
-
-        # Create or strengthen BEFORE synapse
-        await _strengthen_topic_synapse(storage, neuron_a.id, neuron_b.id, candidate.frequency)
-
-        report.patterns_learned += 1
+        if neuron_a.id != neuron_b.id:
+            await _strengthen_topic_synapse(
+                storage,
+                neuron_a.id,
+                neuron_b.id,
+                candidate.frequency,
+                effect_id=_query_effect_id(run_id, candidate) if run_id else None,
+                effect_run_id=run_id,
+            )
+            report.patterns_learned += 1
+        if on_progress is not None:
+            await on_progress(manifest, candidate_index + 1)
 
     if report.patterns_learned:
         logger.info(
@@ -282,7 +349,6 @@ async def learn_query_patterns(
             report.patterns_learned,
             report.topics_extracted,
         )
-
     return report
 
 
@@ -376,9 +442,11 @@ async def _strengthen_topic_synapse(
     source_id: str,
     target_id: str,
     frequency: int,
+    *,
+    effect_id: str | None = None,
+    effect_run_id: str | None = None,
 ) -> None:
-    """Create or strengthen a BEFORE synapse between topic neurons."""
-    # Check for existing synapse
+    """Create or strengthen a BEFORE synapse with durable per-effect receipts."""
     try:
         neighbors = await storage.get_neighbors(
             source_id,
@@ -386,30 +454,37 @@ async def _strengthen_topic_synapse(
             synapse_types=[SynapseType.BEFORE],
         )
         for neighbor_neuron, existing_synapse in neighbors:
-            if neighbor_neuron.id == target_id:
-                # Strengthen existing synapse
-                from dataclasses import replace
-
-                new_weight = min(existing_synapse.weight + 0.05, 1.0)
-                new_count = existing_synapse.metadata.get("sequential_count", 0) + frequency
-                updated = replace(
-                    existing_synapse,
-                    weight=new_weight,
-                    metadata={**existing_synapse.metadata, "sequential_count": new_count},
-                )
-                await storage.update_synapse(updated)
+            if neighbor_neuron.id != target_id:
+                continue
+            metadata, already_applied = _query_effect_metadata(
+                existing_synapse.metadata, effect_id, effect_run_id
+            )
+            if already_applied:
                 return
+            from dataclasses import replace
+
+            metadata["sequential_count"] = (
+                existing_synapse.metadata.get("sequential_count", 0) + frequency
+            )
+            updated = replace(
+                existing_synapse,
+                weight=min(existing_synapse.weight + 0.05, 1.0),
+                metadata=metadata,
+            )
+            await storage.update_synapse(updated)
+            return
     except Exception:
         logger.debug("Synapse lookup failed, creating new", exc_info=True)
 
-    # Create new synapse
+    create_metadata: dict[str, object] = {"_query_pattern": True, "sequential_count": frequency}
+    create_metadata, _ = _query_effect_metadata(create_metadata, effect_id, effect_run_id)
     synapse = Synapse(
         id=uuid4().hex[:16],
         source_id=source_id,
         target_id=target_id,
         type=SynapseType.BEFORE,
         weight=min(0.3 + frequency * 0.05, 1.0),
-        metadata={"_query_pattern": True, "sequential_count": frequency},
+        metadata=create_metadata,
         created_at=utcnow(),
     )
     try:

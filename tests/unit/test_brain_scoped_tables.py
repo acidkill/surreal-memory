@@ -39,7 +39,7 @@ def test_clear_covers_every_brain_scoped_table() -> None:
 
 def test_cleared_tables_all_exist_in_the_schema() -> None:
     source = Path(schema_module.__file__).read_text(encoding="utf-8")
-    defined = set(re.findall(r"DEFINE TABLE\s+(\w+)", source))
+    defined = set(re.findall(r"DEFINE TABLE(?:\s+IF\s+NOT\s+EXISTS)?\s+(\w+)", source))
 
     unknown = set(_BRAIN_SCOPED_TABLES) - defined
 

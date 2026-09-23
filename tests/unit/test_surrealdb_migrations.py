@@ -119,8 +119,8 @@ class TestDetectVersion:
         assert await M.detect_db_version(conn) == M.RELATION_SYNAPSE_VERSION
 
     @pytest.mark.asyncio
-    async def test_relation_table_with_trace_is_v9(self):
-        # Relation synapse + retrieval_trace table => fully at TARGET_VERSION (v9).
+    async def test_relation_table_with_trace_without_v11_state_is_v9(self):
+        # retrieval_trace proves v9+, but without both v11 tables DDL must replay.
         conn = ScriptedConn()
         conn.route("SELECT version FROM schema_meta:version", [])
         conn.route(
@@ -129,6 +129,23 @@ class TestDetectVersion:
                 "tables": {
                     "synapse": "DEFINE TABLE synapse TYPE RELATION IN neuron OUT neuron",
                     "retrieval_trace": "DEFINE TABLE retrieval_trace SCHEMAFULL",
+                }
+            },
+        )
+        assert await M.detect_db_version(conn) == M.TYPED_VALIDITY_VERSION
+
+    @pytest.mark.asyncio
+    async def test_relation_table_with_v11_progress_and_lease_is_v11(self):
+        conn = ScriptedConn()
+        conn.route("SELECT version FROM schema_meta:version", [])
+        conn.route(
+            "INFO FOR DB",
+            {
+                "tables": {
+                    "synapse": "DEFINE TABLE synapse TYPE RELATION IN neuron OUT neuron",
+                    "retrieval_trace": "DEFINE TABLE retrieval_trace SCHEMAFULL",
+                    "consolidation_progress": "DEFINE TABLE consolidation_progress SCHEMAFULL",
+                    "consolidation_lease": "DEFINE TABLE consolidation_lease SCHEMAFULL",
                 }
             },
         )
@@ -142,7 +159,7 @@ class TestDetectVersion:
         assert await M.detect_db_version(conn) == M.SOURCE_VERSION
 
     @pytest.mark.asyncio
-    async def test_fresh_db_is_v8(self):
+    async def test_fresh_db_is_latest(self):
         conn = ScriptedConn()
         conn.route("SELECT version FROM schema_meta:version", [])
         conn.route("INFO FOR DB", {"tables": {}})
@@ -496,6 +513,73 @@ class TestApplyMigrations:
             s.strip().startswith("DELETE schema_meta:migration_lock") and "WHERE" not in s
             for s in conn.sqls()
         ), "lock must be released"
+
+
+class TestConsolidationProgressV11:
+    @pytest.mark.asyncio
+    async def test_v10_to_v11_creates_checkpoint_schema_and_stamps_v11(self):
+        conn = ScriptedConn()
+        await M._migrate_10_to_11(conn)
+
+        sqls = conn.sqls()
+        assert any("DEFINE TABLE IF NOT EXISTS consolidation_progress" in sql for sql in sqls)
+        assert any(
+            "DEFINE FIELD engine_version ON consolidation_progress TYPE string" in sql
+            for sql in sqls
+        )
+        assert any("DEFINE TABLE IF NOT EXISTS consolidation_lease" in sql for sql in sqls)
+        assert any("idx_synapse_brain_created" in sql for sql in sqls)
+        assert any("idx_cprog_brain_run" in sql for sql in sqls)
+        assert any("idx_clease_brain" in sql for sql in sqls)
+        stamp = next(
+            (params for sql, params in conn.calls if "UPSERT schema_meta:version" in sql), None
+        )
+        assert stamp == {"v": M.TARGET_VERSION}
+        assert M.TARGET_VERSION == 11
+
+    @pytest.mark.asyncio
+    async def test_v10_to_v11_promotes_partial_schemaless_progress_table(self):
+        conn = ScriptedConn().route(
+            "INFO FOR DB",
+            {
+                "tables": {
+                    "consolidation_progress": "DEFINE TABLE consolidation_progress SCHEMALESS"
+                }
+            },
+        )
+        await M._migrate_10_to_11(conn)
+
+        alter_index = conn.first_index("ALTER TABLE consolidation_progress SCHEMAFULL")
+        flexible_index = conn.first_index(
+            "DEFINE FIELD strategy_states ON consolidation_progress TYPE object FLEXIBLE"
+        )
+        assert alter_index >= 0
+        assert flexible_index > alter_index
+
+    @pytest.mark.asyncio
+    async def test_v9_to_v10_stamps_v10_not_moving_target(self):
+        conn = ScriptedConn()
+        await M._migrate_9_to_10(conn)
+
+        stamp = next(
+            (params for sql, params in conn.calls if "UPSERT schema_meta:version" in sql), None
+        )
+        assert stamp == {"v": M.VERSION_10}
+
+    @pytest.mark.asyncio
+    async def test_apply_migrations_runs_v10_to_v11(self):
+        conn = ScriptedConn()
+        conn.route("SELECT version FROM schema_meta:version", [{"version": M.VERSION_10}])
+        conn.route("CREATE schema_meta:migration_lock", [])
+        conn.route("DELETE schema_meta:migration_lock", [])
+
+        result = await M.apply_migrations(conn)
+
+        assert result == M.TARGET_VERSION
+        assert any(
+            "DEFINE TABLE IF NOT EXISTS consolidation_progress" in sql for sql in conn.sqls()
+        )
+        assert any("UPSERT schema_meta:version" in sql for sql in conn.sqls())
 
 
 class TestFailedMigrationNotSilentlyAccepted:

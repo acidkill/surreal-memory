@@ -724,7 +724,7 @@ class TestDedupReportAccounting:
     async def test_truncated_census_says_so(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # A silent cap turns "duplicates in my brain" into "duplicates among the
         # first N anchors in scan order" without telling anyone.
-        storage = FakeAnchorStorage([_anchor(f"note {i}") for i in range(7)])
+        storage = FakeBrainCursorStorage([_anchor(f"note {i}") for i in range(7)], cursor=0)
         report = ConsolidationReport()
         engine = ConsolidationEngine(storage, config=ConsolidationConfig(dedup_max_anchors=5))
 
@@ -747,7 +747,7 @@ class TestDedupReportAccounting:
         # Outgrowing the cap is a steady state for a big brain. Warning about it
         # every run trains operators to ignore dedup warnings, which buries the
         # failures this unit exists to surface.
-        storage = FakeAnchorStorage([_anchor(f"note {i}") for i in range(7)])
+        storage = FakeBrainCursorStorage([_anchor(f"note {i}") for i in range(7)], cursor=0)
         engine = ConsolidationEngine(storage, config=ConsolidationConfig(dedup_max_anchors=5))
 
         with caplog.at_level(logging.INFO):
@@ -866,3 +866,95 @@ class TestDedupCursorRespectsDryRun:
 
         assert len(storage.saved_brains) == 1
         assert storage.brain.metadata[ConsolidationEngine._DEDUP_CURSOR_KEY] == (2 + 5) % 7
+
+
+class FakeDedupProgress:
+    def __init__(self) -> None:
+        self.state: dict[str, object] = {}
+
+    def strategy_state(self, strategy: str) -> dict[str, object]:
+        return dict(self.state)
+
+    async def checkpoint(
+        self,
+        strategy: str,
+        phase: str,
+        *,
+        cursor: str | None = None,
+        pending: list[str] | None = None,
+        counters: dict[str, int | float] | None = None,
+    ) -> dict[str, object]:
+        self.state = {
+            "phase": phase,
+            "cursor": cursor,
+            "pending": list(pending or []),
+            "counters": dict(counters or {}),
+        }
+        return dict(self.state)
+
+
+class TestDedupCheckpointResume:
+    @pytest.mark.asyncio
+    async def test_resumes_after_last_committed_anchor_batch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from surreal_memory.engine.consolidation import ConsolidationStrategy
+        from surreal_memory.engine.consolidation_progress import ConsolidationPausedError
+        from surreal_memory.utils import simhash
+
+        comparisons = 0
+
+        def not_near_duplicate(*_args: object, **_kwargs: object) -> bool:
+            nonlocal comparisons
+            comparisons += 1
+            return False
+
+        monkeypatch.setattr(simhash, "is_near_duplicate", not_near_duplicate)
+        storage = FakeBrainCursorStorage(
+            [_anchor(f"note {i}", content_hash=i + 101) for i in range(14)],
+            cursor=0,
+        )
+        progress = FakeDedupProgress()
+        engine = ConsolidationEngine(
+            storage,
+            config=ConsolidationConfig(dedup_max_anchors=13),
+        )
+        engine._progress_session = progress
+        engine._active_strategy = ConsolidationStrategy.DEDUP
+
+        budget_checks = 0
+
+        async def pause_at_second_checkpoint() -> None:
+            nonlocal budget_checks
+            budget_checks += 1
+            if budget_checks == 2:
+                raise ConsolidationPausedError("simulated strategy budget boundary")
+
+        engine._check_progress_budget = pause_at_second_checkpoint  # type: ignore[method-assign]
+        with pytest.raises(ConsolidationPausedError):
+            await engine._dedup(ConsolidationReport(), dry_run=False)
+
+        assert progress.state["phase"] == "dedup_pairs"
+        import json
+
+        cursor = json.loads(str(progress.state["cursor"]))
+        assert cursor["next_i"] == 10
+        assert len([item for item in progress.state["pending"] if item.startswith("window:")]) == 13
+        assert storage.brain.metadata[ConsolidationEngine._DEDUP_CURSOR_KEY] == 0
+
+        async def keep_running() -> None:
+            return None
+
+        engine._check_progress_budget = keep_running  # type: ignore[method-assign]
+        before_resume = comparisons
+        report = ConsolidationReport()
+        await engine._dedup(report, dry_run=False)
+
+        # Only anchors 10-12 are scanned after the stored cursor; anchors 0-9
+        # are not re-compared after a committed checkpoint.
+        assert comparisons - before_resume == 3
+        assert progress.state["phase"] == "dedup_window_complete"
+        assert storage.brain.metadata[ConsolidationEngine._DEDUP_CURSOR_KEY] == 13
+
+        await engine._dedup(ConsolidationReport(), dry_run=False)
+        assert storage.brain.metadata[ConsolidationEngine._DEDUP_CURSOR_KEY] == 13
