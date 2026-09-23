@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
 import pytest
 import pytest_asyncio
 
@@ -336,6 +338,88 @@ class TestFindCrossClusterLinks:
 
         result = await find_cross_cluster_links(store)
         assert result == []
+
+    async def test_global_salience_includes_fiber_older_than_10000(
+        self, store: InMemoryStorage
+    ) -> None:
+        """An old high-salience fiber must not vanish behind the newest 10k."""
+        for neuron_id in ("n-old", "n-new", "n-shared"):
+            await store.add_neuron(
+                Neuron.create(type=NeuronType.CONCEPT, content=neuron_id, neuron_id=neuron_id)
+            )
+        old = Fiber.create(
+            neuron_ids={"n-old", "n-shared"},
+            synapse_ids=set(),
+            anchor_neuron_id="n-old",
+            tags={"old"},
+            fiber_id="f-00000",
+        ).with_salience(1.0)
+        await store.add_fiber(old)
+        for index in range(1, 10001):
+            await store.add_fiber(
+                Fiber.create(
+                    neuron_ids={"n-irrelevant"},
+                    synapse_ids=set(),
+                    anchor_neuron_id="n-irrelevant",
+                    fiber_id=f"f-{index:05d}",
+                )
+            )
+        newest = Fiber.create(
+            neuron_ids={"n-new", "n-shared"},
+            synapse_ids=set(),
+            anchor_neuron_id="n-new",
+            tags={"new"},
+            fiber_id="f-10001",
+        ).with_salience(0.9)
+        await store.add_fiber(newest)
+
+        links = await find_cross_cluster_links(store)
+        assert len(links) == 1
+        assert {links[0].source_id, links[0].target_id} == {"n-old", "n-new"}
+
+    async def test_equal_salience_uses_fiber_id_to_break_top_1000_ties(
+        self, store: InMemoryStorage
+    ) -> None:
+        """ID order, not arrival order, decides the last candidate in a tie."""
+        for neuron_id in ("n-alpha", "n-beta", "n-gamma", "n-shared"):
+            await store.add_neuron(
+                Neuron.create(type=NeuronType.CONCEPT, content=neuron_id, neuron_id=neuron_id)
+            )
+        # Insert in reverse ID order so recency cannot accidentally supply the tie-break.
+        for index in reversed(range(1001)):
+            if index == 0:
+                anchor, members, tags = "n-alpha", {"n-alpha", "n-shared"}, {"alpha"}
+            elif index == 999:
+                anchor, members, tags = "n-beta", {"n-beta", "n-shared"}, {"beta"}
+            elif index == 1000:
+                anchor, members, tags = "n-gamma", {"n-gamma", "n-shared"}, {"gamma"}
+            else:
+                anchor, members, tags = "n-irrelevant", {"n-irrelevant"}, {"alpha"}
+            await store.add_fiber(
+                Fiber.create(
+                    neuron_ids=members,
+                    synapse_ids=set(),
+                    anchor_neuron_id=anchor,
+                    tags=tags,
+                    fiber_id=f"f-{index:04d}",
+                ).with_salience(0.5)
+            )
+
+        links = await find_cross_cluster_links(store)
+        assert len(links) == 1
+        assert {links[0].source_id, links[0].target_id} == {"n-alpha", "n-beta"}
+
+    async def test_legacy_backend_refuses_ambiguous_ten_thousand_fiber_prefix(
+        self, store: InMemoryStorage, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without keyset paging, a full legacy prefix cannot prove completeness."""
+        monkeypatch.setattr(
+            store, "get_fibers_after_id", AsyncMock(side_effect=NotImplementedError)
+        )
+        monkeypatch.setattr(store, "get_fibers", AsyncMock(return_value=[None] * 10000))
+
+        with pytest.raises(RuntimeError, match="requires fiber keyset paging"):
+            await find_cross_cluster_links(store)
 
 
 # ── Full Enrich Tests ─────────────────────────────────────────────

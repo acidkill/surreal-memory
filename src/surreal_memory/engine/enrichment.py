@@ -16,6 +16,7 @@ from surreal_memory.core.synapse import Synapse, SynapseType
 from surreal_memory.engine.clustering import UnionFind
 
 if TYPE_CHECKING:
+    from surreal_memory.core.fiber import Fiber
     from surreal_memory.storage.base import NeuralStorage
 
 
@@ -117,18 +118,48 @@ async def find_cross_cluster_links(
     Returns:
         List of new Synapse objects (not yet persisted)
     """
-    fibers = await storage.get_fibers(limit=10000)
-    tagged_fibers = [f for f in fibers if f.tags]
+    # The Jaccard pass intentionally considers only the global top 1000 tagged
+    # fibers. A get_fibers(limit=10000) prefix is not a global top-N: older,
+    # high-salience fibers can be absent from that prefix.
+    max_fibers_for_clustering = 1000
+    page_size = 1000
+    tagged_fibers: list[Fiber] = []
+    get_page = getattr(storage, "get_fibers_after_id", None)
+    if get_page is not None:
+        cursor_id: str | None = None
+        while True:
+            try:
+                page = await get_page(cursor_id, limit=page_size)
+            except NotImplementedError:
+                if cursor_id is not None:
+                    raise
+                get_page = None
+                break
+            if not page:
+                break
+            if len(page) > page_size or any(fiber.id <= (cursor_id or "") for fiber in page):
+                raise RuntimeError("Fiber keyset page did not advance monotonically")
+            tagged_fibers.extend(fiber for fiber in page if fiber.tags)
+            tagged_fibers = sorted(tagged_fibers, key=lambda fiber: (-fiber.salience, fiber.id))[
+                :max_fibers_for_clustering
+            ]
+            cursor_id = page[-1].id
+            if len(page) < page_size:
+                break
+    if get_page is None:
+        # Legacy backends without keyset paging can safely serve only a census
+        # strictly below the old 10k cap; a full prefix cannot prove completeness.
+        fibers = await storage.get_fibers(limit=10001)
+        if len(fibers) >= 10000:
+            raise RuntimeError(
+                "Cross-cluster enrichment requires fiber keyset paging beyond 9999 fibers"
+            )
+        tagged_fibers = sorted(
+            (fiber for fiber in fibers if fiber.tags),
+            key=lambda fiber: (-fiber.salience, fiber.id),
+        )[:max_fibers_for_clustering]
     if len(tagged_fibers) < 2:
         return []
-
-    # Cap fiber count for O(N^2) Jaccard comparison — 1000 fibers = 500K pairs max
-    max_fibers_for_clustering = 1000
-    if len(tagged_fibers) > max_fibers_for_clustering:
-        # Keep highest-salience fibers
-        tagged_fibers = sorted(tagged_fibers, key=lambda f: f.salience, reverse=True)[
-            :max_fibers_for_clustering
-        ]
 
     n = len(tagged_fibers)
 
