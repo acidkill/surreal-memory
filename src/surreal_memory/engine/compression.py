@@ -1135,11 +1135,11 @@ class CompressionEngine:
             dry_run: If True, compute but do not apply changes.
             time_budget_seconds: If set, stop compressing once elapsed time
                 exceeds this budget and report the remainder as
-                ``fibers_deferred`` instead of running unbounded. A fiber only
-                becomes ineligible once actually compressed, so deferred work
-                is picked up by the next run — the strategy is O(batch) per
-                call rather than O(brain size), which is what lets it keep up
-                as the brain grows instead of eventually timing out again.
+                ``fibers_deferred`` instead of running unbounded. The count is
+                a lower bound from the current fetched page; additional unread
+                pages may also remain. A fiber only becomes ineligible once
+                actually compressed, so the next run picks up deferred work.
+                Each keyset read is bounded, with no global top-N ceiling.
 
         Returns:
             A CompressionReport with aggregate statistics.
@@ -1155,7 +1155,15 @@ class CompressionEngine:
             report.duration_ms = (time.perf_counter() - start) * 1000
             return report
 
-        fibers = await self._storage.get_fibers(limit=10000)
+        # The storage keyset scan keeps a pass bounded without a top-N ceiling.
+        # Legacy adapters may only expose get_fibers; fail rather than reporting
+        # success for a silently truncated census at its 10,000-record limit.
+        get_page = getattr(self._storage, "get_fibers_after_id", None)
+        paged = get_page is not None and hasattr(type(self._storage), "get_fibers_after_id")
+        if not paged:
+            legacy_fibers = await self._storage.get_fibers(limit=10000)
+            if len(legacy_fibers) >= 10000:
+                raise RuntimeError("compression requires get_fibers_after_id for 10000+ fibers")
 
         # One brain lookup for the whole pass: the derived-field refresh needs
         # the brain's embedding config, which cannot change mid-run, and paying
@@ -1174,59 +1182,84 @@ class CompressionEngine:
             )
             brain = None
 
-        for idx, fiber in enumerate(fibers):
-            # Pinned (KB) fibers stay at tier 0 forever
-            if fiber.pinned:
-                report.fibers_skipped += 1
-                continue
-
-            # Verbatim fibers (structured data cells) must not be compressed
-            if fiber.metadata.get("_verbatim"):
-                report.fibers_skipped += 1
-                continue
-
-            # Arousal-based compression resistance: high-arousal memories
-            # (production incidents, breakthroughs) resist compression
-            arousal = fiber.metadata.get("_arousal", 0.0) if fiber.metadata else 0.0
-            arousal_heat = float(arousal) * 0.3 if isinstance(arousal, (int, float)) else 0.0
-            target_tier = self.determine_target_tier(
-                fiber,
-                reference_time,
-                heat_score=arousal_heat,
-            )
-
-            if int(target_tier) <= fiber.compression_tier:
-                report.fibers_skipped += 1
-                continue
-
-            if (
-                time_budget_seconds is not None
-                and time.perf_counter() - start > time_budget_seconds
-            ):
-                report.fibers_deferred += len(fibers) - idx
-                logger.info(
-                    "Compression time budget (%.0fs) reached; deferring %d fibers to the next run",
-                    time_budget_seconds,
-                    report.fibers_deferred,
-                )
-                break
-
-            try:
-                result = await self.compress_fiber(fiber, target_tier, dry_run=dry_run, brain=brain)
-            except Exception:
-                logger.error("Compression failed for fiber %s", fiber.id, exc_info=True)
-                report.fibers_skipped += 1
-                continue
-
-            report.results.append(result)
-
-            if result.skipped:
-                report.fibers_skipped += 1
+        page_size = 250
+        cursor: str | None = None
+        while True:
+            if paged and get_page is not None:
+                page = await get_page(cursor, limit=page_size, created_before=reference_time)
             else:
-                report.fibers_compressed += 1
-                report.tokens_saved += result.tokens_saved
-                if result.backup_created:
-                    report.backups_created += 1
+                page = legacy_fibers
+            if not page:
+                break
+            if cursor is not None and page[0].id <= cursor:
+                raise RuntimeError("compression fiber keyset page did not advance")
+
+            for idx, fiber in enumerate(page):
+                if (
+                    time_budget_seconds is not None
+                    and time.perf_counter() - start > time_budget_seconds
+                ):
+                    # Unread pages are not counted, so this is a lower bound.
+                    # Never claim completion when the current page still has work.
+                    report.fibers_deferred += len(page) - idx
+                    logger.info(
+                        "Compression time budget (%.0fs) reached; deferring at least %d "
+                        "fibers to the next run",
+                        time_budget_seconds,
+                        report.fibers_deferred,
+                    )
+                    break
+
+                # Resume a durable intent before eligibility checks: a fiber may
+                # have been pinned or reached its target tier after a partial write.
+                pending = fiber.metadata.get("_compression_pending") if fiber.metadata else None
+                if pending is not None:
+                    try:
+                        target_tier = CompressionTier(int(pending["target_tier"]))
+                    except (KeyError, TypeError, ValueError) as exc:
+                        logger.error("Invalid compression intent for fiber %s: %s", fiber.id, exc)
+                        report.fibers_skipped += 1
+                        continue
+                else:
+                    # Pinned (KB) and verbatim fibers must not be compressed.
+                    if fiber.pinned or fiber.metadata.get("_verbatim"):
+                        report.fibers_skipped += 1
+                        continue
+
+                    arousal = fiber.metadata.get("_arousal", 0.0) if fiber.metadata else 0.0
+                    arousal_heat = (
+                        float(arousal) * 0.3 if isinstance(arousal, (int, float)) else 0.0
+                    )
+                    target_tier = self.determine_target_tier(
+                        fiber, reference_time, heat_score=arousal_heat
+                    )
+                    if int(target_tier) <= fiber.compression_tier:
+                        report.fibers_skipped += 1
+                        continue
+
+                try:
+                    result = await self.compress_fiber(
+                        fiber, target_tier, dry_run=dry_run, brain=brain
+                    )
+                except Exception:
+                    logger.error("Compression failed for fiber %s", fiber.id, exc_info=True)
+                    report.fibers_skipped += 1
+                    continue
+
+                report.results.append(result)
+                if result.skipped:
+                    report.fibers_skipped += 1
+                else:
+                    report.fibers_compressed += 1
+                    report.tokens_saved += result.tokens_saved
+                    if result.backup_created:
+                        report.backups_created += 1
+
+            if report.fibers_deferred:
+                break
+            cursor = page[-1].id
+            if not paged or len(page) < page_size:
+                break
 
         report.duration_ms = (time.perf_counter() - start) * 1000
         logger.info(
