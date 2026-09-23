@@ -147,8 +147,9 @@ def _engine(
 
 def _pending(progress: _Progress) -> dict[str, Any]:
     serialized = progress.strategy_state("summarize")["pending"]
-    assert len(serialized) == 1
-    return json.loads(serialized[0])
+    assert len(serialized) == 2
+    assert json.loads(serialized[0])["kind"] == "summary_pairs"
+    return json.loads(serialized[1])
 
 
 @pytest.mark.asyncio
@@ -180,7 +181,7 @@ async def test_pending_cluster_resumes_from_saved_output_and_ids() -> None:
     assert storage.added_synapses == [edge["id"] for edge in snapshot["synapses"]]
     assert storage.added_fibers == [snapshot["summary_fiber_id"]]
     assert report.summaries_created == 1
-    assert progress.strategy_state("summarize")["pending"] == []
+    assert len(progress.strategy_state("summarize")["pending"]) == 1
     assert progress.strategy_state("summarize")["cursor"].endswith(snapshot["cluster_key"])
 
 
@@ -204,7 +205,7 @@ async def test_crash_after_summary_fiber_write_replays_without_duplicate_effects
     assert storage.added_synapses == [edge["id"] for edge in snapshot["synapses"]]
     assert storage.added_fibers == [snapshot["summary_fiber_id"]]
     assert report.summaries_created == 1
-    assert progress.strategy_state("summarize")["pending"] == []
+    assert len(progress.strategy_state("summarize")["pending"]) == 1
 
 
 @pytest.mark.parametrize("change", ["source_data", "parameter", "pending_version"])
@@ -274,3 +275,127 @@ async def test_dry_run_does_not_change_progress_or_graph_state() -> None:
     assert storage.added_neurons == []
     assert storage.added_synapses == []
     assert storage.added_fibers == []
+
+
+@pytest.mark.asyncio
+async def test_summarize_considers_fibers_after_the_former_top_1000_limit() -> None:
+    fibers = [
+        Fiber.create(
+            neuron_ids={f"anchor-{i}"},
+            synapse_ids=set(),
+            anchor_neuron_id=f"anchor-{i}",
+            summary=f"source {i}",
+            tags={f"unique-{i}"},
+            fiber_id=f"fiber-{i:04d}",
+        )
+        for i in range(1000)
+    ]
+    fibers.extend(
+        Fiber.create(
+            neuron_ids={f"anchor-{i}"},
+            synapse_ids=set(),
+            anchor_neuron_id=f"anchor-{i}",
+            summary=f"source {i}",
+            tags={"z-shared"},
+            fiber_id=f"fiber-{i:04d}",
+        )
+        for i in (1000, 1001)
+    )
+    report = ConsolidationReport()
+
+    await _engine(_Storage(fibers))._summarize(report, dry_run=True)
+
+    assert report.summaries_created == 1
+    assert "summarize_fibers_scanned" not in report.extra
+
+
+@pytest.mark.asyncio
+async def test_summarize_examines_pairs_after_the_former_50000_limit() -> None:
+    # Ten groups contribute 49,500 pairs. The eleventh only existed after
+    # the previous global cap and must also produce a cluster.
+    fibers = [
+        Fiber.create(
+            neuron_ids={f"anchor-{group}-{member}"},
+            synapse_ids=set(),
+            anchor_neuron_id=f"anchor-{group}-{member}",
+            summary=f"source {group}-{member}",
+            tags={f"group-{group:02d}"},
+            fiber_id=f"fiber-{group:02d}-{member:03d}",
+        )
+        for group in range(11)
+        for member in range(100)
+    ]
+    report = ConsolidationReport()
+
+    await _engine(_Storage(fibers))._summarize(report, dry_run=True)
+
+    assert report.summaries_created == 11
+
+
+@pytest.mark.asyncio
+async def test_old_summarize_cursor_refuses_incompatible_resume() -> None:
+    storage = _Storage(_source_fibers())
+    progress = _Progress()
+    progress.strategy_state("summarize").update(
+        cursor="summarize-v1|old-fingerprint|",
+        pending=[],
+        counters={},
+    )
+
+    with pytest.raises(ConsolidationProgressError, match="summarize inputs or algorithm changed"):
+        await _engine(storage, progress)._summarize(ConsolidationReport(), dry_run=False)
+
+    assert storage.added_neurons == []
+    assert storage.added_synapses == []
+    assert storage.added_fibers == []
+
+
+@pytest.mark.asyncio
+async def test_pair_scan_resumes_from_committed_tag_and_union_state() -> None:
+    class PauseAfterHundredTags(_Progress):
+        async def checkpoint(
+            self,
+            strategy: str,
+            phase: str,
+            *,
+            cursor: str | None = None,
+            pending: list[str] | None = None,
+            counters: dict[str, int | float] | None = None,
+        ) -> None:
+            await super().checkpoint(
+                strategy, phase, cursor=cursor, pending=pending, counters=counters
+            )
+            if cursor is not None and cursor.endswith("pairs:100"):
+                raise ConsolidationPausedError("after hundred tags")
+
+    fibers = [
+        Fiber.create(
+            neuron_ids={f"anchor-{i}"},
+            synapse_ids=set(),
+            anchor_neuron_id=f"anchor-{i}",
+            summary=f"source {i}",
+            tags={"a-tag"} if i < 2 else {f"b-{i:03d}"} if i < 101 else {"z-tag"},
+            fiber_id=f"fiber-{i:03d}",
+        )
+        for i in range(103)
+    ]
+    storage = _Storage(fibers)
+    progress = PauseAfterHundredTags()
+
+    with pytest.raises(ConsolidationPausedError, match="after hundred tags"):
+        await _engine(storage, progress)._summarize(ConsolidationReport(), dry_run=False)
+
+    state = progress.strategy_state("summarize")
+    assert state["cursor"].endswith("pairs:100")
+    snapshot = json.loads(state["pending"][0])
+    assert snapshot["next_tag"] == 100
+    assert snapshot["pairs_examined"] == 1
+    assert snapshot["parent"]
+    assert storage.added_neurons == []
+
+    report = ConsolidationReport()
+    await _engine(storage, progress)._summarize(report, dry_run=False)
+
+    assert report.summaries_created == 2
+    assert state["pending"] and len(state["pending"]) == 1
+    assert progress.strategy_state("summarize")["cursor"].split("|", 2)[2] != "pairs:100"

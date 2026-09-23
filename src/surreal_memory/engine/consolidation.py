@@ -2864,25 +2864,14 @@ class ConsolidationEngine:
         # the same cluster sequence after a process interruption.
         source_fibers = sorted(self._summarize_input_fibers(fibers), key=lambda f: f.id)
 
-        max_fibers_for_clustering = 1000
-        if len(source_fibers) > max_fibers_for_clustering:
-            report.extra["summarize_fibers_total"] = len(source_fibers)
-            report.extra["summarize_fibers_scanned"] = max_fibers_for_clustering
-            source_fibers = sorted(
-                source_fibers,
-                key=lambda f: (-f.salience, f.id),
-            )[:max_fibers_for_clustering]
-            source_fibers.sort(key=lambda f: f.id)
         if len(source_fibers) < self._config.summarize_min_cluster_size:
             return
 
         snapshot_fingerprint = options_fingerprint(
             {
-                "algorithm": "summarize-v1",
+                "algorithm": "summarize-v2",
                 "min_cluster_size": self._config.summarize_min_cluster_size,
                 "tag_overlap_threshold": self._config.summarize_tag_overlap_threshold,
-                "max_fibers": max_fibers_for_clustering,
-                "max_pairs": 50_000,
                 "source_fibers": [
                     {
                         "id": fiber.id,
@@ -2902,23 +2891,6 @@ class ConsolidationEngine:
             for tag in sorted(fiber.tags):
                 tag_to_fibers.setdefault(tag, set()).add(idx)
 
-        max_pairs = 50_000
-        candidate_pairs: set[tuple[int, int]] = set()
-        for tag in sorted(tag_to_fibers):
-            indices = tag_to_fibers[tag]
-            if len(indices) > 100:
-                continue
-            indices_list = sorted(indices)
-            for i_pos in range(len(indices_list)):
-                if len(candidate_pairs) >= max_pairs:
-                    break
-                for j_pos in range(i_pos + 1, len(indices_list)):
-                    if len(candidate_pairs) >= max_pairs:
-                        break
-                    candidate_pairs.add((indices_list[i_pos], indices_list[j_pos]))
-            if len(candidate_pairs) >= max_pairs:
-                break
-
         parent: dict[int, int] = {i: i for i in range(n)}
 
         def find(x: int) -> int:
@@ -2932,18 +2904,138 @@ class ConsolidationEngine:
             if ra != rb:
                 parent[ra] = rb
 
-        for pair_idx, (i, j) in enumerate(sorted(candidate_pairs)):
-            if pair_idx % 1000 == 0 and pair_idx > 0:
-                await asyncio.sleep(0)
-            tags_a = source_fibers[i].tags
-            tags_b = source_fibers[j].tags
-            intersection = len(tags_a & tags_b)
-            union_size = len(tags_a | tags_b)
-            if (
-                union_size > 0
-                and intersection / union_size >= self._config.summarize_tag_overlap_threshold
+        resumable = self._progress_session is not None and not dry_run
+        tags = sorted(tag_to_fibers)
+        pairs_examined = 0
+        next_tag = 0
+        pair_snapshot_serialized = ""
+
+        def cursor_for(cluster_key: str) -> str:
+            return f"summarize-v2|{snapshot_fingerprint}|{cluster_key}"
+
+        def pair_snapshot(tag_index: int) -> str:
+            return json.dumps(
+                {
+                    "kind": "summary_pairs",
+                    "version": 2,
+                    "fingerprint": snapshot_fingerprint,
+                    "next_tag": tag_index,
+                    "parent": {str(i): root for i, root in parent.items() if i != root},
+                    "pairs_examined": pairs_examined,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+
+        if resumable:
+            state = self._strategy_progress_state()
+            saved_cursor = state.get("cursor")
+            saved_pending = state.get("pending")
+            if saved_cursor is None:
+                if saved_pending:
+                    raise ConsolidationProgressError(
+                        "summarize pending checkpoint has no compatible cursor"
+                    )
+                pair_snapshot_serialized = pair_snapshot(0)
+                await self._checkpoint_progress(
+                    "summarize_pairs",
+                    cursor=cursor_for("pairs:0"),
+                    pending=[pair_snapshot_serialized],
+                    counters={"summarize_pairs_examined": 0},
+                )
+                saved_cursor = cursor_for("pairs:0")
+                saved_pending = [pair_snapshot_serialized]
+            if not isinstance(saved_cursor, str):
+                raise ConsolidationProgressError("summarize cursor is malformed")
+            parts = saved_cursor.split("|", 2)
+            if len(parts) != 3 or parts[0] != "summarize-v2" or parts[1] != snapshot_fingerprint:
+                raise ConsolidationProgressError(
+                    "summarize inputs or algorithm changed; refusing to skip its checkpoint"
+                )
+            if not isinstance(saved_pending, (list, tuple)) or len(saved_pending) not in (1, 2):
+                raise ConsolidationProgressError("summarize pair state is missing or malformed")
+            try:
+                snapshot = json.loads(str(saved_pending[0]))
+                if (
+                    snapshot["kind"] != "summary_pairs"
+                    or snapshot["version"] != 2
+                    or snapshot["fingerprint"] != snapshot_fingerprint
+                ):
+                    raise ValueError("incompatible pair snapshot")
+                next_tag = int(snapshot["next_tag"])
+                pairs_examined = int(snapshot["pairs_examined"])
+                if not 0 <= next_tag <= len(tags) or pairs_examined < 0:
+                    raise ValueError("invalid pair cursor")
+                restored_parent = snapshot["parent"]
+                if not isinstance(restored_parent, dict):
+                    raise ValueError("invalid parent snapshot")
+                for raw_index, raw_root in restored_parent.items():
+                    index, root = int(raw_index), int(raw_root)
+                    if not 0 <= index < n or not 0 <= root < n:
+                        raise ValueError("invalid parent index")
+                    parent[index] = root
+                if parts[2].startswith("pairs:"):
+                    if len(saved_pending) != 1 or int(parts[2][6:]) != next_tag:
+                        raise ValueError("pair cursor does not match snapshot")
+                elif next_tag != len(tags):
+                    raise ValueError("cluster cursor requires complete pair scan")
+                else:
+                    next_tag = len(tags)
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ConsolidationProgressError(
+                    "summarize pair checkpoint is malformed or incompatible"
+                ) from exc
+            pair_snapshot_serialized = str(saved_pending[0])
+
+        last_saved_pairs = pairs_examined
+        # Enumerate every policy-eligible pair without a global pair cap or
+        # materializing an unbounded set. A tag is the committed work unit;
+        # union state and its cursor are persisted together after each batch.
+        for tag_index in range(next_tag, len(tags)):
+            indices_list = sorted(tag_to_fibers[tags[tag_index]])
+            if len(indices_list) <= 100:
+                for i_pos, i in enumerate(indices_list):
+                    for j in indices_list[i_pos + 1 :]:
+                        if pairs_examined % 1000 == 0:
+                            await self._check_progress_budget()
+                            await asyncio.sleep(0)
+                        tags_a = source_fibers[i].tags
+                        tags_b = source_fibers[j].tags
+                        intersection = len(tags_a & tags_b)
+                        union_size = len(tags_a | tags_b)
+                        if (
+                            union_size > 0
+                            and intersection / union_size
+                            >= self._config.summarize_tag_overlap_threshold
+                        ):
+                            union(i, j)
+                        pairs_examined += 1
+            if resumable and (
+                (tag_index + 1) % 100 == 0 or pairs_examined - last_saved_pairs >= 20_000
             ):
-                union(i, j)
+                pair_snapshot_serialized = pair_snapshot(tag_index + 1)
+                await self._checkpoint_progress(
+                    "summarize_pairs",
+                    cursor=cursor_for(f"pairs:{tag_index + 1}"),
+                    pending=[pair_snapshot_serialized],
+                    counters={"summarize_pairs_examined": pairs_examined},
+                )
+                last_saved_pairs = pairs_examined
+
+        if resumable and str(self._strategy_progress_state().get("cursor", "")).split("|", 2)[
+            -1
+        ].startswith("pairs:"):
+            pair_snapshot_serialized = pair_snapshot(len(tags))
+            await self._checkpoint_progress(
+                "summarize_scan",
+                cursor=cursor_for(""),
+                pending=[pair_snapshot_serialized],
+                counters={
+                    "summarize_pairs_examined": pairs_examined,
+                    "summaries_created": 0,
+                    "summaries_skipped_existing": 0,
+                },
+            )
 
         grouped_members: dict[int, list[int]] = {}
         for i in range(n):
@@ -2958,42 +3050,20 @@ class ConsolidationEngine:
         cluster_work.sort(key=lambda item: item[0])
 
         existing_cluster_keys = self._existing_summary_cluster_keys(fibers)
-        resumable = self._progress_session is not None and not dry_run
         last_cluster_key = ""
         created_count = 0
         skipped_count = 0
-
-        def cursor_for(cluster_key: str) -> str:
-            return f"summarize-v1|{snapshot_fingerprint}|{cluster_key}"
 
         if resumable:
             state = self._strategy_progress_state()
             cursor_value = state.get("cursor")
             pending = state.get("pending")
-            if cursor_value is None:
-                if pending:
-                    raise ConsolidationProgressError(
-                        "summarize pending checkpoint has no compatible cursor"
-                    )
-                await self._checkpoint_progress(
-                    "summarize_scan",
-                    cursor=cursor_for(""),
-                    pending=[],
-                    counters={
-                        "summaries_created": 0,
-                        "summaries_skipped_existing": 0,
-                    },
-                )
-                state = self._strategy_progress_state()
-                cursor_value = state.get("cursor")
-                pending = state.get("pending")
-
             if not isinstance(cursor_value, str):
                 raise ConsolidationProgressError("summarize cursor is malformed")
             cursor_parts = cursor_value.split("|", 2)
             if (
                 len(cursor_parts) != 3
-                or cursor_parts[0] != "summarize-v1"
+                or cursor_parts[0] != "summarize-v2"
                 or cursor_parts[1] != snapshot_fingerprint
             ):
                 raise ConsolidationProgressError(
@@ -3083,10 +3153,10 @@ class ConsolidationEngine:
                 await apply_snapshot(snapshot)
                 return cluster_key
 
-            if pending:
-                if not isinstance(pending, (list, tuple)) or len(pending) != 1:
-                    raise ConsolidationProgressError("summarize pending checkpoint is malformed")
-                pending_cluster_key = await replay_pending(str(pending[0]))
+            if not isinstance(pending, (list, tuple)) or len(pending) not in (1, 2):
+                raise ConsolidationProgressError("summarize pending checkpoint is malformed")
+            if len(pending) == 2:
+                pending_cluster_key = await replay_pending(str(pending[1]))
                 if pending_cluster_key <= last_cluster_key:
                     raise ConsolidationProgressError(
                         "summarize pending unit is not after its committed cursor"
@@ -3097,8 +3167,9 @@ class ConsolidationEngine:
                 await self._checkpoint_progress(
                     "summarize_cluster",
                     cursor=cursor_for(last_cluster_key),
-                    pending=[],
+                    pending=[pair_snapshot_serialized],
                     counters={
+                        "summarize_pairs_examined": pairs_examined,
                         "summaries_created": created_count,
                         "summaries_skipped_existing": skipped_count,
                     },
@@ -3117,8 +3188,9 @@ class ConsolidationEngine:
                     await self._checkpoint_progress(
                         "summarize_cluster",
                         cursor=cursor_for(cluster_key),
-                        pending=[],
+                        pending=[pair_snapshot_serialized],
                         counters={
+                            "summarize_pairs_examined": pairs_examined,
                             "summaries_created": created_count,
                             "summaries_skipped_existing": skipped_count,
                         },
@@ -3229,8 +3301,9 @@ class ConsolidationEngine:
             await self._checkpoint_progress(
                 "summarize_pending",
                 cursor=cursor_for(last_cluster_key),
-                pending=[serialized],
+                pending=[pair_snapshot_serialized, serialized],
                 counters={
+                    "summarize_pairs_examined": pairs_examined,
                     "summaries_created": created_count,
                     "summaries_skipped_existing": skipped_count,
                 },
@@ -3242,8 +3315,9 @@ class ConsolidationEngine:
             await self._checkpoint_progress(
                 "summarize_cluster",
                 cursor=cursor_for(last_cluster_key),
-                pending=[],
+                pending=[pair_snapshot_serialized],
                 counters={
+                    "summarize_pairs_examined": pairs_examined,
                     "summaries_created": created_count,
                     "summaries_skipped_existing": skipped_count,
                 },
