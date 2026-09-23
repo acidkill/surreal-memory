@@ -262,3 +262,60 @@ async def test_merge_dry_run_never_writes_graph_or_checkpoint() -> None:
     assert report.fibers_merged == 2
     assert report.fibers_created == 1
     assert report.fibers_removed == 0
+
+
+def _large_disjoint_merge_groups() -> list[Fiber]:
+    """Twelve independent postings exceed the former 50,000-pair ceiling."""
+    return [
+        Fiber(
+            id=f"candidate-{group:02d}-{member:03d}",
+            neuron_ids={f"neuron-{group:02d}"},
+            synapse_ids=set(),
+            anchor_neuron_id=f"neuron-{group:02d}",
+            pathway=[f"neuron-{group:02d}"],
+            created_at=REFERENCE_TIME,
+        )
+        for group in range(12)
+        for member in range(100)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_merge_scans_every_posting_after_fifty_thousand_candidate_pairs() -> None:
+    storage = _FiberStorage(typed=False, matured=False)
+    engine = _engine(storage, _Progress())
+    fibers = _large_disjoint_merge_groups()
+
+    async def all_fibers(*, created_before: datetime | None = None) -> list[Fiber]:
+        return list(reversed(fibers))
+
+    engine._all_fibers_paged = all_fibers  # type: ignore[method-assign]
+    report = ConsolidationReport()
+    await engine._merge(report, dry_run=True)
+
+    assert report.fibers_merged == 1200
+    assert report.fibers_created == 12
+    assert {detail.original_fiber_ids[0][:12] for detail in report.merge_details} == {
+        f"candidate-{group:02d}" for group in range(12)
+    }
+
+
+@pytest.mark.asyncio
+async def test_merge_candidate_scan_deadline_fails_before_any_graph_write() -> None:
+    storage = _FiberStorage(typed=False, matured=False)
+    progress = _Progress()
+    engine = _engine(storage, progress)
+    engine._strategy_deadline = 0.0
+    fibers = _large_disjoint_merge_groups()
+
+    async def all_fibers(*, created_before: datetime | None = None) -> list[Fiber]:
+        return fibers
+
+    engine._all_fibers_paged = all_fibers  # type: ignore[method-assign]
+    report = ConsolidationReport()
+    with pytest.raises(RuntimeError, match="merge candidate scan could not finish"):
+        await engine._merge(report, dry_run=False)
+
+    assert report.fibers_created == 0
+    assert progress.writes == []
+    assert not any(fiber.metadata.get("merged_from") for fiber in storage.fibers.values())

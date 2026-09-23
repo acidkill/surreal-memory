@@ -2504,51 +2504,71 @@ class ConsolidationEngine:
                 for neuron_id in fiber.neuron_ids:
                     neuron_to_fibers.setdefault(neuron_id, set()).add(idx)
 
-            candidate_pairs: set[tuple[int, int]] = set()
-            for indices in neuron_to_fibers.values():
+            uf = UnionFind(len(fiber_list))
+            pair_number = 0
+            # Posting lists and their members must be stable across processes. Stream
+            # pairs into the union-find rather than retaining an arbitrarily truncated
+            # set of candidates (or all O(n²) pairs) in memory. A repeated pair is
+            # harmless: union is idempotent and the overlap rule depends only on its
+            # two immutable fiber snapshots.
+            for neuron_id in sorted(neuron_to_fibers):
+                indices = neuron_to_fibers[neuron_id]
                 if len(indices) > 100:
                     continue
                 indices_list = sorted(indices)
                 for i_pos in range(len(indices_list)):
                     for j_pos in range(i_pos + 1, len(indices_list)):
-                        candidate_pairs.add((indices_list[i_pos], indices_list[j_pos]))
-                if len(candidate_pairs) >= 50_000:
-                    break
-
-            uf = UnionFind(len(fiber_list))
-            for pair_number, (left, right) in enumerate(sorted(candidate_pairs), start=1):
-                if pair_number % 1000 == 0:
-                    # Let the strategy deadline and lease heartbeat run during large scans.
-                    await asyncio.sleep(0)
-                first = fiber_list[left]
-                second = fiber_list[right]
-                if first.metadata.get("_verbatim", False) != second.metadata.get(
-                    "_verbatim", False
-                ):
-                    continue
-                if any(
-                    fiber.metadata.get(marker)
-                    for fiber in (first, second)
-                    for marker in ("_habit_pattern", "_reasoning_pattern")
-                ):
-                    continue
-                if first.pinned or second.pinned:
-                    continue
-                union_size = len(first.neuron_ids | second.neuron_ids)
-                if union_size == 0:
-                    continue
-                jaccard = len(first.neuron_ids & second.neuron_ids) / union_size
-                if first.created_at and second.created_at:
-                    time_diff = abs((first.created_at - second.created_at).total_seconds())
-                else:
-                    time_diff = float("inf")
-                threshold = (
-                    self._config.merge_overlap_threshold * 0.6
-                    if time_diff < 3600
-                    else self._config.merge_overlap_threshold
-                )
-                if jaccard >= threshold:
-                    uf.union(left, right)
+                        pair_number += 1
+                        if pair_number % 1000 == 0:
+                            # Candidate groups are not durable until fully formed.
+                            # Never report a resumable pause here: that would restart
+                            # this entire scan and might never reach later postings.
+                            await asyncio.sleep(0)
+                            deadlines = [
+                                deadline
+                                for deadline in (self._strategy_deadline, self._total_deadline)
+                                if deadline is not None
+                            ]
+                            if self._progress_session is not None and (
+                                getattr(self._progress_session, "lease_lost", False)
+                                or (deadlines and min(deadlines) - time.perf_counter() <= 10.0)
+                            ):
+                                raise RuntimeError(
+                                    "merge candidate scan could not finish within its lease/time "
+                                    f"budget after {pair_number} pair checks (posting {neuron_id!r}); "
+                                    "no group was applied or marked complete; optimize or persist "
+                                    "a stable group plan before retrying"
+                                )
+                        left, right = indices_list[i_pos], indices_list[j_pos]
+                        first = fiber_list[left]
+                        second = fiber_list[right]
+                        if first.metadata.get("_verbatim", False) != second.metadata.get(
+                            "_verbatim", False
+                        ):
+                            continue
+                        if any(
+                            fiber.metadata.get(marker)
+                            for fiber in (first, second)
+                            for marker in ("_habit_pattern", "_reasoning_pattern")
+                        ):
+                            continue
+                        if first.pinned or second.pinned:
+                            continue
+                        union_size = len(first.neuron_ids | second.neuron_ids)
+                        if union_size == 0:
+                            continue
+                        jaccard = len(first.neuron_ids & second.neuron_ids) / union_size
+                        if first.created_at and second.created_at:
+                            time_diff = abs((first.created_at - second.created_at).total_seconds())
+                        else:
+                            time_diff = float("inf")
+                        threshold = (
+                            self._config.merge_overlap_threshold * 0.6
+                            if time_diff < 3600
+                            else self._config.merge_overlap_threshold
+                        )
+                        if jaccard >= threshold:
+                            uf.union(left, right)
 
             groups: list[list[Fiber]] = []
             for members in uf.groups().values():
