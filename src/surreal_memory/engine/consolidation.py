@@ -6531,12 +6531,11 @@ class ConsolidationEngine:
         reference_time: datetime,
         dry_run: bool,
     ) -> None:
-        """Calculate heat scores and update lifecycle_state for all neurons.
+        """Update lifecycle state across the complete frozen neuron census.
 
-        Lifecycle scans use a stable record-ID keyset on stores that expose it.
-        Durable progress is saved only after each neuron has been handled, so a
-        resumed scan starts strictly after the last committed neuron. The
-        supplied reference_time remains fixed across the scan and any resume.
+        A changed neuron is revalidated and checkpointed immediately after its
+        idempotent write. Unchanged spans checkpoint once per keyset page, so a
+        steady-state scan does not incur a write or a singleton read per neuron.
         """
         import logging as _logging
 
@@ -6567,7 +6566,6 @@ class ConsolidationEngine:
         has_keyset = supports_storage_methods(self._storage, ("find_neurons_after_id",))
         fetch_by_ids: Any = getattr(self._storage, "find_neurons_by_ids", None)
         offset = 0
-        scanned = 0
         pending: list[str] = list(strategy_state.get("pending") or [])
 
         prefetched_states: dict[str, Any] | None = None
@@ -6595,15 +6593,7 @@ class ConsolidationEngine:
                 }
             return await self._storage.get_neuron_states_batch([neuron.id for neuron in neurons])
 
-        async def _process(neuron: Neuron, state_map: dict[str, Any]) -> bool:
-            nonlocal states_updated
-            # Refresh the candidate before applying a decision based on a page
-            # that may have become stale while earlier records were processed.
-            if callable(fetch_by_ids) and not dry_run:
-                fresh = await fetch_by_ids([neuron.id], include_embedding=False)
-                if not fresh:
-                    return True
-                neuron = fresh[0]
+        def _desired_state(neuron: Neuron, state_map: dict[str, Any]) -> str:
             neuron_state = state_map.get(neuron.id)
             last_accessed_at: datetime | None = (
                 neuron_state.last_activated if neuron_state is not None else None
@@ -6618,51 +6608,84 @@ class ConsolidationEngine:
                 config=config,
             )
             age_days = (reference_time - neuron.created_at).total_seconds() / 86400.0
-            new_state = determine_lifecycle_state(age_days, heat, config)
-            current_state = str(neuron.metadata.get("lifecycle_state", "active"))
-            if current_state == str(new_state):
-                return True
+            return str(determine_lifecycle_state(age_days, heat, config))
+
+        async def _process(neuron: Neuron, state_map: dict[str, Any]) -> tuple[bool, bool]:
+            nonlocal states_updated
+            new_state = _desired_state(neuron, state_map)
+            if str(neuron.metadata.get("lifecycle_state", "active")) == new_state:
+                return True, False
             if dry_run:
                 states_updated += 1
-                return True
+                return True, False
+
+            # Only potential writes need a singleton refresh. Recompute the
+            # decision after refresh because the page may now be stale.
+            if callable(fetch_by_ids):
+                fresh = await fetch_by_ids([neuron.id], include_embedding=False)
+                if not fresh:
+                    return True, False
+                neuron = fresh[0]
+                if neuron.ephemeral or neuron.created_at > reference_time:
+                    return True, False
+                new_state = _desired_state(neuron, state_map)
+                if str(neuron.metadata.get("lifecycle_state", "active")) == new_state:
+                    return True, False
             try:
-                await self._storage.update_neuron_lifecycle(neuron.id, str(new_state))
+                await self._storage.update_neuron_lifecycle(neuron.id, new_state)
                 states_updated += 1
-                return True
+                return True, True
             except Exception:
                 _logger.error(
                     "Failed to update lifecycle_state for neuron %s", neuron.id, exc_info=True
                 )
-                return False
+                return False, False
+
+        async def _checkpoint() -> None:
+            if not dry_run:
+                await self._checkpoint_progress(
+                    "scan",
+                    cursor=str(cursor) if cursor is not None else None,
+                    pending=pending,
+                    counters={"lifecycle_states_updated": states_updated},
+                )
 
         try:
             if has_keyset:
-                # Failed updates from a previous attempt are revisited before the
-                # cursor scan; these IDs are explicit work, not offset progress.
+                # Pending failures are revisited before advancing the keyset.
+                # Keep unprocessed IDs durable at every successful write.
                 if pending:
                     if not callable(fetch_by_ids):
-                        pending_neurons = []
-                    else:
-                        pending_neurons = await fetch_by_ids(pending, include_embedding=False)
+                        raise RuntimeError("LIFECYCLE pending IDs require find_neurons_by_ids")
+                    pending_neurons = await fetch_by_ids(pending, include_embedding=False)
+                    pending_map = {neuron.id: neuron for neuron in pending_neurons}
                     state_map = await _states_for(pending_neurons)
-                    still_pending: list[str] = []
-                    for neuron in sorted(pending_neurons, key=lambda item: item.id):
-                        ok = await _process(neuron, state_map)
+                    previous_pending = pending
+                    pending = []
+                    for index, neuron_id in enumerate(previous_pending):
+                        neuron = pending_map.get(neuron_id)
+                        if neuron is None:
+                            continue  # Deleted since the previous run.
+                        ok, changed = await _process(neuron, state_map)
                         if not ok:
-                            still_pending.append(neuron.id)
-                        elif not dry_run:
-                            await self._checkpoint_progress(
-                                "scan",
-                                cursor=str(cursor) if cursor is not None else None,
-                                pending=still_pending,
-                                counters={"lifecycle_states_updated": states_updated},
-                            )
-                    pending = still_pending
+                            pending.append(neuron_id)
+                        if changed:
+                            remaining = previous_pending[index + 1 :]
+                            saved_pending = pending
+                            pending = pending + remaining
+                            await _checkpoint()
+                            pending = saved_pending
+                    await _checkpoint()
+                    if pending:
+                        raise ConsolidationPausedError(
+                            f"LIFECYCLE: {len(pending)} neuron update(s) failed; "
+                            "the saved pending IDs will be retried"
+                        )
 
-                while scanned < 10000:
+                while True:
                     batch = await keyset_fetch(
                         str(cursor) if cursor is not None else None,
-                        limit=min(batch_size, 10000 - scanned),
+                        limit=batch_size,
                         created_before=reference_time,
                         ephemeral=False,
                         include_embedding=False,
@@ -6671,25 +6694,24 @@ class ConsolidationEngine:
                         break
                     state_map = await _states_for(batch)
                     for neuron in batch:
-                        ok = await _process(neuron, state_map)
+                        ok, changed = await _process(neuron, state_map)
                         cursor = neuron.id
-                        scanned += 1
                         if not ok:
                             pending.append(neuron.id)
-                        if not dry_run:
-                            await self._checkpoint_progress(
-                                "scan",
-                                cursor=str(cursor),
-                                pending=pending,
-                                counters={"lifecycle_states_updated": states_updated},
-                            )
+                        if changed:
+                            await _checkpoint()
+                    await _checkpoint()
                     if len(batch) < batch_size:
                         break
+                if pending:
+                    raise ConsolidationPausedError(
+                        f"LIFECYCLE: {len(pending)} neuron update(s) failed; "
+                        "the saved pending IDs will be retried"
+                    )
             else:
-                # Legacy in-memory/test backends have no keyset API and cannot
-                # participate in durable resume; retain their existing paging.
-                neurons: list[Neuron] = []
-                while len(neurons) < 10000:
+                # Legacy backends lack durable keyset resume; process all pages
+                # without retaining a capped collection of neurons in memory.
+                while True:
                     batch = await self._storage.find_neurons(
                         limit=batch_size,
                         offset=offset,
@@ -6698,13 +6720,14 @@ class ConsolidationEngine:
                     )
                     if not batch:
                         break
-                    neurons.extend(batch)
+                    state_map = await _states_for(batch)
+                    for neuron in batch:
+                        await _process(neuron, state_map)
                     offset += len(batch)
                     if len(batch) < batch_size:
                         break
-                state_map = await _states_for(neurons)
-                for neuron in neurons:
-                    await _process(neuron, state_map)
+        except ConsolidationPausedError:
+            raise
         except Exception:
             _logger.error("LIFECYCLE failed to fetch or process neurons", exc_info=True)
             raise

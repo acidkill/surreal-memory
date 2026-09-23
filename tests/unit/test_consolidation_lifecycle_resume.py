@@ -161,3 +161,141 @@ async def test_lifecycle_dry_run_does_not_write_or_checkpoint() -> None:
     assert report.extra["lifecycle_states_updated"] == 1
     assert storage.updates == []
     assert progress.checkpoints == 0
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_scans_beyond_ten_thousand_without_singleton_reads_for_noops() -> None:
+    class CountingStorage(_Storage):
+        def __init__(self, neurons: list[Neuron]) -> None:
+            super().__init__(neurons)
+            self.singleton_reads = 0
+            self.pages = 0
+
+        async def find_neurons_after_id(
+            self,
+            cursor_id: str | None,
+            *,
+            limit: int,
+            created_before: datetime,
+            ephemeral: bool | None,
+            include_embedding: bool,
+        ) -> list[Neuron]:
+            self.pages += 1
+            return await super().find_neurons_after_id(
+                cursor_id,
+                limit=limit,
+                created_before=created_before,
+                ephemeral=ephemeral,
+                include_embedding=include_embedding,
+            )
+
+        async def find_neurons_by_ids(
+            self, neuron_ids: list[str], *, include_embedding: bool = False
+        ) -> list[Neuron]:
+            self.singleton_reads += 1
+            return await super().find_neurons_by_ids(
+                neuron_ids, include_embedding=include_embedding
+            )
+
+    storage = CountingStorage(
+        [_neuron(f"n-{i:05d}").with_metadata(lifecycle_state="archived") for i in range(10_001)]
+    )
+    progress = _Progress()
+    await _engine(storage, progress)._lifecycle(
+        ConsolidationReport(), REFERENCE_TIME, dry_run=False
+    )
+
+    assert progress.strategy_state("lifecycle")["cursor"] == "n-10000"
+    assert progress.checkpoints == 21
+    assert storage.singleton_reads == 0
+    assert storage.pages == 21
+    assert storage.updates == []
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_noop_pages_survive_two_restarts() -> None:
+    storage = _Storage(
+        [_neuron(f"n-{i:04d}").with_metadata(lifecycle_state="archived") for i in range(1_201)]
+    )
+    progress = _Progress(pause_after=1)
+    engine = _engine(storage, progress)
+
+    for checkpoint, expected_cursor in ((1, "n-0499"), (2, "n-0999")):
+        with pytest.raises(ConsolidationPausedError, match="test budget"):
+            await engine._lifecycle(ConsolidationReport(), REFERENCE_TIME, dry_run=False)
+        assert progress.checkpoints == checkpoint
+        assert progress.strategy_state("lifecycle")["cursor"] == expected_cursor
+        progress.pause_after = checkpoint + 1
+
+    progress.pause_after = None
+    await engine._lifecycle(ConsolidationReport(), REFERENCE_TIME, dry_run=False)
+    assert progress.strategy_state("lifecycle")["cursor"] == "n-1200"
+    assert progress.checkpoints == 3
+    assert storage.updates == []
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_failed_update_remains_pending_and_retries_once() -> None:
+    class FailingStorage(_Storage):
+        def __init__(self, neurons: list[Neuron]) -> None:
+            super().__init__(neurons)
+            self.fail_once = True
+
+        async def update_neuron_lifecycle(self, neuron_id: str, lifecycle_state: str) -> None:
+            if neuron_id == "n-1" and self.fail_once:
+                self.fail_once = False
+                raise OSError("temporary write failure")
+            await super().update_neuron_lifecycle(neuron_id, lifecycle_state)
+
+    storage = FailingStorage([_neuron("n-1"), _neuron("n-2")])
+    progress = _Progress()
+    engine = _engine(storage, progress)
+
+    with pytest.raises(ConsolidationPausedError, match="1 neuron update"):
+        await engine._lifecycle(ConsolidationReport(), REFERENCE_TIME, dry_run=False)
+
+    assert progress.strategy_state("lifecycle")["pending"] == ["n-1"]
+    assert progress.strategy_state("lifecycle")["cursor"] == "n-2"
+    assert storage.updates == [("n-2", "archived")]
+
+    report = ConsolidationReport()
+    await engine._lifecycle(report, REFERENCE_TIME, dry_run=False)
+
+    assert storage.updates == [("n-2", "archived"), ("n-1", "archived")]
+    assert progress.strategy_state("lifecycle")["pending"] == []
+    assert report.extra["lifecycle_states_updated"] == 2
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_write_before_failed_checkpoint_is_not_duplicated() -> None:
+    class FailingProgress(_Progress):
+        fail_before_save = True
+
+        async def checkpoint(
+            self,
+            strategy: str,
+            phase: str,
+            *,
+            cursor: str | None = None,
+            pending: list[str] | None = None,
+            counters: dict[str, int | float] | None = None,
+        ) -> None:
+            if self.fail_before_save:
+                self.fail_before_save = False
+                raise OSError("temporary checkpoint failure")
+            await super().checkpoint(
+                strategy, phase, cursor=cursor, pending=pending, counters=counters
+            )
+
+    storage = _Storage([_neuron("n-1")])
+    progress = FailingProgress()
+    engine = _engine(storage, progress)
+
+    with pytest.raises(OSError, match="temporary checkpoint"):
+        await engine._lifecycle(ConsolidationReport(), REFERENCE_TIME, dry_run=False)
+    assert storage.updates == [("n-1", "archived")]
+    assert progress.checkpoints == 0
+
+    await engine._lifecycle(ConsolidationReport(), REFERENCE_TIME, dry_run=False)
+    assert storage.updates == [("n-1", "archived")]
+    assert progress.strategy_state("lifecycle")["cursor"] == "n-1"
