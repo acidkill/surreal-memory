@@ -139,6 +139,28 @@ class TestQueryShapes:
         assert "source_id = " not in sql and "target_id = " not in sql
 
     @pytest.mark.asyncio
+    async def test_alias_pair_lookup_forces_source_index(self):
+        st, conn = _store_with_mock_conn()
+        await st.get_synapses(
+            source_id="duplicate-1", target_id="canonical-2", type=SynapseType.ALIAS, limit=1
+        )
+        found = _find_query(conn, "FROM synapse WITH INDEX idx_synapse_in WHERE")
+        assert found is not None
+        sql, params = found
+        assert "in = type::record('neuron', $source_id)" in sql
+        assert "out = type::record('neuron', $target_id)" in sql
+        assert "type = $stype" in sql
+        assert params["stype"] == "alias"
+
+    @pytest.mark.asyncio
+    async def test_alias_slice_lookup_keeps_default_index_selection(self):
+        st, conn = _store_with_mock_conn()
+        await st.get_synapses(type=SynapseType.ALIAS, limit=5000)
+        found = _find_query(conn, "FROM synapse WHERE")
+        assert found is not None
+        assert "WITH INDEX idx_synapse_in" not in found[0]
+
+    @pytest.mark.asyncio
     async def test_get_neighbors_inlines_endpoints_to_kill_n_plus_1(self):
         st, conn = _store_with_mock_conn()
         await st.get_neighbors("a", direction="out")

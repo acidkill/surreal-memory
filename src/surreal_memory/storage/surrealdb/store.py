@@ -2150,7 +2150,15 @@ class SurrealDBStorage(
             params["min_weight"] = min_weight
 
         where = " AND ".join(conditions)
-        query_str = f"SELECT * FROM synapse WHERE {where}"
+        # A pair lookup on a large alias slice can otherwise choose
+        # idx_synapse_type and scan every alias in the brain. The source index
+        # bounds the scan to one neuron's outgoing edges, including a miss.
+        index_hint = (
+            " WITH INDEX idx_synapse_in"
+            if source_id is not None and target_id is not None and type is SynapseType.ALIAS
+            else ""
+        )
+        query_str = f"SELECT * FROM synapse{index_hint} WHERE {where}"
         # A windowed read with no order returns an arbitrary subset, so paging it
         # could overlap or skip rows. Ordering by the primary key is what the
         # table is already stored by -- EXPLAIN shows the identical IndexScan
