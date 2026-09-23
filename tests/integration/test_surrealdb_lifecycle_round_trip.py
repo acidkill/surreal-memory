@@ -1,7 +1,7 @@
-"""Live SurrealDB lifecycle write/read contract in a disposable database.
+"""Live SurrealDB lifecycle contract, restricted to a loopback test server.
 
-Skipped unless SURREALDB_URL explicitly points to a test server. Never uses the
-user's configured Surreal-Memory database or credentials implicitly.
+An inherited production SURREALDB_URL must never make this test write to it.
+The database is unique per test and the namespace and credentials are fixed.
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ import os
 import uuid
 from dataclasses import replace
 from datetime import timedelta
+from urllib.parse import urlsplit
 
 import pytest
 import pytest_asyncio
@@ -21,9 +22,31 @@ from surreal_memory.storage.surrealdb.store import SurrealDBStorage
 from surreal_memory.utils.timeutils import utcnow
 
 SURREALDB_URL = os.getenv("SURREALDB_URL")
+TEST_AUTH = ("root", "root")  # Docker/CI's disposable server, never inherited credentials.
+
+
+def _is_loopback_test_url(url: str | None) -> bool:
+    if not url:
+        return False
+    try:
+        parsed = urlsplit(url)
+        return (
+            parsed.scheme in {"http", "https", "ws", "wss"}
+            and parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+            and parsed.username is None
+            and parsed.password is None
+            and parsed.port is not None
+        )
+    except ValueError:
+        return False
+
+
 pytestmark = [
     pytest.mark.integration,
-    pytest.mark.skipif(not SURREALDB_URL, reason="requires an explicit test SURREALDB_URL"),
+    pytest.mark.skipif(
+        not _is_loopback_test_url(SURREALDB_URL),
+        reason="requires a loopback SURREALDB_URL with explicit port",
+    ),
 ]
 
 
@@ -31,9 +54,9 @@ pytestmark = [
 async def store():
     storage = SurrealDBStorage(
         url=SURREALDB_URL,
-        user=os.getenv("SURREALDB_USER", "root"),
-        password=os.getenv("SURREALDB_PASS", "root"),
-        namespace=os.getenv("SURREALDB_NS", "smem_it"),
+        user=TEST_AUTH[0],
+        password=TEST_AUTH[1],
+        namespace="smem_ci",
         database="it_" + uuid.uuid4().hex[:12],
     )
     await storage.initialize()
