@@ -256,3 +256,40 @@ async def test_graph_only_replay_keeps_all_original_snapshots(
     assert (await store.get_neuron_snapshot(second.id))["original_content"] == (
         "A second original neuron."
     )
+
+
+@pytest.mark.asyncio
+async def test_compress_keyset_reaches_beyond_ten_thousand_fibers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = InMemoryStorage()
+    brain = Brain.create(name="keyset-over-10k")
+    await store.save_brain(brain)
+    store.set_brain(brain.id)
+    created = utcnow() - timedelta(days=1)
+    for index in range(10_050):
+        await store.add_fiber(
+            Fiber(
+                id=f"f-{index:05d}",
+                neuron_ids=set(),
+                synapse_ids=set(),
+                anchor_neuron_id="none",
+                created_at=created,
+            )
+        )
+
+    monkeypatch.setattr(
+        CompressionEngine,
+        "determine_target_tier",
+        lambda _self, _fiber, _now, *, heat_score: CompressionTier.FULL,
+    )
+    progress = _Progress()
+    progress.fail = False
+    engine = ConsolidationEngine(store, ConsolidationConfig())
+    engine._active_strategy = ConsolidationStrategy.COMPRESS
+    engine._progress_session = progress  # type: ignore[assignment]
+    await engine._compress(ConsolidationReport(), utcnow(), dry_run=False)
+
+    state = progress.strategy_state("compress")
+    assert state["cursor"] == "f-10049"
+    assert state["counters"]["fibers_compressed"] == 0

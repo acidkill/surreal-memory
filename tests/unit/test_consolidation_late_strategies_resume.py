@@ -73,6 +73,18 @@ class _CompressionStorage:
     async def get_fibers(self, *, limit: int) -> list[Any]:
         return self.fibers[:limit]
 
+    async def get_fibers_after_id(
+        self,
+        cursor_id: str | None,
+        *,
+        limit: int = 250,
+        created_before: datetime | None = None,
+    ) -> list[Any]:
+        return sorted(
+            (fiber for fiber in self.fibers if cursor_id is None or fiber.id > cursor_id),
+            key=lambda fiber: fiber.id,
+        )[:limit]
+
     async def get_brain(self, brain_id: str) -> object:
         assert brain_id == self.current_brain_id
         return object()

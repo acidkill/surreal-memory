@@ -13,7 +13,7 @@ import hashlib
 import json
 import logging
 import time
-from collections.abc import Awaitable, Callable, Iterable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Sequence
 from dataclasses import asdict, dataclass, field
 from dataclasses import replace as dc_replace
 from datetime import datetime
@@ -6107,7 +6107,7 @@ class ConsolidationEngine:
         engine = CompressionEngine(self._storage)
         start = _time.perf_counter()
         time_budget = self._config.strategy_timeout_seconds * 0.8
-        fibers = sorted(await self._storage.get_fibers(limit=10000), key=lambda item: str(item.id))
+        page_size = 250
 
         try:
             brain = await self._storage.get_brain(brain_id)
@@ -6130,9 +6130,25 @@ class ConsolidationEngine:
         cursor = self._strategy_resume_cursor() if not dry_run else None
         raw_run_id = self._progress_session.state.get("run_id") if self._progress_session else None
         run_id = str(raw_run_id) if raw_run_id else None
-        pending_fibers = [fiber for fiber in fibers if cursor is None or str(fiber.id) > cursor]
 
-        for index, fiber in enumerate(pending_fibers):
+        async def pending_fibers() -> AsyncIterator[tuple[Fiber, int]]:
+            page_cursor = cursor
+            while True:
+                await self._check_progress_budget()
+                page = await self._storage.get_fibers_after_id(
+                    page_cursor,
+                    limit=page_size,
+                    created_before=reference_time,
+                )
+                if not page:
+                    return
+                for index, fiber in enumerate(page):
+                    yield fiber, len(page) - index
+                page_cursor = str(page[-1].id)
+                if len(page) < page_size:
+                    return
+
+        async for fiber, remaining_on_page in pending_fibers():
             await self._check_progress_budget()
             fiber_cursor = str(fiber.id)
 
@@ -6192,11 +6208,11 @@ class ConsolidationEngine:
                 continue
 
             if _time.perf_counter() - start > time_budget:
-                report.extra["compress_fibers_deferred"] = len(pending_fibers) - index
+                report.extra["compress_fibers_deferred"] = remaining_on_page
                 report.fibers_compressed += total_compressed
                 report.tokens_saved += total_tokens_saved
                 raise ConsolidationPausedError(
-                    f"compression deferred {len(pending_fibers) - index} fibers "
+                    f"compression deferred at least {remaining_on_page} fibers "
                     "at its time budget; the last committed fiber checkpoint is retained"
                 )
 
