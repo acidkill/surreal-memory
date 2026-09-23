@@ -1,6 +1,7 @@
 """Live SurrealDB lifecycle contract, restricted to a loopback test server.
 
-An inherited production SURREALDB_URL must never make this test write to it.
+An inherited production SURREALDB_URL must never make this test write to it;
+only the explicit SMEM_TEST_SURREALDB_URL opt-in enables it.
 The database is unique per test and the namespace and credentials are fixed.
 """
 
@@ -21,7 +22,7 @@ from surreal_memory.engine.consolidation import ConsolidationEngine, Consolidati
 from surreal_memory.storage.surrealdb.store import SurrealDBStorage
 from surreal_memory.utils.timeutils import utcnow
 
-SURREALDB_URL = os.getenv("SURREALDB_URL")
+TEST_SURREALDB_URL = os.getenv("SMEM_TEST_SURREALDB_URL")
 TEST_AUTH = ("root", "root")  # Docker/CI's disposable server, never inherited credentials.
 
 
@@ -44,8 +45,8 @@ def _is_loopback_test_url(url: str | None) -> bool:
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(
-        not _is_loopback_test_url(SURREALDB_URL),
-        reason="requires a loopback SURREALDB_URL with explicit port",
+        not _is_loopback_test_url(TEST_SURREALDB_URL),
+        reason="requires an explicit loopback SMEM_TEST_SURREALDB_URL with port",
     ),
 ]
 
@@ -53,7 +54,7 @@ pytestmark = [
 @pytest_asyncio.fixture
 async def store():
     storage = SurrealDBStorage(
-        url=SURREALDB_URL,
+        url=TEST_SURREALDB_URL,
         user=TEST_AUTH[0],
         password=TEST_AUTH[1],
         namespace="smem_ci",
