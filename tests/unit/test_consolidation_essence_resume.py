@@ -66,8 +66,24 @@ class _Storage:
         self.fail_after_write = fail_after_write
 
     async def get_fibers(self, *, limit: int) -> list[Fiber]:
-        # Match the real API's bounded result shape; engine applies stable ID order.
         return list(self.fibers.values())[:limit]
+
+    async def get_fibers_after_id(
+        self,
+        cursor_id: str | None,
+        *,
+        limit: int = 250,
+        created_before: datetime | None = None,
+    ) -> list[Fiber]:
+        return [
+            fiber
+            for fiber in sorted(self.fibers.values(), key=lambda item: item.id)
+            if (cursor_id is None or fiber.id > cursor_id)
+            and (created_before is None or fiber.created_at <= created_before)
+        ][:limit]
+
+    async def get_fiber(self, fiber_id: str) -> Fiber | None:
+        return self.fibers.get(fiber_id)
 
     async def get_neuron(self, neuron_id: str) -> SimpleNamespace:
         return SimpleNamespace(id=neuron_id, content=f"content for {neuron_id}")
@@ -215,3 +231,30 @@ async def test_pending_result_replay_skips_write_when_db_applied_before_crash(
     assert storage.writes == ["fiber-a"]
     assert report.essences_generated == 1
     assert progress.strategy_state("essence_backfill")["pending"] == []
+
+
+@pytest.mark.asyncio
+async def test_backfill_reaches_fiber_beyond_ten_thousand_and_resumes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from surreal_memory.engine import fidelity
+
+    fibers = [_fiber(f"fiber-{index:05d}").with_essence("existing") for index in range(10005)]
+    fibers[-1] = _fiber("fiber-10004")
+    storage = _Storage(fibers)
+    progress = _Progress(pause_phase="essence_scan", pause_cursor="fiber-05000")
+    generator = _Generator()
+    monkeypatch.setattr(fidelity, "get_essence_generator", lambda _strategy: generator)
+    engine = _engine(storage, progress)
+
+    with pytest.raises(ConsolidationPausedError, match="simulated interruption"):
+        await engine._essence_backfill(ConsolidationReport(), dry_run=False)
+    assert generator.calls == 0
+    assert progress.strategy_state("essence_backfill")["cursor"] == "fiber-05000"
+
+    report = ConsolidationReport()
+    await engine._essence_backfill(report, dry_run=False)
+    assert generator.calls == 1
+    assert storage.writes == ["fiber-10004"]
+    assert report.essences_generated == 1
+    assert progress.strategy_state("essence_backfill")["phase"] == "essence_complete"

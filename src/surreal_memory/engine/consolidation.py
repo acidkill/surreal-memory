@@ -2573,8 +2573,10 @@ class ConsolidationEngine:
                 pending_ids = list(descriptor["source_ids"])
             await _finish_unit(descriptor, phase, pending_ids)
 
-        fibers = await self._storage.get_fibers(limit=10000)
-        groups = await _candidate_groups(list(fibers))
+        fibers = await self._all_fibers_paged(
+            created_before=getattr(self._progress_session, "reference_time", None)
+        )
+        groups = await _candidate_groups(fibers)
         for member_fibers in groups:
             if dry_run:
                 source_ids = sorted(fiber.id for fiber in member_fibers)
@@ -2620,6 +2622,35 @@ class ConsolidationEngine:
         except Exception:
             # Config is optional here: consolidation must still run on a bare install.
             return ConsolidationConfig()
+
+    async def _all_fibers_paged(self, *, created_before: datetime | None = None) -> list[Fiber]:
+        """Build a complete fiber census through bounded keyset reads.
+
+        Group-based strategies need all members at once, but no single storage
+        query may silently truncate the brain at a fixed top-N threshold.
+        """
+        get_page = getattr(self._storage, "get_fibers_after_id", None)
+        if get_page is None or not hasattr(type(self._storage), "get_fibers_after_id"):
+            # Legacy/mock storage adapters expose only the bounded list API.
+            # They must fail visibly if they hit its ceiling.
+            legacy_fibers = await self._storage.get_fibers(limit=10000)
+            if len(legacy_fibers) >= 10000:
+                raise RuntimeError("fiber census requires get_fibers_after_id for 10000+ fibers")
+            return list(legacy_fibers)
+        fibers: list[Fiber] = []
+        cursor: str | None = None
+        while True:
+            await self._check_progress_budget()
+            page = await get_page(cursor, limit=500, created_before=created_before)
+            if not page:
+                return fibers
+            if cursor is not None and page[0].id <= cursor:
+                raise RuntimeError("fiber keyset page did not advance")
+            fibers.extend(page)
+            cursor = page[-1].id
+            if len(page) < 500:
+                return fibers
+            await asyncio.sleep(0)
 
     async def _all_synapses_paged(self) -> list[Synapse]:
         """Every synapse in the brain, fetched in pages instead of one giant read.
@@ -2803,7 +2834,9 @@ class ConsolidationEngine:
         """
         import json
 
-        fibers = await self._storage.get_fibers(limit=10000)
+        fibers = await self._all_fibers_paged(
+            created_before=getattr(self._progress_session, "reference_time", None)
+        )
         if len(fibers) < self._config.summarize_min_cluster_size:
             return
 
@@ -3297,7 +3330,9 @@ class ConsolidationEngine:
             )
 
         async def pattern_source_fingerprint() -> str:
-            source_fibers = await self._storage.get_fibers(limit=10000)
+            source_fibers = await self._all_fibers_paged(
+                created_before=getattr(self._progress_session, "reference_time", None)
+            )
             source_maturations = await self._storage.find_maturations()
             payload = {
                 "fibers": [
@@ -3599,7 +3634,9 @@ class ConsolidationEngine:
 
         maturations = await self._storage.find_maturations()
         maturation_map = {m.fiber_id: m for m in maturations}
-        fibers = await self._storage.get_fibers(limit=10000)
+        fibers = await self._all_fibers_paged(
+            created_before=getattr(self._progress_session, "reference_time", None)
+        )
         patterns, extraction_report = extract_patterns(
             fibers=fibers,
             maturations=maturation_map,
@@ -3768,18 +3805,13 @@ class ConsolidationEngine:
 
         generator = get_essence_generator(strategy)
 
-        max_backfill = 2000  # Safety cap to avoid runaway
-
-        # Keep the legacy adapter path simple: non-SurrealDB backends and dry
-        # runs do not write progress state. Dry-run must never mutate storage.
+        # Dry runs and legacy adapters do not mutate progress state.
         if self._progress_session is None or dry_run:
-            fibers = await self._storage.get_fibers(limit=1000)
+            fibers = await self._all_fibers_paged()
             candidates = [fiber for fiber in fibers if not fiber.essence]
 
             backfilled = 0
             for idx, fiber in enumerate(candidates):
-                if backfilled >= max_backfill:
-                    break
                 if idx % 50 == 0 and idx > 0:
                     await asyncio.sleep(0)
 
@@ -3816,15 +3848,6 @@ class ConsolidationEngine:
             report.essences_generated += backfilled
             return
 
-        # get_fibers is bounded by the storage API; sorting the returned window
-        # by the immutable fiber ID gives this strategy a stable work-unit order.
-        fibers = await self._storage.get_fibers(limit=1000)
-        fibers_by_id = {fiber.id: fiber for fiber in fibers}
-        candidates = sorted(
-            (fiber for fiber in fibers if not fiber.essence),
-            key=lambda fiber: fiber.id,
-        )
-
         state = self._strategy_progress_state()
         cursor_value = state.get("cursor")
         cursor = str(cursor_value) if cursor_value is not None else None
@@ -3847,14 +3870,9 @@ class ConsolidationEngine:
                 raise RuntimeError("invalid essence-backfill pending result") from exc
 
             await self._check_progress_budget()
-            pending_fiber = fibers_by_id.get(pending_fiber_id)
+            pending_fiber = await self._storage.get_fiber(pending_fiber_id)
             if pending_fiber is None:
-                # Do not discard a generated result if its fiber has fallen
-                # outside the storage window; the caller can safely retry after
-                # the storage view is corrected.
-                raise RuntimeError(
-                    f"pending essence fiber {pending_fiber_id!r} is not in the current fiber window"
-                )
+                raise RuntimeError(f"pending essence fiber {pending_fiber_id!r} is missing")
 
             # update_fiber writes the same value for this stable ID and essence.
             # If the previous process applied it before crashing, skip the write.
@@ -3870,17 +3888,89 @@ class ConsolidationEngine:
                 counters=counters,
             )
 
-        for idx, fiber in enumerate(candidates):
-            if backfilled >= max_backfill:
-                break
-            if cursor is not None and fiber.id <= cursor:
-                continue
-            if idx % 50 == 0 and idx > 0:
-                await asyncio.sleep(0)
+        page_cursor = cursor
+        page_size = 250
+        while True:
             await self._check_progress_budget()
+            get_page = getattr(self._storage, "get_fibers_after_id", None)
+            if get_page is None or not hasattr(type(self._storage), "get_fibers_after_id"):
+                legacy = await self._all_fibers_paged()
+                page = [
+                    fiber
+                    for fiber in sorted(legacy, key=lambda f: f.id)
+                    if page_cursor is None or fiber.id > page_cursor
+                ][:page_size]
+            else:
+                page = await get_page(
+                    page_cursor,
+                    limit=page_size,
+                    created_before=getattr(self._progress_session, "reference_time", None),
+                )
+            if not page:
+                break
+            if page_cursor is not None and page[0].id <= page_cursor:
+                raise RuntimeError("essence fiber keyset page did not advance")
+            for fiber in page:
+                await self._check_progress_budget()
+                if fiber.essence:
+                    cursor = fiber.id
+                    await self._checkpoint_progress(
+                        "essence_scan",
+                        cursor=cursor,
+                        pending=[],
+                        counters={"essences_generated": backfilled},
+                    )
+                    continue
 
-            anchor = await self._storage.get_neuron(fiber.anchor_neuron_id)
-            if not anchor or not anchor.content:
+                anchor = await self._storage.get_neuron(fiber.anchor_neuron_id)
+                if not anchor or not anchor.content:
+                    cursor = fiber.id
+                    await self._checkpoint_progress(
+                        "essence_scan",
+                        cursor=cursor,
+                        pending=[],
+                        counters={"essences_generated": backfilled},
+                    )
+                    continue
+
+                # Get priority from typed memory for cost guard
+                priority = 5
+                try:
+                    typed_mem = await self._storage.get_typed_memory(fiber.id)
+                    if (
+                        typed_mem
+                        and hasattr(typed_mem, "priority")
+                        and isinstance(typed_mem.priority, (int, float))
+                    ):
+                        priority = int(typed_mem.priority)
+                except Exception:
+                    pass
+
+                # If the process dies before this checkpoint, the external LLM call
+                # may repeat on resume; after it succeeds, resume uses the saved text.
+                essence = await generator.generate(anchor.content, priority=priority)
+                if essence:
+                    result = json.dumps(
+                        {"fiber_id": fiber.id, "essence": essence},
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                    await self._checkpoint_progress(
+                        "essence_pending",
+                        cursor=cursor,
+                        pending=[result],
+                        counters={"essences_generated": backfilled},
+                    )
+                    # A crash between this write and the committed checkpoint is
+                    # replay-safe: resume observes the saved text and avoids a
+                    # duplicate write when the fiber already contains that essence.
+                    current_fiber = fiber
+                    if not current_fiber.essence:
+                        await self._storage.update_fiber(current_fiber.with_essence(essence))
+                    backfilled += 1
+
+                # Every fiber is a committed work unit, including skips and empty
+                # generator results, so the cursor can resume at the next stable ID.
                 cursor = fiber.id
                 await self._checkpoint_progress(
                     "essence_scan",
@@ -3888,53 +3978,10 @@ class ConsolidationEngine:
                     pending=[],
                     counters={"essences_generated": backfilled},
                 )
-                continue
 
-            # Get priority from typed memory for cost guard
-            priority = 5
-            try:
-                typed_mem = await self._storage.get_typed_memory(fiber.id)
-                if (
-                    typed_mem
-                    and hasattr(typed_mem, "priority")
-                    and isinstance(typed_mem.priority, (int, float))
-                ):
-                    priority = int(typed_mem.priority)
-            except Exception:
-                pass
-
-            # If the process dies before this checkpoint, the external LLM call
-            # may repeat on resume; after it succeeds, resume uses the saved text.
-            essence = await generator.generate(anchor.content, priority=priority)
-            if essence:
-                result = json.dumps(
-                    {"fiber_id": fiber.id, "essence": essence},
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
-                await self._checkpoint_progress(
-                    "essence_pending",
-                    cursor=cursor,
-                    pending=[result],
-                    counters={"essences_generated": backfilled},
-                )
-                # A crash between this write and the committed checkpoint is
-                # replay-safe: resume observes the saved text and avoids a
-                # duplicate write when the fiber already contains that essence.
-                current_fiber = fibers_by_id[fiber.id]
-                if not current_fiber.essence:
-                    await self._storage.update_fiber(current_fiber.with_essence(essence))
-                backfilled += 1
-
-            # Every fiber is a committed work unit, including skips and empty
-            # generator results, so the cursor can resume at the next stable ID.
-            cursor = fiber.id
-            await self._checkpoint_progress(
-                "essence_scan",
-                cursor=cursor,
-                pending=[],
-                counters={"essences_generated": backfilled},
-            )
+            page_cursor = page[-1].id
+            if len(page) < page_size:
+                break
 
         await self._checkpoint_progress(
             "essence_complete",
@@ -4252,7 +4299,9 @@ class ConsolidationEngine:
             }
             neurons = await self._storage.get_neurons_batch(sorted(neuron_ids))
             content_map = {neuron_id: neuron.content for neuron_id, neuron in neurons.items()}
-            fibers = sorted(await self._storage.get_fibers(limit=10000), key=lambda f: f.id)
+            fibers = await self._all_fibers_paged(
+                created_before=getattr(self._progress_session, "reference_time", None)
+            )
             existing_tags: set[str] = set()
             for fiber in fibers:
                 existing_tags |= fiber.tags
@@ -4353,7 +4402,9 @@ class ConsolidationEngine:
         async def source_fingerprint(excluded_ids: set[str]) -> str:
             causal = await self._storage.get_synapses(type=SynapseType.CAUSED_BY)
             related = await self._storage.get_synapses_paged(type=SynapseType.RELATED_TO)
-            fibers = await self._storage.get_fibers(limit=10000)
+            fibers = await self._all_fibers_paged(
+                created_before=getattr(self._progress_session, "reference_time", None)
+            )
             payload = {
                 "causal": [
                     encode_synapse(item)
