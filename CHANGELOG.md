@@ -5,6 +5,78 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.11.0] — 2026-09-23 — recall reaches the right memories and checks its work
+
+Recall now searches beyond the first page of neurons, ranks lexical anchors by
+relevance, and can retrieve fibers directly through an optional vector index.
+The release also repairs snapshot fidelity, makes automatic capture and expiry
+defaults match their names, and adds a sampled CLI check of retrieval itself.
+
+### Added
+
+- Indexed semantic anchors search the full brain instead of scoring only the
+  first 1,000 neurons in Python. `embedding_anchor_mode` selects `auto` (the
+  default), `knn`, or `scan`; the result metadata reports the selected path and
+  any fallback reason. SurrealDB and the in-memory backend expose comparable
+  cosine similarity, and unusable vector distances are rejected.
+- An optional fiber-vector retriever joins the other anchor sources. It is off
+  by default (`fiber_vector_enabled = false`); existing fibers need
+  `scripts/backfill_fiber_vectors.py --brain <name> --apply` before they can
+  participate. The query embedding is reused rather than computed twice.
+- `smem brain recall-check --sample-size N` probes a random sample of stored
+  fiber summaries through ordinary recall and reports how often the sampled
+  fibers are returned. It scans at most 1,000 fibers and probes at most 100;
+  this is a diagnostic, not a guarantee of answer quality.
+
+### Changed
+
+- Keyword anchors use the full-text index's BM25 score instead of record-id
+  order. `keyword_anchor_min_content_len` defaults to 25 characters and can
+  be set to 0 to disable the length gate.
+- Never-recalled fibers derive recency from `created_at` when
+  `last_conducted` is absent. Explicit `priority` from MCP or
+  `smem remember --priority` reaches fiber ranking; default priority remains
+  neutral, and machine-derived auto-priority remains inert by default.
+- Answer confidence receives a proportional discount when neither a neuron
+  embedding nor a fiber-vector anchor grounds the match. The intersection
+  contribution is capped so keyword-only intersections cannot overwhelm the
+  discount. This changes confidence values for some existing queries.
+- `write_gate.auto_capture_mode = "off"` now stops automatic writes from the
+  stop hook, pre-compact hook, and passive MCP capture. Use `"ungated"` for
+  explicitly ungated automatic capture; an inherited `mode = "off"` retains
+  its prior ungated behavior.
+- Newly auto-classified DECISION, ERROR, TOOL, and PREDICTION memories have no
+  implicit expiry. TODO, INSIGHT, and WORKFLOW retain finite defaults, and an
+  explicitly requested expiry still wins. Existing stored expiry timestamps
+  are not rewritten.
+- Neuron-state batch reads switch from bounded per-record reads to the set
+  query at 64 ids and accept both public and stored id spellings on either
+  side of that threshold.
+
+### Fixed
+
+- Brain export/import now round-trips all persisted fiber fields, including
+  summaries, tags, timing, frequency, metadata, and the separately stored
+  `fiber_vec`. Older seven-field snapshots still import with defaults; a
+  failed vector restoration makes the import fail visibly.
+- Public `Fiber.id` values again round-trip with their original dashed form.
+  Maturation lookups use the same public form while retaining compatibility
+  with older folded ids.
+- Integration coverage pins the neuron-to-fiber lookup to
+  `idx_fiber_neurons` and checks the neuron-state plans on both sides of the
+  batch threshold.
+
+### Compatibility and rollout
+
+- Run a database backup before importing a snapshot. To use the optional
+  fiber-vector retriever on an existing brain, backfill vectors for that brain
+  and then enable `fiber_vector_enabled`; merely enabling it on an unfilled
+  brain leaves that retrieval source empty.
+- `smem brain health` remains a freshness and hygiene report. Use
+  `smem brain recall-check` for sampled retrieval diagnostics.
+- New auto-capture and expiry semantics apply on new writes as described
+  above. Stored memories are not retroactively changed by the upgrade.
+
 ## [3.10.0] — 2026-09-13 — reusable strategy quality becomes an injection gate
 
 Reasoning-pattern confidence measures how strongly a trace cluster supports a

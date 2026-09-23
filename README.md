@@ -19,6 +19,27 @@ Restart your AI tool. Your agent now remembers.
 
 ---
 
+## What's new in 3.11.0
+
+- Recall can use BM25-ranked keyword anchors and indexed semantic anchors across
+  the whole brain. An optional fiber-vector retriever can also surface a fiber
+  whose neurons did not win an anchor search; existing fibers need a deliberate
+  vector backfill before enabling it.
+- Creation age and an explicitly requested priority now affect recall ranking.
+  Confidence is reduced when no embedding or fiber-vector anchor grounds a
+  match, even if keyword anchors are present.
+- Brain snapshots retain the persisted fiber fields and stored fiber vectors.
+  `smem brain recall-check` samples stored summaries through normal recall to
+  report self-recall separately from the health score.
+- `auto_capture_mode = "off"` now disables automatic writes. Auto-classified
+  decisions, errors, tools, and predictions no longer receive an implicit
+  expiry; explicit expiry settings still apply.
+
+See [CHANGELOG.md](CHANGELOG.md) for migration details and the complete list of
+changes.
+
+---
+
 ## Why Surreal-Memory?
 
 Most AI memory tools are vector databases with a search API bolted on. Surreal-Memory is a **graph that thinks** — memories are stored as interconnected neurons and recalled through spreading activation, backed by SurrealDB's multi-model engine (document + graph + vector in one database).
