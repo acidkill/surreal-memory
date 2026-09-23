@@ -18,6 +18,7 @@ Frozen memories (frozen=True) are never compressed.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 import re
@@ -557,6 +558,7 @@ class CompressionEngine:
         *,
         dry_run: bool = False,
         brain: Brain | None = None,
+        run_id: str | None = None,
     ) -> CompressionResult:
         """Compress a single fiber to *target_tier*.
 
@@ -572,6 +574,18 @@ class CompressionEngine:
         Returns:
             A CompressionResult describing what happened.
         """
+        if not dry_run:
+            # The caller may hold an earlier snapshot after a failed write.
+            current_fiber = await self._storage.get_fiber(fiber.id)
+            if current_fiber is None:
+                raise RuntimeError(f"Cannot read fiber {fiber.id} before compression")
+            fiber = current_fiber
+            pending = fiber.metadata.get("_compression_pending")
+            if pending is not None:
+                if not isinstance(pending, dict):
+                    raise ValueError(f"Invalid compression intent for fiber {fiber.id}")
+                return await self._resume_prepared_fiber(fiber, pending, brain=brain)
+
         current_tier = CompressionTier(fiber.compression_tier)
 
         if target_tier <= current_tier:
@@ -745,6 +759,33 @@ class CompressionEngine:
                         )
                         raise
 
+        # Prepare the exact result durably before touching a neuron. If a later
+        # neuron/fiber write fails, replay uses this result instead of compressing
+        # the already-modified anchor or replacing its pre-compression backup.
+        from dataclasses import replace as dc_replace
+
+        intent: dict[str, Any] = {
+            "version": 1,
+            "run_id": run_id,
+            "target_tier": int(target_tier),
+            "original_tier": fiber.compression_tier,
+            "anchor_id": fiber.anchor_neuron_id,
+            "compressed_content": compressed_content,
+            "original_token_count": original_token_count,
+            "compressed_token_count": compressed_token_count,
+            "entities_preserved": entities_preserved,
+            "backup_created": backup_created,
+            "source_hashes": [
+                {
+                    "id": neuron_id,
+                    "hash": hashlib.sha256(neuron.content.encode("utf-8")).hexdigest(),
+                }
+                for neuron_id, neuron in neurons.items()
+            ],
+        }
+        fiber = dc_replace(fiber, metadata={**fiber.metadata, "_compression_pending": intent})
+        await self._storage.update_fiber(fiber)
+
         # Apply compression: update each neuron's content if tier < GRAPH_ONLY,
         # or clear all content for GRAPH_ONLY.
         if target_tier == CompressionTier.GRAPH_ONLY:
@@ -814,7 +855,20 @@ class CompressionEngine:
         # Update fiber's compression_tier in storage.
         from dataclasses import replace as dc_replace
 
-        updated_fiber = dc_replace(fiber, compression_tier=int(target_tier))
+        completed_metadata = {
+            k: v for k, v in fiber.metadata.items() if k != "_compression_pending"
+        }
+        if run_id:
+            completed_metadata["_compression_receipt"] = {
+                "run_id": run_id,
+                "target_tier": int(target_tier),
+                "tokens_saved": max(0, original_token_count - compressed_token_count),
+            }
+        updated_fiber = dc_replace(
+            fiber,
+            compression_tier=int(target_tier),
+            metadata=completed_metadata,
+        )
         try:
             await self._storage.update_fiber(updated_fiber)
         except Exception:
@@ -829,6 +883,103 @@ class CompressionEngine:
             compressed_token_count=compressed_token_count,
             entities_preserved=entities_preserved,
             backup_created=backup_created,
+        )
+
+    async def _resume_prepared_fiber(
+        self,
+        fiber: Fiber,
+        intent: dict[str, Any],
+        *,
+        brain: Brain | None,
+    ) -> CompressionResult:
+        """Finish an already prepared compression without regenerating its output."""
+        from dataclasses import replace as dc_replace
+
+        if intent.get("version") != 1 or intent.get("anchor_id") != fiber.anchor_neuron_id:
+            raise ValueError(f"Invalid compression intent for fiber {fiber.id}")
+        try:
+            target_tier = CompressionTier(int(intent["target_tier"]))
+            compressed_content = str(intent["compressed_content"])
+            sources = intent["source_hashes"]
+            if not isinstance(sources, list):
+                raise ValueError("missing neuron sources")
+            hashes = {str(item["id"]): str(item["hash"]) for item in sources}
+            if len(hashes) != len(sources) or set(hashes) != fiber.neuron_ids:
+                raise ValueError("neuron set changed")
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid compression intent for fiber {fiber.id}") from exc
+
+        neurons = await self._storage.get_neurons_batch(list(hashes))
+        if set(neurons) != set(hashes):
+            raise RuntimeError(f"Neuron missing during compression replay for fiber {fiber.id}")
+
+        # Check every neuron before changing any: an external edit must not be
+        # overwritten by a stale intent. The only accepted states are the
+        # prepared source or this intent's already-applied target.
+        to_refresh: list[tuple[Neuron, str]] = []
+        to_stamp: list[Neuron] = []
+        for neuron_id, neuron in neurons.items():
+            current_hash = hashlib.sha256(neuron.content.encode("utf-8")).hexdigest()
+            if target_tier != CompressionTier.GRAPH_ONLY and neuron_id != fiber.anchor_neuron_id:
+                if current_hash != hashes[neuron_id]:
+                    raise RuntimeError(
+                        f"Neuron {neuron_id} changed during compression replay for fiber {fiber.id}"
+                    )
+                continue
+            expected = (
+                GRAPH_ONLY_PLACEHOLDER
+                if target_tier == CompressionTier.GRAPH_ONLY
+                else compressed_content
+            )
+            if neuron.content == expected:
+                if target_tier == CompressionTier.GRAPH_ONLY and neuron.content_hash != 0:
+                    to_stamp.append(dc_replace(neuron, content_hash=0))
+                continue
+            if current_hash != hashes[neuron_id]:
+                raise RuntimeError(
+                    f"Neuron {neuron_id} changed during compression replay for fiber {fiber.id}"
+                )
+            if target_tier == CompressionTier.GRAPH_ONLY or neuron_id == fiber.anchor_neuron_id:
+                to_refresh.append((neuron, expected))
+
+        if to_refresh:
+            refreshed = await contents_refreshed(self._storage, to_refresh, brain=brain)
+            for neuron in refreshed:
+                updated = (
+                    dc_replace(neuron, content_hash=0)
+                    if target_tier == CompressionTier.GRAPH_ONLY
+                    else neuron
+                )
+                await self._storage.update_neuron(updated)
+        for neuron in to_stamp:
+            await self._storage.update_neuron(neuron)
+
+        # Tier, intent removal and receipt share one fiber-row write. A
+        # checkpoint failure can then recover the committed result by run_id.
+        completed_metadata = {
+            k: v for k, v in fiber.metadata.items() if k != "_compression_pending"
+        }
+        run_id = intent.get("run_id")
+        if isinstance(run_id, str) and run_id:
+            completed_metadata["_compression_receipt"] = {
+                "run_id": run_id,
+                "target_tier": int(target_tier),
+                "tokens_saved": max(
+                    0,
+                    int(intent["original_token_count"]) - int(intent["compressed_token_count"]),
+                ),
+            }
+        await self._storage.update_fiber(
+            dc_replace(fiber, compression_tier=int(target_tier), metadata=completed_metadata)
+        )
+        return CompressionResult(
+            fiber_id=fiber.id,
+            original_tier=int(intent["original_tier"]),
+            new_tier=int(target_tier),
+            original_token_count=int(intent["original_token_count"]),
+            compressed_token_count=int(intent["compressed_token_count"]),
+            entities_preserved=int(intent["entities_preserved"]),
+            backup_created=bool(intent["backup_created"]),
         )
 
     async def decompress_fiber(self, fiber_id: str) -> bool:

@@ -6128,13 +6128,35 @@ class ConsolidationEngine:
             int(raw_tokens_saved) if isinstance(raw_tokens_saved, (int, float)) else 0
         )
         cursor = self._strategy_resume_cursor() if not dry_run else None
+        raw_run_id = self._progress_session.state.get("run_id") if self._progress_session else None
+        run_id = str(raw_run_id) if raw_run_id else None
         pending_fibers = [fiber for fiber in fibers if cursor is None or str(fiber.id) > cursor]
 
         for index, fiber in enumerate(pending_fibers):
             await self._check_progress_budget()
             fiber_cursor = str(fiber.id)
 
-            if fiber.pinned or fiber.metadata.get("_verbatim"):
+            pending = fiber.metadata.get("_compression_pending") if not dry_run else None
+            receipt = fiber.metadata.get("_compression_receipt") if not dry_run else None
+            if (
+                pending is None
+                and run_id
+                and isinstance(receipt, dict)
+                and receipt.get("run_id") == run_id
+                and receipt.get("target_tier") == fiber.compression_tier
+            ):
+                total_compressed += 1
+                total_tokens_saved += int(receipt["tokens_saved"])
+                await self._checkpoint_progress(
+                    "compress_fibers",
+                    cursor=fiber_cursor,
+                    counters={
+                        "fibers_compressed": total_compressed,
+                        "tokens_saved": total_tokens_saved,
+                    },
+                )
+                continue
+            if (fiber.pinned or fiber.metadata.get("_verbatim")) and pending is None:
                 if not dry_run:
                     await self._checkpoint_progress(
                         "compress_fibers",
@@ -6148,12 +6170,16 @@ class ConsolidationEngine:
 
             arousal = fiber.metadata.get("_arousal", 0.0) if fiber.metadata else 0.0
             arousal_heat = float(arousal) * 0.3 if isinstance(arousal, (int, float)) else 0.0
-            target_tier = engine.determine_target_tier(
-                fiber,
-                reference_time,
-                heat_score=arousal_heat,
+            target_tier = (
+                CompressionTier(int(pending["target_tier"]))
+                if isinstance(pending, dict)
+                else engine.determine_target_tier(
+                    fiber,
+                    reference_time,
+                    heat_score=arousal_heat,
+                )
             )
-            if int(target_tier) <= fiber.compression_tier:
+            if pending is None and int(target_tier) <= fiber.compression_tier:
                 if not dry_run:
                     await self._checkpoint_progress(
                         "compress_fibers",
@@ -6180,6 +6206,7 @@ class ConsolidationEngine:
                     CompressionTier(target_tier),
                     dry_run=dry_run,
                     brain=brain,
+                    **({"run_id": run_id} if run_id else {}),
                 )
             except Exception:
                 _logger.error("Compression failed for fiber %s", fiber.id, exc_info=True)
