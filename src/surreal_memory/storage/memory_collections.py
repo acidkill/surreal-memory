@@ -183,6 +183,26 @@ class InMemoryCollectionsMixin:
         fibers.sort(key=sort_keys[order_by], reverse=descending)
         return fibers[:limit]
 
+    async def get_fibers_after_id(
+        self,
+        cursor_id: str | None,
+        *,
+        limit: int = 250,
+        created_before: datetime | None = None,
+    ) -> list[Fiber]:
+        """Return one bounded fiber page without a global top-N ceiling."""
+        brain_id = self._get_brain_id()
+        cursor = cursor_id.rsplit(":", 1)[-1] if cursor_id is not None else None
+        fibers = (
+            fiber
+            for fiber in self._fibers[brain_id].values()
+            if (cursor is None or fiber.id.rsplit(":", 1)[-1] > cursor)
+            and (created_before is None or fiber.created_at <= created_before)
+        )
+        return sorted(fibers, key=lambda fiber: fiber.id.rsplit(":", 1)[-1])[
+            : min(max(int(limit), 1), 2000)
+        ]
+
     # ========== TypedMemory Operations ==========
 
     async def add_typed_memory(self, typed_memory: TypedMemory) -> str:

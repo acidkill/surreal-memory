@@ -908,6 +908,16 @@ class NeuralStorage(ABC):
         """
         ...
 
+    async def get_fibers_after_id(
+        self,
+        cursor_id: str | None,
+        *,
+        limit: int = 250,
+        created_before: datetime | None = None,
+    ) -> list[Fiber]:
+        """Optional bounded, ID-ordered fiber scan for resumable consolidation."""
+        raise NotImplementedError
+
     async def get_fiber_neuron_ids_for(
         self,
         neuron_ids: list[str] | set[str],

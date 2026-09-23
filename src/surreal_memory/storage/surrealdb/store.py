@@ -2917,6 +2917,31 @@ class SurrealDBStorage(
         )
         return [_row_to_fiber(r) for r in rows]
 
+    async def get_fibers_after_id(
+        self,
+        cursor_id: str | None,
+        *,
+        limit: int = 250,
+        created_before: datetime | None = None,
+    ) -> list[Fiber]:
+        """Return a brain-scoped keyset page, independent of get_fibers' top-N."""
+        brain_id = self._get_brain_id()
+        conditions = ["brain_id = $brain_id"]
+        params: dict[str, Any] = {"brain_id": brain_id}
+        if cursor_id is not None:
+            conditions.append("id > type::record('fiber', $cursor_id)")
+            params["cursor_id"] = _to_surreal_id(cursor_id)
+        if created_before is not None:
+            conditions.append("(created_at IS NONE OR created_at <= $created_before)")
+            params["created_before"] = created_before
+        page_limit = min(max(int(limit), 1), 2000)
+        rows = await self._query(
+            f"SELECT * FROM fiber WHERE {' AND '.join(conditions)} "
+            f"ORDER BY id ASC LIMIT {page_limit}",
+            **params,
+        )
+        return [_row_to_fiber(row) for row in rows]
+
     # ================================================================
     # Brain Operations
     # ================================================================
