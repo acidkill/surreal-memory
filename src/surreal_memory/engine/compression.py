@@ -722,6 +722,7 @@ class CompressionEngine:
                 logger.error(
                     "Failed to save compression backup for fiber %s", fiber.id, exc_info=True
                 )
+                raise
 
         # Save neuron-level snapshots before destructive tiers (3-4).
         destructive = target_tier in (CompressionTier.TEMPLATE, CompressionTier.GRAPH_ONLY)
@@ -742,6 +743,7 @@ class CompressionEngine:
                         logger.error(
                             "Failed to save neuron snapshot for neuron %s", neuron.id, exc_info=True
                         )
+                        raise
 
         # Apply compression: update each neuron's content if tier < GRAPH_ONLY,
         # or clear all content for GRAPH_ONLY.
@@ -784,6 +786,7 @@ class CompressionEngine:
                         fiber.id,
                         exc_info=True,
                     )
+                    raise
         elif target_tier in (
             CompressionTier.TEMPLATE,
             CompressionTier.ENTITY_ONLY,
@@ -806,6 +809,7 @@ class CompressionEngine:
                         fiber.id,
                         exc_info=True,
                     )
+                    raise
 
         # Update fiber's compression_tier in storage.
         from dataclasses import replace as dc_replace
@@ -815,6 +819,7 @@ class CompressionEngine:
             await self._storage.update_fiber(updated_fiber)
         except Exception:
             logger.error("Failed to update compression_tier for fiber %s", fiber.id, exc_info=True)
+            raise
 
         return CompressionResult(
             fiber_id=fiber.id,

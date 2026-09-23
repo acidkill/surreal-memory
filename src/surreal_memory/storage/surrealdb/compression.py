@@ -66,9 +66,9 @@ class SurrealDBCompressionMixin:
 
         existing = await self._query(
             "SELECT id FROM compression_backups"
-            " WHERE brain_id = $brain_id AND fiber_id = $fiber_id LIMIT 1",
+            " WHERE brain_id = $brain_id AND fiber_id IN $fiber_ids LIMIT 1",
             brain_id=brain_id,
-            fiber_id=fiber_id,
+            fiber_ids=[fiber_id, _to_surreal_id(fiber_id)],
         )
         if existing:
             # Merge by existing record id (not recomputed sid) — survives a brain
@@ -86,9 +86,9 @@ class SurrealDBCompressionMixin:
             "SELECT fiber_id, brain_id, original_content, compression_tier,"
             " compressed_at, original_token_count, compressed_token_count"
             " FROM compression_backups"
-            " WHERE brain_id = $brain_id AND fiber_id = $fiber_id LIMIT 1",
+            " WHERE brain_id = $brain_id AND fiber_id IN $fiber_ids LIMIT 1",
             brain_id=brain_id,
-            fiber_id=fiber_id,
+            fiber_ids=[fiber_id, _to_surreal_id(fiber_id)],
         )
         if not rows:
             return None
@@ -108,9 +108,9 @@ class SurrealDBCompressionMixin:
         brain_id = self._get_brain_id()
         existing = await self._query(
             "SELECT id FROM compression_backups"
-            " WHERE brain_id = $brain_id AND fiber_id = $fiber_id LIMIT 1",
+            " WHERE brain_id = $brain_id AND fiber_id IN $fiber_ids LIMIT 1",
             brain_id=brain_id,
-            fiber_id=fiber_id,
+            fiber_ids=[fiber_id, _to_surreal_id(fiber_id)],
         )
         if not existing:
             return False
@@ -184,9 +184,9 @@ class SurrealDBCompressionMixin:
 
         existing = await self._query(
             "SELECT id FROM neuron_snapshots"
-            " WHERE brain_id = $brain_id AND neuron_id = $neuron_id LIMIT 1",
+            " WHERE brain_id = $brain_id AND neuron_id IN $neuron_ids LIMIT 1",
             brain_id=brain_id,
-            neuron_id=neuron_id,
+            neuron_ids=[neuron_id, _to_surreal_id(neuron_id)],
         )
         if existing:
             # Merge by existing record id (not recomputed sid) — survives a brain
@@ -203,9 +203,9 @@ class SurrealDBCompressionMixin:
         rows = await self._query(
             "SELECT neuron_id, brain_id, original_content, compressed_at, tier"
             " FROM neuron_snapshots"
-            " WHERE brain_id = $brain_id AND neuron_id = $neuron_id LIMIT 1",
+            " WHERE brain_id = $brain_id AND neuron_id IN $neuron_ids LIMIT 1",
             brain_id=brain_id,
-            neuron_id=neuron_id,
+            neuron_ids=[neuron_id, _to_surreal_id(neuron_id)],
         )
         if not rows:
             return None
@@ -223,9 +223,9 @@ class SurrealDBCompressionMixin:
         brain_id = self._get_brain_id()
         existing = await self._query(
             "SELECT id FROM neuron_snapshots"
-            " WHERE brain_id = $brain_id AND neuron_id = $neuron_id LIMIT 1",
+            " WHERE brain_id = $brain_id AND neuron_id IN $neuron_ids LIMIT 1",
             brain_id=brain_id,
-            neuron_id=neuron_id,
+            neuron_ids=[neuron_id, _to_surreal_id(neuron_id)],
         )
         if not existing:
             return False
