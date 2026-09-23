@@ -297,11 +297,13 @@ smem brain delete NAME [--force]
 
 ### smem brain health
 
-Check brain health.
+Check brain hygiene (freshness and sensitive content); it does not test retrieval quality.
 
 ```bash
 smem brain health [--name NAME] [--json]
 ```
+
+Use `smem brain recall-check` for a sampled end-to-end self-recall probe.
 
 ---
 

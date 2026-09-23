@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import random
 from datetime import datetime
 from typing import Annotated, Any
 
@@ -597,7 +598,7 @@ def brain_health(
     ] = None,
     json_output: Annotated[bool, typer.Option("--json", "-j", help="Output as JSON")] = False,
 ) -> None:
-    """Check brain health (freshness, sensitive content).
+    """Check brain hygiene (freshness and sensitive content); this is not a retrieval test.
 
     Examples:
         smem brain health
@@ -651,3 +652,87 @@ def brain_health(
         output_result(result, True)
     else:
         _display_health(result)
+
+
+@brain_app.command("recall-check")
+def brain_recall_check(
+    name: Annotated[
+        str | None, typer.Option("--name", "-n", help="Brain name (default: current)")
+    ] = None,
+    sample_size: Annotated[
+        int,
+        typer.Option("--sample-size", min=1, max=100, help="Number of stored memories to probe"),
+    ] = 10,
+    json_output: Annotated[bool, typer.Option("--json", "-j", help="Output as JSON")] = False,
+) -> None:
+    """Probe whether sampled stored memories can be recalled through the normal retrieval path."""
+
+    async def _check() -> dict[str, Any]:
+        from surreal_memory.engine.retrieval import ReflexPipeline
+
+        config = get_config()
+        brain_name = resolve_brain(name, config)
+        brain_path = get_brain_path_auto(config, brain_name)
+        if not brain_path.exists():
+            return {"error": f"Brain '{brain_name}' not found."}
+
+        storage = await get_storage(config, brain_name=brain_name)
+        try:
+            brain_id = storage.brain_id
+            if not brain_id:
+                return {"error": "No brain context set"}
+            brain = await storage.get_brain(brain_id)
+            if not brain:
+                return {"error": "No brain configured"}
+
+            population = await storage.get_fibers(limit=1000)
+            candidates = [fiber for fiber in population if fiber.summary and fiber.summary.strip()]
+            count = min(sample_size, len(candidates))
+            if count == 0:
+                return {
+                    "brain": brain_name,
+                    "population_scanned": len(population),
+                    "sampled": 0,
+                    "recalled": 0,
+                    "recall_rate": None,
+                    "message": "No fibers with summaries were available to probe.",
+                }
+
+            sample = random.sample(candidates, count)
+            pipeline = ReflexPipeline(storage, brain.config)
+            outcomes: list[dict[str, Any]] = []
+            for fiber in sample:
+                query = (fiber.summary or "").strip()[:1000]
+                result = await pipeline.query(query)
+                recalled = fiber.id in result.fibers_matched
+                outcomes.append({"fiber_id": fiber.id, "recalled": recalled})
+
+            recalled_count = sum(1 for item in outcomes if item["recalled"])
+            return {
+                "brain": brain_name,
+                "population_scanned": len(population),
+                "eligible": len(candidates),
+                "sampled": count,
+                "recalled": recalled_count,
+                "recall_rate": recalled_count / count,
+                "probes": outcomes,
+                "note": "Sampled self-recall is a diagnostic signal, not a guarantee of answer quality.",
+            }
+        finally:
+            await storage.close()
+
+    result = run_async(_check())
+    if json_output:
+        output_result(result, True)
+    elif "error" in result:
+        typer.secho(result["error"], fg=typer.colors.RED)
+    else:
+        rate = result["recall_rate"]
+        if rate is None:
+            typer.echo(result["message"])
+        else:
+            typer.echo(
+                f"Brain: {result['brain']} — recalled {result['recalled']}/{result['sampled']} "
+                f"sampled memories ({rate:.0%})"
+            )
+            typer.secho(result["note"], fg=typer.colors.BRIGHT_BLACK)

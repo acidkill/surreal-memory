@@ -1,6 +1,6 @@
 # Brain Health Guide
 
-Your brain's health grade (A through F) reflects how well-connected, diverse, and active your memory network is. This guide explains each metric, what affects it, and exactly how to improve it.
+This guide describes the richer `smem_health()` diagnostics: connectivity, diversity, freshness, consolidation, orphan rate, activation, recall confidence, and conflicts. The CLI command `smem brain health` reports only freshness and sensitive-content hygiene; it does not compute this grade or validate retrieval. Use `smem brain recall-check` for a sampled end-to-end self-recall probe.
 
 ## Quick Reference
 
@@ -12,7 +12,7 @@ Your brain's health grade (A through F) reflects how well-connected, diverse, an
 | **D** | 40-59 | Poor — significant gaps in connectivity or activity |
 | **F** | 0-39 | Failing — empty or severely neglected brain |
 
-Run `smem_health()` (MCP) or `smem brain health` (CLI) to see your current grade.
+Run `smem_health()` (MCP) to see this grade. For the CLI hygiene report, run `smem brain health`.
 
 ---
 
