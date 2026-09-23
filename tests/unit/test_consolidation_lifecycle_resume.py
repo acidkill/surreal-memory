@@ -150,6 +150,36 @@ async def test_lifecycle_revalidates_changed_neuron_before_updating() -> None:
 
 
 @pytest.mark.asyncio
+async def test_lifecycle_revalidates_candidates_in_one_page_read() -> None:
+    class CountingStorage(_Storage):
+        def __init__(self, neurons: list[Neuron]) -> None:
+            super().__init__(neurons)
+            self.refetches: list[list[str]] = []
+
+        async def find_neurons_by_ids(
+            self, neuron_ids: list[str], *, include_embedding: bool = False
+        ) -> list[Neuron]:
+            self.refetches.append(list(neuron_ids))
+            return await super().find_neurons_by_ids(
+                neuron_ids, include_embedding=include_embedding
+            )
+
+    storage = CountingStorage(
+        [_neuron("n-1"), _neuron("n-2"), _neuron("n-3").with_metadata(lifecycle_state="archived")]
+    )
+    storage.change_on_refetch = "n-2"
+    progress = _Progress()
+    await _engine(storage, progress)._lifecycle(
+        ConsolidationReport(), REFERENCE_TIME, dry_run=False
+    )
+
+    assert storage.refetches == [["n-1", "n-2"]]
+    assert storage.updates == [("n-1", "archived")]
+    assert progress.strategy_state("lifecycle")["cursor"] == "n-3"
+    assert progress.checkpoints == 2  # Committed write, then page boundary.
+
+
+@pytest.mark.asyncio
 async def test_lifecycle_dry_run_does_not_write_or_checkpoint() -> None:
     storage = _Storage([_neuron("n-1")])
     progress = _Progress()

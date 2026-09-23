@@ -6616,7 +6616,9 @@ class ConsolidationEngine:
             age_days = (reference_time - neuron.created_at).total_seconds() / 86400.0
             return str(determine_lifecycle_state(age_days, heat, config))
 
-        async def _process(neuron: Neuron, state_map: dict[str, Any]) -> tuple[bool, bool]:
+        async def _process(
+            neuron: Neuron, state_map: dict[str, Any], *, refreshed: bool = False
+        ) -> tuple[bool, bool]:
             nonlocal states_updated
             new_state = _desired_state(neuron, state_map)
             if str(neuron.metadata.get("lifecycle_state", "active")) == new_state:
@@ -6625,18 +6627,18 @@ class ConsolidationEngine:
                 states_updated += 1
                 return True, False
 
-            # Only potential writes need a singleton refresh. Recompute the
-            # decision after refresh because the page may now be stale.
-            if callable(fetch_by_ids):
+            # Only potential writes need a refresh. Page candidates arrive
+            # pre-refreshed; pending IDs and legacy callers use this fallback.
+            if callable(fetch_by_ids) and not refreshed:
                 fresh = await fetch_by_ids([neuron.id], include_embedding=False)
                 if not fresh:
                     return True, False
                 neuron = fresh[0]
-                if neuron.ephemeral or neuron.created_at > reference_time:
-                    return True, False
-                new_state = _desired_state(neuron, state_map)
-                if str(neuron.metadata.get("lifecycle_state", "active")) == new_state:
-                    return True, False
+            if neuron.ephemeral or neuron.created_at > reference_time:
+                return True, False
+            new_state = _desired_state(neuron, state_map)
+            if str(neuron.metadata.get("lifecycle_state", "active")) == new_state:
+                return True, False
             try:
                 await self._storage.update_neuron_lifecycle(neuron.id, new_state)
                 states_updated += 1
@@ -6672,7 +6674,7 @@ class ConsolidationEngine:
                         neuron = pending_map.get(neuron_id)
                         if neuron is None:
                             continue  # Deleted since the previous run.
-                        ok, changed = await _process(neuron, state_map)
+                        ok, changed = await _process(neuron, state_map, refreshed=True)
                         if not ok:
                             pending.append(neuron_id)
                         if changed:
@@ -6699,8 +6701,36 @@ class ConsolidationEngine:
                     if not batch:
                         break
                     state_map = await _states_for(batch)
+                    # Only potential writes need revalidation. Fetch those
+                    # records together instead of one round-trip per change.
+                    refreshed_map: dict[str, Neuron] | None = None
+                    if callable(fetch_by_ids) and not dry_run:
+                        candidate_ids = [
+                            neuron.id
+                            for neuron in batch
+                            if str(neuron.metadata.get("lifecycle_state", "active"))
+                            != _desired_state(neuron, state_map)
+                        ]
+                        if candidate_ids:
+                            refreshed_map = {
+                                neuron.id: neuron
+                                for neuron in await fetch_by_ids(
+                                    candidate_ids, include_embedding=False
+                                )
+                            }
                     for neuron in batch:
-                        ok, changed = await _process(neuron, state_map)
+                        candidate = refreshed_map is not None and neuron.id in candidate_ids
+                        fresh_neuron = (
+                            refreshed_map.get(neuron.id)
+                            if refreshed_map is not None and candidate
+                            else neuron
+                        )
+                        if fresh_neuron is None:
+                            cursor = neuron.id  # Deleted after page fetch.
+                            continue
+                        ok, changed = await _process(
+                            fresh_neuron, state_map, refreshed=bool(candidate)
+                        )
                         cursor = neuron.id
                         if not ok:
                             pending.append(neuron.id)
