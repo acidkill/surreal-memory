@@ -15,14 +15,18 @@ preventing stale semantic links from accumulating.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import math
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from surreal_memory.core.constants import GRAPH_ONLY_PLACEHOLDER
 from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.core.synapse import Synapse, SynapseType
+from surreal_memory.engine.consolidation_progress import ConsolidationPausedError
 from surreal_memory.engine.edge_identity import deterministic_edge_id
 
 if TYPE_CHECKING:
@@ -30,6 +34,9 @@ if TYPE_CHECKING:
     from surreal_memory.storage.base import NeuralStorage
 
 logger = logging.getLogger(__name__)
+
+SemanticDiscoveryCheckpoint = Callable[[str, str | None, dict[str, Any]], Awaitable[None]]
+SemanticDiscoveryBudgetCheck = Callable[[], Awaitable[None]]
 
 # Caps that bound work on very large brains. Semantic discovery now reads the
 # STORED embedding on each neuron (no re-embedding), so it scales well.
@@ -50,14 +57,16 @@ _SYNAPSE_PAGE_SIZE = 5000
 # than the synapse page above.
 _EMBEDDING_PAGE_SIZE = 1000
 
-# How many similarity rows to process between yields back to the event loop.
-# The similarity pass is pure CPU with no I/O of its own, so without an explicit
-# yield it holds the loop for as long as it runs — long enough to miss the
-# WebSocket keepalive (the `websockets` default is a 20 s ping interval with a
-# 20 s timeout, which the SurrealDB SDK does not override), after which the peer
-# drops the connection and every following query fails with
-# "[Errno 104] Connection reset by peer".
+# Similarity rows between event-loop yields in the legacy discovery path.
+# Resumable discovery yields every row because each NumPy operation scales with
+# the candidate count and must not starve SurrealDB WebSocket keepalives.
 _YIELD_EVERY_ROWS = 100
+
+# Keep the durable similarity prefix bounded in both bytes and checkpoint writes.
+# The separate per-row budget callback checks the lease/deadline before more work;
+# this interval only controls how often the compact result prefix is persisted.
+_MAX_SIMILARITY_CHECKPOINTS = 64
+_MAX_SIMILARITY_CHECKPOINT_BYTES = 512 * 1024
 
 # Ceiling for the pure-python similarity fallback. The vectorised path is O(n*d)
 # per row in C; the fallback is O(n*d) per row in interpreted Python, roughly
@@ -99,6 +108,7 @@ class SemanticDiscoveryResult:
     constant "2000" reads as a stuck system when it is actually a backlog
     draining one capped run at a time.
     """
+    source_fingerprint: str | None = None
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -345,6 +355,10 @@ async def _select_candidates(
 async def discover_semantic_synapses(
     storage: NeuralStorage,
     config: BrainConfig,
+    *,
+    checkpoint: SemanticDiscoveryCheckpoint | None = None,
+    resume_state: Mapping[str, Any] | None = None,
+    budget_check: SemanticDiscoveryBudgetCheck | None = None,
 ) -> SemanticDiscoveryResult:
     """Discover SIMILAR_TO synapses between CONCEPT/ENTITY neurons.
 
@@ -361,11 +375,25 @@ async def discover_semantic_synapses(
            pure-python otherwise).
         3. Create SIMILAR_TO synapses for each neuron's top-K peers above
            threshold, up to ``semantic_discovery_max_pairs``.
+
+    With durable checkpoints and a supplied ``budget_check``, the callback
+    runs before each similarity row. A pause commits the latest completed row
+    so a restart can
+    skip its scoring work after replaying and validating source data.
     """
     effective_enabled, _, _ = _effective_embedding(config)
     if not effective_enabled:
         logger.debug("Embedding disabled — skipping semantic discovery")
         return SemanticDiscoveryResult()
+
+    if checkpoint is not None:
+        return await _discover_semantic_synapses_resumable(
+            storage,
+            config,
+            checkpoint=checkpoint,
+            resume_state=resume_state,
+            budget_check=budget_check,
+        )
 
     # Collect eligible neurons that already carry a stored embedding (no re-embed).
     # Ask for the two eligible types separately so the filter runs in the DB's
@@ -568,4 +596,612 @@ async def discover_semantic_synapses(
         eligible_total=eligible_before_resample,
         synapses=new_synapses,
         truncated=len(new_synapses) >= max_pairs,
+    )
+
+
+class _SemanticFingerprintBuilder:
+    """Stream the same canonical source payload used by consolidation snapshots."""
+
+    def __init__(self, brain_id: str | None, config: BrainConfig) -> None:
+        self._digest = hashlib.sha256()
+        self._digest.update(b'{"brain_id":')
+        self._write(brain_id)
+        self._digest.update(b',"config":')
+        self._write(repr(config))
+        self._digest.update(b',"neurons":[')
+        self._neuron_count = 0
+        self._edge_count = 0
+        self._edges_started = False
+        self._finished = False
+
+    def _write(self, value: Any) -> None:
+        self._digest.update(
+            json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+        )
+
+    def add_neuron(self, neuron: Neuron) -> None:
+        if neuron.type not in (NeuronType.CONCEPT, NeuronType.ENTITY):
+            return
+        if self._neuron_count:
+            self._digest.update(b",")
+        self._write(
+            {
+                "id": neuron.id,
+                "type": neuron.type.value,
+                "content": neuron.content,
+                "embedding": neuron.metadata.get("_embedding"),
+            }
+        )
+        self._neuron_count += 1
+
+    def begin_edges(self) -> None:
+        if not self._edges_started:
+            self._digest.update(b'],"synapses":[')
+            self._edges_started = True
+
+    def add_synapse(self, synapse: Synapse, excluded_ids: set[str] | None = None) -> None:
+        self.begin_edges()
+        if excluded_ids and synapse.id in excluded_ids:
+            return
+        if self._edge_count:
+            self._digest.update(b",")
+        self._write(
+            {
+                "id": synapse.id,
+                "source_id": synapse.source_id,
+                "target_id": synapse.target_id,
+                "type": synapse.type.value,
+            }
+        )
+        self._edge_count += 1
+
+    def prefix_digest(self) -> str:
+        return self._digest.copy().hexdigest()
+
+    def finish(self) -> str:
+        if not self._finished:
+            self.begin_edges()
+            self._digest.update(b"]}")
+            self._finished = True
+        return self._digest.hexdigest()
+
+
+async def _discover_semantic_synapses_resumable(
+    storage: NeuralStorage,
+    config: BrainConfig,
+    *,
+    checkpoint: SemanticDiscoveryCheckpoint,
+    resume_state: Mapping[str, Any] | None,
+    budget_check: SemanticDiscoveryBudgetCheck | None,
+) -> SemanticDiscoveryResult:
+    """Discover links in durable pages; replay only the committed prefix on resume."""
+    neuron_fetch = getattr(storage, "find_neurons_after_id", None)
+    synapse_fetch = getattr(storage, "get_synapses_after_id", None)
+    if not callable(neuron_fetch) or not callable(synapse_fetch):
+        raise RuntimeError(
+            "semantic_link discovery requires neuron and synapse keyset scan support"
+        )
+
+    saved = dict(resume_state or {})
+    saved_stage = str(saved.get("stage") or "")
+    saved_version = saved.get("version")
+    if saved and (
+        saved.get("kind") != "semantic_link_discovery"
+        or saved_version not in (1, 2)
+        or (saved_version == 2 and saved_stage != "similarity")
+    ):
+        raise RuntimeError("invalid semantic_link discovery checkpoint")
+    saved_cursor = saved.get("cursor")
+    brain_id = getattr(storage, "current_brain_id", None)
+    fingerprint = _SemanticFingerprintBuilder(brain_id, config)
+    per_type: dict[NeuronType, tuple[list[Neuron], list[list[float]]]] = {
+        NeuronType.CONCEPT: ([], []),
+        NeuronType.ENTITY: ([], []),
+    }
+
+    def record_neuron(neuron: Neuron) -> None:
+        fingerprint.add_neuron(neuron)
+        if neuron.type not in per_type or not neuron.content.strip():
+            return
+        # GRAPH_ONLY placeholders all share an artificial vector and must not
+        # produce semantic edges.
+        if neuron.content == GRAPH_ONLY_PLACEHOLDER:
+            return
+        embedding = neuron.metadata.get("_embedding")
+        if not embedding:
+            return
+        neurons, vectors = per_type[neuron.type]
+        neurons.append(neuron)
+        vectors.append([float(value) for value in embedding])
+
+    async def emit(
+        stage: str,
+        cursor: str | None,
+        *,
+        prefix_digest: str,
+        **details: Any,
+    ) -> None:
+        await checkpoint(
+            stage,
+            cursor,
+            {
+                "kind": "semantic_link_discovery",
+                "version": 1,
+                "stage": stage,
+                "cursor": cursor,
+                "prefix_digest": prefix_digest,
+                **details,
+            },
+        )
+
+    neuron_cursor: str | None = None
+    replay_neuron_cursor = (
+        str(saved_cursor) if saved_stage == "neurons" and saved_cursor is not None else None
+    )
+    replay_neuron = replay_neuron_cursor is not None
+    replay_neuron_found = not replay_neuron
+    last_neuron_id: str | None = None
+    while True:
+        if not replay_neuron:
+            await emit(
+                "neurons",
+                neuron_cursor,
+                prefix_digest=fingerprint.prefix_digest(),
+                eligible_neurons=sum(len(value[0]) for value in per_type.values()),
+            )
+        page = await neuron_fetch(
+            neuron_cursor,
+            limit=_EMBEDDING_PAGE_SIZE,
+            ephemeral=None,
+            include_embedding=True,
+        )
+        if not page:
+            if replay_neuron and not replay_neuron_found:
+                raise RuntimeError("semantic_link neuron cursor disappeared during resume")
+            break
+        replayed_this_page = False
+        for neuron in page:
+            neuron_id = str(neuron.id)
+            if (
+                replay_neuron
+                and replay_neuron_cursor is not None
+                and neuron_id > replay_neuron_cursor
+            ):
+                raise RuntimeError("semantic_link neuron cursor changed during resume")
+            record_neuron(neuron)
+            neuron_cursor = neuron_id
+            last_neuron_id = neuron_id
+            if replay_neuron and neuron_id == replay_neuron_cursor:
+                replay_neuron_found = True
+                if fingerprint.prefix_digest() != saved.get("prefix_digest"):
+                    raise RuntimeError("semantic_link neuron source changed before its cursor")
+                replay_neuron = False
+                replayed_this_page = True
+                break
+        if not replay_neuron and not replay_neuron_found:
+            raise RuntimeError("semantic_link neuron cursor disappeared during resume")
+        if replay_neuron:
+            continue
+        if not replay_neuron_found:
+            continue
+        await emit(
+            "neurons",
+            neuron_cursor,
+            prefix_digest=fingerprint.prefix_digest(),
+            eligible_neurons=sum(len(value[0]) for value in per_type.values()),
+        )
+        if len(page) < _EMBEDDING_PAGE_SIZE and not replayed_this_page:
+            break
+
+    neuron_digest = fingerprint.prefix_digest()
+    if (
+        saved_stage in {"selection", "synapses", "similarity"}
+        and saved.get("neuron_digest") != neuron_digest
+    ):
+        raise RuntimeError("semantic_link neuron source changed after its checkpoint")
+
+    eligible: list[Neuron] = []
+    vectors: list[list[float]] = []
+    concept_neurons, concept_vectors = per_type[NeuronType.CONCEPT]
+    entity_neurons, entity_vectors = per_type[NeuronType.ENTITY]
+    longest = max(len(concept_neurons), len(entity_neurons))
+    for index in range(longest):
+        if index < len(concept_neurons):
+            eligible.append(concept_neurons[index])
+            vectors.append(concept_vectors[index])
+        if index < len(entity_neurons):
+            eligible.append(entity_neurons[index])
+            vectors.append(entity_vectors[index])
+
+    eligible_total = len(eligible)
+    eligible_before_resample = eligible_total if eligible_total > MAX_NEURONS_TO_LINK else 0
+    if len(eligible) > MAX_NEURONS_TO_LINK:
+        if saved_stage not in {"synapses", "similarity"}:
+            await emit(
+                "selection",
+                last_neuron_id,
+                prefix_digest=neuron_digest,
+                neuron_digest=neuron_digest,
+                eligible_neurons=eligible_total,
+            )
+        eligible, vectors = await _select_candidates(storage, eligible, vectors)
+
+    candidate_ids = {neuron.id for neuron in eligible}
+    existing_pairs: set[frozenset[str]] = set()
+    fingerprint.begin_edges()
+
+    edge_cursor: str | None = None
+    replay_edge_cursor = (
+        str(saved_cursor) if saved_stage == "synapses" and saved_cursor is not None else None
+    )
+    replay_edge = replay_edge_cursor is not None
+    replay_edge_found = not replay_edge
+    if saved_stage == "synapses" and saved_cursor is None:
+        if fingerprint.prefix_digest() != saved.get("prefix_digest"):
+            raise RuntimeError("semantic_link neuron source changed before synapse scan")
+    while True:
+        if not replay_edge:
+            await emit(
+                "synapses",
+                edge_cursor,
+                prefix_digest=fingerprint.prefix_digest(),
+                neuron_digest=neuron_digest,
+                existing_pairs=len(existing_pairs),
+            )
+        page = await synapse_fetch(
+            edge_cursor,
+            limit=min(_SYNAPSE_PAGE_SIZE, 2000),
+        )
+        if not page:
+            if replay_edge and not replay_edge_found:
+                raise RuntimeError("semantic_link synapse cursor disappeared during resume")
+            break
+        replayed_this_page = False
+        for synapse in page:
+            synapse_id = str(synapse.id)
+            if replay_edge and replay_edge_cursor is not None and synapse_id > replay_edge_cursor:
+                raise RuntimeError("semantic_link synapse cursor changed during resume")
+            fingerprint.add_synapse(synapse)
+            if synapse.source_id in candidate_ids and synapse.target_id in candidate_ids:
+                existing_pairs.add(frozenset({synapse.source_id, synapse.target_id}))
+            edge_cursor = synapse_id
+            if replay_edge and synapse_id == replay_edge_cursor:
+                replay_edge_found = True
+                if fingerprint.prefix_digest() != saved.get("prefix_digest"):
+                    raise RuntimeError("semantic_link synapse source changed before its cursor")
+                replay_edge = False
+                replayed_this_page = True
+                break
+        if replay_edge and not replay_edge_found:
+            continue
+        await emit(
+            "synapses",
+            edge_cursor,
+            prefix_digest=fingerprint.prefix_digest(),
+            neuron_digest=neuron_digest,
+            existing_pairs=len(existing_pairs),
+        )
+        if len(page) < min(_SYNAPSE_PAGE_SIZE, 2000) and not replayed_this_page:
+            break
+
+    source_fingerprint = fingerprint.finish()
+    if saved_stage == "similarity" and saved.get("source_fingerprint") != source_fingerprint:
+        raise RuntimeError("semantic_link source changed after its similarity checkpoint")
+
+    if len(eligible) < 2:
+        return SemanticDiscoveryResult(source_fingerprint=source_fingerprint)
+
+    logger.debug(
+        "semantic discovery: %d eligible neurons, %d existing pairs",
+        len(eligible),
+        len(existing_pairs),
+    )
+    threshold = config.semantic_discovery_similarity_threshold
+    max_pairs = min(config.semantic_discovery_max_pairs, MAX_PAIRS_HARD_CAP)
+    top_k = SEMANTIC_TOP_K
+    new_synapses: list[Synapse] = []
+    skipped = 0
+    skipped_created_this_run = 0
+    pairs_evaluated = 0
+    created_this_run: set[frozenset[str]] = set()
+    created_digest = hashlib.sha256(b"semantic-link-created-v1")
+    checkpoint_results: list[tuple[int, int, str]] = []
+
+    def _make_synapse(i: int, j: int, sim: float) -> Synapse:
+        return Synapse.create(
+            source_id=eligible[i].id,
+            target_id=eligible[j].id,
+            type=SynapseType.SIMILAR_TO,
+            weight=sim * 0.6,
+            metadata={"_semantic_discovery": True, "cosine_similarity": round(sim, 4)},
+            synapse_id=deterministic_edge_id(
+                SynapseType.SIMILAR_TO, eligible[i].id, eligible[j].id
+            ),
+        )
+
+    def _update_created_digest(synapse: Synapse) -> None:
+        created_digest.update(
+            json.dumps(
+                {
+                    "id": synapse.id,
+                    "source_id": synapse.source_id,
+                    "target_id": synapse.target_id,
+                    "weight": synapse.weight,
+                    "metadata": synapse.metadata,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            ).encode("utf-8")
+        )
+
+    def _record_created_synapse(i: int, j: int, sim: float) -> None:
+        pair = frozenset({eligible[i].id, eligible[j].id})
+        synapse = _make_synapse(i, j, sim)
+        new_synapses.append(synapse)
+        checkpoint_results.append((i, j, sim.hex()))
+        _update_created_digest(synapse)
+        existing_pairs.add(pair)
+        created_this_run.add(pair)
+
+    def _link(i: int, j: int, sim: float) -> bool:
+        nonlocal skipped, skipped_created_this_run
+        pair = frozenset({eligible[i].id, eligible[j].id})
+        if pair in created_this_run:
+            skipped_created_this_run += 1
+            return False
+        if pair in existing_pairs:
+            skipped += 1
+            return False
+        _record_created_synapse(i, j, sim)
+        return True
+
+    row_count = len(eligible)
+    resume_row: int | None = None
+    resume_v2 = saved_stage == "similarity" and saved_version == 2
+    if saved_stage == "similarity" and saved_cursor is not None:
+        if not isinstance(saved_cursor, str) or not saved_cursor.isdecimal():
+            raise RuntimeError("invalid semantic_link similarity row cursor")
+        resume_row = int(saved_cursor)
+        if str(resume_row) != saved_cursor or resume_row < 0 or resume_row >= row_count:
+            raise RuntimeError("semantic_link similarity cursor is beyond the candidate rows")
+    elif resume_v2:
+        raise RuntimeError("invalid semantic_link similarity result cursor")
+
+    resumed_row_found = resume_row is None or resume_v2
+    start_row = resume_row + 1 if resume_v2 and resume_row is not None else 0
+    if resume_v2:
+        if resume_row is None:
+            raise RuntimeError("invalid semantic_link similarity result cursor")
+        raw_results = saved.get("results")
+        if not isinstance(raw_results, list) or len(raw_results) > max_pairs:
+            raise RuntimeError("invalid semantic_link similarity results")
+        last_source_index = -1
+        results_per_source: dict[int, int] = {}
+        for item in raw_results:
+            if not isinstance(item, list) or len(item) != 3:
+                raise RuntimeError("invalid semantic_link similarity result entry")
+            source_index, target_index, similarity_hex = item
+            if (
+                type(source_index) is not int
+                or type(target_index) is not int
+                or not isinstance(similarity_hex, str)
+                or len(similarity_hex) > 32
+            ):
+                raise RuntimeError("invalid semantic_link similarity result entry")
+            if (
+                source_index < last_source_index
+                or source_index < 0
+                or source_index > resume_row
+                or target_index < 0
+                or target_index >= row_count
+                or source_index == target_index
+            ):
+                raise RuntimeError("semantic_link similarity result index is out of range")
+            last_source_index = source_index
+            results_per_source[source_index] = results_per_source.get(source_index, 0) + 1
+            if results_per_source[source_index] > top_k:
+                raise RuntimeError("semantic_link similarity result exceeds top-K")
+            try:
+                sim = float.fromhex(similarity_hex)
+            except ValueError as exc:
+                raise RuntimeError("invalid semantic_link similarity value") from exc
+            if sim.hex() != similarity_hex or sim < threshold:
+                raise RuntimeError("semantic_link similarity result changed")
+            pair = frozenset({eligible[source_index].id, eligible[target_index].id})
+            if pair in existing_pairs or pair in created_this_run:
+                raise RuntimeError("semantic_link checkpoint contains a duplicate pair")
+            _record_created_synapse(source_index, target_index, sim)
+
+        def _saved_counter(name: str) -> int:
+            value = saved.get(name)
+            if type(value) is not int or value < 0:
+                raise RuntimeError(f"invalid semantic_link similarity counter: {name}")
+            return value
+
+        skipped = _saved_counter("skipped_existing")
+        skipped_created_this_run = _saved_counter("skipped_created_this_run")
+        pairs_evaluated = _saved_counter("pairs_evaluated")
+        synapses_created = _saved_counter("synapses_created")
+        if (
+            synapses_created != len(new_synapses)
+            or synapses_created > max_pairs
+            or pairs_evaluated > (resume_row + 1) * top_k
+            or synapses_created + skipped + skipped_created_this_run > pairs_evaluated
+            or created_digest.hexdigest() != saved.get("result_prefix_digest")
+        ):
+            raise RuntimeError("semantic_link similarity checkpoint failed validation")
+
+    checkpoint_interval = max(
+        _YIELD_EVERY_ROWS,
+        math.ceil(row_count / max(1, _MAX_SIMILARITY_CHECKPOINTS - 1)),
+    )
+    durable_row_cursor = resume_row if resume_v2 else None
+
+    async def checkpoint_row(index: int, similarity_backend: str) -> None:
+        nonlocal durable_row_cursor
+        details: dict[str, Any] = {
+            "kind": "semantic_link_discovery",
+            "version": 2,
+            "stage": "similarity",
+            "cursor": str(index),
+            "neuron_digest": neuron_digest,
+            "source_fingerprint": source_fingerprint,
+            "similarity_backend": similarity_backend,
+            "results": [[i, j, sim_hex] for i, j, sim_hex in checkpoint_results],
+            "result_prefix_digest": created_digest.copy().hexdigest(),
+            "synapses_created": len(new_synapses),
+            "skipped_existing": skipped,
+            "skipped_created_this_run": skipped_created_this_run,
+            "pairs_evaluated": pairs_evaluated,
+        }
+        snapshot = json.dumps(details, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        # The caller stores this JSON text as one string in a pending list, so
+        # measure the outer serialized payload, including quote escaping.
+        encoded_size = len(
+            json.dumps([snapshot], ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        )
+        if encoded_size > _MAX_SIMILARITY_CHECKPOINT_BYTES:
+            raise RuntimeError(
+                "semantic_link similarity checkpoint payload exceeds "
+                f"{_MAX_SIMILARITY_CHECKPOINT_BYTES} bytes; optimize durable result staging"
+            )
+        await checkpoint("similarity", str(index), details)
+        durable_row_cursor = index
+
+    async def check_budget_before_row(next_index: int, similarity_backend: str) -> None:
+        if budget_check is None:
+            return
+        try:
+            await budget_check()
+        except ConsolidationPausedError:
+            completed_index = next_index - 1
+            legacy_cursor_validated = resume_row is None or resume_v2 or resumed_row_found
+            if (
+                legacy_cursor_validated
+                and completed_index >= 0
+                and (durable_row_cursor is None or completed_index > durable_row_cursor)
+            ):
+                # Persist all completed rows before yielding at the run budget. A
+                # restart then replays source pages but skips this similarity prefix.
+                await checkpoint_row(completed_index, similarity_backend)
+            raise
+
+    async def run_row(index: int, similarities: Any, similarity_backend: str) -> bool:
+        nonlocal pairs_evaluated, resumed_row_found
+        for candidate_index in similarities(index):
+            j, sim = candidate_index
+            pairs_evaluated += 1
+            if sim < threshold:
+                break
+            _link(index, j, sim)
+            if len(new_synapses) >= max_pairs:
+                break
+        if resume_row is not None and not resume_v2 and index == resume_row:
+            if created_digest.hexdigest() != saved.get("result_prefix_digest"):
+                raise RuntimeError("semantic_link result changed before its similarity cursor")
+            if (
+                len(new_synapses) != int(saved.get("synapses_created", -1))
+                or skipped != int(saved.get("skipped_existing", -1))
+                or skipped_created_this_run != int(saved.get("skipped_created_this_run", -1))
+                or pairs_evaluated != int(saved.get("pairs_evaluated", -1))
+            ):
+                raise RuntimeError("semantic_link counters changed before its similarity cursor")
+            resumed_row_found = True
+        completed_rows = index + 1
+        if budget_check is not None or completed_rows % _YIELD_EVERY_ROWS == 0:
+            # Row cost scales with candidate count, so resumable runs with a
+            # budget guard also yield once per row for database keepalives.
+            await asyncio.sleep(0)
+        reached_cap = len(new_synapses) >= max_pairs
+        if completed_rows % checkpoint_interval == 0 or reached_cap or completed_rows == row_count:
+            await checkpoint_row(index, similarity_backend)
+        return reached_cap
+
+    if saved_stage != "similarity" or resume_row is None:
+        await emit(
+            "similarity",
+            None,
+            prefix_digest=source_fingerprint,
+            neuron_digest=neuron_digest,
+            source_fingerprint=source_fingerprint,
+            result_prefix_digest=created_digest.hexdigest(),
+            synapses_created=0,
+            skipped_existing=0,
+            skipped_created_this_run=0,
+            pairs_evaluated=0,
+        )
+
+    try:
+        import numpy as np
+
+        matrix = np.asarray(vectors, dtype=np.float32)
+        matrix /= np.linalg.norm(matrix, axis=1, keepdims=True) + 1e-9
+
+        def numpy_similarities(index: int) -> list[tuple[int, float]]:
+            scores = matrix @ matrix[index]
+            scores[index] = -1.0
+            return [(int(j), float(scores[j])) for j in np.argsort(-scores)[:top_k]]
+
+        similarity_backend = f"numpy_float32:{np.__version__}"
+        if resume_v2 and saved.get("similarity_backend") != similarity_backend:
+            raise RuntimeError("semantic_link similarity backend changed after its checkpoint")
+        row_limit = start_row if resume_v2 and len(new_synapses) >= max_pairs else row_count
+        for row_index in range(start_row, row_limit):
+            await check_budget_before_row(row_index, similarity_backend)
+            if (
+                resume_row is not None
+                and not resume_v2
+                and row_index > resume_row
+                and not resumed_row_found
+            ):
+                raise RuntimeError("semantic_link similarity cursor is beyond the candidate rows")
+            if await run_row(row_index, numpy_similarities, similarity_backend):
+                break
+    except ImportError:
+        considered = min(len(eligible), _FALLBACK_MAX_NEURONS)
+        if len(eligible) > considered:
+            logger.warning(
+                "numpy is not installed: semantic discovery is running its pure-python "
+                "fallback and will consider only %d of %d eligible neurons this pass. "
+                "Install numpy to link the whole set.",
+                considered,
+                len(eligible),
+            )
+
+        similarity_backend = "python_float64"
+        if resume_v2 and saved.get("similarity_backend") != similarity_backend:
+            raise RuntimeError("semantic_link similarity backend changed after its checkpoint")
+        if resume_row is not None and resume_v2 and resume_row >= considered:
+            raise RuntimeError("semantic_link similarity cursor exceeds fallback candidate rows")
+
+        def python_similarities(index: int) -> list[tuple[int, float]]:
+            return sorted(
+                (
+                    (j, _cosine_similarity(vectors[index], vectors[j]))
+                    for j in range(considered)
+                    if j != index
+                ),
+                key=lambda item: item[1],
+                reverse=True,
+            )[:top_k]
+
+        row_limit = start_row if resume_v2 and len(new_synapses) >= max_pairs else considered
+        for row_index in range(start_row, row_limit):
+            await check_budget_before_row(row_index, similarity_backend)
+            if await run_row(row_index, python_similarities, similarity_backend):
+                break
+
+    if resume_row is not None and not resumed_row_found:
+        raise RuntimeError("semantic_link similarity cursor is beyond the candidate rows")
+    return SemanticDiscoveryResult(
+        neurons_embedded=len(vectors),
+        pairs_evaluated=pairs_evaluated,
+        synapses_created=len(new_synapses),
+        skipped_existing=skipped,
+        skipped_created_this_run=skipped_created_this_run,
+        eligible_total=eligible_before_resample,
+        synapses=new_synapses,
+        truncated=len(new_synapses) >= max_pairs,
+        source_fingerprint=source_fingerprint,
     )

@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Resumable semantic-link discovery** — discovery and similarity progress now checkpoint durably and resume from committed cursors/rows; changed source data invalidates stale progress.
+
 ## [3.11.0] — 2026-09-23 — recall reaches the right memories and checks its work
 
 Recall now searches beyond the first page of neurons, ranks lexical anchors by

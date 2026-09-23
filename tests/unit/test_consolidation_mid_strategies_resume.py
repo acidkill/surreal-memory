@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -10,6 +11,7 @@ import pytest
 from surreal_memory.core.fiber import Fiber
 from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.core.synapse import Synapse, SynapseType
+from surreal_memory.engine import semantic_discovery as semantic_discovery_module
 from surreal_memory.engine.consolidation import (
     ConsolidationConfig,
     ConsolidationEngine,
@@ -21,15 +23,26 @@ from surreal_memory.engine.consolidation_progress import (
     ConsolidationProgressError,
 )
 from surreal_memory.engine.memory_stages import MaturationRecord, MemoryStage
-from surreal_memory.engine.semantic_discovery import SemanticDiscoveryResult
+from surreal_memory.engine.semantic_discovery import (
+    SemanticDiscoveryResult,
+    discover_semantic_synapses,
+)
 
 _REFERENCE_TIME = datetime(2026, 1, 1, tzinfo=UTC)
 
 
 class _Progress:
-    def __init__(self, strategy: str, pause_phase: str | None = None) -> None:
+    def __init__(
+        self,
+        strategy: str,
+        pause_phase: str | None = None,
+        *,
+        pause_after_phase_calls: int = 1,
+    ) -> None:
         self.state: dict[str, Any] = {"strategy_states": {strategy: {}}}
         self.pause_phase = pause_phase
+        self.pause_after_phase_calls = pause_after_phase_calls
+        self.phase_calls: dict[str, int] = {}
         self.writes: list[dict[str, Any]] = []
 
     def strategy_state(self, strategy: str) -> dict[str, Any]:
@@ -52,7 +65,8 @@ class _Progress:
             counters=dict(counters or {}),
         )
         self.writes.append(dict(state))
-        if phase == self.pause_phase:
+        self.phase_calls[phase] = self.phase_calls.get(phase, 0) + 1
+        if phase == self.pause_phase and self.phase_calls[phase] == self.pause_after_phase_calls:
             self.pause_phase = None
             raise ConsolidationPausedError("simulated interruption")
 
@@ -130,6 +144,19 @@ class _Storage:
         )
         return found[offset : offset + limit]
 
+    async def find_neurons_after_id(
+        self,
+        cursor_id: str | None,
+        *,
+        limit: int,
+        ephemeral: bool | None = None,
+        include_embedding: bool = False,
+    ) -> list[Neuron]:
+        found = sorted(self.neurons.values(), key=lambda neuron: neuron.id)
+        if cursor_id is not None:
+            found = [neuron for neuron in found if neuron.id > cursor_id]
+        return found[:limit]
+
     async def get_synapses(
         self,
         *,
@@ -142,6 +169,17 @@ class _Storage:
             key=lambda edge: edge.id,
         )
         return found[offset : offset + limit] if limit is not None else found
+
+    async def get_synapses_after_id(
+        self,
+        cursor_id: str | None,
+        *,
+        limit: int,
+    ) -> list[Synapse]:
+        found = sorted(self.synapses.values(), key=lambda edge: edge.id)
+        if cursor_id is not None:
+            found = [edge for edge in found if edge.id > cursor_id]
+        return found[:limit]
 
     async def get_synapses_paged(self, *, type: SynapseType) -> list[Synapse]:
         return await self.get_synapses(type=type)
@@ -397,7 +435,7 @@ def _semantic_result() -> SemanticDiscoveryResult:
     )
 
 
-async def _semantic_discovery(*_args: Any) -> SemanticDiscoveryResult:
+async def _semantic_discovery(*_args: Any, **_kwargs: Any) -> SemanticDiscoveryResult:
     return _semantic_result()
 
 
@@ -435,6 +473,463 @@ async def test_semantic_link_replays_saved_synapse_after_interruption_without_du
     assert storage.added_synapses == ["semantic-edge-a-b"]
     assert report.semantic_synapses_created == 1
     assert progress.strategy_state("semantic_link")["pending"] == []
+
+
+@pytest.mark.asyncio
+async def test_semantic_link_resumes_after_first_durable_discovery_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    neurons = [
+        Neuron.create(
+            NeuronType.CONCEPT if index % 2 == 0 else NeuronType.ENTITY,
+            f"semantic candidate {index}",
+            metadata={"_embedding": [1.0 - index * 0.01, index * 0.01]},
+            neuron_id=f"semantic-node-{index}",
+        )
+        for index in range(4)
+    ]
+    config = SimpleNamespace(
+        embedding_enabled=True,
+        embedding_provider="fixture",
+        embedding_model="fixture",
+        semantic_discovery_similarity_threshold=0.7,
+        semantic_discovery_max_pairs=50,
+        essence_generator="extractive",
+    )
+    monkeypatch.setattr(
+        "surreal_memory.engine.semantic_discovery._effective_embedding",
+        lambda _config: (True, "fixture", "fixture"),
+    )
+    monkeypatch.setattr("surreal_memory.engine.semantic_discovery._EMBEDDING_PAGE_SIZE", 2)
+    monkeypatch.setattr("surreal_memory.engine.semantic_discovery._SYNAPSE_PAGE_SIZE", 2)
+
+    expected_storage = _Storage(neurons=neurons)
+    expected_storage.brain.config = config
+    legacy_result = await discover_semantic_synapses(expected_storage, config)
+    expected_synapse_ids = sorted(synapse.id for synapse in legacy_result.synapses)
+
+    storage = _Storage(neurons=neurons)
+    storage.brain.config = config
+    progress = _Progress(
+        "semantic_link",
+        pause_phase="semantic_link_discovery_neurons",
+        pause_after_phase_calls=2,
+    )
+    with pytest.raises(ConsolidationPausedError, match="simulated interruption"):
+        await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+            ConsolidationReport(), dry_run=False
+        )
+
+    checkpoint = progress.strategy_state("semantic_link")
+    assert checkpoint["phase"] == "semantic_link_discovery_neurons"
+    discovery_state = json.loads(checkpoint["pending"][0])
+    assert discovery_state["stage"] == "neurons"
+    assert discovery_state["cursor"] == "semantic-node-1"
+    assert storage.added_synapses == []
+
+    progress.pause_phase = "semantic_link_apply"
+    progress.pause_after_phase_calls = 1
+    with pytest.raises(ConsolidationPausedError, match="simulated interruption"):
+        await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+            ConsolidationReport(), dry_run=False
+        )
+    assert len(storage.added_synapses) == 1
+
+    await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+        ConsolidationReport(), dry_run=False
+    )
+
+    assert sorted(storage.added_synapses) == expected_synapse_ids
+    assert len(storage.added_synapses) == len(set(storage.added_synapses))
+
+    changed_storage = _Storage(neurons=neurons)
+    changed_storage.brain.config = config
+    changed_progress = _Progress(
+        "semantic_link",
+        pause_phase="semantic_link_discovery_neurons",
+        pause_after_phase_calls=2,
+    )
+    with pytest.raises(ConsolidationPausedError, match="simulated interruption"):
+        await _engine(
+            changed_storage, ConsolidationStrategy.SEMANTIC_LINK, changed_progress
+        )._semantic_link(ConsolidationReport(), dry_run=False)
+    changed_storage.neurons["semantic-node-0"] = changed_storage.neurons[
+        "semantic-node-0"
+    ].with_metadata(_embedding=[0.0, 1.0])
+    with pytest.raises(ConsolidationProgressError, match="source changed before its cursor"):
+        await _engine(
+            changed_storage, ConsolidationStrategy.SEMANTIC_LINK, changed_progress
+        )._semantic_link(ConsolidationReport(), dry_run=False)
+    assert changed_storage.added_synapses == []
+
+
+@pytest.mark.asyncio
+async def test_semantic_link_resumes_after_synapse_keyset_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    neurons = [
+        Neuron.create(
+            NeuronType.CONCEPT if index % 2 == 0 else NeuronType.ENTITY,
+            f"semantic candidate {index}",
+            metadata={"_embedding": [1.0 - index * 0.01, index * 0.01]},
+            neuron_id=f"semantic-node-{index}",
+        )
+        for index in range(4)
+    ]
+    existing = [
+        Synapse.create(
+            neurons[index].id,
+            neurons[index + 1].id,
+            SynapseType.CAUSED_BY,
+            weight=0.8,
+            synapse_id=f"existing-edge-{index}",
+        )
+        for index in range(3)
+    ]
+    config = SimpleNamespace(
+        embedding_enabled=True,
+        embedding_provider="fixture",
+        embedding_model="fixture",
+        semantic_discovery_similarity_threshold=0.7,
+        semantic_discovery_max_pairs=50,
+        essence_generator="extractive",
+    )
+    monkeypatch.setattr(
+        "surreal_memory.engine.semantic_discovery._effective_embedding",
+        lambda _config: (True, "fixture", "fixture"),
+    )
+    monkeypatch.setattr("surreal_memory.engine.semantic_discovery._EMBEDDING_PAGE_SIZE", 2)
+    monkeypatch.setattr("surreal_memory.engine.semantic_discovery._SYNAPSE_PAGE_SIZE", 2)
+
+    expected_storage = _Storage(neurons=neurons, synapses=existing)
+    legacy_result = await discover_semantic_synapses(expected_storage, config)
+    expected_synapse_ids = sorted(synapse.id for synapse in legacy_result.synapses)
+
+    storage = _Storage(neurons=neurons, synapses=existing)
+    storage.brain.config = config
+    progress = _Progress(
+        "semantic_link",
+        pause_phase="semantic_link_discovery_synapses",
+        pause_after_phase_calls=2,
+    )
+    with pytest.raises(ConsolidationPausedError, match="simulated interruption"):
+        await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+            ConsolidationReport(), dry_run=False
+        )
+    checkpoint = progress.strategy_state("semantic_link")
+    discovery_state = json.loads(checkpoint["pending"][0])
+    assert checkpoint["phase"] == "semantic_link_discovery_synapses"
+    assert discovery_state["stage"] == "synapses"
+    assert discovery_state["cursor"] == "existing-edge-1"
+
+    await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+        ConsolidationReport(), dry_run=False
+    )
+
+    assert sorted(storage.added_synapses) == expected_synapse_ids
+    assert len(storage.added_synapses) == len(set(storage.added_synapses))
+
+
+def _semantic_similarity_fixture(
+    neuron_count: int = 6,
+) -> tuple[list[Neuron], SimpleNamespace]:
+    neurons = [
+        Neuron.create(
+            NeuronType.CONCEPT if index % 2 == 0 else NeuronType.ENTITY,
+            f"semantic candidate {index}",
+            metadata={"_embedding": [1.0 - index * 0.01, index * 0.01]},
+            neuron_id=f"semantic-node-{index:02d}",
+        )
+        for index in range(neuron_count)
+    ]
+    config = SimpleNamespace(
+        embedding_enabled=True,
+        embedding_provider="fixture",
+        embedding_model="fixture",
+        semantic_discovery_similarity_threshold=0.7,
+        semantic_discovery_max_pairs=50,
+        essence_generator="extractive",
+    )
+    return neurons, config
+
+
+def _force_semantic_python_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(sys.modules, "numpy", None)
+    monkeypatch.setattr(
+        "surreal_memory.engine.semantic_discovery._effective_embedding",
+        lambda _config: (True, "fixture", "fixture"),
+    )
+    monkeypatch.setattr("surreal_memory.engine.semantic_discovery._EMBEDDING_PAGE_SIZE", 2)
+    monkeypatch.setattr("surreal_memory.engine.semantic_discovery._SYNAPSE_PAGE_SIZE", 2)
+    monkeypatch.setattr("surreal_memory.engine.semantic_discovery._YIELD_EVERY_ROWS", 2)
+
+
+@pytest.mark.asyncio
+async def test_semantic_link_resumes_similarity_cursor_without_recomputing_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    neurons, config = _semantic_similarity_fixture()
+    _force_semantic_python_fallback(monkeypatch)
+    monkeypatch.setattr(semantic_discovery_module, "_MAX_SIMILARITY_CHECKPOINTS", 4)
+    original_cosine = semantic_discovery_module._cosine_similarity
+    similarity_calls = 0
+
+    def counted_cosine(left: list[float], right: list[float]) -> float:
+        nonlocal similarity_calls
+        similarity_calls += 1
+        return original_cosine(left, right)
+
+    monkeypatch.setattr(semantic_discovery_module, "_cosine_similarity", counted_cosine)
+    expected_storage = _Storage(neurons=neurons)
+    legacy_result = await discover_semantic_synapses(expected_storage, config)
+    expected_synapse_ids = sorted(synapse.id for synapse in legacy_result.synapses)
+
+    storage = _Storage(neurons=neurons)
+    storage.brain.config = config
+    progress = _Progress(
+        "semantic_link",
+        pause_phase="semantic_link_discovery_similarity",
+        pause_after_phase_calls=3,
+    )
+    with pytest.raises(ConsolidationPausedError, match="simulated interruption"):
+        await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+            ConsolidationReport(), dry_run=False
+        )
+
+    checkpoint = progress.strategy_state("semantic_link")
+    discovery_state = json.loads(checkpoint["pending"][0])
+    assert checkpoint["phase"] == "semantic_link_discovery_similarity"
+    assert discovery_state["stage"] == "similarity"
+    assert discovery_state["version"] == 2
+    assert discovery_state["cursor"] == "3"
+    assert discovery_state["similarity_backend"] == "python_float64"
+    assert len(discovery_state["results"]) == discovery_state["synapses_created"]
+    assert all(len(result) == 3 for result in discovery_state["results"])
+    assert storage.added_synapses == []
+
+    similarity_calls = 0
+    await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+        ConsolidationReport(), dry_run=False
+    )
+
+    assert similarity_calls == 2 * (len(neurons) - 1)
+    assert sorted(storage.added_synapses) == expected_synapse_ids
+    assert len(storage.added_synapses) == len(set(storage.added_synapses))
+    assert progress.phase_calls["semantic_link_discovery_similarity"] == 4
+    for write in progress.writes:
+        if write["phase"] == "semantic_link_discovery_similarity" and write["cursor"] is not None:
+            pending_bytes = len(
+                json.dumps(write["pending"], ensure_ascii=False, separators=(",", ":")).encode(
+                    "utf-8"
+                )
+            )
+            assert pending_bytes <= semantic_discovery_module._MAX_SIMILARITY_CHECKPOINT_BYTES
+
+
+@pytest.mark.asyncio
+async def test_semantic_link_budget_pause_checkpoints_last_completed_similarity_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    neurons, config = _semantic_similarity_fixture()
+    _force_semantic_python_fallback(monkeypatch)
+    monkeypatch.setattr(semantic_discovery_module, "_MAX_SIMILARITY_CHECKPOINTS", 4)
+    original_cosine = semantic_discovery_module._cosine_similarity
+    similarity_calls = 0
+
+    def counted_cosine(left: list[float], right: list[float]) -> float:
+        nonlocal similarity_calls
+        similarity_calls += 1
+        return original_cosine(left, right)
+
+    monkeypatch.setattr(semantic_discovery_module, "_cosine_similarity", counted_cosine)
+    expected = await discover_semantic_synapses(_Storage(neurons=neurons), config)
+    similarity_calls = 0
+    snapshots: list[dict[str, Any]] = []
+
+    async def save_checkpoint(_phase: str, _cursor: str | None, details: dict[str, Any]) -> None:
+        snapshots.append(details)
+
+    budget_checks = 0
+
+    async def pause_before_fourth_row() -> None:
+        nonlocal budget_checks
+        budget_checks += 1
+        if budget_checks == 4:
+            raise ConsolidationPausedError("simulated budget exhaustion")
+
+    with pytest.raises(ConsolidationPausedError, match="budget exhaustion"):
+        await discover_semantic_synapses(
+            _Storage(neurons=neurons),
+            config,
+            checkpoint=save_checkpoint,
+            budget_check=pause_before_fourth_row,
+        )
+
+    durable = snapshots[-1]
+    assert durable["stage"] == "similarity"
+    assert durable["version"] == 2
+    assert durable["cursor"] == "2"
+    assert len(durable["results"]) == durable["synapses_created"]
+    assert similarity_calls == 3 * (len(neurons) - 1)
+
+    similarity_calls = 0
+    resumed = await discover_semantic_synapses(
+        _Storage(neurons=neurons),
+        config,
+        checkpoint=save_checkpoint,
+        resume_state=durable,
+        budget_check=lambda: _completed_budget_check(),
+    )
+
+    assert similarity_calls == (len(neurons) - 3) * (len(neurons) - 1)
+    assert sorted(edge.id for edge in resumed.synapses) == sorted(
+        edge.id for edge in expected.synapses
+    )
+    assert len({edge.id for edge in resumed.synapses}) == len(resumed.synapses)
+
+
+async def _completed_budget_check() -> None:
+    return None
+
+
+@pytest.mark.asyncio
+async def test_semantic_link_resume_at_pair_cap_does_not_create_more_pairs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    neurons, config = _semantic_similarity_fixture()
+    config.semantic_discovery_max_pairs = 1
+    _force_semantic_python_fallback(monkeypatch)
+    storage = _Storage(neurons=neurons)
+    storage.brain.config = config
+    progress = _Progress(
+        "semantic_link",
+        pause_phase="semantic_link_discovery_similarity",
+        pause_after_phase_calls=2,
+    )
+
+    with pytest.raises(ConsolidationPausedError, match="simulated interruption"):
+        await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+            ConsolidationReport(), dry_run=False
+        )
+    discovery_state = json.loads(progress.strategy_state("semantic_link")["pending"][0])
+    assert discovery_state["cursor"] == "0"
+    assert discovery_state["synapses_created"] == 1
+    assert len(discovery_state["results"]) == 1
+
+    await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+        ConsolidationReport(), dry_run=False
+    )
+
+    assert len(storage.added_synapses) == 1
+    assert len(storage.added_synapses) == len(set(storage.added_synapses))
+
+
+@pytest.mark.asyncio
+async def test_semantic_link_rejects_changed_source_after_similarity_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    neurons, config = _semantic_similarity_fixture()
+    _force_semantic_python_fallback(monkeypatch)
+    storage = _Storage(neurons=neurons)
+    storage.brain.config = config
+    progress = _Progress(
+        "semantic_link",
+        pause_phase="semantic_link_discovery_similarity",
+        pause_after_phase_calls=3,
+    )
+    with pytest.raises(ConsolidationPausedError, match="simulated interruption"):
+        await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+            ConsolidationReport(), dry_run=False
+        )
+
+    storage.neurons["semantic-node-00"] = storage.neurons["semantic-node-00"].with_metadata(
+        _embedding=[0.0, 1.0]
+    )
+    with pytest.raises(ConsolidationProgressError, match="source changed"):
+        await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+            ConsolidationReport(), dry_run=False
+        )
+    assert storage.added_synapses == []
+
+
+@pytest.mark.asyncio
+async def test_semantic_link_restarts_from_last_durable_similarity_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    neurons, config = _semantic_similarity_fixture()
+    _force_semantic_python_fallback(monkeypatch)
+    original_cosine = semantic_discovery_module._cosine_similarity
+    similarity_calls = 0
+
+    def counted_cosine(left: list[float], right: list[float]) -> float:
+        nonlocal similarity_calls
+        similarity_calls += 1
+        return original_cosine(left, right)
+
+    monkeypatch.setattr(semantic_discovery_module, "_cosine_similarity", counted_cosine)
+    expected_storage = _Storage(neurons=neurons)
+    legacy_result = await discover_semantic_synapses(expected_storage, config)
+    expected_synapse_ids = sorted(synapse.id for synapse in legacy_result.synapses)
+
+    storage = _Storage(neurons=neurons)
+    storage.brain.config = config
+    progress = _Progress("semantic_link")
+    durable_checkpoint = progress.checkpoint
+    similarity_checkpoint_calls = 0
+
+    async def fail_before_durable_write(
+        strategy: str,
+        phase: str,
+        **kwargs: Any,
+    ) -> None:
+        nonlocal similarity_checkpoint_calls
+        if phase == "semantic_link_discovery_similarity":
+            similarity_checkpoint_calls += 1
+            if similarity_checkpoint_calls == 3:
+                raise OSError("simulated checkpoint persistence failure")
+        await durable_checkpoint(strategy, phase, **kwargs)
+
+    monkeypatch.setattr(progress, "checkpoint", fail_before_durable_write)
+    similarity_calls = 0
+    with pytest.raises(OSError, match="checkpoint persistence failure"):
+        await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+            ConsolidationReport(), dry_run=False
+        )
+
+    checkpoint = progress.strategy_state("semantic_link")
+    discovery_state = json.loads(checkpoint["pending"][0])
+    assert checkpoint["phase"] == "semantic_link_discovery_similarity"
+    assert discovery_state["version"] == 2
+    assert discovery_state["cursor"] == "1"
+    assert storage.added_synapses == []
+
+    monkeypatch.setattr(progress, "checkpoint", durable_checkpoint)
+    similarity_calls = 0
+    await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+        ConsolidationReport(), dry_run=False
+    )
+
+    assert similarity_calls == (len(neurons) - 2) * (len(neurons) - 1)
+    assert sorted(storage.added_synapses) == expected_synapse_ids
+    assert len(storage.added_synapses) == len(set(storage.added_synapses))
+
+
+@pytest.mark.asyncio
+async def test_semantic_link_fails_when_similarity_checkpoint_exceeds_byte_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    neurons, config = _semantic_similarity_fixture()
+    _force_semantic_python_fallback(monkeypatch)
+    monkeypatch.setattr(semantic_discovery_module, "_MAX_SIMILARITY_CHECKPOINT_BYTES", 1)
+    storage = _Storage(neurons=neurons)
+    storage.brain.config = config
+    progress = _Progress("semantic_link")
+
+    with pytest.raises(ConsolidationProgressError, match="payload exceeds"):
+        await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+            ConsolidationReport(), dry_run=False
+        )
+    assert storage.added_synapses == []
 
 
 @pytest.mark.asyncio

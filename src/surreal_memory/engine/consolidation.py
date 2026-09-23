@@ -6151,39 +6151,91 @@ class ConsolidationEngine:
                         )
             return
 
-        cursor_value = state.get("cursor")
-        cursor = (
-            str(cursor_value)
-            if cursor_value is not None and state.get("phase") != "semantic_link_complete"
-            else None
-        )
+        # A discovery cursor and an apply cursor belong to different units.
+        # Only restore the latter from a pending manifest; discovery checkpoints
+        # are replayed by semantic_discovery itself.
+        cursor: str | None = None
         pending = state.get("pending")
+        resume_discovery: dict[str, Any] | None = None
+        manifest: dict[str, Any] | None = None
+        serialized: str
         if pending:
             if not isinstance(pending, (list, tuple)) or len(pending) != 1:
                 raise ConsolidationProgressError("invalid semantic-link pending checkpoint")
             try:
-                manifest = json.loads(pending[0])
-                if manifest.get("kind") != "semantic_link_synapses" or manifest.get("version") != 1:
-                    raise ValueError("unsupported pending manifest")
-                raw_synapses = manifest["synapses"]
-                if not isinstance(raw_synapses, list):
-                    raise ValueError("synapses is not a list")
-                synapses = [decode_synapse(item) for item in raw_synapses]
-                current_fingerprint = await source_fingerprint({synapse.id for synapse in synapses})
-                if current_fingerprint != manifest.get("source_fingerprint"):
-                    raise ConsolidationProgressError(
-                        "semantic-link source data changed after its pending checkpoint"
-                    )
-                metrics = manifest["metrics"]
-                if not isinstance(metrics, dict):
-                    raise ValueError("metrics is not an object")
+                saved = json.loads(pending[0])
+                if saved.get("kind") == "semantic_link_discovery":
+                    resume_discovery = saved
+                elif saved.get("kind") == "semantic_link_synapses" and saved.get("version") in (
+                    1,
+                    2,
+                ):
+                    manifest = saved
+                    raw_synapses = manifest["synapses"]
+                    if not isinstance(raw_synapses, list):
+                        raise ValueError("synapses is not a list")
+                    synapses = [decode_synapse(item) for item in raw_synapses]
+                    fingerprint_value = manifest.get("source_fingerprint")
+                    if fingerprint_value is not None:
+                        current_fingerprint = await source_fingerprint(
+                            {synapse.id for synapse in synapses}
+                        )
+                        if current_fingerprint != fingerprint_value:
+                            raise ConsolidationProgressError(
+                                "semantic-link source data changed after its pending checkpoint"
+                            )
+                    metrics = manifest["metrics"]
+                    if not isinstance(metrics, dict):
+                        raise ValueError("metrics is not an object")
+                    serialized = str(pending[0])
+                    cursor_value = state.get("cursor")
+                    cursor = str(cursor_value) if cursor_value is not None else None
+                else:
+                    raise ValueError("unsupported pending checkpoint")
             except ConsolidationProgressError:
                 raise
             except (KeyError, TypeError, ValueError) as exc:
                 raise ConsolidationProgressError("invalid semantic-link pending snapshot") from exc
-            serialized = pending[0]
-        else:
-            result = await discover_semantic_synapses(self._storage, brain.config)
+
+        if manifest is None:
+
+            async def checkpoint_discovery(
+                phase: str, phase_cursor: str | None, details: dict[str, Any]
+            ) -> None:
+                discovery_snapshot = json.dumps(
+                    details, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                )
+                await self._checkpoint_progress(
+                    f"semantic_link_discovery_{phase}",
+                    cursor=phase_cursor,
+                    pending=[discovery_snapshot],
+                    counters={
+                        key: int(details[key])
+                        for key in (
+                            "eligible_neurons",
+                            "existing_pairs",
+                            "synapses_created",
+                            "skipped_existing",
+                            "pairs_evaluated",
+                        )
+                        if isinstance(details.get(key), (int, float))
+                    },
+                )
+
+            try:
+                result = await discover_semantic_synapses(
+                    self._storage,
+                    brain.config,
+                    checkpoint=checkpoint_discovery,
+                    resume_state=resume_discovery,
+                    budget_check=self._check_progress_budget,
+                )
+            except ConsolidationProgressError:
+                raise
+            except RuntimeError as exc:
+                raise ConsolidationProgressError(
+                    f"semantic_link discovery requires optimization or a safe restart: {exc}"
+                ) from exc
             synapses = sorted(result.synapses, key=lambda synapse: synapse.id)
             metrics = {
                 "skipped_existing": result.skipped_existing,
@@ -6192,12 +6244,13 @@ class ConsolidationEngine:
                 "neurons_embedded": result.neurons_embedded,
                 "truncated": result.truncated,
             }
+            result_fingerprint = result.source_fingerprint
+            if result_fingerprint is None and synapses:
+                result_fingerprint = await source_fingerprint({synapse.id for synapse in synapses})
             manifest = {
                 "kind": "semantic_link_synapses",
-                "version": 1,
-                "source_fingerprint": await source_fingerprint(
-                    {synapse.id for synapse in synapses}
-                ),
+                "version": 2,
+                "source_fingerprint": result_fingerprint,
                 "metrics": metrics,
                 "synapses": [encode_synapse(synapse) for synapse in synapses],
             }
@@ -6206,7 +6259,7 @@ class ConsolidationEngine:
             )
             await self._checkpoint_progress(
                 "semantic_link_pending",
-                cursor=cursor,
+                cursor=None,
                 pending=[serialized],
                 counters={
                     "semantic_synapses_created": 0,
@@ -6214,6 +6267,9 @@ class ConsolidationEngine:
                     "semantic_link_failures": 0,
                 },
             )
+            # Discovery may have persisted a cursor to the outer strategy state.
+            # The final manifest starts a separate, deterministic apply cursor.
+            cursor = None
 
         report.semantic_synapses_skipped += int(metrics.get("skipped_existing", 0))
         if metrics.get("skipped_created_this_run"):
