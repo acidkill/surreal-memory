@@ -604,23 +604,20 @@ def consolidate(
         # Post-consolidation health hint: warn about orphans if not pruning
         if strategy != "prune" and not dry_run:
             try:
-                from surreal_memory.engine.diagnostics import DiagnosticsEngine
-
-                engine = DiagnosticsEngine(storage)
-                report = await engine.analyze(brain_id)
-                if report.orphan_rate > 0.20:
-                    orphan_count = int(report.orphan_rate * report.neuron_count)
+                after = delta.after
+                if after.orphan_rate > 0.20:
+                    orphan_count = int(after.orphan_rate * after.neuron_count)
                     typer.echo("")
                     typer.secho(
                         f"  Hint: {orphan_count} orphan neurons detected "
-                        f"({report.orphan_rate:.0%} of total).",
+                        f"({after.orphan_rate:.0%} of total).",
                         fg=typer.colors.YELLOW,
                     )
                     typer.echo(
                         "  Run with --strategy prune to clean up, "
                         "or recall related topics to build connections."
                     )
-                if report.consolidation_ratio == 0.0 and strategy != "mature":
+                if after.consolidation_ratio == 0.0 and strategy != "mature":
                     typer.echo("")
                     typer.secho(
                         "  Hint: No memories have reached SEMANTIC stage yet.",
