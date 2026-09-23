@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from surreal_memory.core.fiber import Fiber
 from surreal_memory.engine.reasoning_distiller import (
     DistillResult,
     _classify_by_keywords,
@@ -207,6 +208,39 @@ async def test_reasoning_coverage_math(tmp_path: Path, no_embedder: None) -> Non
     # A different model has no coverage.
     cov_other = await reasoning_coverage(storage, "claude-sonnet-5", cfg)
     assert cov_other["coverage_percent"] == 0.0
+
+
+async def test_pattern_census_exceeds_old_twenty_thousand_ceiling(
+    tmp_path: Path, no_embedder: None
+) -> None:
+    """Coverage and per-model budgets include patterns beyond the old top-N cap."""
+    storage = InMemoryStorage()
+    storage.set_brain(BRAIN)
+    for i in range(20_001):
+        await storage.add_fiber(
+            Fiber.create(
+                neuron_ids={"anchor"},
+                synapse_ids=set(),
+                anchor_neuron_id="anchor",
+                fiber_id=f"pattern-{i:05d}",
+                metadata={
+                    "_reasoning_pattern": True,
+                    "_reasoning_signature": f"signature-{i}",
+                    "_source_model": "claude-fable-5",
+                    "_reasoning_confidence": 0.9,
+                    "_reasoning_category": "debugging" if i == 20_000 else "planning",
+                },
+            )
+        )
+    cfg = _ucfg(tmp_path, pattern_targets={"claude-fable-5": 20_001})
+    coverage = await reasoning_coverage(storage, "claude-fable-5", cfg)
+    assert coverage["by_category"]["planning"] == 20_000
+    assert coverage["by_category"]["debugging"] == 1
+
+    await _seed(storage, "claude-fable-5", _DEBUG_TRACES)
+    result = await distill_reasoning_patterns(storage, BRAIN, cfg)
+    assert result.patterns_learned == 0  # Target already met across all pages.
+    assert len(await storage.get_unprocessed_reasoning_traces(BRAIN)) == len(_DEBUG_TRACES)
 
 
 async def test_coverage_respects_min_patterns_bar(tmp_path: Path, no_embedder: None) -> None:

@@ -25,7 +25,7 @@ import math
 import os
 import re
 from collections import Counter
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass, replace
 from fnmatch import fnmatch
 from typing import TYPE_CHECKING, Any
@@ -51,9 +51,8 @@ _CATEGORY_COS_THRESHOLD = 0.35
 _MOVE_JACCARD = 0.6
 _CLASSIFY_CHARS = 500
 _BATCH_PER_MODEL = 200
-# Ceiling on existing pattern fibers fetched for dedup/existing-count/coverage.
-# Raised from 5000 for full-corpus mining across many models (u008).
-_PATTERN_FETCH_LIMIT = 20_000
+# Bound each scan request, not the total number of patterns considered.
+_PATTERN_PAGE_SIZE = 1000
 
 # ── Reasoning moves (closed vocabulary; regex discourse markers) ──────────────
 _REASONING_MOVES: dict[str, re.Pattern[str]] = {
@@ -678,6 +677,19 @@ async def _process_model_batch(
     return created, consumed
 
 
+async def _reasoning_pattern_fibers(storage: NeuralStorage) -> AsyncIterator[Fiber]:
+    """Visit all pattern fibers in bounded ID-ordered pages."""
+    cursor: str | None = None
+    while True:
+        page = await storage.get_fibers_after_id(cursor, limit=_PATTERN_PAGE_SIZE)
+        for fiber in page:
+            if "_reasoning_pattern" in fiber.metadata:
+                yield fiber
+        if len(page) < _PATTERN_PAGE_SIZE:
+            break
+        cursor = page[-1].id
+
+
 async def distill_reasoning_patterns(
     storage: NeuralStorage,
     brain_id: str,
@@ -722,16 +734,12 @@ async def distill_reasoning_patterns(
     if namer is not None:
         await namer.acquire()
 
-    existing = await storage.find_fibers(
-        metadata_key="_reasoning_pattern", limit=_PATTERN_FETCH_LIMIT
-    )
-    existing_sigs = {
-        str(f.metadata.get("_reasoning_signature"))
-        for f in existing
-        if f.metadata.get("_reasoning_signature")
-    }
+    existing_sigs: set[str] = set()
     existing_by_model: dict[str, int] = {}
-    for f in existing:
+    async for f in _reasoning_pattern_fibers(storage):
+        signature = f.metadata.get("_reasoning_signature")
+        if signature:
+            existing_sigs.add(str(signature))
         source_model = f.metadata.get("_source_model")
         if source_model:
             existing_by_model[str(source_model)] = existing_by_model.get(str(source_model), 0) + 1
@@ -845,11 +853,8 @@ async def reasoning_coverage(
     it is never in ``categories``). ``storage`` must be on the target brain.
     """
     rt = config.reasoning_training
-    fibers = await storage.find_fibers(
-        metadata_key="_reasoning_pattern", limit=_PATTERN_FETCH_LIMIT
-    )
     counts: dict[str, int] = dict.fromkeys(rt.categories, 0)
-    for f in fibers:
+    async for f in _reasoning_pattern_fibers(storage):
         md = f.metadata
         if md.get("_source_model") != model:
             continue

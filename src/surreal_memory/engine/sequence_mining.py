@@ -414,13 +414,20 @@ async def learn_habits(
 
 
 async def _existing_habit_steps(storage: NeuralStorage) -> set[tuple[str, ...]]:
-    """Step-sequences of habits already materialized as `_habit_pattern` fibers."""
-    existing = await storage.find_fibers(metadata_key="_habit_pattern", limit=1000)
-    return {
-        tuple(f.metadata.get("_workflow_actions", []))
-        for f in existing
-        if f.metadata.get("_workflow_actions")
-    }
+    """Step-sequences of all materialized habits, without a top-N cutoff."""
+    steps: set[tuple[str, ...]] = set()
+    cursor: str | None = None
+    while True:
+        page = await storage.get_fibers_after_id(cursor, limit=1000)
+        for fiber in page:
+            if "_habit_pattern" in fiber.metadata:
+                actions = fiber.metadata.get("_workflow_actions")
+                if actions:
+                    steps.add(tuple(actions))
+        if len(page) < 1000:
+            break
+        cursor = page[-1].id
+    return steps
 
 
 async def _materialize_habits(

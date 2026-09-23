@@ -9,10 +9,12 @@ import pytest_asyncio
 
 from surreal_memory.core.action_event import ActionEvent
 from surreal_memory.core.brain import Brain, BrainConfig
+from surreal_memory.core.fiber import Fiber
 from surreal_memory.core.neuron import NeuronType
 from surreal_memory.core.synapse import SynapseType
 from surreal_memory.engine.sequence_mining import (
     SequencePair,
+    _existing_habit_steps,
     extract_habit_candidates,
     heuristic_habit_name,
     learn_habits,
@@ -43,6 +45,23 @@ async def store() -> InMemoryStorage:
 
 
 # ── mine_sequential_pairs ────────────────────────────────────────
+
+
+async def test_habit_dedup_scans_beyond_first_thousand(store: InMemoryStorage) -> None:
+    """An older habit cannot disappear from dedup after 1000 newer fibers."""
+    for i in range(1001):
+        fiber = Fiber.create(
+            neuron_ids={"anchor"},
+            synapse_ids=set(),
+            anchor_neuron_id="anchor",
+            fiber_id=f"habit-{i:05d}",
+            metadata={"_habit_pattern": True, "_workflow_actions": [f"action-{i}"]},
+        )
+        await store.add_fiber(fiber)
+
+    steps = await _existing_habit_steps(store)
+    assert len(steps) == 1001
+    assert ("action-1000",) in steps
 
 
 class TestMineSequentialPairs:
