@@ -169,6 +169,7 @@ jobs:
     timeout-minutes: 15
     env:
       SURREALDB_URL: http://127.0.0.1:8001
+      SMEM_TEST_SURREALDB_URL: http://127.0.0.1:8001
       SURREALDB_USER: root
       SURREALDB_PASS: root
       SURREALDB_NS: smem_ci
