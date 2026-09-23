@@ -45,6 +45,12 @@ _CONTRACT = (
     # and inherited-inert on the other would mean the table grows without bound
     # exactly where it already did: the production backend.
     "collapse_pending_updates",
+    # Semantic anchor retrieval's vector search. The interface fallback raises
+    # NotImplementedError (a capability gap, deliberately distinct from "no
+    # neighbours") rather than returning [] — so an inherited fallback here
+    # would silently make every backend "unsupported" instead of failing the
+    # override check below.
+    "find_neurons_by_embedding",
 )
 
 # SharedStorage is a thin HTTP client against a remote server, with no local
@@ -103,7 +109,6 @@ _KNOWN_ASYMMETRIC_ONLY = frozenset(
         "count_activated_neuron_states",
         "delete_neurons_batch",
         "delete_synapses_batch",
-        "find_neurons_by_embedding",
         "find_neurons_by_ids",
         "get_connected_neuron_ids",
         "get_edges_for_neurons",

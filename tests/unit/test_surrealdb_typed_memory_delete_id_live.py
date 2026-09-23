@@ -1,15 +1,19 @@
 """Live-DB regression for the typed-memory delete id-form mismatch (BUG-006).
 
-``find_fibers`` returns ``Fiber.id`` in the ``_to_surreal_id``-folded form (the
-SurrealDB record name, dashes folded to underscores), while
-``typed_memory.fiber_id`` keeps the original dashed uuid. ``delete_typed_memory``
-used to match the dashed *field* only, so a fiber id round-tripped through
-``find_fibers``/``get_fiber`` deleted nothing, returned ``False`` and raised no
-error — leaving an orphan ``typed_memory`` row behind forever (``smem_forget``
-with ``hard=true`` still deleted the fiber, so the orphan became unreachable).
-The fix matches on the sanitized record id, exactly like ``get_typed_memory``,
-so both id forms resolve. Skipped unless SURREALDB_URL points at a running
-SurrealDB.
+``delete_typed_memory`` used to match the dashed ``typed_memory.fiber_id`` *field*
+only, so an id in the ``_to_surreal_id``-folded form (dashes folded to underscores,
+which is what ``find_fibers``/``get_fiber`` handed back until 2026-09-13) deleted
+nothing, returned ``False`` and raised no error — leaving an orphan ``typed_memory``
+row behind forever (``smem_forget`` with ``hard=true`` still deleted the fiber, so the
+orphan became unreachable). The fix matches on the sanitized record id, exactly like
+``get_typed_memory``, so both id forms resolve.
+
+The fiber-id round-trip fix (2026-09-13) removed the *source* of folded ids —
+``find_fibers`` now returns the same dashed id ``Fiber.create`` minted — but it did
+NOT remove the requirement: folded ids still live in older callers and in stored
+rows, so ``delete_typed_memory`` must keep accepting both. These tests therefore
+assert the round-trip AND feed the folded form in explicitly. Skipped unless
+SURREALDB_URL points at a running SurrealDB.
 """
 
 from __future__ import annotations
@@ -79,15 +83,18 @@ async def _typed_memory_row_count(storage) -> int:  # type: ignore[no-untyped-de
 
 class TestDeleteTypedMemoryIdForms:
     async def test_delete_accepts_find_fibers_folded_id(self, storage) -> None:  # type: ignore[no-untyped-def]
-        """A fiber id sourced from find_fibers must delete its typed_memory row."""
+        """A folded fiber id must still delete its typed_memory row."""
         fiber = await _make_memory(storage, "bug006 folded-id fiber")
 
         found = await storage.find_fibers(contains_neuron=fiber.anchor_neuron_id, limit=10)
         assert len(found) == 1
-        folded_id = found[0].id
-        # Guard the premise: the round-tripped id really is a different string.
+        # Premise since the fiber-id round-trip fix: find_fibers hands back the id it
+        # was given, so the folded form no longer arrives by accident...
         assert "-" in fiber.id
-        assert folded_id == fiber.id.replace("-", "_")
+        assert found[0].id == fiber.id
+        # ...but it still arrives from older callers and stored rows, so feed it in
+        # deliberately — that is the form BUG-006 was about.
+        folded_id = fiber.id.replace("-", "_")
         assert folded_id != fiber.id
 
         assert await storage.delete_typed_memory(folded_id) is True  # BUG-006: was False

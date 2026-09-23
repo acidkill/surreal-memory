@@ -629,6 +629,60 @@ class NeuralStorage(ABC):
         """
         return []
 
+    async def find_neurons_by_embedding(
+        self,
+        query_embedding: list[float],
+        limit: int = 10,
+        type_filter: NeuronType | None = None,
+    ) -> list[tuple[Neuron, float]]:
+        """Find neurons nearest to ``query_embedding``, best first.
+
+        Returns ``(neuron, cosine_similarity)`` pairs, where the similarity is on
+        the same scale as :meth:`EmbeddingProvider.similarity` so callers can
+        compare it against ``embedding_similarity_threshold`` directly.
+
+        Raises ``NotImplementedError`` when the backend has no vector search.
+        That is deliberately different from returning an empty list: "this
+        backend cannot search vectors" and "no neuron is near this query" lead
+        to different caller decisions, and collapsing them into ``[]`` would
+        silently hide a missing capability.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} has no vector search; callers must fall back to a scan"
+        )
+
+    async def find_fibers_by_embedding(
+        self,
+        query_embedding: list[float],
+        limit: int = 10,
+    ) -> list[tuple[Fiber, float]]:
+        """Find fibers nearest to ``query_embedding`` by their precomputed ``fiber_vec``, best
+        first — the ONLY retrieval path that reaches a fiber without going through one of its
+        neurons as an anchor (see
+        ``engine/retrieval.py``'s "FIBER VECTOR ANCHORS" step). ``fiber_vec`` is populated by
+        ``scripts/backfill_fiber_vectors.py``, not written inline at encode time (follow-up, not
+        part of this fix — see that script's docstring).
+
+        Returns ``(fiber, cosine_similarity)`` pairs, same scale as
+        :meth:`find_neurons_by_embedding`.
+
+        Raises ``NotImplementedError`` when the backend has no fiber vector search — deliberately
+        different from returning ``[]`` for the same reason as ``find_neurons_by_embedding``.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} has no fiber vector search; the fiber-vector retriever "
+            "contributes nothing on this backend"
+        )
+
+    async def update_fiber_embeddings(self, pairs: list[tuple[str, list[float]]]) -> None:
+        """Write ``fiber_vec`` for many fibers in one round-trip (see
+        ``find_fibers_by_embedding``). Unlike ``update_neuron_embeddings``, there is no generic
+        dataclass-level fallback: ``Fiber`` carries no metadata bag equivalent to
+        ``Neuron.metadata["_embedding"]``, so a backend must implement this directly against its
+        own storage to support the fiber-vector retriever at all.
+        """
+        raise NotImplementedError(f"{type(self).__name__} has no fiber embedding storage")
+
     @abstractmethod
     async def find_fibers(
         self,

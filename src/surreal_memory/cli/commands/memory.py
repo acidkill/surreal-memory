@@ -99,14 +99,24 @@ async def _encode_and_store(
     project_id: str | None,
     event_timestamp: datetime | None = None,
     ephemeral: bool = False,
+    priority_was_explicit: bool = False,
 ) -> dict[str, Any]:
     """Encode content into neural graph and store typed memory metadata."""
     encoder = MemoryEncoder(storage, brain_config, dedup_pipeline=build_dedup_pipeline(storage))
     storage.disable_auto_save()
 
+    # A priority the caller asked for must reach the FIBER, not only typed_memory:
+    # retrieval scores fibers, so a priority the fiber never carries cannot influence
+    # recall. Mirrors the MCP write path. A priority that was merely defaulted is not
+    # written — the value has to mean "someone said this matters".
+    encode_metadata: dict[str, Any] | None = None
+    if priority_was_explicit:
+        encode_metadata = {"priority": mem_priority.value}
+
     result = await encoder.encode(
         content=content,
         timestamp=event_timestamp or utcnow(),
+        metadata=encode_metadata,
         tags=tags,
     )
 
@@ -265,6 +275,7 @@ def remember(
             project_id=project_id,
             event_timestamp=event_timestamp,
             ephemeral=ephemeral,
+            priority_was_explicit=priority is not None,
         )
 
         response = {
