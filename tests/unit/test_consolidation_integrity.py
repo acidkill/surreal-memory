@@ -223,9 +223,19 @@ _EXTRA_KEYS_NOT_RENDERED = {
     "semantic_link_truncated": "folded into the semantic synapse line",
     "failed_strategies": "rendered by its own branch",
     "timed_out_strategies": "rendered by its own branch",
+    "paused_strategies": "rendered by its own branch",
     "maturations_backfilled": "rendered by its own branch",
     "maturations_unreachable": "rendered by its own branch",
 }
+
+
+def test_graceful_budget_pause_is_not_reported_as_timeout() -> None:
+    report = ConsolidationReport()
+    report.extra["paused_strategies"] = ["lifecycle"]
+
+    summary = report.summary()
+    assert "Stages paused: lifecycle" in summary
+    assert "Stages timed out: lifecycle" not in summary
 
 
 class TestCounterContract:

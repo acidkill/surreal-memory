@@ -552,6 +552,9 @@ class ConsolidationReport:
         timed_out = self.extra.get("timed_out_strategies")
         if timed_out:
             lines.append(f"  Stages timed out: {', '.join(timed_out)}")
+        paused_stages = self.extra.get("paused_strategies")
+        if paused_stages:
+            lines.append(f"  Stages paused: {', '.join(paused_stages)}")
 
         backfilled = self.extra.get("maturations_backfilled")
         if backfilled:
@@ -820,6 +823,7 @@ class ConsolidationEngine:
         strategy_timeout = self._config.strategy_timeout_seconds
         total_timeout = self._config.total_timeout_seconds
         timed_out_strategies: list[str] = []
+        paused_strategies: list[str] = []
         failed_strategies: list[str] = []
         progress_messages: list[str] = []
         resume_message: str | None = None
@@ -944,7 +948,7 @@ class ConsolidationEngine:
                         if progress_session is not None:
                             await progress_session.complete_strategy(strategy.value)
                     except ConsolidationPausedError as exc:
-                        timed_out_strategies.append(strategy.value)
+                        paused_strategies.append(strategy.value)
                         if progress_session is not None:
                             try:
                                 await progress_session.pause()
@@ -1035,6 +1039,8 @@ class ConsolidationEngine:
 
             if timed_out_strategies:
                 report.extra["timed_out_strategies"] = list(dict.fromkeys(timed_out_strategies))
+            if paused_strategies:
+                report.extra["paused_strategies"] = list(dict.fromkeys(paused_strategies))
             if failed_strategies:
                 report.extra["failed_strategies"] = failed_strategies
 
