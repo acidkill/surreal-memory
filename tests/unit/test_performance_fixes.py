@@ -104,6 +104,12 @@ class TestEmbeddingFallback:
         storage.get_neurons_batch = AsyncMock(return_value={})
         storage.get_fibers = AsyncMock(return_value=[])
         storage.get_synapses_for_neurons = AsyncMock(return_value={})
+        # This class pins the pre-KNN scan semantics (see mock_config below), so
+        # the vector index must never be touched here — a call would mean the
+        # scan/knn branch selection regressed, not that the mock is unconfigured.
+        storage.find_neurons_by_embedding = AsyncMock(
+            side_effect=AssertionError("scan mode must not touch the vector index")
+        )
         return storage
 
     @pytest.fixture
@@ -120,6 +126,10 @@ class TestEmbeddingFallback:
         config.hebbian_initial_weight = 0.3
         config.embedding_enabled = False
         config.embedding_similarity_threshold = 0.7
+        # Pins this whole class to the historical scan path: these tests
+        # predate embedding_anchor_mode and assert on capped-scan behaviour
+        # (probe + wide `find_neurons` scan), not on the vector index.
+        config.embedding_anchor_mode = "scan"
         return config
 
     def test_pipeline_accepts_embedding_provider(self, mock_storage, mock_config):
@@ -173,6 +183,9 @@ class TestEmbeddingFallback:
         anchors = await pipeline._find_embedding_anchors("auth login")
         assert len(anchors) > 0
         mock_provider.embed.assert_called_once_with("auth login")
+        # The sentinel side effect alone would be swallowed by the fallback path,
+        # so assert outright that scan mode never reached for the vector index.
+        mock_storage.find_neurons_by_embedding.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_embedding_anchors_empty_without_provider(self, mock_storage, mock_config):
@@ -184,6 +197,10 @@ class TestEmbeddingFallback:
         )
         result = await pipeline._find_embedding_anchors("test query")
         assert result == []
+        # No provider means the method must return before touching storage at
+        # all — neither the scan path nor the vector index.
+        mock_storage.find_neurons.assert_not_called()
+        mock_storage.find_neurons_by_embedding.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_graph_only_tombstones_never_enter_the_anchor_set(
@@ -229,6 +246,7 @@ class TestEmbeddingFallback:
             "a tombstone's vector describes a placeholder, not a memory - it must "
             "never occupy an anchor slot"
         )
+        mock_storage.find_neurons_by_embedding.assert_not_called()
 
 
 # -- Retrieval: Query Expansion ----------------------------------------------

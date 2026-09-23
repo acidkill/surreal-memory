@@ -7,10 +7,11 @@ through to the no-op defaults in ``storage/base.py`` — ``save_maturation`` sil
 dropped every write and ``find_maturations`` always returned ``[]`` — so the dashboard
 reported "0 semantic" regardless of processing. Mirrors ``review_schedules.py``.
 
-Every ``fiber_id`` crossing this boundary — in, out, and in the WHERE clause — is
-folded through ``_ids._to_surreal_id``. See ``_canonicalised`` for why: without it
-the field kept the caller's dash-form uuid4 while the fiber table (and this table's
-own record id) used the underscore form, so nothing could join and no memory ever
+Every ``fiber_id`` going IN — writes, record ids, WHERE clauses — is folded through
+``_ids._to_surreal_id``, because that is the form the table's record ids use. Every
+``fiber_id`` coming OUT is canonicalised through ``_ids._to_public_id``, because that
+is the form ``Fiber.id`` carries. See ``_canonicalised`` for why the two directions
+differ, and why getting them out of step meant nothing could join and no memory ever
 reached SEMANTIC.
 """
 
@@ -22,7 +23,7 @@ from datetime import datetime
 from typing import Any
 
 from surreal_memory.engine.memory_stages import MaturationRecord, MemoryStage
-from surreal_memory.storage.surrealdb._ids import _to_surreal_id
+from surreal_memory.storage.surrealdb._ids import _to_public_id, _to_surreal_id
 from surreal_memory.utils.timeutils import utcnow
 
 # Rows per page when listing maturations. Matches the synapse snapshot page size
@@ -62,24 +63,30 @@ def _row_to_maturation(row: dict[str, Any]) -> MaturationRecord:
 
 
 def _canonicalised(record: MaturationRecord) -> MaturationRecord:
-    """Return ``record`` with ``fiber_id`` in the form the ``fiber`` table uses.
+    """Return ``record`` with ``fiber_id`` in the form ``Fiber.id`` now carries.
 
     BUG: ``Fiber.create`` mints a dash-form uuid4 and ``BuildFiberStep`` handed
     that straight to ``save_maturation``, so the ``fiber_id`` FIELD kept dashes
     while the record id was already folded to underscores by ``_to_surreal_id``.
     Every consumer that joins a maturation back to a fiber BY ID — the rehearsal
-    lookup in ``lifecycle.reinforce`` (fiber ids read back from the DB, so always
-    underscore-form) and the ``maturation_map`` fed to ``extract_patterns`` —
-    therefore missed those rows entirely. Rehearsals never landed, so the
-    EPISODIC->SEMANTIC spacing gate could never be satisfied: on the live brain
-    ALL 77 rehearsed and ALL 9 semantic rows were underscore-form, and not one of
-    the 1277 dash-form rows had ever been rehearsed.
+    lookup in ``lifecycle.reinforce`` and the ``maturation_map`` fed to
+    ``extract_patterns`` — therefore missed those rows entirely. Rehearsals never
+    landed, so the EPISODIC->SEMANTIC spacing gate could never be satisfied: on the
+    live brain ALL 77 rehearsed and ALL 9 semantic rows were underscore-form, and not
+    one of the 1277 dash-form rows had ever been rehearsed.
 
-    Folding on the way OUT (not just on the way in) means legacy rows resolve
-    exactly like freshly written ones, so promotion resumes without waiting for a
-    data migration.
+    Canonicalising on the way OUT (not just on the way in) means legacy rows resolve
+    exactly like freshly written ones, so promotion resumes without waiting for a data
+    migration. **Which form is canonical changed on 2026-09-13**: it used to be the
+    underscore form, because ``_row_to_fiber`` handed callers underscore-form
+    ``Fiber.id``. Now that ``Fiber.id`` round-trips as dashes, this function folds the
+    other way — the two are one change, not two, because they are the two halves of a
+    single join. Only the OUTPUT form moved: ``save_maturation``, the record id and the
+    dual-form WHERE fallback in ``_find_maturation_row`` still go through
+    ``_to_surreal_id`` and are untouched, so rows written before and after the change
+    both resolve.
     """
-    canonical = _to_surreal_id(record.fiber_id)
+    canonical = _to_public_id(record.fiber_id)
     if canonical == record.fiber_id:
         return record
     return replace(record, fiber_id=canonical)

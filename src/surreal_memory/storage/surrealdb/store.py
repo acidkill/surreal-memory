@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
+import math
 import random
 import re
 from collections.abc import Iterator
@@ -27,7 +28,7 @@ from surreal_memory.core.project import Project
 from surreal_memory.core.synapse import Direction, Synapse, SynapseType
 from surreal_memory.core.sync_records import ChangeEntry, DeviceRecord
 from surreal_memory.storage.base import NeuralStorage
-from surreal_memory.storage.surrealdb._ids import _safe_brain_id, _to_surreal_id
+from surreal_memory.storage.surrealdb._ids import _safe_brain_id, _to_public_id, _to_surreal_id
 from surreal_memory.storage.surrealdb.activity import SurrealDBActivityMixin
 from surreal_memory.storage.surrealdb.alerts import SurrealDBAlertsMixin
 from surreal_memory.storage.surrealdb.cognitive import SurrealDBCognitiveMixin
@@ -56,6 +57,18 @@ from surreal_memory.utils.geo import GeoFilter, fiber_within
 from surreal_memory.utils.timeutils import utcnow
 
 logger = logging.getLogger(__name__)
+
+# HNSW search width floor. The index is built with EFC 150. This backend used
+# to search with 100, and at that width the index quietly drops neighbours:
+# measured on a copy of the production brain (18 712 neurons, 49 golden
+# queries, k = 30, ef the only variable), recall@30 against a brute-force scan
+# was 0.944 mean / 0.800 min at ef=100, 0.983 / 0.933 at 200, 0.999 / 0.967 at
+# 400 and 1.000 at 800 — two of the 49 queries lost the very neuron they were
+# looking for at 100, including one that recall otherwise ranked first. 400 is
+# the smallest width at which no query lost a true top-30 neighbour; it costs
+# ~2.4x the query time (40 -> 96 ms median on that copy). Larger k still
+# raises ef above the floor (ef < k silently degrades recall).
+_KNN_EF_MIN = 400
 
 #: Every table carrying a ``brain_id``. ``clear()`` walks this list, so a brain
 #: wipe leaves nothing behind. It used to name nine tables by hand and drift as
@@ -161,7 +174,19 @@ _BATCH_FETCH_CONCURRENCY = 16
 # composite index is selected, while direct record-id reads complete in
 # milliseconds. Keep the set-based query for consolidation-sized pages, where
 # thousands of individual RPCs would cost more than the scan-like index path.
-_DIRECT_STATE_FETCH_LIMIT = 256
+#
+# The cut-over point is MEASURED, not assumed: with the set-based query hinted
+# past the brain index (see ``get_neuron_states_batch``) it stops being the slow
+# side much earlier than 256. Both paths timed on a copy of the production brain
+# (18 657 state rows, 5 repetitions per point, interleaved), p50 ms:
+#
+#     n:          8     16     32     64    128    256    512   1024
+#     per-id:   2.8    5.2    9.0   15.0   25.6   50.8  103.8  197.3
+#     set:     10.5   11.0   11.7   13.7   17.5   26.2   51.3  125.9
+#
+# so the set query takes the lead at n = 64 and never gives it back.
+# measured 2026-09-13 on a copy of a production brain (18 657 state rows).
+_DIRECT_STATE_FETCH_LIMIT = 64
 
 
 def _prefer_ws_transport(url: str) -> str:
@@ -428,11 +453,9 @@ def _row_to_neuron(row: dict[str, Any]) -> Neuron:
     if embedding_vec:
         meta["_embedding"] = list(embedding_vec)
     rid = row["id"]
-    neuron_id = f"{rid.table_name}:{rid.id}" if hasattr(rid, "table_name") else str(rid)
-    # Strip table prefix and convert underscores back to dashes
-    if ":" in neuron_id:
-        neuron_id = neuron_id.split(":", 1)[1]
-    neuron_id = neuron_id.replace("_", "-")
+    neuron_id = _to_public_id(
+        f"{rid.table_name}:{rid.id}" if hasattr(rid, "table_name") else str(rid)
+    )
     return Neuron(
         id=neuron_id,
         type=_parse_neuron_type(row["type"]),
@@ -496,10 +519,7 @@ def _row_to_synapse(row: dict[str, Any]) -> Synapse:
     """
 
     rid = row["id"]
-    syn_id = f"{rid.table_name}:{rid.id}" if hasattr(rid, "table_name") else str(rid)
-    if ":" in syn_id:
-        syn_id = syn_id.split(":", 1)[1]
-    syn_id = syn_id.replace("_", "-")
+    syn_id = _to_public_id(f"{rid.table_name}:{rid.id}" if hasattr(rid, "table_name") else str(rid))
     source_id = _endpoint_to_id(row.get("in"), row.get("source_id"))
     target_id = _endpoint_to_id(row.get("out"), row.get("target_id"))
     syn = Synapse(
@@ -549,11 +569,21 @@ def _change_payload(entity: Any | None) -> dict[str, Any] | None:
 
 
 def _row_to_fiber(row: dict[str, Any]) -> Fiber:
-    """Convert a SurrealDB fiber record to Fiber."""
+    """Convert a SurrealDB fiber record to Fiber.
+
+    Until 2026-09-13 this converter — alone among the three — did not fold the record
+    id's underscores back to dashes, so ``Fiber.id`` did not round-trip through
+    ``get_fiber``/``find_fibers``/``find_fibers_batch``: a fresh fiber, saved and
+    re-fetched, came back with every ``-`` turned into ``_``. Callers grew dual-form
+    compensations to live with it (``delete_typed_memory``, BUG-006), and
+    ``maturation._canonicalised`` actively folded the *other* direction to match. The
+    id now round-trips via the shared ``_to_public_id``; see that fix's commit message for the audit of who depended on the
+    old form.
+    """
     rid = row["id"]
-    fiber_id = f"{rid.table_name}:{rid.id}" if hasattr(rid, "table_name") else str(rid)
-    if ":" in fiber_id:
-        fiber_id = fiber_id.split(":", 1)[1]
+    fiber_id = _to_public_id(
+        f"{rid.table_name}:{rid.id}" if hasattr(rid, "table_name") else str(rid)
+    )
     return Fiber(
         id=fiber_id,
         neuron_ids=set(row.get("neuron_ids") or []),
@@ -1841,10 +1871,32 @@ class SurrealDBStorage(
         chunk = 5000
         for start in range(0, len(neuron_ids), chunk):
             ids = list(neuron_ids[start : start + chunk])
+            # Two things this query needs and neither is obvious.
+            #
+            # WITH NOINDEX: ``idx_state_neuron`` is the composite UNIQUE
+            # (brain_id, neuron_id), and for ``neuron_id IN $ids`` the planner can
+            # use only its brain_id prefix — on a single-brain database that selects
+            # every row and evaluates the IN list after decoding each one. Measured
+            # on a copy of production (18 657 rows, 5 ids): 85 ms with the index,
+            # 9.7 ms letting the predicate run as a ``pre_decode_filter``. Pinned by
+            # a plan test, not a timing test.
+            #
+            # The id spelling: the per-id path above addresses
+            # ``neuron_state:state_{_to_surreal_id(nid)}``, which folds ``-`` to
+            # ``_`` and therefore accepts BOTH spellings of the same id. This query
+            # filters the ``neuron_id`` COLUMN, which stores the public, dashed
+            # spelling — measured on the same copy, an underscored id list returns 8
+            # of 8 through the per-id path and 0 of 8 here. Without this union the
+            # two branches would disagree about their own input and the caller would
+            # get states below the threshold and silence above it. Sending both
+            # spellings keeps them equivalent (a folded id that names nothing simply
+            # matches no row).
+            lookup_ids = list(dict.fromkeys(ids + [_to_public_id(i) for i in ids]))
             rows = await self._query(
-                "SELECT * FROM neuron_state WHERE brain_id = $brain_id AND neuron_id IN $ids",
+                "SELECT * FROM neuron_state WITH NOINDEX "
+                "WHERE brain_id = $brain_id AND neuron_id IN $ids",
                 brain_id=brain_id,
-                ids=ids,
+                ids=lookup_ids,
             )
             for r in rows:
                 state = _row_to_neuron_state(r)
@@ -3034,36 +3086,116 @@ class SurrealDBStorage(
         limit: int = 10,
         type_filter: NeuronType | None = None,
     ) -> list[tuple[Neuron, float]]:
-        """Find neurons by vector similarity using SurrealDB KNN operator."""
+        """Find neurons by vector similarity using the SurrealDB KNN operator.
+
+        Returns ``(neuron, cosine_similarity)`` pairs, best first. The index is
+        ``DIST COSINE``, so the distance it reports is ``1 - cos`` and the
+        similarity below is that identity inverted — the same scale as
+        ``EmbeddingProvider.similarity``, which is what
+        ``embedding_similarity_threshold`` is expressed in.
+        """
         brain_id = self._get_brain_id()
-        conditions = [
-            "brain_id = $brain_id",
-        ]
-        params: dict[str, Any] = {
-            "brain_id": brain_id,
-            "vec": query_embedding,
-        }
+        # brain_id inline as a literal — same planner gotcha as find_neurons: a
+        # parameterized $brain_id makes 3.2.0 filter the whole table instead of
+        # using the index. brain_id is charset-validated, so this is injection-safe.
+        conditions = [f"brain_id = {_brain_literal(brain_id)}"]
+        params: dict[str, Any] = {"vec": query_embedding}
 
         if type_filter is not None:
             conditions.append("type = $ntype")
             params["ntype"] = type_filter.value
 
         where = " AND ".join(conditions)
-        # SurrealDB KNN syntax: WHERE embedding_vec <|k, ef|> $vec
+        # ef must stay >= k, otherwise HNSW searches a candidate list smaller than
+        # the number of neighbours asked for and quietly returns a worse set.
+        ef = max(_KNN_EF_MIN, 2 * int(limit))
         rows = await self._query(
             f"SELECT *, vector::distance::knn() AS score "
-            f"FROM neuron WHERE {where} AND embedding_vec <|{int(limit)},100|> $vec",
+            f"FROM neuron WHERE {where} AND embedding_vec <|{int(limit)},{ef}|> $vec",
             **params,
         )
 
         results: list[tuple[Neuron, float]] = []
+        unusable = 0
         for r in rows:
             raw_score = r.pop("score", None)
-            score = float(raw_score) if raw_score is not None else 0.0
-            # SurrealDB returns distance (lower = more similar), convert to similarity
-            similarity = 1.0 / (1.0 + score) if score >= 0 else 0.0
-            results.append((_row_to_neuron(r), similarity))
+            # NULL (no distance reported at all) and NaN (a zero-magnitude vector
+            # on either side) both arrive here. Neither may be read as a distance:
+            # 1 - NULL treated as 0 and 1 - NaN through a clamp would BOTH come out
+            # as similarity 1.0 — a perfect match for a row that is in fact
+            # unrankable, which then outranks every genuine neighbour.
+            distance = float(raw_score) if raw_score is not None else float("nan")
+            if math.isnan(distance):
+                unusable += 1
+                continue
+            results.append((_row_to_neuron(r), max(-1.0, min(1.0, 1.0 - distance))))
+
+        if unusable and not results:
+            # Nothing usable came back: the whole query is degenerate, not one bad
+            # row. Fail loudly so the caller can fall back visibly instead of
+            # ranking on fabricated similarities.
+            raise ValueError(
+                f"vector::distance::knn() gave no usable distance for any of {unusable} "
+                "rows — the query vector may have zero magnitude, or the HNSW index "
+                "may be missing or not yet built on this table"
+            )
+        if unusable:
+            logger.warning(
+                "Dropped %d neuron(s) with an unusable KNN distance (zero-magnitude "
+                "embedding_vec); they cannot be ranked and must not become anchors",
+                unusable,
+            )
         return results
+
+    async def find_fibers_by_embedding(
+        self,
+        query_embedding: list[float],
+        limit: int = 10,
+    ) -> list[tuple[Fiber, float]]:
+        """Fiber-level counterpart of `find_neurons_by_embedding` — same KNN operator, same
+        NaN/zero-magnitude handling, over `fiber.fiber_vec` instead of `neuron.embedding_vec`.
+        See `storage/base.py::find_fibers_by_embedding` for what this fixes.
+        """
+        brain_id = self._get_brain_id()
+        rows = await self._query(
+            f"SELECT *, vector::distance::knn() AS score FROM fiber "
+            f"WHERE brain_id = {_brain_literal(brain_id)} "
+            f"AND fiber_vec <|{int(limit)},{max(_KNN_EF_MIN, 2 * int(limit))}|> $vec",
+            vec=query_embedding,
+        )
+        results: list[tuple[Fiber, float]] = []
+        unusable = 0
+        for r in rows:
+            raw_score = r.pop("score", None)
+            distance = float(raw_score) if raw_score is not None else float("nan")
+            if math.isnan(distance):
+                unusable += 1
+                continue
+            results.append((_row_to_fiber(r), max(-1.0, min(1.0, 1.0 - distance))))
+        if unusable and not results:
+            raise ValueError(
+                f"vector::distance::knn() gave no usable distance for any of {unusable} "
+                "fiber rows — the query vector may have zero magnitude, or the HNSW index "
+                "may be missing or not yet built on the fiber table"
+            )
+        if unusable:
+            logger.warning(
+                "Dropped %d fiber(s) with an unusable KNN distance (zero-magnitude fiber_vec)",
+                unusable,
+            )
+        return results
+
+    async def update_fiber_embeddings(self, pairs: list[tuple[str, list[float]]]) -> None:
+        """Batch write of `fiber.fiber_vec` — same shape as `update_neuron_embeddings`."""
+        if not pairs:
+            return
+        stmts: list[str] = []
+        params: dict[str, Any] = {}
+        for i, (fid, vec) in enumerate(pairs):
+            params[f"id{i}"] = _to_surreal_id(fid)
+            params[f"v{i}"] = list(vec)
+            stmts.append(f"UPDATE type::record('fiber', $id{i}) SET fiber_vec = $v{i}")
+        await self._query(";\n".join(stmts) + ";", **params)
 
     # ================================================================
     # Change Log (for sync)

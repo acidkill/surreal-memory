@@ -673,6 +673,14 @@ async def ensure_schema(conn: Any, embedding_dim: int = 3072) -> None:
         "DEFINE INDEX idx_neuron_embedding ON neuron "
         f"FIELDS embedding_vec HNSW DIMENSION {dim} DIST COSINE"
     )
+    # `fiber` has no vector field or
+    # index at all, so the ONLY way to reach a fiber is through one of its neurons as an anchor
+    # — measured +5/49 golden hits when a fiber-level vector retriever exists alongside that.
+    # `fiber` is SCHEMALESS (no `DEFINE FIELD fiber_vec` needed); `fiber_vec` is populated by
+    # `scripts/backfill_fiber_vectors.py`, not at encode time (follow-up, not part of this fix).
+    statements.append(
+        f"DEFINE INDEX idx_fiber_vec ON fiber FIELDS fiber_vec HNSW DIMENSION {dim} DIST COSINE"
+    )
     statements.extend(SYNAPSE_V8_DDL)
     # Before any change_log field defines: a legacy SCHEMALESS change_log would
     # reject the payload FLEXIBLE define (issue #230), so converge it first.

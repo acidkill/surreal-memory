@@ -45,6 +45,31 @@ def _to_surreal_id(record_id: str) -> str:
     )
 
 
+def _to_public_id(record_id: str) -> str:
+    """Inverse of :func:`_to_surreal_id` for ids the engine hands back to callers.
+
+    Strips any table prefix and folds ``_`` back to ``-``, so a record read out of
+    SurrealDB carries the same id its dataclass was minted with (``uuid4()`` produces
+    dashes; the store folds them to underscores because a record name may only contain
+    ``[A-Za-z0-9_]``).
+
+    It lives here, next to the folding direction it undoes, because the un-folding was
+    previously open-coded once per row converter — ``_row_to_neuron`` and
+    ``_row_to_synapse`` each carried their own ``.replace("_", "-")`` and
+    ``_row_to_fiber`` carried none at all, which is exactly how ``Fiber.id`` came to
+    not round-trip. One spelling in one module means the next row converter cannot
+    forget the step, and cannot disagree about what "strip the prefix" means.
+
+    Note this is deliberately NOT the inverse of the character-class hardening in
+    ``_to_surreal_id``: that mapping is lossy (every non-``[A-Za-z0-9_]`` character
+    becomes ``_``) and therefore has no inverse. Ids that round-trip are the ones the
+    engine mints itself — uuid4 and hex hashes — whose only folded character is ``-``.
+    """
+    if ":" in record_id:
+        record_id = record_id.split(":", 1)[1]
+    return record_id.replace("_", "-")
+
+
 def _record_id_part(record_id: str) -> str:
     """Bare id part of a record id, as ``_to_surreal_id`` would have produced it.
 

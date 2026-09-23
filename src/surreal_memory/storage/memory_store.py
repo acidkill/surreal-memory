@@ -8,6 +8,7 @@ SurrealDB is the supported backend (see ``docker-compose.surrealdb.yml``).
 
 from __future__ import annotations
 
+import math
 import random
 from collections import defaultdict
 from dataclasses import replace
@@ -72,6 +73,7 @@ class InMemoryStorage(
         self._neurons: dict[str, dict[str, Neuron]] = defaultdict(dict)
         self._synapses: dict[str, dict[str, Synapse]] = defaultdict(dict)
         self._fibers: dict[str, dict[str, Fiber]] = defaultdict(dict)
+        self._fiber_vecs: dict[str, dict[str, list[float]]] = defaultdict(dict)
         self._states: dict[str, dict[str, NeuronState]] = defaultdict(dict)
         self._decay_passes: dict[str, list[dict[str, Any]]] = defaultdict(list)
         self._typed_memories: dict[str, dict[str, TypedMemory]] = defaultdict(dict)
@@ -182,6 +184,38 @@ class InMemoryStorage(
 
         results.sort(key=lambda n: n.id)
         return results[offset : offset + limit]
+
+    async def find_neurons_by_embedding(
+        self,
+        query_embedding: list[float],
+        limit: int = 10,
+        type_filter: NeuronType | None = None,
+    ) -> list[tuple[Neuron, float]]:
+        """Brute-force nearest neighbours over the whole in-memory brain.
+
+        The scale is cosine similarity, matching ``EmbeddingProvider.similarity``
+        and the SurrealDB backend, so callers can apply one threshold to both.
+        """
+        query_norm = math.sqrt(sum(component * component for component in query_embedding))
+        if query_norm == 0.0:
+            return []
+
+        brain_id = self._get_brain_id()
+        scored: list[tuple[Neuron, float]] = []
+        for neuron in self._neurons[brain_id].values():
+            if type_filter is not None and neuron.type != type_filter:
+                continue
+            stored = neuron.metadata.get("_embedding")
+            if not isinstance(stored, list) or len(stored) != len(query_embedding):
+                continue
+            stored_norm = math.sqrt(sum(component * component for component in stored))
+            if stored_norm == 0.0:
+                continue
+            dot = sum(a * b for a, b in zip(query_embedding, stored, strict=True))
+            scored.append((neuron, dot / (query_norm * stored_norm)))
+
+        scored.sort(key=lambda pair: pair[1], reverse=True)
+        return scored[:limit]
 
     async def update_neuron(self, neuron: Neuron) -> None:
         brain_id = self._get_brain_id()

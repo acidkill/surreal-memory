@@ -345,6 +345,13 @@ class RememberHandler:
 
             # U8: optional geographic location → fiber metadata (for recall's `near`).
             encode_metadata: dict[str, Any] = {"type": mem_type.value}
+            # An explicitly requested priority must reach the FIBER, not only
+            # typed_memory: retrieval scores fibers, so a priority the fiber never
+            # carries cannot influence recall. Auto-derived importance is deliberately
+            # not written here — it already travels as `auto_priority` and means
+            # something else (novelty at encode time, not a human's mark).
+            if raw_priority is not None:
+                encode_metadata["priority"] = priority.value
             raw_location = args.get("location")
             if raw_location is not None:
                 from surreal_memory.utils.geo import location_to_metadata, parse_geo_point
