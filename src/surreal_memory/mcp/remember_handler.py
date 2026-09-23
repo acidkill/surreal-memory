@@ -111,6 +111,11 @@ class RememberHandler:
         """Store a memory in the neural graph."""
         # Extract internal-only flags (not user-settable via MCP args)
         is_auto_capture = bool(args.pop("_auto_capture", False))
+        if is_auto_capture and not self.config.write_gate.auto_capture_enabled:
+            return {
+                "error": "Automatic capture is disabled by write_gate.auto_capture_mode",
+                "capture_skipped": True,
+            }
 
         storage = await self.get_storage()
         brain, err = await _get_brain_or_error(storage)
@@ -228,7 +233,7 @@ class RememberHandler:
         gate_mode = (
             write_gate_cfg.effective_auto_mode if is_auto_capture else write_gate_cfg.effective_mode
         )
-        if gate_mode != "off":
+        if gate_mode in ("shadow", "enforce"):
             from surreal_memory.engine.gate_telemetry import log_gate_decision
             from surreal_memory.engine.quality_scorer import check_write_gate
 

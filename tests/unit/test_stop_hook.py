@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -98,6 +99,31 @@ class TestHasMemoryMarkers:
 
     def test_committed_marker(self) -> None:
         assert _has_memory_markers("Committed the changes to main branch")
+
+
+@pytest.mark.asyncio
+async def test_auto_capture_off_skips_stop_hook_before_opening_storage(monkeypatch) -> None:
+    from surreal_memory.hooks.stop import capture_text
+    from surreal_memory.unified_config import WriteGateConfig
+
+    storage_factory = AsyncMock()
+    monkeypatch.setattr(
+        "surreal_memory.safety.input_firewall.check_content",
+        lambda _text: SimpleNamespace(blocked=False, sanitized=None),
+    )
+    monkeypatch.setattr(
+        "surreal_memory.unified_config.get_config",
+        lambda: SimpleNamespace(
+            current_brain="test", write_gate=WriteGateConfig(auto_capture_mode="off")
+        ),
+    )
+    monkeypatch.setattr("surreal_memory.unified_config.get_shared_storage", storage_factory)
+
+    result = await capture_text("A long enough transcript for automatic capture.")
+
+    assert result["saved"] == 0
+    assert result["message"].startswith("Automatic capture disabled")
+    storage_factory.assert_not_awaited()
 
     def test_no_markers_generic_text(self) -> None:
         assert not _has_memory_markers("Let me read the file for you")

@@ -5,7 +5,10 @@ from __future__ import annotations
 import io
 import json
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
+import pytest
 
 from surreal_memory.hooks.pre_compact import (
     MAX_FLUSH_CHARS,
@@ -46,6 +49,31 @@ def test_read_hook_input_malformed_json() -> None:
     with patch("sys.stdin", io.StringIO("{not: valid json}")):
         result = read_hook_input()
     assert result == {}
+
+
+@pytest.mark.asyncio
+async def test_auto_capture_off_skips_precompact_before_opening_storage(monkeypatch) -> None:
+    from surreal_memory.hooks.pre_compact import flush_text
+    from surreal_memory.unified_config import WriteGateConfig
+
+    storage_factory = AsyncMock()
+    monkeypatch.setattr(
+        "surreal_memory.safety.input_firewall.check_content",
+        lambda _text: SimpleNamespace(blocked=False, sanitized=None),
+    )
+    monkeypatch.setattr(
+        "surreal_memory.unified_config.get_config",
+        lambda: SimpleNamespace(
+            current_brain="test", write_gate=WriteGateConfig(auto_capture_mode="off")
+        ),
+    )
+    monkeypatch.setattr("surreal_memory.unified_config.get_shared_storage", storage_factory)
+
+    result = await flush_text("A long enough transcript for automatic capture.")
+
+    assert result["saved"] == 0
+    assert result["message"].startswith("Automatic capture disabled")
+    storage_factory.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

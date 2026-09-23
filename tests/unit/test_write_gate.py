@@ -415,6 +415,17 @@ class TestAutoCaptureMode:
         cfg = WriteGateConfig(mode="shadow", auto_capture_mode="off")
         assert cfg.effective_mode == "shadow"
         assert cfg.effective_auto_mode == "off"
+        assert cfg.auto_capture_enabled is False
+
+    def test_inherited_off_disables_gate_but_keeps_auto_capture_enabled(self) -> None:
+        cfg = WriteGateConfig(mode="off")
+        assert cfg.effective_auto_mode == "off"
+        assert cfg.auto_capture_enabled is True
+
+    def test_ungated_auto_capture_is_an_explicit_pass_through(self) -> None:
+        cfg = WriteGateConfig(mode="enforce", auto_capture_mode="ungated")
+        assert cfg.effective_mode == "enforce"
+        assert cfg.effective_auto_mode == "ungated"
 
     def test_survives_save_load_roundtrip(self, tmp_path) -> None:
         from pathlib import Path

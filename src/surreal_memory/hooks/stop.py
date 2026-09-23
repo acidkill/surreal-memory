@@ -374,6 +374,8 @@ async def capture_text(text: str, project_name: str | None = None) -> dict[str, 
     from surreal_memory.utils.timeutils import utcnow
 
     config = get_config()
+    if not config.write_gate.auto_capture_enabled:
+        return {"saved": 0, "message": "Automatic capture disabled by write_gate.auto_capture_mode"}
     storage = await get_shared_storage(config.current_brain)
 
     try:
@@ -453,7 +455,7 @@ async def capture_text(text: str, project_name: str | None = None) -> dict[str, 
                 content = item["content"]
 
                 # Apply write gate unless off (uses auto_capture threshold)
-                if gate_mode != "off":
+                if gate_mode in ("shadow", "enforce"):
                     from surreal_memory.engine.gate_telemetry import log_gate_decision
                     from surreal_memory.engine.quality_scorer import check_write_gate
 
@@ -540,7 +542,7 @@ async def capture_text(text: str, project_name: str | None = None) -> dict[str, 
                     summary = None  # type: ignore[assignment]
             if summary and len(summary) > 30:
                 # Apply write gate to session summary too
-                if gate_mode != "off":
+                if gate_mode in ("shadow", "enforce"):
                     from surreal_memory.engine.gate_telemetry import log_gate_decision
                     from surreal_memory.engine.quality_scorer import check_write_gate
 

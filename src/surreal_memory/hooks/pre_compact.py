@@ -151,6 +151,8 @@ async def flush_text(text: str, project_name: str | None = None) -> dict[str, An
         text = fw.sanitized
 
     config = get_config()
+    if not config.write_gate.auto_capture_enabled:
+        return {"saved": 0, "message": "Automatic capture disabled by write_gate.auto_capture_mode"}
     storage = await get_shared_storage(config.current_brain)
 
     try:
@@ -239,7 +241,7 @@ async def flush_text(text: str, project_name: str | None = None) -> dict[str, An
                 # Auto-redact sensitive content
                 content = item["content"]
 
-                if gate_mode != "off":
+                if gate_mode in ("shadow", "enforce"):
                     from surreal_memory.engine.gate_telemetry import log_gate_decision
                     from surreal_memory.engine.quality_scorer import check_write_gate
 

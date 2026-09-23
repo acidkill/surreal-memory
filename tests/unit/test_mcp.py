@@ -207,6 +207,19 @@ class TestMCPServer:
         assert "extensions" in schema["properties"]
         assert schema["required"] == ["action"]
 
+    async def test_auto_capture_off_skips_remember_before_storage(self, server: MCPServer) -> None:
+        server.config.write_gate = WriteGateConfig(auto_capture_mode="off")
+        storage_factory = AsyncMock()
+        server.get_storage = storage_factory
+
+        result = await server._remember(
+            {"content": "a detected memory that must not be captured", "_auto_capture": True}
+        )
+
+        assert result["capture_skipped"] is True
+        assert "error" in result
+        storage_factory.assert_not_awaited()
+
 
 class TestMCPToolCalls:
     """Tests for MCP tool call execution."""

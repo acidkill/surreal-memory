@@ -143,7 +143,7 @@ Write-gate configuration for memory quality enforcement.
 |---|---|---|---|
 | `enabled` | `bool` | `false` | opt-in, backward compat (True == enforce) |
 | `mode` | `str` | `off` | off | shadow | enforce. Overrides `enabled` when not "off". |
-| `auto_capture_mode` | `str` | `""` | "" (inherit) | off | shadow | enforce |
+| `auto_capture_mode` | `str` | `""` | Inherit | off disables | ungated bypasses | shadow | enforce |
 | `min_length` | `int` | `30` | reject content shorter than this |
 | `min_quality_score` | `int` | `3` | reject score below this (0-10 scale) |
 | `auto_capture_min_score` | `int` | `5` | stricter threshold for passive captures |

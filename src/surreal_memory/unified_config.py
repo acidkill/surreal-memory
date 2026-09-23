@@ -497,7 +497,7 @@ class WriteGateConfig:
     # turns keep `mode`). "" = inherit `mode`. Lets junk auto-captures be
     # ENFORCED while interactive writes stay in shadow — a global enforce is
     # known to false-reject real turn/summary content.
-    auto_capture_mode: str = ""  # "" (inherit) | off | shadow | enforce
+    auto_capture_mode: str = ""  # Inherit | off disables | ungated bypasses | shadow | enforce
     min_length: int = 30  # reject content shorter than this
     min_quality_score: int = 3  # reject score below this (0-10 scale)
     auto_capture_min_score: int = 5  # stricter threshold for passive captures
@@ -518,11 +518,21 @@ class WriteGateConfig:
     @property
     def effective_auto_mode(self) -> str:
         """Resolve the mode for auto-captures (intent=auto). A valid
-        `auto_capture_mode` wins; otherwise inherit `effective_mode`."""
+        `auto_capture_mode` wins; otherwise inherit `effective_mode`. An explicit
+        `off` disables automatic capture; `ungated` allows it without gate evaluation."""
         m = (self.auto_capture_mode or "").strip().lower()
-        if m in ("off", "shadow", "enforce"):
+        if m in ("off", "ungated", "shadow", "enforce"):
             return m
         return self.effective_mode
+
+    @property
+    def auto_capture_enabled(self) -> bool:
+        """Only an explicit per-auto-capture ``off`` disables passive writes.
+
+        An inherited ``effective_mode == "off"`` disables the quality gate, not
+        automatic capture itself.
+        """
+        return (self.auto_capture_mode or "").strip().lower() != "off"
 
     def to_dict(self) -> dict[str, Any]:
         return {
