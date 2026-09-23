@@ -514,18 +514,18 @@ class TypedMemory:
 # Default expiry settings per memory type
 DEFAULT_EXPIRY_DAYS: dict[MemoryType, int | None] = {
     MemoryType.FACT: None,  # Facts don't expire by default
-    MemoryType.DECISION: 90,  # Decisions may become stale
+    MemoryType.DECISION: None,  # Auto-classified decisions persist until superseded
     MemoryType.PREFERENCE: None,  # Preferences persist
     MemoryType.TODO: 30,  # TODOs should be acted on
     MemoryType.INSIGHT: 180,  # Insights may become outdated
     MemoryType.CONTEXT: None,  # Context persists until superseded; use ephemeral=True for scratch/short-lived context
     MemoryType.INSTRUCTION: None,  # Instructions persist
-    MemoryType.ERROR: 30,  # Error patterns may get fixed
+    MemoryType.ERROR: None,  # Auto-classified error patterns persist until corrected
     MemoryType.WORKFLOW: 365,  # Workflows change slowly
     MemoryType.REFERENCE: None,  # References persist
-    MemoryType.TOOL: 90,  # Tool patterns become stale as workflows change
+    MemoryType.TOOL: None,  # Auto-classified tool knowledge persists until superseded
     MemoryType.HYPOTHESIS: 180,  # Hypotheses may be resolved or abandoned
-    MemoryType.PREDICTION: 30,  # Predictions should be verified soon
+    MemoryType.PREDICTION: None,  # Auto-classified predictions persist until reviewed
     MemoryType.SCHEMA: None,  # Schemas persist (superseded, not expired)
     MemoryType.BOUNDARY: None,  # Boundaries never expire (safety rules)
 }

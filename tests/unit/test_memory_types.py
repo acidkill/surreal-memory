@@ -265,9 +265,12 @@ class TestDefaultExpiry:
         """
         assert DEFAULT_EXPIRY_DAYS[MemoryType.CONTEXT] is None
 
-    def test_decisions_expire_in_90_days(self) -> None:
-        """Test decisions expire in 90 days."""
-        assert DEFAULT_EXPIRY_DAYS[MemoryType.DECISION] == 90
+    def test_auto_classified_types_persist_until_superseded(self) -> None:
+        """Auto-classified types without an explicit TTL do not silently expire."""
+        assert DEFAULT_EXPIRY_DAYS[MemoryType.DECISION] is None
+        assert DEFAULT_EXPIRY_DAYS[MemoryType.ERROR] is None
+        assert DEFAULT_EXPIRY_DAYS[MemoryType.TOOL] is None
+        assert DEFAULT_EXPIRY_DAYS[MemoryType.PREDICTION] is None
 
     def test_context_remember_path_resolves_to_no_expiry(self) -> None:
         """Storing a context memory with no explicit expiry must not expire it.

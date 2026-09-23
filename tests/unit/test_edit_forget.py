@@ -111,9 +111,9 @@ class TestNmemEdit:
         new type has no default expiry.
 
         Before this fix, `_edit` swapped `memory_type` but left the old
-        type's TTL on the record. A DECISION (default 90d) edited to FACT
-        (default None) still expired ~90d out; going the other way, a FACT
-        edited to TODO or ERROR (default 30d each) never picked up their
+        type's TTL on the record. A TODO (default 30d) edited to FACT
+        (default None) still expired ~30d out; going the other way, a FACT
+        edited to TODO never picked up its
         finite expiry and persisted indefinitely.
         """
         from surreal_memory.core.fiber import Fiber
@@ -123,16 +123,16 @@ class TestNmemEdit:
         storage = AsyncMock()
         storage.current_brain_id = "brain-1"
 
-        # Start as DECISION with a finite expiry (mirroring what remember_handler
-        # would set via expires_in_days=DEFAULT_EXPIRY_DAYS[DECISION]=90).
+        # Start as TODO with a finite expiry (mirroring what remember_handler
+        # would set via expires_in_days=DEFAULT_EXPIRY_DAYS[TODO]=30).
         typed_mem = TypedMemory.create(
             fiber_id="fiber-1",
-            memory_type=MemoryType.DECISION,
+            memory_type=MemoryType.TODO,
             priority=Priority.NORMAL,
             source="test",
-            expires_in_days=90,
+            expires_in_days=30,
         )
-        assert typed_mem.expires_at is not None, "sanity: expires_in_days=90 must give expires_at"
+        assert typed_mem.expires_at is not None, "sanity: expires_in_days=30 must give expires_at"
 
         fiber = Fiber.create(
             neuron_ids={"neuron-1"},
@@ -147,7 +147,7 @@ class TestNmemEdit:
         storage.update_typed_memory = AsyncMock()
         server.get_storage = AsyncMock(return_value=storage)
 
-        # Edit DECISION -> FACT. FACT has DEFAULT_EXPIRY_DAYS[FACT] = None.
+        # Edit TODO -> FACT. FACT has DEFAULT_EXPIRY_DAYS[FACT] = None.
         result = await server.call_tool("smem_edit", {"memory_id": "fiber-1", "type": "fact"})
         assert result["status"] == "edited"
 
@@ -155,16 +155,14 @@ class TestNmemEdit:
         (updated_tm,) = storage.update_typed_memory.call_args.args
         assert updated_tm.memory_type == MemoryType.FACT
         assert updated_tm.expires_at is None, (
-            "changing type DECISION -> FACT (FACT has no default expiry) must "
+            "changing type TODO -> FACT (FACT has no default expiry) must "
             f"clear expires_at, but it is {updated_tm.expires_at!r} (the old "
-            "DECISION 90-day clock)"
+            "TODO 30-day clock)"
         )
 
     @pytest.mark.asyncio
     async def test_edit_type_change_picks_up_finite_expiry(self) -> None:
-        """The extend_expiry direction: FACT (no default TTL) edited to TODO
-        (default 30d) must gain a finite, future expiry — the half of the
-        original bug the PR itself called the worse one, previously untested."""
+        """The extend_expiry direction: FACT edited to TODO must gain its finite TTL."""
         from surreal_memory.core.fiber import Fiber
         from surreal_memory.core.memory_types import MemoryType, Priority, TypedMemory
         from surreal_memory.utils.timeutils import utcnow

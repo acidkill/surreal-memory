@@ -90,9 +90,9 @@ class LifecycleHandler:
                     changes.append(f"type: {typed_mem.memory_type.value} → {new_type}")
                     # Recompute expires_at from DEFAULT_EXPIRY_DAYS[new_type] relative to
                     # now (None = clear); the old type's TTL was left in place before,
-                    # so a DECISION (90d) edited to FACT (None) still expired ~90d out,
-                    # and a FACT edited to TODO/ERROR (30d) never picked up its finite
-                    # expiry at all. Two cases must NOT be touched: a soft-deleted
+                    # so a finite-TTL type edited to FACT still expired, and a FACT
+                    # edited to TODO never picked up its finite expiry. Two cases must
+                    # NOT be touched: a soft-deleted
                     # memory (`_forget` sets expires_at=utcnow() — recomputing would
                     # resurrect it) and an ephemeral memory (remember_handler flags its
                     # anchor neuron ephemeral=True with a 1d default TTL — clearing
