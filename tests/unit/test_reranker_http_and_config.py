@@ -14,8 +14,10 @@ config-driven feature:
 
 from __future__ import annotations
 
+import io
 import json
 import tempfile
+import urllib.error
 from dataclasses import dataclass, replace
 from pathlib import Path
 from unittest.mock import patch
@@ -116,6 +118,54 @@ class TestHttpReranker:
             results = r.rerank("q", candidates, limit=2)
         # blend_weight=1.0 → pure normalised score; present index wins
         assert results[0].neuron_id == "a"
+
+    def test_context_overflow_splits_batches_and_long_document(self) -> None:
+        """LiteLLM's 4096-token rejection must not disable reranking."""
+        calls: list[list[str]] = []
+
+        def limited_urlopen(req: object, **_kwargs: object) -> _FakeResp:
+            payload = json.loads(req.data)  # type: ignore[attr-defined]
+            documents = payload["documents"]
+            calls.append(documents)
+            if sum(map(len, documents)) > 350:
+                raise urllib.error.HTTPError(
+                    "http://x/v1/rerank",
+                    400,
+                    "Bad Request",
+                    None,
+                    io.BytesIO(
+                        b"This model's maximum context length is 4096 tokens (input_tokens)"
+                    ),
+                )
+            return _FakeResp(
+                _rerank_payload(
+                    {i: 9.0 if "needle" in doc else 0.1 for i, doc in enumerate(documents)}
+                )
+            )
+
+        r = HttpReranker(endpoint="http://x/v1", model_name="bge-reranker-v2-m3")
+        documents = ["short", "a" * 300 + "needle" + "b" * 300, "other"]
+        with patch("urllib.request.urlopen", side_effect=limited_urlopen):
+            scores = r._raw_scores("q", documents)
+
+        assert scores == [0.1, 9.0, 0.1]
+        assert len(calls) > 3  # both the batch and the single long document split
+        assert all(
+            doc in documents[1]
+            for call in calls
+            for doc in call
+            if doc != "short" and doc != "other"
+        )
+
+    def test_unrelated_http_400_is_not_retried_as_context_overflow(self) -> None:
+        error = urllib.error.HTTPError(
+            "http://x/v1/rerank", 400, "Bad Request", None, io.BytesIO(b"unknown model")
+        )
+        r = HttpReranker(endpoint="http://x/v1", model_name="bge-reranker-v2-m3")
+        with patch("urllib.request.urlopen", side_effect=error) as urlopen:
+            with pytest.raises(urllib.error.HTTPError):
+                r._raw_scores("q", ["first", "second"])
+        assert urlopen.call_count == 1
 
 
 class TestMinMax:

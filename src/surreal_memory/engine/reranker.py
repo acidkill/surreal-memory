@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import re
+import urllib.error
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -210,8 +211,33 @@ class HttpReranker:
             headers=headers,
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=self._timeout) as resp:  # noqa: S310
-            data = json.loads(resp.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(req, timeout=self._timeout) as resp:  # noqa: S310
+                data = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            # LiteLLM forwards the rerank model's 4096-token context rejection.
+            # A single large stored memory can overflow it even with a small
+            # max_candidates setting. Split only this specific error; an unknown
+            # model, invalid auth, etc. must still surface as a degradation.
+            detail = exc.read().lower() if exc.code == 400 else b""
+            if b"maximum context length" not in detail or b"input_tokens" not in detail:
+                raise
+            if len(documents) > 1:
+                middle = len(documents) // 2
+                return self._raw_scores(query, documents[:middle]) + self._raw_scores(
+                    query, documents[middle:]
+                )
+            if documents and len(documents[0]) > 256:
+                content = documents[0]
+                middle = len(content) // 2
+                overlap = min(32, middle // 4)  # do not cut a keyword across chunks
+                return [
+                    max(
+                        self._raw_scores(query, [content[: middle + overlap]])[0],
+                        self._raw_scores(query, [content[middle - overlap :]])[0],
+                    )
+                ]
+            raise
         # Accept both the OpenAI-compatible field (`relevance_score`, llamastash) and
         # the BGE-M3 service field (`score`).
         by_index = {
