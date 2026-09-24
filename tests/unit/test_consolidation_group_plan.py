@@ -182,6 +182,18 @@ class _PlanStorage:
                 key=lambda row: str(row["candidate_id"]),
             )
             return found[: int(params["limit"])]
+        if "AND kind = 'posting' AND feature = $feature AND candidate_id > $after" in sql:
+            found = sorted(
+                (
+                    row
+                    for row in rows
+                    if row.get("kind") == "posting"
+                    and row.get("feature") == params["feature"]
+                    and str(row.get("candidate_id", "")) > str(params["after"])
+                ),
+                key=lambda row: str(row["candidate_id"]),
+            )
+            return found[: int(params["limit"])]
         if "AND kind = 'posting' AND feature >= $start_feature" in sql:
             found = sorted(
                 (
@@ -476,6 +488,22 @@ async def test_summary_source_reader_supports_legacy_list_and_paged_manifest() -
     current.metadata["source_fibers_manifest"]["source_count"] = 3
     with pytest.raises(ConsolidationProgressError, match="manifest is incomplete"):
         [source_id async for source_id in _iter_summary_source_ids(current, store)]
+
+
+@pytest.mark.asyncio
+async def test_group_plan_pages_single_oversized_feature_posting() -> None:
+    store = _PlanStorage()
+    plan = _plan(store)
+    await plan.put_candidates(
+        [(f"neuron-{index:04d}", {"index": index}, {"popular-tag"}) for index in range(1205)]
+    )
+
+    candidate_ids = [
+        candidate_id async for candidate_id in plan.iter_posting_candidates("popular-tag")
+    ]
+
+    assert candidate_ids == [f"neuron-{index:04d}" for index in range(1205)]
+    assert max(store.page_limits) <= 500
 
 
 @pytest.mark.asyncio

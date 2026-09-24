@@ -203,13 +203,47 @@ async def _create_schema(
     neurons: list[Neuron],
     tags: set[str],
     storage: NeuralStorage,
+    *,
+    cluster_size: int | None = None,
 ) -> AssimilationResult:
     """Create a new SCHEMA neuron from a cluster of related memories."""
-    shared = _extract_shared_entities([n.content for n in neurons])
+    schema, synapses = build_schema_records(
+        neuron_ids=[neuron.id for neuron in neurons],
+        contents=[neuron.content for neuron in neurons],
+        tags=tags,
+        cluster_size=cluster_size,
+    )
+    await storage.add_neuron(schema)
+
+    # Link cluster members to schema
+    for synapse in synapses:
+        await storage.add_synapse(synapse)
+
+    logger.debug("Created schema %s for %d neurons", schema.id[:12], len(neurons))
+
+    return AssimilationResult(
+        action=AssimilationAction.SCHEMA_CREATED,
+        schema_id=schema.id,
+        version=1,
+    )
+
+
+def build_schema_records(
+    *,
+    neuron_ids: list[str],
+    contents: list[str],
+    tags: set[str],
+    cluster_size: int | None = None,
+) -> tuple[Neuron, list[Synapse]]:
+    """Build one schema and its bounded member edges without writing storage."""
+    if len(neuron_ids) != len(contents):
+        raise ValueError("schema sample IDs and contents must have equal lengths")
+    shared = _extract_shared_entities(contents)
     tag_str = ", ".join(sorted(tags)[:5])
     entity_str = ", ".join(shared[:5]) if shared else "common patterns"
+    total_cluster_size = len(neuron_ids) if cluster_size is None else cluster_size
 
-    summary = f"Schema: {tag_str} — entities: {entity_str} ({len(neurons)} memories)"
+    summary = f"Schema: {tag_str} — entities: {entity_str} ({total_cluster_size} memories)"
 
     schema = Neuron.create(
         content=summary,
@@ -217,28 +251,19 @@ async def _create_schema(
         metadata={
             "tags": sorted(tags),
             "schema_version": 1,
-            "cluster_size": len(neurons),
+            "cluster_size": total_cluster_size,
         },
     )
-    await storage.add_neuron(schema)
-
-    # Link cluster members to schema
-    for neuron in neurons[:20]:  # Cap to avoid excessive synapses
-        syn = Synapse.create(
-            source_id=neuron.id,
+    synapses = [
+        Synapse.create(
+            source_id=neuron_id,
             target_id=schema.id,
             type=SynapseType.IS_A,
             weight=0.4,
         )
-        await storage.add_synapse(syn)
-
-    logger.debug("Created schema %s for %d neurons (%s)", schema.id[:12], len(neurons), tag_str)
-
-    return AssimilationResult(
-        action=AssimilationAction.SCHEMA_CREATED,
-        schema_id=schema.id,
-        version=1,
-    )
+        for neuron_id in neuron_ids[:20]
+    ]
+    return schema, synapses
 
 
 async def _find_neurons_by_tags(
@@ -324,7 +349,8 @@ async def batch_schema_assimilation(
 
     # Find popular tags that don't have schemas yet (paginated to handle large brains)
     tag_counts: Counter[str] = Counter()
-    tag_neurons: dict[str, list[Neuron]] = {}
+    sample_limit = min(min_cluster + 10, 30)
+    tag_samples: dict[str, list[Neuron]] = {}
     page_size = 1000
     offset = 0
     while True:
@@ -336,21 +362,23 @@ async def batch_schema_assimilation(
             for t in ntags:
                 if t not in covered_tags:
                     tag_counts[t] += 1
-                    tag_neurons.setdefault(t, []).append(n)
+                    samples = tag_samples.setdefault(t, [])
+                    if len(samples) < sample_limit:
+                        samples.append(n)
         if len(batch) < page_size:
             break
         offset += page_size
 
     schemas_created = 0
-    for tag, count in tag_counts.most_common(20):
+    for tag, count in sorted(tag_counts.items(), key=lambda item: (-item[1], item[0]))[:20]:
         if count < min_cluster:
             break
         if dry_run:
             schemas_created += 1
             continue
 
-        neurons = tag_neurons[tag][: min_cluster + 10]
-        result = await _create_schema(neurons, {tag}, storage)
+        neurons = tag_samples[tag]
+        result = await _create_schema(neurons, {tag}, storage, cluster_size=count)
         if result.action == AssimilationAction.SCHEMA_CREATED:
             schemas_created += 1
 

@@ -379,6 +379,34 @@ class SurrealDBConsolidationGroupPlan:
         if active_feature is not None and members:
             yield active_feature, members
 
+    async def iter_posting_candidates(
+        self, feature: str, *, after_candidate: str = ""
+    ) -> AsyncIterator[str]:
+        """Page candidate IDs for a single feature without retaining its posting set."""
+        if not feature:
+            raise ValueError("feature must be non-empty")
+        cursor = after_candidate
+        while True:
+            rows = await self._storage._query(
+                "SELECT * FROM consolidation_group_plan WHERE plan_id = $plan_id "
+                "AND kind = 'posting' AND feature = $feature AND candidate_id > $after "
+                "ORDER BY candidate_id ASC LIMIT $limit",
+                plan_id=self.plan_id,
+                feature=feature,
+                after=cursor,
+                limit=_PAGE_SIZE,
+            )
+            if not rows:
+                return
+            for row in rows:
+                candidate_id = str(row.get("candidate_id", ""))
+                if not candidate_id or candidate_id <= cursor:
+                    raise ConsolidationGroupPlanError("feature posting page is malformed")
+                cursor = candidate_id
+                yield candidate_id
+            if len(rows) < _PAGE_SIZE:
+                return
+
     async def _latest_event(
         self, kind: str, candidate_id: str, before_sequence: int
     ) -> dict[str, Any] | None:

@@ -8658,6 +8658,45 @@ class ConsolidationEngine:
         from surreal_memory.core.synapse import Direction, Synapse, SynapseType
         from surreal_memory.engine.schema_assimilation import batch_schema_assimilation
 
+        state = self._strategy_progress_state() if not dry_run else {}
+        phase = str(state.get("phase") or "")
+        progress_state = getattr(self._progress_session, "state", {})
+        run_id = str(progress_state.get("run_id", "")) if isinstance(progress_state, dict) else ""
+        durable_backend = bool(
+            not dry_run
+            and self._progress_session is not None
+            and run_id
+            and callable(getattr(self._storage, "_query", None))
+            and callable(getattr(type(self._storage), "find_neurons_after_id", None))
+        )
+        durable_resume = phase.startswith("schema_plan_") or phase == "schema_ready_to_apply"
+        if phase in {"schema_pending", "schema_apply"}:
+            legacy_manifest = False
+            try:
+                raw_cursor = json.loads(str(state.get("cursor") or "{}"))
+                durable_resume = isinstance(raw_cursor, dict) and (
+                    raw_cursor.get("kind") == "schema_paged_group_plan"
+                )
+                pending_rows = state.get("pending") or []
+                if isinstance(pending_rows, list):
+                    for raw_pending in pending_rows:
+                        pending = json.loads(str(raw_pending))
+                        if isinstance(pending, dict):
+                            if pending.get("kind") == "schema_manifest":
+                                legacy_manifest = True
+                            elif pending.get("kind") == "schema_output_group":
+                                durable_resume = True
+            except (TypeError, ValueError):
+                if durable_backend:
+                    # Old checkpoints carry an explicit schema_manifest. Without it,
+                    # an unparseable durable cursor must fail closed in the planner.
+                    durable_resume = not legacy_manifest
+            if durable_backend and not legacy_manifest:
+                durable_resume = True
+        if durable_backend and (not phase or durable_resume):
+            await self._schema_durable(report, state=state)
+            return
+
         brain_id = self._storage.current_brain_id
         if not brain_id:
             return
@@ -8665,7 +8704,6 @@ class ConsolidationEngine:
         if not brain:
             return
 
-        state = self._strategy_progress_state() if not dry_run else {}
         saved_counters = state.get("counters") or {}
         counters: dict[str, int | float] = {
             "schemas_created": int(saved_counters.get("schemas_created", 0))
@@ -8836,6 +8874,556 @@ class ConsolidationEngine:
             cursor="completed",
             pending=[],
             counters=counters,
+        )
+
+    async def _schema_durable(
+        self,
+        report: ConsolidationReport,
+        *,
+        state: dict[str, Any],
+    ) -> None:
+        """Plan and apply SCHEMA outputs through resumable bounded group-plan rows."""
+        import hashlib
+        import json
+        from dataclasses import asdict
+        from datetime import datetime
+        from enum import Enum
+
+        from surreal_memory.core.neuron import Neuron, NeuronType
+        from surreal_memory.core.synapse import Direction, Synapse, SynapseType
+        from surreal_memory.engine.consolidation_group_plan import (
+            SurrealDBConsolidationGroupPlan,
+        )
+        from surreal_memory.engine.consolidation_progress import ConsolidationProgressError
+        from surreal_memory.engine.schema_assimilation import build_schema_records
+
+        brain_id = str(self._storage.current_brain_id or "")
+        progress_state = getattr(self._progress_session, "state", {})
+        run_id = str(progress_state.get("run_id", "")) if isinstance(progress_state, dict) else ""
+        if not brain_id or not run_id:
+            raise ConsolidationProgressError("schema plan identity is incomplete")
+
+        brain = await self._storage.get_brain(brain_id)
+        if not brain:
+            return
+        enabled = getattr(brain.config, "schema_assimilation_enabled", False)
+        if not isinstance(enabled, bool) or not enabled:
+            report.extra["schemas_created"] = 0
+            await self._checkpoint_progress(
+                "completed", cursor="completed", pending=[], counters={"schemas_created": 0}
+            )
+            return
+        min_cluster = getattr(brain.config, "schema_min_cluster_size", 10)
+        min_cluster = int(min_cluster) if isinstance(min_cluster, (int, float)) else 10
+        # Keep both candidate IDs and content samples bounded even if a caller
+        # configures an unusually large minimum cluster size.
+        sample_limit = min(min_cluster + 10, 30)
+        if sample_limit < 1:
+            raise ConsolidationProgressError("schema cluster sample limit must be positive")
+
+        config_fingerprint = hashlib.sha256(
+            json.dumps(
+                {
+                    "algorithm": "schema-tag-count-sample-v1",
+                    "min_cluster_size": min_cluster,
+                    "sample_limit": sample_limit,
+                    "selection_limit": 20,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        plan = SurrealDBConsolidationGroupPlan(
+            self._storage,
+            brain_id=brain_id,
+            run_id=run_id,
+            strategy="schema",
+            fingerprint=config_fingerprint,
+        )
+        cursor: dict[str, Any] = {
+            "version": 1,
+            "kind": "schema_paged_group_plan",
+            "plan_id": plan.plan_id,
+            "config_fingerprint": config_fingerprint,
+            "source_fingerprint": "",
+            "after_neuron": "",
+            "after_feature": "",
+            "after_output": -1,
+        }
+        phase = str(state.get("phase") or "")
+        if phase.startswith("schema_plan_") or phase in {
+            "schema_pending",
+            "schema_apply",
+            "schema_ready_to_apply",
+        }:
+            try:
+                decoded = json.loads(str(state.get("cursor") or ""))
+            except (TypeError, ValueError) as exc:
+                raise ConsolidationProgressError(
+                    "schema plan checkpoint cursor is malformed"
+                ) from exc
+            if (
+                not isinstance(decoded, dict)
+                or decoded.get("version") != 1
+                or decoded.get("kind") != "schema_paged_group_plan"
+                or decoded.get("plan_id") != plan.plan_id
+                or decoded.get("config_fingerprint") != config_fingerprint
+            ):
+                raise ConsolidationProgressError("schema source or plan configuration changed")
+            cursor.update(decoded)
+
+        saved_counters = state.get("counters")
+        schemas_created = (
+            int(saved_counters.get("schemas_created", 0)) if isinstance(saved_counters, dict) else 0
+        )
+        report.extra["schemas_created"] = schemas_created
+
+        def encode_record(record: Neuron | Synapse) -> str:
+            def encode(value: object) -> str:
+                if isinstance(value, Enum):
+                    return str(value.value)
+                if isinstance(value, datetime):
+                    return value.isoformat()
+                raise TypeError(f"unsupported schema record value: {type(value).__name__}")
+
+            return json.dumps(asdict(record), default=encode, sort_keys=True, separators=(",", ":"))
+
+        def decode_record(kind: str, serialized: str) -> Neuron | Synapse:
+            values = json.loads(serialized)
+            if kind == "neuron":
+                values["type"] = NeuronType(values["type"])
+                if values.get("created_at") is not None:
+                    values["created_at"] = datetime.fromisoformat(values["created_at"])
+                return Neuron(**values)
+            values["type"] = SynapseType(values["type"])
+            values["direction"] = Direction(values["direction"])
+            if values.get("last_activated") is not None:
+                values["last_activated"] = datetime.fromisoformat(values["last_activated"])
+            values["created_at"] = datetime.fromisoformat(values["created_at"])
+            return Synapse(**values)
+
+        def tag_key(tag: str) -> str:
+            return hashlib.sha256(tag.encode("utf-8")).hexdigest()
+
+        def tag_feature(tag: str) -> str:
+            return "schema-tag:" + tag_key(tag)
+
+        async def persisted_output_neuron_ids() -> set[str]:
+            excluded: set[str] = set()
+            async for _key, row in plan.iter_items("schema_output"):
+                neuron_record = str(row.get("neuron_record", ""))
+                try:
+                    payload = json.loads(neuron_record)
+                except (TypeError, ValueError) as exc:
+                    raise ConsolidationProgressError("stored schema output is malformed") from exc
+                neuron_id = payload.get("id") if isinstance(payload, dict) else None
+                if not isinstance(neuron_id, str) or not neuron_id:
+                    raise ConsolidationProgressError("stored schema output has no neuron ID")
+                excluded.add(neuron_id)
+            return excluded
+
+        async def source_fingerprint(excluded_ids: set[str]) -> str:
+            digest = hashlib.sha256()
+            cursor_id: str | None = None
+            while True:
+                await self._check_progress_budget()
+                page = await self._storage.find_neurons_after_id(
+                    cursor_id,
+                    limit=500,
+                    ephemeral=None,
+                    include_embedding=False,
+                )
+                if not page:
+                    break
+                previous_id = cursor_id
+                for neuron in page:
+                    if previous_id is not None and neuron.id <= previous_id:
+                        raise ConsolidationProgressError("schema neuron page is not keyset ordered")
+                    previous_id = neuron.id
+                    if neuron.id in excluded_ids:
+                        continue
+                    raw_tags = neuron.metadata.get("tags", []) if neuron.metadata else []
+                    tags = (
+                        sorted(raw_tags, key=str)
+                        if isinstance(raw_tags, (set, frozenset))
+                        else list(raw_tags)
+                        if isinstance(raw_tags, (list, tuple))
+                        else []
+                    )
+                    digest.update(
+                        json.dumps(
+                            {
+                                "id": neuron.id,
+                                "type": neuron.type.value,
+                                "content": neuron.content,
+                                "tags": tags,
+                            },
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                            default=str,
+                        ).encode("utf-8")
+                    )
+                    digest.update(b"\n")
+                cursor_id = page[-1].id
+                if len(page) < 500:
+                    break
+            return digest.hexdigest()
+
+        async def verify_source() -> None:
+            excluded = await persisted_output_neuron_ids()
+            actual = await source_fingerprint(excluded)
+            if actual != cursor["source_fingerprint"]:
+                raise ConsolidationProgressError(
+                    "schema source data changed after its frozen census checkpoint"
+                )
+
+        async def checkpoint(
+            checkpoint_phase: str,
+            *,
+            pending: list[str] | None = None,
+        ) -> None:
+            await self._checkpoint_progress(
+                checkpoint_phase,
+                cursor=json.dumps(cursor, sort_keys=True, separators=(",", ":")),
+                pending=[] if pending is None else pending,
+                counters={"schemas_created": schemas_created},
+            )
+
+        if not phase:
+            cursor["source_fingerprint"] = await source_fingerprint(set())
+            await checkpoint("schema_plan_init")
+            phase = "schema_plan_init"
+        else:
+            await verify_source()
+
+        if phase in {"schema_plan_init", "schema_plan_stage"}:
+            existing_schemas = await self._storage.find_neurons(type=NeuronType.SCHEMA, limit=200)
+            covered_tags: set[str] = set()
+            for schema in existing_schemas:
+                raw_tags = schema.metadata.get("tags", []) if schema.metadata else []
+                if not isinstance(raw_tags, (list, tuple, set)):
+                    continue
+                for raw_tag in raw_tags:
+                    if not isinstance(raw_tag, str):
+                        continue
+                    covered_tags.add(raw_tag)
+                    await plan.put_item(
+                        "schema_covered_tag",
+                        tag_key(raw_tag),
+                        {"tag": raw_tag},
+                    )
+
+            after_neuron = str(cursor.get("after_neuron", ""))
+            while True:
+                await self._check_progress_budget()
+                page = await self._storage.find_neurons_after_id(
+                    after_neuron or None,
+                    limit=500,
+                    ephemeral=None,
+                    include_embedding=False,
+                )
+                if not page:
+                    break
+                previous_id = after_neuron
+                staged: list[tuple[str, Mapping[str, Any], set[str] | frozenset[str]]] = []
+                for neuron in page:
+                    if previous_id and neuron.id <= previous_id:
+                        raise ConsolidationProgressError("schema neuron census page is not ordered")
+                    previous_id = neuron.id
+                    raw_tags = neuron.metadata.get("tags", []) if neuron.metadata else []
+                    tags = (
+                        [tag for tag in raw_tags if isinstance(tag, str)]
+                        if isinstance(raw_tags, (list, tuple, set))
+                        else []
+                    )
+                    tag_hashes: set[str] = set()
+                    for tag in tags:
+                        if tag in covered_tags:
+                            continue
+                        key = tag_key(tag)
+                        tag_hashes.add(key)
+                        if not await plan.has_item("schema_tag_definition", key):
+                            await plan.put_item("schema_tag_definition", key, {"tag": tag})
+                    signature = hashlib.sha256(
+                        json.dumps(
+                            {
+                                "id": neuron.id,
+                                "type": neuron.type.value,
+                                "content": neuron.content,
+                                "tags": tags,
+                            },
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                            default=str,
+                        ).encode("utf-8")
+                    ).hexdigest()
+                    staged.append(
+                        (
+                            neuron.id,
+                            {
+                                "content": neuron.content,
+                                "tags": tags,
+                                "type": neuron.type.value,
+                                "source_signature": signature,
+                            },
+                            {tag_feature(tag) for tag in set(tags) if tag not in covered_tags},
+                        )
+                    )
+                if staged:
+                    await plan.put_candidates(staged)
+                after_neuron = page[-1].id
+                cursor["after_neuron"] = after_neuron
+                await checkpoint("schema_plan_stage")
+                if len(page) < 500:
+                    break
+            await verify_source()
+            cursor.update(after_feature="")
+            await checkpoint("schema_plan_tag_counts")
+            phase = "schema_plan_tag_counts"
+
+        if phase == "schema_plan_tag_counts":
+            after_feature = str(cursor.get("after_feature", ""))
+            async for feature, _bounded_candidates in plan.iter_postings(
+                posting_limit=500,
+                after_feature=after_feature,
+            ):
+                if not feature.startswith("schema-tag:"):
+                    raise ConsolidationProgressError("schema tag posting feature is malformed")
+                key = feature.removeprefix("schema-tag:")
+                definition = await plan.get_item("schema_tag_definition", key)
+                tag = str(definition.get("tag", ""))
+                if not tag or tag_key(tag) != key:
+                    raise ConsolidationProgressError("schema tag definition is malformed")
+                if not await plan.has_item("schema_tag_count", key):
+                    if cursor.get("count_feature") == feature:
+                        count = int(cursor.get("count_value", 0))
+                        sample_ids = [str(item) for item in cursor.get("count_sample_ids", [])]
+                        after_candidate = str(cursor.get("count_after_candidate", ""))
+                    else:
+                        count = 0
+                        sample_ids = []
+                        after_candidate = ""
+                    scanned_since_checkpoint = 0
+                    async for neuron_id in plan.iter_posting_candidates(
+                        feature, after_candidate=after_candidate
+                    ):
+                        candidate = await plan.get_candidate(neuron_id)
+                        occurrences = sum(
+                            1 for candidate_tag in candidate.get("tags", []) if candidate_tag == tag
+                        )
+                        if occurrences < 1:
+                            raise ConsolidationProgressError(
+                                "schema posting does not match its candidate"
+                            )
+                        count += occurrences
+                        remaining = sample_limit - len(sample_ids)
+                        if remaining > 0:
+                            sample_ids.extend([neuron_id] * min(occurrences, remaining))
+                        scanned_since_checkpoint += 1
+                        if scanned_since_checkpoint >= 500:
+                            cursor["count_feature"] = feature
+                            cursor["count_after_candidate"] = neuron_id
+                            cursor["count_value"] = count
+                            cursor["count_sample_ids"] = sample_ids
+                            await checkpoint("schema_plan_tag_counts")
+                            scanned_since_checkpoint = 0
+                    await plan.put_item(
+                        "schema_tag_count",
+                        key,
+                        {
+                            "tag": tag,
+                            "count": count,
+                            "sample_neuron_ids": sample_ids,
+                        },
+                    )
+                    cursor.pop("count_feature", None)
+                    cursor.pop("count_after_candidate", None)
+                    cursor.pop("count_value", None)
+                    cursor.pop("count_sample_ids", None)
+                cursor["after_feature"] = feature
+                await checkpoint("schema_plan_tag_counts")
+            await verify_source()
+            if await plan.has_item("schema_selection", "top20"):
+                selection = await plan.get_item("schema_selection", "top20")
+            else:
+                top: list[tuple[int, str, list[str]]] = []
+                async for _key, row in plan.iter_items("schema_tag_count"):
+                    count = int(row.get("count", 0))
+                    tag = str(row.get("tag", ""))
+                    stored_samples = row.get("sample_neuron_ids")
+                    if count < min_cluster or not tag or not isinstance(stored_samples, list):
+                        continue
+                    top.append((count, tag, [str(item) for item in stored_samples]))
+                    top.sort(key=lambda item: (-item[0], item[1]))
+                    del top[20:]
+                selection = {
+                    "source_fingerprint": cursor["source_fingerprint"],
+                    "entries": [
+                        {"tag": tag, "count": count, "sample_neuron_ids": sample_ids}
+                        for count, tag, sample_ids in top
+                    ],
+                }
+                await plan.put_item("schema_selection", "top20", selection)
+            entries = selection.get("entries")
+            if (
+                selection.get("source_fingerprint") != cursor["source_fingerprint"]
+                or not isinstance(entries, list)
+                or len(entries) > 20
+            ):
+                raise ConsolidationProgressError("schema top-tag selection is malformed")
+            cursor["after_output"] = -1
+            await checkpoint("schema_plan_outputs")
+            phase = "schema_plan_outputs"
+
+        if phase == "schema_plan_outputs":
+            selection = await plan.get_item("schema_selection", "top20")
+            entries = selection.get("entries")
+            if not isinstance(entries, list) or len(entries) > 20:
+                raise ConsolidationProgressError("schema top-tag selection is malformed")
+            start = int(cursor.get("after_output", -1)) + 1
+            for rank in range(start, len(entries)):
+                entry = entries[rank]
+                if not isinstance(entry, dict):
+                    raise ConsolidationProgressError("schema selection row is malformed")
+                item_key = f"{rank:02d}"
+                if not await plan.has_item("schema_output", item_key):
+                    tag = str(entry.get("tag", ""))
+                    raw_sample_ids = entry.get("sample_neuron_ids")
+                    if not tag or not isinstance(raw_sample_ids, list):
+                        raise ConsolidationProgressError("schema selection row is malformed")
+                    contents: list[str] = []
+                    for neuron_id in raw_sample_ids:
+                        candidate = await plan.get_candidate(str(neuron_id))
+                        if not isinstance(candidate.get("content"), str):
+                            raise ConsolidationProgressError(
+                                "schema candidate content is malformed"
+                            )
+                        contents.append(candidate["content"])
+                    schema, edges = build_schema_records(
+                        neuron_ids=[str(item) for item in raw_sample_ids],
+                        contents=contents,
+                        tags={tag},
+                        cluster_size=int(entry.get("count", 0)),
+                    )
+                    await plan.put_item(
+                        "schema_output",
+                        item_key,
+                        {
+                            "tag": tag,
+                            "count": int(entry.get("count", 0)),
+                            "neuron_record": encode_record(schema),
+                            "synapse_records": [encode_record(edge) for edge in edges],
+                        },
+                    )
+                cursor["after_output"] = rank
+                await checkpoint("schema_plan_outputs")
+            cursor["after_output"] = -1
+            await checkpoint("schema_ready_to_apply")
+            phase = "schema_ready_to_apply"
+
+        async def apply_output(output: dict[str, Any]) -> None:
+            nonlocal schemas_created
+            neuron = decode_record("neuron", str(output.get("neuron_record", "")))
+            if not isinstance(neuron, Neuron):
+                raise ConsolidationProgressError("schema output neuron is malformed")
+            existing_neuron = await self._storage.get_neuron(neuron.id)
+            if existing_neuron is None:
+                try:
+                    await self._storage.add_neuron(neuron)
+                except ValueError:
+                    existing_neuron = await self._storage.get_neuron(neuron.id)
+                    if existing_neuron != neuron:
+                        raise ConsolidationProgressError("schema neuron conflicts on replay")
+            elif existing_neuron != neuron:
+                raise ConsolidationProgressError("schema neuron conflicts on replay")
+
+            raw_synapses = output.get("synapse_records")
+            if not isinstance(raw_synapses, list) or len(raw_synapses) > 20:
+                raise ConsolidationProgressError("schema output edges are malformed")
+            for raw_synapse in raw_synapses:
+                synapse = decode_record("synapse", str(raw_synapse))
+                if not isinstance(synapse, Synapse):
+                    raise ConsolidationProgressError("schema output edge is malformed")
+                existing_synapse = await self._storage.get_synapse(synapse.id)
+                if existing_synapse is not None:
+                    if existing_synapse != synapse:
+                        raise ConsolidationProgressError("schema edge conflicts on replay")
+                    continue
+                try:
+                    await self._storage.add_synapse(synapse)
+                except ValueError:
+                    pair_check = await self._storage.find_existing_synapse_pairs(
+                        [(synapse.source_id, synapse.target_id)]
+                    )
+                    if (synapse.source_id, synapse.target_id) not in pair_check:
+                        raise ConsolidationProgressError("schema edge conflicts on replay")
+            schemas_created += 1
+            report.extra["schemas_created"] = schemas_created
+
+        if phase in {"schema_pending", "schema_ready_to_apply", "schema_apply"}:
+            pending: dict[str, Any] | None = None
+            if phase == "schema_pending":
+                pending_rows = state.get("pending") or []
+                if not isinstance(pending_rows, list) or len(pending_rows) != 1:
+                    raise ConsolidationProgressError("schema pending checkpoint is malformed")
+                try:
+                    pending = json.loads(str(pending_rows[0]))
+                except (TypeError, ValueError) as exc:
+                    raise ConsolidationProgressError(
+                        "schema pending snapshot is malformed"
+                    ) from exc
+                if (
+                    not isinstance(pending, dict)
+                    or pending.get("kind") != "schema_output_group"
+                    or pending.get("plan_id") != plan.plan_id
+                    or pending.get("source_fingerprint") != cursor["source_fingerprint"]
+                ):
+                    raise ConsolidationProgressError("schema pending snapshot is incompatible")
+                await verify_source()
+                output_key = str(pending.get("output_key", ""))
+                output = await plan.get_item("schema_output", output_key)
+                if output.get("neuron_record") != pending.get("neuron_record"):
+                    raise ConsolidationProgressError("schema pending output changed in its plan")
+                await apply_output(output)
+                cursor["after_output"] = int(output_key)
+                await checkpoint("schema_apply")
+                phase = "schema_apply"
+
+            selection = await plan.get_item("schema_selection", "top20")
+            entries = selection.get("entries")
+            if not isinstance(entries, list):
+                raise ConsolidationProgressError("schema top-tag selection is malformed")
+            last_output = int(cursor.get("after_output", -1))
+            for rank in range(last_output + 1, len(entries)):
+                await verify_source()
+                output_key = f"{rank:02d}"
+                output = await plan.get_item("schema_output", output_key)
+                pending = {
+                    "kind": "schema_output_group",
+                    "version": 1,
+                    "plan_id": plan.plan_id,
+                    "source_fingerprint": cursor["source_fingerprint"],
+                    "output_key": output_key,
+                    "neuron_record": output.get("neuron_record"),
+                }
+                await self._checkpoint_progress(
+                    "schema_pending",
+                    cursor=json.dumps(cursor, sort_keys=True, separators=(",", ":")),
+                    pending=[json.dumps(pending, sort_keys=True, separators=(",", ":"))],
+                    counters={"schemas_created": schemas_created},
+                )
+                await self._check_progress_budget()
+                await apply_output(output)
+                cursor["after_output"] = rank
+                await checkpoint("schema_apply")
+
+        await self._checkpoint_progress(
+            "completed",
+            cursor=json.dumps(cursor, sort_keys=True, separators=(",", ":")),
+            pending=[],
+            counters={"schemas_created": schemas_created},
         )
 
     async def _interference(
