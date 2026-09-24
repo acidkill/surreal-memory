@@ -646,8 +646,8 @@ class TestConsolidationProgressV11:
         # migration tolerates those definitions and only stamps v11 after all DDL.
         result = await M.apply_migrations(conn)
         assert result == M.TARGET_VERSION
-        stamps = [sql for sql in conn.sqls() if "UPSERT schema_meta:version" in sql]
-        assert len(stamps) == 1
+        stamps = [params["v"] for sql, params in conn.calls if "UPSERT schema_meta:version" in sql]
+        assert stamps == [M.VERSION_11, M.TARGET_VERSION]
         assert conn.graph_rows == original_graph_rows
         graph_row_dml = [
             sql
