@@ -485,6 +485,28 @@ class TestApplyMigrations:
         assert not any("REMOVE TABLE" in s for s in conn.sqls())
 
     @pytest.mark.asyncio
+    async def test_already_migrated_upgrades_compatible_checkpoint_metadata(self):
+        checkpoint = {
+            "id": _rid("consolidation_progress", "run-1"),
+            "schema_version": M.VERSION_11,
+            "engine_version": "3.11.0:checkpoint-v1",
+            "format_version": 1,
+            "status": "running",
+            "phase": "semantic_link",
+            "cursor": "neuron:n-42",
+            "counters": {"processed": 42},
+        }
+        conn = ScriptedConn()
+        conn.route("SELECT version FROM schema_meta:version", [{"version": M.TARGET_VERSION}])
+        conn.route("SELECT * FROM consolidation_progress", [checkpoint])
+
+        result = await M.apply_migrations(conn)
+
+        assert result == M.TARGET_VERSION
+        assert any(sql.lstrip().startswith("UPDATE $id SET schema_version") for sql in conn.sqls())
+        assert any("UPSERT schema_meta:version" in sql for sql in conn.sqls())
+
+    @pytest.mark.asyncio
     async def test_lock_contention_but_peer_finished_returns_noop(self, monkeypatch):
         """Second concurrent caller: can't get lock, but peer already migrated → return 8."""
         versions = iter([[], [{"version": M.TARGET_VERSION}]])  # 1st: unmigrated; 2nd: migrated
@@ -571,6 +593,76 @@ class TestConsolidationProgressV11:
         )
         assert stamp == {"v": M.TARGET_VERSION}
         assert M.TARGET_VERSION == 12
+
+    @pytest.mark.asyncio
+    async def test_v11_checkpoint_upgrade_preserves_unfinished_progress(self):
+        checkpoint = {
+            "id": _rid("consolidation_progress", "run-1"),
+            "schema_version": M.VERSION_11,
+            "engine_version": "3.11.0:checkpoint-v1",
+            "format_version": 1,
+            "status": "running",
+            "phase": "semantic_link",
+            "cursor": "neuron:n-42",
+            "strategy_states": {"semantic_link": {"page": 7}},
+            "counters": {"processed": 42, "created": 3},
+        }
+        conn = ScriptedConn().route(
+            "SELECT * FROM consolidation_progress",
+            [checkpoint],
+        )
+
+        await M._upgrade_consolidation_progress_v11_to_v12(conn)
+
+        update_calls = [
+            (sql, params) for sql, params in conn.calls if sql.lstrip().startswith("UPDATE ")
+        ]
+        assert len(update_calls) == 1
+        sql, params = update_calls[0]
+        assert "SET schema_version = $target_version" in sql
+        assert "phase =" not in sql
+        assert "cursor =" not in sql
+        assert "counters =" not in sql
+        assert params == {
+            "id": checkpoint["id"],
+            "target_version": M.TARGET_VERSION,
+            "source_version": M.VERSION_11,
+            "engine_version": "3.11.0:checkpoint-v1",
+            "format_version": 1,
+        }
+        assert checkpoint["phase"] == "semantic_link"
+        assert checkpoint["cursor"] == "neuron:n-42"
+        assert checkpoint["counters"] == {"processed": 42, "created": 3}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("field", "value", "message"),
+        [
+            ("engine_version", "3.12.0:checkpoint-v1", "incompatible engine"),
+            ("format_version", 2, "incompatible progress format"),
+        ],
+    )
+    async def test_v11_checkpoint_upgrade_refuses_incompatible_state(self, field, value, message):
+        checkpoint = {
+            "id": _rid("consolidation_progress", "run-1"),
+            "schema_version": M.VERSION_11,
+            "engine_version": "3.11.0:checkpoint-v1",
+            "format_version": 1,
+            "status": "running",
+            "phase": "semantic_link",
+            "cursor": "neuron:n-42",
+            "counters": {"processed": 42},
+        }
+        checkpoint[field] = value
+        conn = ScriptedConn().route(
+            "SELECT * FROM consolidation_progress",
+            [checkpoint],
+        )
+
+        with pytest.raises(M.MigrationError, match=message):
+            await M._upgrade_consolidation_progress_v11_to_v12(conn)
+
+        assert not any(sql.lstrip().startswith("UPDATE ") for sql in conn.sqls())
 
     @pytest.mark.asyncio
     async def test_v10_to_v11_promotes_partial_schemaless_progress_table(self):

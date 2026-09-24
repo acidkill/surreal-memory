@@ -731,6 +731,52 @@ async def _migrate_10_to_11(conn: Any) -> None:
     await _stamp_version(conn, VERSION_11)
 
 
+async def _upgrade_consolidation_progress_v11_to_v12(conn: Any) -> None:
+    """Advance compatible unfinished v11 checkpoints without changing progress."""
+    rows = await _query(
+        conn,
+        "SELECT * FROM consolidation_progress "
+        "WHERE status IN ['queued', 'running', 'paused', 'failed']",
+    )
+    compatible: list[dict[str, Any]] = []
+    for row in rows:
+        schema_version = row.get("schema_version")
+        if schema_version == TARGET_VERSION:
+            continue
+        if schema_version != VERSION_11:
+            raise MigrationError(
+                "Cannot migrate unfinished consolidation checkpoint with "
+                f"schema_version {schema_version!r}; expected {VERSION_11} or "
+                f"{TARGET_VERSION}. Checkpoint left untouched."
+            )
+        if row.get("engine_version") != "3.11.0:checkpoint-v1":
+            raise MigrationError(
+                "Cannot migrate unfinished consolidation checkpoint from an "
+                "incompatible engine version; checkpoint left untouched."
+            )
+        if row.get("format_version") != 1:
+            raise MigrationError(
+                "Cannot migrate unfinished consolidation checkpoint with an "
+                "incompatible progress format; checkpoint left untouched."
+            )
+        compatible.append(row)
+
+    for row in compatible:
+        await conn.query(
+            "UPDATE $id SET schema_version = $target_version "
+            "WHERE schema_version = $source_version "
+            "AND engine_version = $engine_version "
+            "AND format_version = $format_version",
+            {
+                "id": row["id"],
+                "target_version": TARGET_VERSION,
+                "source_version": VERSION_11,
+                "engine_version": "3.11.0:checkpoint-v1",
+                "format_version": 1,
+            },
+        )
+
+
 async def _migrate_11_to_12(conn: Any) -> None:
     """Enable mutation fences and bounded immutable discovery snapshots."""
     for stmt in SOURCE_REVISION_DDL:
@@ -742,6 +788,7 @@ async def _migrate_11_to_12(conn: Any) -> None:
             else:
                 logger.error("v12 migration statement failed: %s (%s)", stmt[:100], exc)
                 raise
+    await _upgrade_consolidation_progress_v11_to_v12(conn)
     await _stamp_version(conn, TARGET_VERSION)
 
 
@@ -778,6 +825,7 @@ async def apply_migrations(conn: Any) -> int:
             "upgrade Surreal-Memory before connecting"
         )
     if current == TARGET_VERSION:
+        await _upgrade_consolidation_progress_v11_to_v12(conn)
         await _stamp_version(conn, TARGET_VERSION)
         return TARGET_VERSION
 
