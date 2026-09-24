@@ -8173,7 +8173,7 @@ class ConsolidationEngine:
         from enum import Enum
 
         from surreal_memory.core.synapse import Direction, SynapseType
-        from surreal_memory.engine.dream import dream
+        from surreal_memory.engine.dream import DreamPlanCheckpoint, dream
 
         brain_id = self._storage.current_brain_id
         if not brain_id:
@@ -8244,29 +8244,135 @@ class ConsolidationEngine:
             return
 
         if manifest is None:
-            await self._check_progress_budget()
-            result = await dream(self._storage, brain.config)
-            manifest = {
-                "kind": "dream_manifest",
-                "synapses": [dump_synapse(synapse) for synapse in result.synapses_created],
-                "completed": [],
+            manifest = {"kind": "dream_manifest", "synapses": [], "completed": []}
+
+        def load_plan(raw: object) -> DreamPlanCheckpoint | None:
+            if not isinstance(raw, dict):
+                return None
+            try:
+                synapses_raw = raw["planned_synapses"]
+                receipts_raw = raw["pair_receipts"]
+                activated_raw = raw["activated_ids"]
+                if (
+                    any(
+                        type(raw[field]) is not int
+                        for field in ("seed", "pair_cursor", "pairs_explored")
+                    )
+                    or type(raw["complete"]) is not bool
+                ):
+                    raise TypeError("dream planning checkpoint fields have invalid types")
+                if not isinstance(synapses_raw, list):
+                    raise TypeError("planned synapse payloads are not a list")
+                if not isinstance(receipts_raw, list):
+                    raise TypeError("pair receipts are not a list")
+                if not isinstance(activated_raw, list):
+                    raise TypeError("activated neuron IDs are not a list")
+                if not all(isinstance(item, str) for item in synapses_raw):
+                    raise TypeError("planned synapse payload is not text")
+                if not all(isinstance(item, str) for item in receipts_raw):
+                    raise TypeError("pair receipt is not text")
+                if not all(isinstance(item, str) for item in activated_raw):
+                    raise TypeError("activated neuron ID is not text")
+                return DreamPlanCheckpoint(
+                    seed=int(raw["seed"]),
+                    activated_ids=tuple(activated_raw),
+                    pair_cursor=int(raw["pair_cursor"]),
+                    pair_receipts=tuple(receipts_raw),
+                    planned_synapses=tuple(load_synapse(item) for item in synapses_raw),
+                    pairs_explored=int(raw["pairs_explored"]),
+                    complete=bool(raw["complete"]),
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                raise RuntimeError("dream planning checkpoint is malformed") from exc
+
+        plan = load_plan(manifest.get("planning"))
+
+        async def checkpoint_plan(plan_state: DreamPlanCheckpoint) -> None:
+            manifest["planning"] = {
+                "seed": plan_state.seed,
+                "activated_ids": list(plan_state.activated_ids),
+                "pair_cursor": plan_state.pair_cursor,
+                "pair_receipts": list(plan_state.pair_receipts),
+                "planned_synapses": [
+                    dump_synapse(synapse) for synapse in plan_state.planned_synapses
+                ],
+                "pairs_explored": plan_state.pairs_explored,
+                "complete": plan_state.complete,
             }
             await self._checkpoint_progress(
-                "dream_apply",
+                "dream_plan",
+                cursor=str(plan_state.pair_cursor),
                 pending=[json.dumps(manifest, sort_keys=True, separators=(",", ":"))],
                 counters=counters,
             )
+
+        raw_synapses = manifest.get("synapses", [])
+        saved_synapses = (
+            [load_synapse(str(item)) for item in raw_synapses]
+            if isinstance(raw_synapses, list)
+            else []
+        )
+        already_planned = pending_op is not None or (plan is None and bool(saved_synapses))
+        if already_planned:
+            planned_synapses = saved_synapses
+        else:
+            await self._check_progress_budget()
+            result = await dream(
+                self._storage,
+                brain.config,
+                resume=plan,
+                checkpoint=checkpoint_plan,
+            )
+            planned_synapses = result.synapses_created
+            manifest["synapses"] = [dump_synapse(synapse) for synapse in planned_synapses]
+            manifest.setdefault("completed", [])
+            # A tiny graph may return without emitting a planning checkpoint;
+            # make its empty result durable before the first write.
+            if plan is None and not manifest.get("planning"):
+                await self._checkpoint_progress(
+                    "dream_apply",
+                    cursor=None,
+                    pending=[json.dumps(manifest, sort_keys=True, separators=(",", ":"))],
+                    counters=counters,
+                )
+            else:
+                raw_planning = manifest.get("planning")
+                plan_cursor = (
+                    str(raw_planning.get("pair_cursor", 0))
+                    if isinstance(raw_planning, dict)
+                    else "0"
+                )
+                await self._checkpoint_progress(
+                    "dream_apply",
+                    cursor=plan_cursor,
+                    pending=[json.dumps(manifest, sort_keys=True, separators=(",", ":"))],
+                    counters=counters,
+                )
 
         raw_completed = manifest.get("completed", [])
         completed = (
             {str(item) for item in raw_completed} if isinstance(raw_completed, list) else set()
         )
-        raw_synapses = manifest.get("synapses", [])
-        synapse_payloads = (
-            [str(item) for item in raw_synapses] if isinstance(raw_synapses, list) else []
-        )
+        synapse_payloads = [dump_synapse(synapse) for synapse in planned_synapses]
 
         async def commit(synapse: Synapse) -> bool:
+            for source_id, target_id in (
+                (synapse.source_id, synapse.target_id),
+                (synapse.target_id, synapse.source_id),
+            ):
+                existing_pair = await self._storage.get_synapses(
+                    source_id=source_id,
+                    target_id=target_id,
+                    type=SynapseType.RELATED_TO,
+                    limit=1,
+                )
+                if any(
+                    item.source_id == source_id
+                    and item.target_id == target_id
+                    and item.type == SynapseType.RELATED_TO
+                    for item in existing_pair
+                ):
+                    return any(item.id == synapse.id for item in existing_pair)
             try:
                 await self._storage.add_synapse(synapse)
                 return True

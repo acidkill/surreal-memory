@@ -8,7 +8,7 @@ import pytest_asyncio
 from surreal_memory.core.brain import Brain, BrainConfig
 from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.core.synapse import Synapse, SynapseType
-from surreal_memory.engine.dream import DreamResult, dream
+from surreal_memory.engine.dream import DreamPlanCheckpoint, DreamResult, dream
 from surreal_memory.storage.memory_store import InMemoryStorage
 
 
@@ -166,6 +166,70 @@ async def test_dream_respects_neuron_count(store: InMemoryStorage) -> None:
 
     # With fewer seed neurons, we expect equal or fewer pairs explored
     assert result_small.pairs_explored <= result_large.pairs_explored
+
+
+@pytest.mark.asyncio
+async def test_dream_plan_resumes_from_bounded_checkpoint_without_full_relation_scan(
+    store: InMemoryStorage,
+) -> None:
+    """A paused pair page resumes exactly, without collecting all RELATED_TO rows."""
+    activated = tuple(f"candidate-{index:02d}" for index in range(15))
+    start = DreamPlanCheckpoint(7, activated, 0, (), (), 0, False)
+    saved: list[DreamPlanCheckpoint] = []
+
+    async def stop_after_page(state: DreamPlanCheckpoint) -> None:
+        saved.append(state)
+        if state.pair_cursor == 100:
+            raise RuntimeError("simulated interruption")
+
+    async def forbidden_full_scan(**_kwargs: object) -> list[Synapse]:
+        raise AssertionError("dream must not collect every RELATED_TO synapse")
+
+    store.get_synapses_paged = forbidden_full_scan
+    with pytest.raises(RuntimeError, match="simulated interruption"):
+        await dream(store, BrainConfig(), resume=start, checkpoint=stop_after_page)
+
+    checkpointed = saved[-1]
+    assert checkpointed.pair_cursor == 100
+    assert len(checkpointed.pair_receipts) == 1
+    assert len(checkpointed.planned_synapses) <= 100
+
+    result = await dream(store, BrainConfig(), resume=checkpointed)
+    assert result.pairs_explored == 105
+    assert len(result.synapses_created) == 105
+
+
+@pytest.mark.asyncio
+async def test_dream_resume_rejects_changed_related_pair_in_checkpointed_page(
+    store: InMemoryStorage,
+) -> None:
+    """A changed relation in an already scanned unit invalidates the saved plan."""
+    activated = tuple(f"candidate-{index:02d}" for index in range(15))
+    for neuron_id in activated:
+        await store.add_neuron(
+            Neuron.create(type=NeuronType.CONCEPT, content=neuron_id, neuron_id=neuron_id)
+        )
+    start = DreamPlanCheckpoint(7, activated, 0, (), (), 0, False)
+    saved: list[DreamPlanCheckpoint] = []
+
+    async def stop_after_page(state: DreamPlanCheckpoint) -> None:
+        saved.append(state)
+        if state.pair_cursor == 100:
+            raise RuntimeError("simulated interruption")
+
+    with pytest.raises(RuntimeError, match="simulated interruption"):
+        await dream(store, BrainConfig(), resume=start, checkpoint=stop_after_page)
+
+    await store.add_synapse(
+        Synapse.create(
+            source_id=activated[0],
+            target_id=activated[1],
+            type=SynapseType.RELATED_TO,
+            weight=0.7,
+        )
+    )
+    with pytest.raises(RuntimeError, match="rows changed"):
+        await dream(store, BrainConfig(), resume=saved[-1])
 
 
 # ── test: DreamResult is frozen ──────────────────────────────────

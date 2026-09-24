@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any, cast
@@ -16,7 +17,7 @@ from surreal_memory.engine.consolidation import (
     ConsolidationStrategy,
 )
 from surreal_memory.engine.consolidation_progress import ConsolidationPausedError
-from surreal_memory.engine.dream import DreamResult
+from surreal_memory.engine.dream import DreamPlanCheckpoint, DreamResult
 from surreal_memory.engine.hippocampal_replay import ReplayResult
 
 
@@ -145,6 +146,69 @@ async def test_dream_replays_exact_pending_synapse_after_write_before_checkpoint
     await engine._dream(report, dry_run=False)
 
     assert calls == 1
+    assert list(storage.synapses) == [synapse.id]
+    assert report.dream_synapses_created == 1
+    assert progress.strategy_state("dream")["phase"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_dream_checkpoints_plan_pages_before_apply_and_resumes_same_units(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = _Storage()
+    progress = _Progress(pause_phase="dream_plan")
+    engine = _engine(ConsolidationStrategy.DREAM, storage, progress)
+    synapse = Synapse.create("neuron-a", "neuron-b", SynapseType.RELATED_TO, weight=0.1)
+    partial = DreamPlanCheckpoint(
+        seed=19,
+        activated_ids=("neuron-a", "neuron-b"),
+        pair_cursor=100,
+        pair_receipts=("receipt-0",),
+        planned_synapses=(synapse,),
+        pairs_explored=100,
+        complete=False,
+    )
+    complete = DreamPlanCheckpoint(
+        seed=19,
+        activated_ids=partial.activated_ids,
+        pair_cursor=101,
+        pair_receipts=("receipt-0", "receipt-1"),
+        planned_synapses=(synapse,),
+        pairs_explored=102,
+        complete=True,
+    )
+    calls = 0
+
+    async def fake_dream(
+        _storage: Any,
+        _config: Any,
+        *,
+        resume: DreamPlanCheckpoint | None = None,
+        checkpoint: Any = None,
+    ) -> DreamResult:
+        nonlocal calls
+        calls += 1
+        if resume is None:
+            await checkpoint(partial)
+        else:
+            assert resume.pair_cursor == 100
+            assert resume.seed == 19
+            await checkpoint(complete)
+        return DreamResult([synapse], pairs_explored=102)
+
+    monkeypatch.setattr("surreal_memory.engine.dream.dream", fake_dream)
+    with pytest.raises(ConsolidationPausedError):
+        await engine._dream(ConsolidationReport(), dry_run=False)
+
+    saved = progress.strategy_state("dream")
+    assert saved["phase"] == "dream_plan"
+    manifest = json.loads(saved["pending"][0])
+    assert manifest["planning"]["pair_cursor"] == 100
+    assert manifest["planning"]["complete"] is False
+
+    report = ConsolidationReport()
+    await engine._dream(report, dry_run=False)
+    assert calls == 2
     assert list(storage.synapses) == [synapse.id]
     assert report.dream_synapses_created == 1
     assert progress.strategy_state("dream")["phase"] == "completed"
