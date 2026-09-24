@@ -477,6 +477,26 @@ async def test_merge_durable_group_plan_replays_pending_unit_after_restart() -> 
 
 
 @pytest.mark.asyncio
+async def test_merge_durable_group_plan_resumes_typed_cleanup_page() -> None:
+    storage = _DurableFiberStorage()
+    plan_store = _PlanStorage()
+    storage._query = plan_store._query  # type: ignore[attr-defined,method-assign]
+    progress = _Progress("merge_typed_cleanup")
+    engine = _engine(storage, progress)
+
+    with pytest.raises(ConsolidationPausedError):
+        await engine._merge(ConsolidationReport(), dry_run=False)
+    assert progress.strategy_state("merge")["phase"] == "merge_typed_cleanup"
+    merged_id = next(
+        fiber.id for fiber in storage.fibers.values() if fiber.metadata.get("merged_from")
+    )
+
+    progress.pause_phase = None
+    await _resume_and_assert_complete(engine, storage)
+    assert (await storage.get_typed_memories_batch([merged_id])).get(merged_id) is not None
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "pause_phase",
     ["merge_plan_stage", "merge_plan_pairs", "merge_plan_members", "merge_plan_units"],
@@ -550,7 +570,9 @@ async def test_merge_durable_plan_streams_more_than_ten_thousand_singletons() ->
 
 
 @pytest.mark.asyncio
-async def test_merge_durable_plan_fails_closed_for_oversized_component() -> None:
+async def test_merge_durable_plan_replays_oversized_component_across_bounded_pages() -> None:
+    import json
+
     storage = _DurableFiberStorage(typed=False, matured=False)
     storage.fibers = {
         f"chain-{index:04d}": Fiber(
@@ -565,7 +587,7 @@ async def test_merge_durable_plan_fails_closed_for_oversized_component() -> None
     }
     plan_store = _PlanStorage()
     storage._query = plan_store._query  # type: ignore[attr-defined,method-assign]
-    progress = _Progress()
+    progress = _Progress("merge_deleting_sources", pause_occurrence=2)
     engine = ConsolidationEngine(
         storage,
         ConsolidationConfig(merge_overlap_threshold=0.3),
@@ -573,11 +595,56 @@ async def test_merge_durable_plan_fails_closed_for_oversized_component() -> None
     engine._active_strategy = ConsolidationStrategy.MERGE
     engine._progress_session = progress  # type: ignore[assignment]
 
-    with pytest.raises(RuntimeError, match="bounded work-unit limit of 500"):
+    delete_calls: list[str] = []
+    original_delete_fiber = storage.delete_fiber
+
+    async def recording_delete_fiber(fiber_id: str) -> bool:
+        delete_calls.append(fiber_id)
+        return await original_delete_fiber(fiber_id)
+
+    storage.delete_fiber = recording_delete_fiber  # type: ignore[method-assign]
+    storage.crash_after = "delete_fiber"
+    with pytest.raises(_SimulatedCrash, match="after delete_fiber"):
         await engine._merge(ConsolidationReport(), dry_run=False)
 
-    assert len(storage.fibers) == 501
-    assert not any(fiber.metadata.get("merged_from") for fiber in storage.fibers.values())
+    saved = progress.strategy_state("merge")
+    pending = json.loads(saved["cursor"])
+    assert saved["phase"] == "merge_deleting_sources"
+    assert pending["source_count"] == 501
+    assert pending["after_deleted"] == ""
+    assert pending["removed_count"] == 0
+    assert "source_ids" not in pending
+    merged_id = pending["merged_id"]
+    assert merged_id in storage.fibers
+
+    storage.crash_after = None
+    with pytest.raises(ConsolidationPausedError):
+        await engine._merge(ConsolidationReport(), dry_run=False)
+
+    saved = progress.strategy_state("merge")
+    pending = json.loads(saved["cursor"])
+    assert saved["phase"] == "merge_deleting_sources"
+    assert pending["after_deleted"] == "chain-0099"
+    assert pending["removed_count"] == 100
+    assert pending["merged_id"] == merged_id
+
+    progress.pause_phase = None
+    report = ConsolidationReport()
+    await engine._merge(report, dry_run=False)
+
+    assert set(storage.fibers) == {merged_id}
+    successor = storage.fibers[merged_id]
+    assert successor.metadata["merged_from"] == [f"chain-{index:04d}" for index in range(501)]
+    assert successor.neuron_ids == {f"node-{index:04d}" for index in range(502)}
+    assert successor.anchor_neuron_id == "node-0000"
+    assert successor.summary == "Merged from 501 fibers"
+    assert report.fibers_merged == 501
+    assert report.fibers_created == 1
+    assert report.fibers_removed == 501
+    assert len(delete_calls) == 501
+    assert len(set(delete_calls)) == 501
+    assert max(plan_store.page_limits) <= 500
+    assert progress.strategy_state("merge")["phase"] == "merge_plan_complete"
 
 
 @pytest.mark.asyncio

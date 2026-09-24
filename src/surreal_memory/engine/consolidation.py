@@ -27,7 +27,6 @@ from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.core.synapse import Synapse, SynapseType
 from surreal_memory.engine.clustering import UnionFind
 from surreal_memory.engine.consolidation_group_plan import (
-    MAX_GROUP_WORK_ITEMS,
     SurrealDBConsolidationGroupPlan,
 )
 from surreal_memory.engine.consolidation_progress import (
@@ -2104,6 +2103,28 @@ class ConsolidationEngine:
                 descriptor = json.loads(raw_cursor)
             except (TypeError, ValueError) as exc:
                 raise RuntimeError("merge checkpoint cursor is malformed") from exc
+            if isinstance(descriptor, dict) and descriptor.get("version") == 2:
+                plan = descriptor.get("plan")
+                if (
+                    not isinstance(plan, dict)
+                    or plan.get("kind") != "paged_group_plan"
+                    or plan.get("unit_format") != "member_manifest_v1"
+                    or not isinstance(plan.get("plan_id"), str)
+                    or not isinstance(plan.get("fingerprint"), str)
+                    or not isinstance(descriptor.get("group_root"), str)
+                    or not descriptor.get("group_root")
+                    or not isinstance(descriptor.get("unit_id"), str)
+                    or descriptor.get("merged_id") != f"merge-{descriptor['unit_id']}"
+                    or type(descriptor.get("source_count")) is not int
+                    or descriptor["source_count"] < 2
+                    or type(descriptor.get("removed_base")) is not int
+                    or type(descriptor.get("removed_count")) is not int
+                    or descriptor["removed_count"] < 0
+                    or not isinstance(descriptor.get("after_typed_cleanup", ""), str)
+                    or not isinstance(descriptor.get("after_deleted", ""), str)
+                ):
+                    raise RuntimeError("merge member-manifest work-unit cursor is incompatible")
+                return descriptor
             if (
                 not isinstance(descriptor, dict)
                 or descriptor.get("version") != 1
@@ -2432,12 +2453,707 @@ class ConsolidationEngine:
             ):
                 raise RuntimeError("maturation inheritance was not durable on the merge successor")
 
+        def _paged_plan_from_descriptor(
+            descriptor: dict[str, Any],
+        ) -> SurrealDBConsolidationGroupPlan:
+            plan_state = descriptor.get("plan")
+            progress = self._progress_session
+            if not isinstance(plan_state, dict) or progress is None:
+                raise RuntimeError("merge member manifest has no durable run identity")
+            run_id = str(getattr(progress, "state", {}).get("run_id", ""))
+            brain_id = str(
+                getattr(progress, "brain_id", None)
+                or getattr(self._storage, "_get_brain_id", lambda: "")()
+            )
+            plan = SurrealDBConsolidationGroupPlan(
+                self._storage,
+                brain_id=brain_id,
+                run_id=run_id,
+                strategy="merge",
+                fingerprint=str(plan_state.get("fingerprint", "")),
+            )
+            if plan.plan_id != plan_state.get("plan_id"):
+                raise RuntimeError("merge member manifest belongs to a different durable plan")
+            return plan
+
+        async def _iter_merge_manifest_batches(
+            group_plan: SurrealDBConsolidationGroupPlan,
+            group_root: str,
+            *,
+            after: str = "",
+        ) -> AsyncIterator[list[dict[str, str | None]]]:
+            batch: list[dict[str, str | None]] = []
+            async for entry in group_plan.iter_merge_manifest_members(group_root, after=after):
+                batch.append(entry)
+                if len(batch) == 100:
+                    yield batch
+                    batch = []
+            if batch:
+                yield batch
+
+        async def _paged_manifest_unit_id(
+            group_plan: SurrealDBConsolidationGroupPlan,
+            group_root: str,
+            source_count: int,
+        ) -> str:
+            digest = hashlib.sha256()
+            digest.update(group_plan.plan_id.encode("ascii"))
+            digest.update(b"\0")
+            digest.update(group_root.encode("utf-8"))
+            actual_count = 0
+            async for batch in _iter_merge_manifest_batches(group_plan, group_root):
+                await self._check_progress_budget()
+                for entry in batch:
+                    encoded = json.dumps(
+                        [
+                            entry["candidate_id"],
+                            entry["fiber_signature"],
+                            entry["typed_signature"],
+                            entry["maturation_signature"],
+                        ],
+                        separators=(",", ":"),
+                        ensure_ascii=False,
+                    )
+                    digest.update(encoded.encode("utf-8"))
+                    digest.update(b"\n")
+                    actual_count += 1
+            if actual_count != source_count:
+                raise RuntimeError(
+                    "merge member manifest is incomplete: "
+                    f"expected {source_count}, found {actual_count}"
+                )
+            return digest.hexdigest()[:32]
+
+        async def _build_paged_successor(
+            descriptor: dict[str, Any],
+            group_plan: SurrealDBConsolidationGroupPlan,
+        ) -> Fiber:
+            group_root = str(descriptor["group_root"])
+            source_count = int(descriptor["source_count"])
+            neuron_ids: set[str] = set()
+            synapse_ids: set[str] = set()
+            auto_tags: set[str] = set()
+            agent_tags: set[str] = set()
+            metadata_winners: dict[str, tuple[float, str, Any]] = {}
+            source_ids: list[str] = []
+            summary_seen: set[str] = set()
+            summary_text = ""
+            summary_truncated = False
+            best_anchor: str | None = None
+            best_frequency = 0
+            max_salience = 0.0
+            created_at: datetime | None = None
+
+            async for batch in _iter_merge_manifest_batches(group_plan, group_root):
+                await self._check_progress_budget()
+                for entry in batch:
+                    fiber_id = str(entry["candidate_id"])
+                    fiber = await self._storage.get_fiber(fiber_id)
+                    if fiber is None:
+                        raise RuntimeError(
+                            f"merge source fiber {fiber_id!r} disappeared before successor creation"
+                        )
+                    if _fiber_fingerprint(fiber) != entry["fiber_signature"]:
+                        raise RuntimeError(
+                            f"merge source fiber {fiber_id!r} changed after its checkpoint"
+                        )
+
+                    source_ids.append(fiber.id)
+                    neuron_ids.update(fiber.neuron_ids)
+                    synapse_ids.update(fiber.synapse_ids)
+                    auto_tags.update(fiber.auto_tags)
+                    agent_tags.update(fiber.agent_tags)
+                    if best_anchor is None or fiber.frequency > best_frequency:
+                        best_anchor = fiber.anchor_neuron_id
+                        best_frequency = fiber.frequency
+                    if fiber.salience > max_salience:
+                        max_salience = fiber.salience
+                    if created_at is None or fiber.created_at < created_at:
+                        created_at = fiber.created_at
+
+                    for key, value in fiber.metadata.items():
+                        if key == "merged_from":
+                            continue
+                        current = metadata_winners.get(key)
+                        rank = (fiber.salience, fiber.id)
+                        if current is None or rank >= (current[0], current[1]):
+                            metadata_winners[key] = (fiber.salience, fiber.id, value)
+
+                    summary = fiber.summary.strip() if fiber.summary else ""
+                    if summary and not summary_truncated and summary not in summary_seen:
+                        separator = "; " if summary_text else ""
+                        available = _MERGED_SUMMARY_MAX_CHARS - len(summary_text) - len(separator)
+                        if len(summary) <= available:
+                            summary_seen.add(summary)
+                            summary_text += separator + summary
+                        else:
+                            prefix = summary_text + separator + summary[: max(0, available)]
+                            summary_text = prefix[: _MERGED_SUMMARY_MAX_CHARS - 1].rstrip() + "…"
+                            summary_truncated = True
+
+            if len(source_ids) != source_count or best_anchor is None or created_at is None:
+                raise RuntimeError("merge member manifest did not yield its frozen source count")
+            metadata = {key: value[2] for key, value in metadata_winners.items()}
+            metadata["merged_from"] = source_ids
+            summary = summary_text or f"Merged from {source_count} fibers"
+            return Fiber(
+                id=str(descriptor["merged_id"]),
+                neuron_ids=neuron_ids,
+                synapse_ids=synapse_ids,
+                anchor_neuron_id=best_anchor,
+                pathway=[best_anchor],
+                salience=max_salience,
+                frequency=best_frequency,
+                auto_tags=auto_tags,
+                agent_tags=agent_tags,
+                summary=summary,
+                metadata=metadata,
+                created_at=created_at,
+            )
+
+        async def _validate_paged_fibers(
+            descriptor: dict[str, Any],
+            group_plan: SurrealDBConsolidationGroupPlan,
+            *,
+            allow_missing: bool,
+        ) -> int:
+            group_root = str(descriptor["group_root"])
+            checked = 0
+            after_deleted = str(descriptor.get("after_deleted", ""))
+            async for batch in _iter_merge_manifest_batches(group_plan, group_root):
+                await self._check_progress_budget()
+                for entry in batch:
+                    fiber_id = str(entry["candidate_id"])
+                    fiber = await self._storage.get_fiber(fiber_id)
+                    if fiber is None:
+                        if not allow_missing:
+                            raise RuntimeError(
+                                f"merge source fiber {fiber_id!r} disappeared before successor data was safe"
+                            )
+                        continue
+                    if allow_missing and after_deleted and fiber_id <= after_deleted:
+                        raise RuntimeError("a previously deleted merge source reappeared")
+                    if _fiber_fingerprint(fiber) != entry["fiber_signature"]:
+                        raise RuntimeError(
+                            f"merge source fiber {fiber_id!r} changed after its checkpoint; "
+                            "the pending unit was left untouched"
+                        )
+                    checked += 1
+            return checked
+
+        async def _paged_typed_output(
+            descriptor: dict[str, Any],
+            group_plan: SurrealDBConsolidationGroupPlan,
+        ) -> Any | None:
+            winner: Any | None = None
+            winner_priority: tuple[int, float] | None = None
+            trust_score: float | None = None
+            valid_from: datetime | None = None
+            expiry: datetime | None = None
+            record_count = 0
+            expiry_count = 0
+            tags: set[str] = set()
+            async for batch in _iter_merge_manifest_batches(
+                group_plan, str(descriptor["group_root"])
+            ):
+                await self._check_progress_budget()
+                ids = [str(entry["candidate_id"]) for entry in batch]
+                records = await _read_source_typed(ids)
+                for entry in batch:
+                    fiber_id = str(entry["candidate_id"])
+                    record = records[fiber_id]
+                    expected = entry["typed_signature"]
+                    if record is None:
+                        if expected is not None:
+                            raise RuntimeError(
+                                f"typed memory for source {fiber_id!r} is missing before reassignment"
+                            )
+                        continue
+                    if expected is None or _fingerprint(record) != expected:
+                        raise RuntimeError(
+                            f"typed memory for source {fiber_id!r} changed after its checkpoint"
+                        )
+                    record_count += 1
+                    priority = (int(record.priority), -record.created_at.timestamp())
+                    if winner_priority is None or priority > winner_priority:
+                        winner = record
+                        winner_priority = priority
+                    if record.trust_score is not None:
+                        trust_score = (
+                            record.trust_score
+                            if trust_score is None
+                            else max(trust_score, record.trust_score)
+                        )
+                    if record.valid_from is not None:
+                        valid_from = (
+                            record.valid_from
+                            if valid_from is None
+                            else min(valid_from, record.valid_from)
+                        )
+                    if record.expires_at is not None:
+                        expiry_count += 1
+                        expiry = (
+                            record.expires_at if expiry is None else max(expiry, record.expires_at)
+                        )
+                    tags.update(record.tags)
+            if winner is None:
+                if record_count:
+                    raise RuntimeError("merge typed-memory winner is missing")
+                return None
+            return dc_replace(
+                winner,
+                fiber_id=str(descriptor["merged_id"]),
+                trust_score=trust_score if trust_score is not None else winner.trust_score,
+                valid_from=valid_from if valid_from is not None else winner.valid_from,
+                expires_at=expiry if expiry_count == record_count and expiry is not None else None,
+                tags=frozenset(tags),
+            )
+
+        async def _paged_maturation_output(
+            descriptor: dict[str, Any],
+            group_plan: SurrealDBConsolidationGroupPlan,
+        ) -> MaturationRecord | None:
+            stage_order = list(MemoryStage)
+            inherited_stage: MemoryStage | None = None
+            stage_rank = -1
+            entered_at: datetime | None = None
+            timestamps: set[str] = set()
+            brain_id: str | None = None
+            record_count = 0
+            async for batch in _iter_merge_manifest_batches(
+                group_plan, str(descriptor["group_root"])
+            ):
+                await self._check_progress_budget()
+                ids = [str(entry["candidate_id"]) for entry in batch]
+                records = await _read_source_maturations(ids)
+                for entry in batch:
+                    fiber_id = str(entry["candidate_id"])
+                    record = records[fiber_id]
+                    expected = entry["maturation_signature"]
+                    if record is None:
+                        if expected is not None:
+                            raise RuntimeError(
+                                f"maturation for source {fiber_id!r} disappeared before transfer"
+                            )
+                        continue
+                    if expected is None or _fingerprint(record) != expected:
+                        raise RuntimeError(
+                            f"maturation for source {fiber_id!r} changed after its checkpoint"
+                        )
+                    record_count += 1
+                    current_rank = stage_order.index(record.stage)
+                    if current_rank > stage_rank:
+                        stage_rank = current_rank
+                        inherited_stage = record.stage
+                    entered_at = (
+                        record.stage_entered_at
+                        if entered_at is None
+                        else min(entered_at, record.stage_entered_at)
+                    )
+                    brain_id = brain_id or record.brain_id
+                    timestamps.update(record.reinforcement_timestamps)
+            if record_count == 0:
+                return None
+            if inherited_stage is None or entered_at is None or brain_id is None:
+                raise RuntimeError("merge maturation aggregate is incomplete")
+            ordered_timestamps = tuple(sorted(timestamps))
+            return MaturationRecord(
+                fiber_id=str(descriptor["merged_id"]),
+                brain_id=brain_id,
+                stage=inherited_stage,
+                stage_entered_at=entered_at,
+                rehearsal_count=len(ordered_timestamps),
+                reinforcement_timestamps=ordered_timestamps,
+            )
+
+        async def _paged_manifest_first_batch(
+            group_plan: SurrealDBConsolidationGroupPlan,
+            group_root: str,
+            *,
+            after: str,
+        ) -> list[dict[str, str | None]]:
+            async for batch in _iter_merge_manifest_batches(group_plan, group_root, after=after):
+                return batch
+            return []
+
+        async def _validate_paged_delete_window(
+            descriptor: dict[str, Any],
+            group_plan: SurrealDBConsolidationGroupPlan,
+        ) -> list[dict[str, str | None]]:
+            """Validate every source, allowing absence only in the current replay page."""
+            root = str(descriptor["group_root"])
+            after = str(descriptor.get("after_deleted", ""))
+            current_batch = await _paged_manifest_first_batch(group_plan, root, after=after)
+            in_flight = {str(entry["candidate_id"]) for entry in current_batch}
+            typed_target = await _read_typed_target(str(descriptor["merged_id"]))
+            typed_signature = descriptor.get("typed_target_signature")
+            if typed_signature is None:
+                if typed_target is not None:
+                    raise RuntimeError("merge successor has unexpected typed memory")
+            elif typed_target is None or _fingerprint(typed_target) != typed_signature:
+                raise RuntimeError("merge successor typed memory changed before source deletion")
+            maturation_target = await self._storage.get_maturation(str(descriptor["merged_id"]))
+            maturation_signature = descriptor.get("maturation_target_signature")
+            if maturation_signature is None:
+                if maturation_target is not None:
+                    raise RuntimeError("merge successor has unexpected maturation")
+            elif (
+                maturation_target is None or _fingerprint(maturation_target) != maturation_signature
+            ):
+                raise RuntimeError("merge successor maturation changed before source deletion")
+            deleted_prefix = 0
+            missing_in_flight = 0
+            async for batch in _iter_merge_manifest_batches(group_plan, root):
+                await self._check_progress_budget()
+                for entry in batch:
+                    fiber_id = str(entry["candidate_id"])
+                    fiber = await self._storage.get_fiber(fiber_id)
+                    if fiber_id <= after:
+                        if fiber is not None:
+                            raise RuntimeError("a previously deleted merge source reappeared")
+                        deleted_prefix += 1
+                    elif fiber is None:
+                        if fiber_id not in in_flight:
+                            raise RuntimeError(
+                                f"merge source fiber {fiber_id!r} disappeared outside the replay page"
+                            )
+                        missing_in_flight += 1
+                    elif _fiber_fingerprint(fiber) != entry["fiber_signature"]:
+                        raise RuntimeError(
+                            f"merge source fiber {fiber_id!r} changed after its checkpoint; "
+                            "the pending unit was left untouched"
+                        )
+                    if fiber is not None:
+                        maturity = await self._storage.get_maturation(fiber_id)
+                        expected_maturity = entry["maturation_signature"]
+                        if expected_maturity is None:
+                            if maturity is not None:
+                                raise RuntimeError(
+                                    f"maturation for source {fiber_id!r} appeared after its checkpoint"
+                                )
+                        elif maturity is None or _fingerprint(maturity) != expected_maturity:
+                            raise RuntimeError(
+                                f"maturation for source {fiber_id!r} changed after its checkpoint"
+                            )
+            if deleted_prefix != int(descriptor.get("removed_count", 0)):
+                raise RuntimeError("merge deletion cursor and removed count disagree")
+            if deleted_prefix + missing_in_flight > int(descriptor["source_count"]):
+                raise RuntimeError("merge deletion progress exceeds its frozen source count")
+            return current_batch
+
+        async def _paged_write_typed_target(
+            descriptor: dict[str, Any],
+            group_plan: SurrealDBConsolidationGroupPlan,
+        ) -> str | None:
+            merged_id = str(descriptor["merged_id"])
+            expected = await _paged_typed_output(descriptor, group_plan)
+            target = await _read_typed_target(merged_id)
+            if expected is None:
+                if target is not None:
+                    raise RuntimeError("merge successor has unexpected typed memory")
+                return None
+            expected_signature = _fingerprint(expected)
+            if target is None:
+                await self._check_progress_budget()
+                await self._storage.add_typed_memory(expected)
+                target = await _read_typed_target(merged_id)
+            if target is None or _fingerprint(target) != expected_signature:
+                raise RuntimeError("merge successor typed-memory write was not durable")
+            return expected_signature
+
+        async def _cleanup_paged_typed_sources(
+            descriptor: dict[str, Any],
+            group_plan: SurrealDBConsolidationGroupPlan,
+        ) -> None:
+            root = str(descriptor["group_root"])
+            after = str(descriptor.get("after_typed_cleanup", ""))
+            current_batch = await _paged_manifest_first_batch(group_plan, root, after=after)
+            in_flight = {str(entry["candidate_id"]) for entry in current_batch}
+            target = await _read_typed_target(str(descriptor["merged_id"]))
+            target_signature = descriptor.get("typed_target_signature")
+            if target_signature is None:
+                if target is not None:
+                    raise RuntimeError("merge successor has unexpected typed memory")
+            elif target is None or _fingerprint(target) != target_signature:
+                raise RuntimeError("merge successor lost typed memory before source cleanup")
+
+            # A crash may happen after source deletes but before this page cursor is
+            # checkpointed. Only that one page is allowed to be partially absent.
+            async for batch in _iter_merge_manifest_batches(group_plan, root):
+                await self._check_progress_budget()
+                ids = [str(entry["candidate_id"]) for entry in batch]
+                records = await _read_source_typed(ids)
+                for entry in batch:
+                    fiber_id = str(entry["candidate_id"])
+                    record = records[fiber_id]
+                    expected = entry["typed_signature"]
+                    if fiber_id <= after:
+                        if record is not None:
+                            raise RuntimeError(
+                                "a previously cleaned typed-memory source reappeared"
+                            )
+                    elif record is None:
+                        if expected is not None and fiber_id not in in_flight:
+                            raise RuntimeError(
+                                f"typed memory for source {fiber_id!r} disappeared outside the replay page"
+                            )
+                    elif expected is None or _fingerprint(record) != expected:
+                        raise RuntimeError(
+                            f"typed memory for source {fiber_id!r} changed after its checkpoint"
+                        )
+
+            while current_batch:
+                ids = [str(entry["candidate_id"]) for entry in current_batch]
+                records = await _read_source_typed(ids)
+                for entry in current_batch:
+                    fiber_id = str(entry["candidate_id"])
+                    record = records[fiber_id]
+                    if record is not None:
+                        if _fingerprint(record) != entry["typed_signature"]:
+                            raise RuntimeError(
+                                f"typed memory for source {fiber_id!r} changed before cleanup"
+                            )
+                        await self._check_progress_budget()
+                        await self._storage.delete_typed_memory(fiber_id)
+                remaining = await _read_source_typed(
+                    [str(entry["candidate_id"]) for entry in current_batch]
+                )
+                if any(record is not None for record in remaining.values()):
+                    raise RuntimeError("typed-memory cleanup did not complete for its replay page")
+                descriptor["after_typed_cleanup"] = str(current_batch[-1]["candidate_id"])
+                await _checkpoint("merge_typed_cleanup", descriptor, ())
+                current_batch = await _paged_manifest_first_batch(
+                    group_plan, root, after=str(descriptor["after_typed_cleanup"])
+                )
+
+        async def _finish_paged_unit(
+            descriptor: dict[str, Any],
+            unit_phase: str,
+        ) -> None:
+            nonlocal fibers_merged, fibers_created, fibers_removed, delete_failures
+
+            group_plan = _paged_plan_from_descriptor(descriptor)
+            group_root = str(descriptor["group_root"])
+            source_count = int(descriptor["source_count"])
+            active_phase = unit_phase
+
+            if active_phase == "merge_pending":
+                successor = await _build_paged_successor(descriptor, group_plan)
+                await self._check_progress_budget()
+                existing = await self._storage.get_fiber(successor.id)
+                if existing is None:
+                    try:
+                        await self._storage.add_fiber(successor)
+                    except Exception as exc:
+                        if not is_duplicate_key_error(exc):
+                            raise
+                persisted_successor = await self._storage.get_fiber(successor.id)
+                if persisted_successor is None or _fiber_fingerprint(
+                    persisted_successor
+                ) != _fiber_fingerprint(successor):
+                    raise RuntimeError("merge successor ID is occupied by different fiber data")
+                descriptor["successor_signature"] = _fiber_fingerprint(successor)
+                active_phase = "merge_fiber_created"
+                await _checkpoint(active_phase, descriptor, ())
+
+            durable_successor = await self._storage.get_fiber(str(descriptor["merged_id"]))
+            successor_signature = descriptor.get("successor_signature")
+            if (
+                durable_successor is None
+                or not isinstance(successor_signature, str)
+                or _fiber_fingerprint(durable_successor) != successor_signature
+            ):
+                raise RuntimeError("merge successor changed after its durable checkpoint")
+            provenance = durable_successor.metadata.get("merged_from")
+            if not isinstance(provenance, list) or len(provenance) != source_count:
+                raise RuntimeError("merge successor provenance no longer matches its work unit")
+            provenance_count = 0
+            async for batch in _iter_merge_manifest_batches(group_plan, group_root):
+                await self._check_progress_budget()
+                for entry in batch:
+                    if provenance[provenance_count] != entry["candidate_id"]:
+                        raise RuntimeError(
+                            "merge successor provenance no longer matches its work unit"
+                        )
+                    provenance_count += 1
+            if provenance_count != source_count:
+                raise RuntimeError("merge successor provenance does not cover its manifest")
+
+            if active_phase == "merge_fiber_created":
+                await _validate_paged_fibers(descriptor, group_plan, allow_missing=False)
+                descriptor["typed_target_signature"] = await _paged_write_typed_target(
+                    descriptor, group_plan
+                )
+                active_phase = "merge_typed_target_written"
+                await _checkpoint(active_phase, descriptor, ())
+
+            if active_phase in {"merge_typed_target_written", "merge_typed_cleanup"}:
+                await _validate_paged_fibers(descriptor, group_plan, allow_missing=False)
+                await _cleanup_paged_typed_sources(descriptor, group_plan)
+                # The cleanup cursor must reach the end even when no typed rows
+                # existed; source typing remains a manifest-level invariant.
+                if await _paged_manifest_first_batch(
+                    group_plan,
+                    group_root,
+                    after=str(descriptor.get("after_typed_cleanup", "")),
+                ):
+                    raise RuntimeError("typed-memory cleanup cursor did not reach the manifest end")
+                active_phase = "merge_typed_reassigned"
+                await _checkpoint(active_phase, descriptor, ())
+
+            if active_phase == "merge_typed_reassigned":
+                await _validate_paged_fibers(descriptor, group_plan, allow_missing=False)
+                maturation = await _paged_maturation_output(descriptor, group_plan)
+                persisted = await self._storage.get_maturation(str(descriptor["merged_id"]))
+                if maturation is None:
+                    if persisted is not None:
+                        raise RuntimeError("merge successor has unexpected maturation")
+                    descriptor["maturation_target_signature"] = None
+                else:
+                    signature = _fingerprint(maturation)
+                    if persisted is None:
+                        await self._check_progress_budget()
+                        await self._storage.save_maturation(maturation)
+                        persisted = await self._storage.get_maturation(maturation.fiber_id)
+                    if persisted is None or _fingerprint(persisted) != signature:
+                        raise RuntimeError(
+                            "maturation inheritance was not durable on the merge successor"
+                        )
+                    descriptor["maturation_target_signature"] = signature
+                active_phase = "merge_maturation_transferred"
+                await _checkpoint(active_phase, descriptor, ())
+
+            if active_phase == "merge_maturation_transferred":
+                await _validate_paged_fibers(descriptor, group_plan, allow_missing=False)
+                target_maturation = await self._storage.get_maturation(str(descriptor["merged_id"]))
+                expected_maturation = descriptor.get("maturation_target_signature")
+                if expected_maturation is None:
+                    if target_maturation is not None:
+                        raise RuntimeError("merge successor has unexpected maturation")
+                elif (
+                    target_maturation is None
+                    or _fingerprint(target_maturation) != expected_maturation
+                ):
+                    raise RuntimeError("merge successor maturation changed before source deletion")
+                descriptor["after_deleted"] = ""
+                descriptor["removed_count"] = 0
+                active_phase = "merge_deleting_sources"
+                await _checkpoint(active_phase, descriptor, ())
+
+            if active_phase != "merge_deleting_sources":
+                raise RuntimeError(f"unsupported merge member-manifest phase {active_phase!r}")
+
+            # Full preflight is streamed and happens before any deletes on each
+            # invocation. The next 100-member page alone may be partially absent,
+            # which covers a crash between successful deletes and its checkpoint.
+            current_batch = await _validate_paged_delete_window(descriptor, group_plan)
+            while current_batch:
+                removed_in_page = 0
+                for entry in current_batch:
+                    fiber_id = str(entry["candidate_id"])
+                    current = await self._storage.get_fiber(fiber_id)
+                    if current is None:
+                        removed_in_page += 1
+                        continue
+                    if _fiber_fingerprint(current) != entry["fiber_signature"]:
+                        raise RuntimeError(
+                            f"merge source {fiber_id!r} changed immediately before deletion"
+                        )
+                    typed = (await _read_source_typed([fiber_id]))[fiber_id]
+                    if typed is not None:
+                        raise RuntimeError(
+                            f"typed memory for source {fiber_id!r} remains before source deletion"
+                        )
+                    maturity = await self._storage.get_maturation(fiber_id)
+                    expected_maturity = entry["maturation_signature"]
+                    if expected_maturity is None:
+                        if maturity is not None:
+                            raise RuntimeError(
+                                f"maturation for source {fiber_id!r} appeared before deletion"
+                            )
+                    elif maturity is None or _fingerprint(maturity) != expected_maturity:
+                        raise RuntimeError(
+                            f"maturation for source {fiber_id!r} changed before deletion"
+                        )
+                    await self._check_progress_budget()
+                    try:
+                        await self._storage.delete_fiber(fiber_id)
+                    except Exception as exc:
+                        delete_failures += 1
+                        report.extra["merge_delete_failures"] = delete_failures
+                        await _checkpoint("merge_deleting_sources", descriptor, ())
+                        raise RuntimeError(
+                            f"merge could not delete source fiber {fiber_id!r}"
+                        ) from exc
+                    if await self._storage.get_fiber(fiber_id) is not None:
+                        delete_failures += 1
+                        report.extra["merge_delete_failures"] = delete_failures
+                        await _checkpoint("merge_deleting_sources", descriptor, ())
+                        raise RuntimeError(f"merge could not delete source fiber {fiber_id!r}")
+                    removed_in_page += 1
+
+                descriptor["after_deleted"] = str(current_batch[-1]["candidate_id"])
+                descriptor["removed_count"] = (
+                    int(descriptor.get("removed_count", 0)) + removed_in_page
+                )
+                if int(descriptor["removed_count"]) > source_count:
+                    raise RuntimeError("merge removed count exceeds its frozen source count")
+                fibers_removed = int(descriptor["removed_base"]) + int(descriptor["removed_count"])
+                report.fibers_removed = fibers_removed
+                await _checkpoint("merge_deleting_sources", descriptor, ())
+                current_batch = await _paged_manifest_first_batch(
+                    group_plan, group_root, after=str(descriptor["after_deleted"])
+                )
+
+            if int(descriptor.get("removed_count", 0)) != source_count:
+                raise RuntimeError("merge deletion did not account for every frozen source")
+            fibers_merged += source_count
+            fibers_created += 1
+            fibers_removed = int(descriptor["removed_base"]) + source_count
+            report.fibers_merged = fibers_merged
+            report.fibers_created = fibers_created
+            report.fibers_removed = fibers_removed
+            plan_state = descriptor.get("plan")
+            if not isinstance(plan_state, dict):
+                raise RuntimeError("merge member manifest lost its group-plan identity")
+            await self._checkpoint_progress(
+                "merge_plan_units",
+                cursor=_encode_descriptor(
+                    {
+                        "version": 2,
+                        "kind": "paged_group_plan",
+                        "plan_id": plan_state["plan_id"],
+                        "fingerprint": plan_state["fingerprint"],
+                        "next_sequence": plan_state.get("next_sequence", 0),
+                        "after_group": group_root,
+                    }
+                ),
+                counters=_counter_values(),
+            )
+            report.merge_details.append(
+                MergeDetail(
+                    original_fiber_ids=tuple(str(item) for item in provenance),
+                    merged_fiber_id=str(descriptor["merged_id"]),
+                    neuron_count=len(durable_successor.neuron_ids),
+                    reason="neuron_overlap",
+                )
+            )
+
         async def _finish_unit(
             descriptor: dict[str, Any],
             unit_phase: str,
             pending_ids: list[str],
         ) -> None:
             nonlocal fibers_merged, fibers_created, fibers_removed, delete_failures
+
+            plan_state = descriptor.get("plan")
+            if (
+                isinstance(plan_state, dict)
+                and plan_state.get("kind") == "paged_group_plan"
+                and plan_state.get("unit_format") == "member_manifest_v1"
+            ):
+                await _finish_paged_unit(descriptor, unit_phase)
+                return
 
             source_ids = list(descriptor["source_ids"])
             removed_base = int(descriptor["removed_base"])
@@ -2775,10 +3491,13 @@ class ConsolidationEngine:
         resumable_phases = {
             "merge_pending",
             "merge_fiber_created",
+            "merge_typed_target_written",
+            "merge_typed_cleanup",
             "merge_typed_reassigned",
             "merge_maturation_transferred",
             "merge_deleting_sources",
         }
+        resumed_group_plan_fingerprint: str | None = None
         if not dry_run and phase in resumable_phases:
             descriptor = _decode_descriptor(progress_state.get("cursor"))
             if descriptor.get("plan") is not None:
@@ -2796,8 +3515,18 @@ class ConsolidationEngine:
                         raise RuntimeError(
                             "merge pending unit does not match its frozen group manifest"
                         )
+            if (
+                isinstance(descriptor.get("plan"), dict)
+                and descriptor["plan"].get("unit_format") == "member_manifest_v1"
+            ):
+                resumed_group_plan_fingerprint = str(descriptor["plan"]["fingerprint"])
             pending_ids = [str(value) for value in (progress_state.get("pending") or [])]
-            if not pending_ids and phase != "merge_deleting_sources":
+            descriptor_plan = descriptor.get("plan")
+            is_manifest_unit = (
+                isinstance(descriptor_plan, dict)
+                and descriptor_plan.get("unit_format") == "member_manifest_v1"
+            )
+            if not is_manifest_unit and not pending_ids and phase != "merge_deleting_sources":
                 pending_ids = list(descriptor["source_ids"])
             await _finish_unit(descriptor, phase, pending_ids)
             progress_state = self._strategy_progress_state()
@@ -2817,29 +3546,37 @@ class ConsolidationEngine:
             and phase not in {"merge_scan", "merge_candidate_scan"}
         )
         if durable_group_mode:
-            digest = hashlib.sha256()
-            source_count = 0
             created_before = getattr(self._progress_session, "reference_time", None)
-            async for page in self._iter_fiber_census_pages(created_before=created_before):
-                for fiber in page:
-                    digest.update(fiber.id.encode("utf-8"))
-                    digest.update(b"\0")
-                    digest.update(_fiber_fingerprint(fiber).encode("ascii"))
-                    digest.update(b"\n")
-                    source_count += 1
-            source_fingerprint = digest.hexdigest()
-            plan_fingerprint = hashlib.sha256(
-                json.dumps(
-                    {
-                        "algorithm": "merge-external-graph-v1",
-                        "source": source_fingerprint,
-                        "max_fiber_size": self._config.merge_max_fiber_size,
-                        "overlap_threshold": self._config.merge_overlap_threshold,
-                    },
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ).encode("utf-8")
-            ).hexdigest()
+            if resumed_group_plan_fingerprint is not None:
+                # A replayed unit has already created its deterministic successor
+                # and may have deleted a prefix of its sources. Its immutable
+                # manifest is the source snapshot; hashing the mutated live census
+                # here would incorrectly reject the very replay the cursor protects.
+                plan_fingerprint = resumed_group_plan_fingerprint
+                source_count = 0
+            else:
+                digest = hashlib.sha256()
+                source_count = 0
+                async for page in self._iter_fiber_census_pages(created_before=created_before):
+                    for fiber in page:
+                        digest.update(fiber.id.encode("utf-8"))
+                        digest.update(b"\0")
+                        digest.update(_fiber_fingerprint(fiber).encode("ascii"))
+                        digest.update(b"\n")
+                        source_count += 1
+                source_fingerprint = digest.hexdigest()
+                plan_fingerprint = hashlib.sha256(
+                    json.dumps(
+                        {
+                            "algorithm": "merge-external-graph-v1",
+                            "source": source_fingerprint,
+                            "max_fiber_size": self._config.merge_max_fiber_size,
+                            "overlap_threshold": self._config.merge_overlap_threshold,
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ).hexdigest()
             brain_id = str(
                 getattr(self._progress_session, "brain_id", None)
                 or getattr(self._storage, "_get_brain_id", lambda: "")()
@@ -3168,22 +3905,33 @@ class ConsolidationEngine:
                 sequence = int(durable_cursor.get("next_sequence", 0))
                 skipped_singletons = 0
                 async for root_id in group_plan.iter_groups(after=after_group):
-                    memberships: list[tuple[str, str | None]] = []
-                    async for fiber_id, signature in group_plan.iter_member_signatures(root_id):
-                        memberships.append((fiber_id, signature))
-                        if len(memberships) > MAX_GROUP_WORK_ITEMS:
-                            raise RuntimeError(
-                                "merge component exceeds the bounded work-unit limit "
-                                f"of {MAX_GROUP_WORK_ITEMS}; no effects were started for "
-                                f"component {root_id!r}"
-                            )
-                        if len(memberships) % 100 == 0:
-                            await self._check_progress_budget()
-                    if len(memberships) < 2:
+                    pending_group = durable_cursor.get("pending_group")
+                    if pending_group is not None and pending_group != root_id:
+                        raise RuntimeError("merge manifest cursor points to a different group")
+                    after_manifest_member = (
+                        str(durable_cursor.get("after_manifest_member", ""))
+                        if pending_group == root_id
+                        else ""
+                    )
+                    manifest_count = (
+                        int(durable_cursor.get("manifest_count", 0))
+                        if pending_group == root_id
+                        else 0
+                    )
+
+                    member_count = 0
+                    async for _fiber_id, _signature in group_plan.iter_member_signatures(root_id):
+                        member_count += 1
+                        if member_count >= 2:
+                            break
+                    if member_count < 2:
                         after_group = root_id
                         skipped_singletons += 1
+                        durable_cursor["after_group"] = after_group
+                        durable_cursor.pop("pending_group", None)
+                        durable_cursor.pop("after_manifest_member", None)
+                        durable_cursor.pop("manifest_count", None)
                         if skipped_singletons % 500 == 0:
-                            durable_cursor["after_group"] = after_group
                             await self._checkpoint_progress(
                                 "merge_plan_units",
                                 cursor=json.dumps(
@@ -3192,28 +3940,121 @@ class ConsolidationEngine:
                                 counters=_counter_values(),
                             )
                         continue
-                    member_fibers: list[Fiber] = []
-                    for fiber_id, signature in memberships:
-                        await self._check_progress_budget()
+
+                    manifest_batch: list[tuple[str, str, str | None, str | None]] = []
+                    async for fiber_id, signature in group_plan.iter_member_signatures(
+                        root_id, after=after_manifest_member
+                    ):
+                        if signature is None:
+                            raise RuntimeError(
+                                f"merge planned source {fiber_id!r} has no frozen signature"
+                            )
                         current = await self._storage.get_fiber(fiber_id)
                         if current is None or _fiber_fingerprint(current) != signature:
                             raise RuntimeError(
                                 f"merge planned source {fiber_id!r} changed before its work unit"
                             )
-                        member_fibers.append(current)
-                    descriptor = await _make_descriptor(member_fibers)
-                    descriptor["group_root"] = root_id
-                    descriptor["plan"] = {
+                        manifest_batch.append((fiber_id, signature, None, None))
+                        if len(manifest_batch) < 100:
+                            continue
+
+                        ids = [item[0] for item in manifest_batch]
+                        typed_rows = await _read_source_typed(ids)
+                        maturation_rows = await _read_source_maturations(ids)
+                        frozen_batch = [
+                            (
+                                fiber_id,
+                                fiber_signature,
+                                _fingerprint(typed_rows[fiber_id])
+                                if typed_rows[fiber_id] is not None
+                                else None,
+                                _fingerprint(maturation_rows[fiber_id])
+                                if maturation_rows[fiber_id] is not None
+                                else None,
+                            )
+                            for fiber_id, fiber_signature, _typed, _maturation in manifest_batch
+                        ]
+                        await self._check_progress_budget()
+                        await group_plan.add_merge_manifest_members(root_id, frozen_batch)
+                        after_manifest_member = manifest_batch[-1][0]
+                        manifest_count += len(manifest_batch)
+                        manifest_batch.clear()
+                        durable_cursor.update(
+                            pending_group=root_id,
+                            after_manifest_member=after_manifest_member,
+                            manifest_count=manifest_count,
+                        )
+                        await self._checkpoint_progress(
+                            "merge_plan_units",
+                            cursor=json.dumps(
+                                durable_cursor, sort_keys=True, separators=(",", ":")
+                            ),
+                            counters=_counter_values(),
+                        )
+
+                    if manifest_batch:
+                        ids = [item[0] for item in manifest_batch]
+                        typed_rows = await _read_source_typed(ids)
+                        maturation_rows = await _read_source_maturations(ids)
+                        frozen_batch = [
+                            (
+                                fiber_id,
+                                fiber_signature,
+                                _fingerprint(typed_rows[fiber_id])
+                                if typed_rows[fiber_id] is not None
+                                else None,
+                                _fingerprint(maturation_rows[fiber_id])
+                                if maturation_rows[fiber_id] is not None
+                                else None,
+                            )
+                            for fiber_id, fiber_signature, _typed, _maturation in manifest_batch
+                        ]
+                        await self._check_progress_budget()
+                        await group_plan.add_merge_manifest_members(root_id, frozen_batch)
+                        after_manifest_member = manifest_batch[-1][0]
+                        manifest_count += len(manifest_batch)
+                        durable_cursor.update(
+                            pending_group=root_id,
+                            after_manifest_member=after_manifest_member,
+                            manifest_count=manifest_count,
+                        )
+                        await self._checkpoint_progress(
+                            "merge_plan_units",
+                            cursor=json.dumps(
+                                durable_cursor, sort_keys=True, separators=(",", ":")
+                            ),
+                            counters=_counter_values(),
+                        )
+
+                    if manifest_count != 0:
+                        unit_id = await _paged_manifest_unit_id(group_plan, root_id, manifest_count)
+                    else:
+                        # A resumed cursor may be exactly at the end of a fully
+                        # persisted manifest whose last batch checkpoint was saved.
+                        manifest_count = int(durable_cursor.get("manifest_count", 0))
+                        unit_id = await _paged_manifest_unit_id(group_plan, root_id, manifest_count)
+                    unit_descriptor: dict[str, Any] = {
+                        "version": 2,
+                        "unit_id": unit_id,
+                        "merged_id": f"merge-{unit_id}",
+                        "group_root": root_id,
+                        "source_count": manifest_count,
+                        "removed_base": fibers_removed,
+                        "removed_count": 0,
+                        "after_typed_cleanup": "",
+                        "after_deleted": "",
+                    }
+                    unit_descriptor["plan"] = {
                         "version": 2,
                         "kind": "paged_group_plan",
+                        "unit_format": "member_manifest_v1",
                         "plan_id": group_plan.plan_id,
                         "fingerprint": plan_fingerprint,
                         "after_group": after_group,
                         "next_sequence": sequence,
                     }
-                    source_ids = list(descriptor["source_ids"])
-                    await _checkpoint("merge_pending", descriptor, source_ids)
-                    await _finish_unit(descriptor, "merge_pending", source_ids)
+                    await _checkpoint("merge_pending", unit_descriptor, ())
+                    await _finish_unit(unit_descriptor, "merge_pending", [])
                     progress_state = self._strategy_progress_state()
                     phase = str(progress_state.get("phase") or "")
                     raw_cursor = progress_state.get("cursor")

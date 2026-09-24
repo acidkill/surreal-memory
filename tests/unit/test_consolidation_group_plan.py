@@ -106,6 +106,8 @@ class _PlanStorage:
             expected_kind = "posting"
         elif "AND kind = 'member'" in sql:
             expected_kind = "member"
+        elif "AND kind = 'merge_manifest'" in sql:
+            expected_kind = "merge_manifest"
         elif "AND kind = 'group'" in sql:
             expected_kind = "group"
         elif "AND kind = $kind" in sql:
@@ -149,6 +151,18 @@ class _PlanStorage:
                     and str(row.get("item_key", "")) > str(params["after"])
                 ),
                 key=lambda row: str(row["item_key"]),
+            )
+            return found[: int(params["limit"])]
+        if "AND kind = 'merge_manifest' AND root_id = $root_id AND candidate_id > $after" in sql:
+            found = sorted(
+                (
+                    row
+                    for row in rows
+                    if row.get("kind") == "merge_manifest"
+                    and row.get("root_id") == params["root_id"]
+                    and str(row.get("candidate_id", "")) > str(params["after"])
+                ),
+                key=lambda row: str(row["candidate_id"]),
             )
             return found[: int(params["limit"])]
         if "AND kind = $kind AND item_key = $item_key" in sql:
@@ -351,6 +365,31 @@ async def test_group_roots_keyset_pages_more_than_five_hundred_without_skips() -
     await plan.add_members([(root, f"candidate-{root}", None) for root in roots])
 
     assert [root async for root in plan.iter_groups()] == roots
+
+
+@pytest.mark.asyncio
+async def test_merge_manifest_pages_and_replays_more_than_five_hundred_members() -> None:
+    storage = _PlanStorage()
+    plan = _plan(storage)
+    entries = [
+        (f"source-{index:04d}", f"fiber-signature-{index}", None, None) for index in range(1_205)
+    ]
+    for offset in range(0, len(entries), 100):
+        await plan.add_merge_manifest_members("root-0000", entries[offset : offset + 100])
+
+    resumed = _plan(storage)
+    recovered = [entry async for entry in resumed.iter_merge_manifest_members("root-0000")]
+    assert [entry["candidate_id"] for entry in recovered] == [entry[0] for entry in entries]
+    assert recovered[600]["typed_signature"] is None
+    assert recovered[-1]["fiber_signature"] == "fiber-signature-1204"
+    assert max(storage.page_limits) <= 500
+
+    # A committed manifest row is immutable and safe to write again on replay.
+    await resumed.add_merge_manifest_members("root-0000", entries[:100])
+    with pytest.raises(ConsolidationGroupPlanError, match="conflicts"):
+        await resumed.add_merge_manifest_members(
+            "root-0000", [(entries[0][0], "changed", None, None)]
+        )
 
 
 @pytest.mark.asyncio

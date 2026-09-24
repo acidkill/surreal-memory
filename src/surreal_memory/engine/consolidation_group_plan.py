@@ -19,7 +19,6 @@ from surreal_memory.storage.errors import is_duplicate_key_error
 _PAGE_SIZE = 500
 _WRITE_BATCH_SIZE = 200
 _MAX_UNION_DEPTH = 128
-MAX_GROUP_WORK_ITEMS = _PAGE_SIZE
 
 
 class ConsolidationGroupPlanError(RuntimeError):
@@ -533,6 +532,80 @@ class SurrealDBConsolidationGroupPlan:
                 if signature is not None and not isinstance(signature, str):
                     raise ConsolidationGroupPlanError("component source signature is malformed")
                 yield candidate_id, signature
+            if len(rows) < _PAGE_SIZE:
+                return
+
+    async def add_merge_manifest_members(
+        self,
+        root_id: str,
+        members: list[tuple[str, str, str | None, str | None]],
+    ) -> None:
+        """Persist a bounded batch of immutable source signatures for one merge group."""
+        rows: list[tuple[str, dict[str, Any]]] = []
+        for candidate_id, fiber_signature, typed_signature, maturation_signature in members:
+            if not root_id or not candidate_id or not fiber_signature:
+                raise ValueError("merge manifest identity and fiber signature must be non-empty")
+            rows.append(
+                self._row(
+                    "merge_manifest",
+                    self._compound_key(root_id, candidate_id),
+                    {
+                        "root_id": root_id,
+                        "candidate_id": candidate_id,
+                        "fiber_signature": fiber_signature,
+                        "typed_signature": typed_signature,
+                        "maturation_signature": maturation_signature,
+                    },
+                )
+            )
+            if len(rows) >= _WRITE_BATCH_SIZE:
+                await self._create_many(rows)
+                rows = []
+        if rows:
+            await self._create_many(rows)
+
+    async def iter_merge_manifest_members(
+        self, root_id: str, *, after: str = ""
+    ) -> AsyncIterator[dict[str, str | None]]:
+        """Page a merge unit's frozen fiber/typed/maturation source signatures."""
+        cursor = after
+        while True:
+            rows = await self._storage._query(
+                "SELECT * FROM consolidation_group_plan WHERE plan_id = $plan_id "
+                "AND kind = 'merge_manifest' AND root_id = $root_id "
+                "AND candidate_id > $after ORDER BY candidate_id ASC LIMIT $limit",
+                plan_id=self.plan_id,
+                root_id=root_id,
+                after=cursor,
+                limit=_PAGE_SIZE,
+            )
+            if not rows:
+                return
+            for row in rows:
+                candidate_id = str(row.get("candidate_id", ""))
+                fiber_signature = row.get("fiber_signature")
+                typed_signature = row.get("typed_signature")
+                maturation_signature = row.get("maturation_signature")
+                if (
+                    str(row.get("root_id", "")) != root_id
+                    or not candidate_id
+                    or candidate_id <= cursor
+                    or not isinstance(fiber_signature, str)
+                    or not fiber_signature
+                    or (typed_signature is not None and not isinstance(typed_signature, str))
+                    or (
+                        maturation_signature is not None
+                        and not isinstance(maturation_signature, str)
+                    )
+                ):
+                    raise ConsolidationGroupPlanError("merge member manifest page is malformed")
+                cursor = candidate_id
+                yield {
+                    "candidate_id": candidate_id,
+                    "fiber_signature": fiber_signature,
+                    "typed_signature": typed_signature,
+                    "maturation_signature": maturation_signature,
+                }
             if len(rows) < _PAGE_SIZE:
                 return
 
