@@ -745,21 +745,21 @@ async def _upgrade_consolidation_progress_v11_to_v12(conn: Any) -> None:
         if schema_version == TARGET_VERSION:
             continue
         if schema_version != VERSION_11:
-            raise MigrationError(
-                "Cannot migrate unfinished consolidation checkpoint with "
-                f"schema_version {schema_version!r}; expected {VERSION_11} or "
-                f"{TARGET_VERSION}. Checkpoint left untouched."
+            logger.warning(
+                "Leaving unfinished consolidation checkpoint with schema_version %r unchanged",
+                schema_version,
             )
+            continue
         if row.get("engine_version") != "3.11.0:checkpoint-v1":
-            raise MigrationError(
-                "Cannot migrate unfinished consolidation checkpoint from an "
-                "incompatible engine version; checkpoint left untouched."
+            logger.warning(
+                "Leaving unfinished consolidation checkpoint with incompatible engine version unchanged"
             )
+            continue
         if row.get("format_version") != 1:
-            raise MigrationError(
-                "Cannot migrate unfinished consolidation checkpoint with an "
-                "incompatible progress format; checkpoint left untouched."
+            logger.warning(
+                "Leaving unfinished consolidation checkpoint with incompatible progress format unchanged"
             )
+            continue
         compatible.append(row)
 
     for row in compatible:

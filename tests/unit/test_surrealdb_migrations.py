@@ -642,13 +642,13 @@ class TestConsolidationProgressV11:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        ("field", "value", "message"),
+        ("field", "value"),
         [
-            ("engine_version", "3.12.0:checkpoint-v1", "incompatible engine"),
-            ("format_version", 2, "incompatible progress format"),
+            ("engine_version", "3.12.0:checkpoint-v1"),
+            ("format_version", 2),
         ],
     )
-    async def test_v11_checkpoint_upgrade_refuses_incompatible_state(self, field, value, message):
+    async def test_v11_checkpoint_upgrade_leaves_incompatible_state_untouched(self, field, value):
         checkpoint = {
             "id": _rid("consolidation_progress", "run-1"),
             "schema_version": M.VERSION_11,
@@ -665,10 +665,11 @@ class TestConsolidationProgressV11:
             [checkpoint],
         )
 
-        with pytest.raises(M.MigrationError, match=message):
-            await M._upgrade_consolidation_progress_v11_to_v12(conn)
+        await M._upgrade_consolidation_progress_v11_to_v12(conn)
 
         assert not any(sql.lstrip().startswith("UPDATE ") for sql in conn.sqls())
+        assert checkpoint["schema_version"] == M.VERSION_11
+        assert checkpoint[field] == value
 
     @pytest.mark.asyncio
     async def test_v10_to_v11_promotes_partial_schemaless_progress_table(self):
