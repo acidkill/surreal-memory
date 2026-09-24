@@ -316,7 +316,9 @@ async def test_v10_migration_recovers_partial_schemaless_progress_table() -> Non
 
 
 @pytest.mark.asyncio
-async def test_stale_v10_stamp_with_active_v11_progress_migrates_without_losing_checkpoint() -> None:
+async def test_stale_v10_stamp_with_active_v11_progress_migrates_without_losing_checkpoint() -> (
+    None
+):
     """A partly stamped deployment must preserve the active run on retry."""
     db = _fresh_db()
     store = _store(db)
