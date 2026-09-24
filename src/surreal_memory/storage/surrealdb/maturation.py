@@ -216,6 +216,43 @@ class SurrealDBMaturationMixin:
         # them against fiber ids (e.g. consolidation's maturation_map -> extract_patterns).
         return [_canonicalised(_row_to_maturation(r)) for r in rows]
 
+    async def find_maturations_after_id(
+        self,
+        cursor_id: str | None,
+        *,
+        limit: int = 250,
+        stage: MemoryStage | None = None,
+        min_rehearsal_count: int = 0,
+    ) -> list[tuple[str, MaturationRecord]]:
+        """Return one stable record-ID page without materializing every maturation.
+
+        The cursor is the actual ``maturation:<key>`` record ID, not a fiber ID:
+        rows whose brain prefix predates a rename still advance correctly.
+        Consumers checkpoint only the last *completed* page or work item.
+        """
+        conditions = ["brain_id = $brain_id"]
+        params: dict[str, Any] = {"brain_id": self._get_brain_id()}
+        if cursor_id is not None:
+            if not cursor_id.startswith("maturation:"):
+                raise ValueError("maturation cursor must be a record ID")
+            conditions.append("id > type::record('maturation', $cursor_id)")
+            params["cursor_id"] = _to_surreal_id(cursor_id)
+        if stage is not None:
+            conditions.append("stage = $stage")
+            params["stage"] = stage.value
+        if min_rehearsal_count > 0:
+            conditions.append("rehearsal_count >= $min_rc")
+            params["min_rc"] = int(min_rehearsal_count)
+        page_limit = min(max(int(limit), 1), _MATURATION_PAGE_SIZE)
+        rows = await self._query(
+            "SELECT id, fiber_id, brain_id, stage, stage_entered_at, "
+            "rehearsal_count, reinforcement_timestamps FROM maturation WHERE "
+            + " AND ".join(conditions)
+            + f" ORDER BY id ASC LIMIT {page_limit}",
+            **params,
+        )
+        return [(str(row["id"]), _canonicalised(_row_to_maturation(row))) for row in rows]
+
     async def cleanup_orphaned_maturations(self) -> int:
         """Delete maturation rows whose fiber -- or whose whole brain -- is gone.
 
