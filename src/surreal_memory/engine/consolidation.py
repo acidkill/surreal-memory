@@ -2919,15 +2919,7 @@ class ConsolidationEngine:
             checkpoint = parsed
 
         if resumable:
-            await storage_query("DEFINE TABLE IF NOT EXISTS consolidation_fiber_census SCHEMALESS")
             if checkpoint is None:
-                await storage_query(
-                    "DELETE consolidation_fiber_census WHERE run_id = $run_id "
-                    "AND strategy = $strategy AND filter_fingerprint = $filter_fingerprint",
-                    run_id=run_id,
-                    strategy=strategy,
-                    filter_fingerprint=filter_fingerprint,
-                )
                 checkpoint = {
                     "version": 1,
                     "run_id": run_id,
@@ -3015,11 +3007,16 @@ class ConsolidationEngine:
             fibers.extend(page)
             last_fiber_id = page[-1].id
             if resumable and checkpoint is not None:
-                serialized = [encode_fiber(fiber) for fiber in page]
-                page_fingerprint = hashlib.sha256(
+                serialized = json.loads(
                     json.dumps(
-                        serialized, sort_keys=True, separators=(",", ":"), default=str
-                    ).encode()
+                        [encode_fiber(fiber) for fiber in page],
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        default=str,
+                    )
+                )
+                page_fingerprint = hashlib.sha256(
+                    json.dumps(serialized, sort_keys=True, separators=(",", ":")).encode()
                 ).hexdigest()
                 stage_key = hashlib.sha256(
                     f"{run_id}:{strategy}:{filter_fingerprint}:{page_index}".encode()
@@ -3034,13 +3031,40 @@ class ConsolidationEngine:
                     "last_fiber_id": last_fiber_id,
                     "page_fingerprint": page_fingerprint,
                     "fibers": serialized,
-                    "created_at": utcnow().isoformat(),
                 }
-                await storage_query(
-                    "UPSERT type::record('consolidation_fiber_census', $stage_id) CONTENT $row",
-                    stage_id=stage_key,
-                    row=stage,
-                )
+                # Stage IDs are stable for the whole run, including across lease
+                # transfer. CREATE prevents a stale owner from replacing a page;
+                # the duplicate path below accepts only an identical retry.
+                try:
+                    await storage_query(
+                        "CREATE type::record('consolidation_fiber_census', $stage_id) CONTENT $row",
+                        stage_id=stage_key,
+                        row=stage,
+                    )
+                except Exception as exc:
+                    if not is_duplicate_key_error(exc):
+                        raise
+                    existing_rows = await storage_query(
+                        "SELECT * FROM type::record('consolidation_fiber_census', $stage_id)",
+                        stage_id=stage_key,
+                    )
+                    if len(existing_rows) != 1:
+                        raise ConsolidationProgressError(
+                            "immutable fiber census page already exists but could not be verified"
+                        ) from exc
+                    existing = dict(existing_rows[0])
+                    existing.pop("id", None)
+                    existing_payload = json.dumps(
+                        existing, sort_keys=True, separators=(",", ":"), default=str
+                    )
+                    requested_payload = json.dumps(
+                        stage, sort_keys=True, separators=(",", ":"), default=str
+                    )
+                    if existing_payload != requested_payload:
+                        raise ConsolidationProgressError(
+                            "immutable fiber census page conflicts with this source page; "
+                            "refusing a stale-owner overwrite"
+                        ) from exc
                 checkpoint.update(
                     last_fiber_id=last_fiber_id,
                     next_page_index=page_index + 1,

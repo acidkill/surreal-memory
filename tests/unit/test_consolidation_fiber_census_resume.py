@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime
 from typing import Any
@@ -20,9 +21,23 @@ from surreal_memory.engine.consolidation_progress import (
 REFERENCE_TIME = datetime(2026, 9, 24, 12, 0)
 
 
+class _AlreadyExistsError(Exception):
+    pass
+
+
+class _SimulatedCrashError(RuntimeError):
+    pass
+
+
 class _Progress:
-    def __init__(self, run_id: str = "run-census-test") -> None:
+    def __init__(
+        self,
+        run_id: str = "run-census-test",
+        *,
+        fail_first_checkpoint: bool = False,
+    ) -> None:
         self.reference_time = REFERENCE_TIME
+        self.fail_first_checkpoint = fail_first_checkpoint
         self.state: dict[str, Any] = {
             "run_id": run_id,
             "strategy_states": {"merge": {}},
@@ -40,6 +55,9 @@ class _Progress:
         pending: list[str] | None = None,
         counters: dict[str, int | float] | None = None,
     ) -> None:
+        if self.fail_first_checkpoint:
+            self.fail_first_checkpoint = False
+            raise _SimulatedCrashError("simulated interruption after stage write")
         value = self.strategy_state(strategy)
         value.update(
             phase=phase,
@@ -56,6 +74,7 @@ class _PagedStorage:
         self.fibers = sorted(fibers, key=lambda item: item.id)
         self.source_cursors: list[str | None] = []
         self.staged: dict[tuple[str, str, int], dict[str, Any]] = {}
+        self.stage_ids: dict[str, tuple[str, str, int]] = {}
 
     def _get_brain_id(self) -> str:
         return self.current_brain_id
@@ -77,14 +96,18 @@ class _PagedStorage:
         return remaining[:limit]
 
     async def _query(self, sql: str, **params: Any) -> list[dict[str, Any]]:
-        if sql.startswith("DEFINE TABLE IF NOT EXISTS consolidation_fiber_census"):
-            return []
-        if sql.startswith("DELETE consolidation_fiber_census"):
-            return []
-        if sql.startswith("UPSERT type::record('consolidation_fiber_census'"):
+        if sql.startswith("CREATE type::record('consolidation_fiber_census'"):
+            stage_id = str(params["stage_id"])
             row = dict(params["row"])
-            self.staged[(str(row["run_id"]), str(row["strategy"]), int(row["page_index"]))] = row
+            key = (str(row["run_id"]), str(row["strategy"]), int(row["page_index"]))
+            if stage_id in self.stage_ids:
+                raise _AlreadyExistsError(f"record {stage_id} already exists")
+            self.staged[key] = row
+            self.stage_ids[stage_id] = key
             return [row]
+        if sql.startswith("SELECT * FROM type::record('consolidation_fiber_census'"):
+            key = self.stage_ids.get(str(params["stage_id"]))
+            return [self.staged[key]] if key is not None else []
         if sql.startswith("SELECT * FROM consolidation_fiber_census"):
             run_id = str(params.get("run_id", ""))
             strategy = str(params["strategy"])
@@ -215,6 +238,77 @@ async def test_fiber_census_rejects_checkpoint_from_another_run() -> None:
         await engine._all_fibers_paged()
 
     assert storage.source_cursors == []
+
+
+@pytest.mark.asyncio
+async def test_fiber_census_crash_after_stage_write_retries_same_immutable_page() -> None:
+    storage = _PagedStorage(_fibers(501))
+    progress = _Progress(fail_first_checkpoint=True)
+    first = ConsolidationEngine(storage, ConsolidationConfig())
+    first._progress_session = progress  # type: ignore[assignment]
+    first._active_strategy = ConsolidationStrategy.MERGE
+    first._check_progress_budget = _completed_budget_check  # type: ignore[method-assign]
+
+    with pytest.raises(_SimulatedCrashError, match="after stage write"):
+        await first._all_fibers_paged()
+
+    staged_before_retry = dict(storage.staged[("run-census-test", "merge", 0)])
+    resumed_progress = _Progress("run-census-test")
+    resumed = ConsolidationEngine(storage, ConsolidationConfig())
+    resumed._progress_session = resumed_progress  # type: ignore[assignment]
+    resumed._active_strategy = ConsolidationStrategy.MERGE
+    resumed._check_progress_budget = _completed_budget_check  # type: ignore[method-assign]
+
+    fibers = await resumed._all_fibers_paged()
+
+    assert [fiber.id for fiber in fibers] == [fiber.id for fiber in _fibers(501)]
+    assert storage.staged[("run-census-test", "merge", 0)] == staged_before_retry
+    assert storage.source_cursors[1] is None
+
+
+@pytest.mark.asyncio
+async def test_fiber_census_concurrent_identical_writers_are_idempotent() -> None:
+    storage = _PagedStorage(_fibers(501))
+
+    def make_engine() -> ConsolidationEngine:
+        engine = ConsolidationEngine(storage, ConsolidationConfig())
+        engine._progress_session = _Progress("shared-run")  # type: ignore[assignment]
+        engine._active_strategy = ConsolidationStrategy.MERGE
+        engine._check_progress_budget = _completed_budget_check  # type: ignore[method-assign]
+        return engine
+
+    first, second = await asyncio.gather(
+        make_engine()._all_fibers_paged(),
+        make_engine()._all_fibers_paged(),
+    )
+
+    assert [fiber.id for fiber in first] == [fiber.id for fiber in second]
+    assert len(storage.staged) == 2
+
+
+@pytest.mark.asyncio
+async def test_fiber_census_stale_writer_cannot_replace_page_after_crash() -> None:
+    storage = _PagedStorage(_fibers(501))
+    stale_progress = _Progress(fail_first_checkpoint=True)
+    stale = ConsolidationEngine(storage, ConsolidationConfig())
+    stale._progress_session = stale_progress  # type: ignore[assignment]
+    stale._active_strategy = ConsolidationStrategy.MERGE
+    stale._check_progress_budget = _completed_budget_check  # type: ignore[method-assign]
+
+    with pytest.raises(_SimulatedCrashError, match="after stage write"):
+        await stale._all_fibers_paged()
+
+    stored_page = storage.staged[("run-census-test", "merge", 0)]
+    storage.fibers[0] = storage.fibers[0].with_summary("changed by current owner")
+    current = ConsolidationEngine(storage, ConsolidationConfig())
+    current._progress_session = _Progress()  # type: ignore[assignment]
+    current._active_strategy = ConsolidationStrategy.MERGE
+    current._check_progress_budget = _completed_budget_check  # type: ignore[method-assign]
+
+    with pytest.raises(ConsolidationProgressError, match="refusing a stale-owner overwrite"):
+        await current._all_fibers_paged()
+
+    assert storage.staged[("run-census-test", "merge", 0)] == stored_page
 
 
 async def _completed_budget_check() -> None:

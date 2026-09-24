@@ -31,6 +31,9 @@ SOURCE_REVISION_DDL: tuple[str, ...] = (
     "DEFINE INDEX idx_sds_state_revision ON semantic_discovery_state FIELDS state_id, revision UNIQUE",
     "DEFINE INDEX idx_sds_brain_run ON semantic_discovery_state FIELDS brain_id, run_id",
     "DEFINE INDEX idx_sds_created_at ON semantic_discovery_state FIELDS created_at",
+    # Immutable run-scoped source pages for resumable consolidation census.
+    "DEFINE TABLE IF NOT EXISTS consolidation_fiber_census SCHEMALESS",
+    "DEFINE INDEX idx_census_run_page ON consolidation_fiber_census FIELDS run_id, strategy, filter_fingerprint, page_index UNIQUE",
 )
 
 SCHEMA_SQL = """
