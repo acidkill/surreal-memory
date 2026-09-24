@@ -626,6 +626,11 @@ class ConsolidationReport:
         dedup_resume = self.extra.get("dedup_resumed_checkpoint")
         if dedup_resume:
             lines.append(f"  Dedup resumed from saved checkpoint: {dedup_resume}")
+        if self.extra.get("semantic_link_stage_rebuilt_for_reference_time"):
+            lines.append(
+                "  Semantic-link stage rebuilt from the frozen reference time "
+                "after its staged source became invalid"
+            )
         last_checkpoint = self.extra.get("last_checkpoint")
         if last_checkpoint:
             lines.append(f"  Last committed checkpoint: {last_checkpoint}")
@@ -10537,9 +10542,7 @@ class ConsolidationEngine:
                             if reference_time is None:
                                 await verify_source(source_token)
                             else:
-                                await verify_source(
-                                    source_token, created_before=reference_time
-                                )
+                                await verify_source(source_token, created_before=reference_time)
                         except RuntimeError as exc:
                             raise ConsolidationProgressError(
                                 f"semantic-link source fence failed: {exc}"

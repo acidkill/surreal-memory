@@ -267,6 +267,12 @@ class TestCounterContract:
             "summary() or add them to _EXTRA_KEYS_NOT_RENDERED with a reason."
         )
 
+    def test_semantic_link_stage_rebuild_is_reported(self) -> None:
+        report = ConsolidationReport()
+        report.extra["semantic_link_stage_rebuilt_for_reference_time"] = True
+
+        assert "Semantic-link stage rebuilt from the frozen reference time" in report.summary()
+
     def test_drift_reports_detected_and_persisted_separately(self) -> None:
         """A failed persist must be visible, not silently lower the count (DEF-10)."""
         report = ConsolidationReport()
