@@ -137,6 +137,23 @@ class SurrealDBConsolidationGroupPlan:
             raise ValueError("plan marker kind and key must be valid and strategy-specific")
         await self._create_immutable(kind, item_key, fields)
 
+    async def put_items(self, items: list[tuple[str, str, Mapping[str, Any]]]) -> None:
+        """Persist a bounded page of immutable strategy-specific markers."""
+        rows: list[tuple[str, dict[str, Any]]] = []
+        for kind, item_key, fields in items:
+            if (
+                not kind
+                or not item_key
+                or kind in {"candidate", "posting", "parent", "rank", "member", "group"}
+            ):
+                raise ValueError("plan marker kind and key must be valid and strategy-specific")
+            rows.append(self._row(kind, item_key, fields))
+            if len(rows) >= _WRITE_BATCH_SIZE:
+                await self._create_many(rows)
+                rows = []
+        if rows:
+            await self._create_many(rows)
+
     async def has_item(self, kind: str, item_key: str) -> bool:
         """Check for one immutable plan marker through its indexed identity."""
         rows = await self._storage._query(
@@ -147,6 +164,51 @@ class SurrealDBConsolidationGroupPlan:
             item_key=item_key,
         )
         return bool(rows)
+
+    async def get_item(self, kind: str, item_key: str) -> dict[str, Any]:
+        """Load one immutable strategy-specific marker by its identity."""
+        rows = await self._storage._query(
+            "SELECT * FROM consolidation_group_plan WHERE plan_id = $plan_id "
+            "AND kind = $kind AND item_key = $item_key LIMIT 1",
+            plan_id=self.plan_id,
+            kind=kind,
+            item_key=item_key,
+        )
+        if len(rows) != 1:
+            raise ConsolidationGroupPlanError(f"plan item {kind}:{item_key!r} is missing")
+        row = dict(rows[0])
+        row.pop("id", None)
+        return row
+
+    async def iter_items(
+        self, kind: str, *, after: str = ""
+    ) -> AsyncIterator[tuple[str, dict[str, Any]]]:
+        """Page strategy-specific markers by their immutable item key."""
+        if not kind or kind in {"candidate", "posting", "parent", "rank", "member", "group"}:
+            raise ValueError("kind must be a strategy-specific plan marker")
+        cursor = after
+        while True:
+            rows = await self._storage._query(
+                "SELECT * FROM consolidation_group_plan WHERE plan_id = $plan_id "
+                "AND kind = $kind AND item_key > $after "
+                "ORDER BY item_key ASC LIMIT $limit",
+                plan_id=self.plan_id,
+                kind=kind,
+                after=cursor,
+                limit=_PAGE_SIZE,
+            )
+            if not rows:
+                return
+            for raw in rows:
+                row = dict(raw)
+                item_key = str(row.get("item_key", ""))
+                if not item_key or item_key <= cursor:
+                    raise ConsolidationGroupPlanError("marker keyset page is malformed")
+                row.pop("id", None)
+                cursor = item_key
+                yield item_key, row
+            if len(rows) < _PAGE_SIZE:
+                return
 
     async def put_candidate(
         self, candidate_id: str, payload: Mapping[str, Any], features: set[str] | frozenset[str]

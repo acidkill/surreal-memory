@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import random
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -1438,6 +1439,31 @@ class NeuralStorage(ABC):
         """
         raise NotImplementedError
 
+    async def iter_co_activation_counts(
+        self,
+        *,
+        since: datetime,
+        until: datetime,
+        min_count: int = 1,
+        after_pair: tuple[str, str] | None = None,
+        page_size: int = 500,
+    ) -> AsyncIterator[tuple[str, str, int, float]]:
+        """Yield pair aggregates in stable key order for bounded consumers.
+
+        Persistent backends should override this with a keyset-paged aggregate
+        query. The compatibility fallback preserves behavior for adapters that
+        only implement ``get_co_activation_counts``; it is not memory-bounded.
+        """
+        if page_size < 1:
+            raise ValueError("page_size must be positive")
+        rows = await self.get_co_activation_counts(since=since, min_count=min_count)
+        cursor = after_pair
+        for neuron_a, neuron_b, count, strength in sorted(rows, key=lambda row: (row[0], row[1])):
+            if cursor is not None and (neuron_a, neuron_b) <= cursor:
+                continue
+            if count >= min_count:
+                yield neuron_a, neuron_b, count, strength
+
     async def prune_co_activations(self, older_than: datetime) -> int:
         """Remove co-activation events older than the given time.
 
@@ -1447,6 +1473,16 @@ class NeuralStorage(ABC):
         Returns:
             Number of events pruned
         """
+        raise NotImplementedError
+
+    async def get_co_activation_prune_page(
+        self, older_than: datetime, after_id: str | None = None, *, limit: int = 500
+    ) -> list[str]:
+        """Read a stable bounded page of expired co-activation event IDs."""
+        raise NotImplementedError
+
+    async def prune_co_activation_ids(self, event_ids: list[str]) -> int:
+        """Delete a bounded set of co-activation IDs idempotently."""
         raise NotImplementedError
 
     # ========== Action Event Operations ==========

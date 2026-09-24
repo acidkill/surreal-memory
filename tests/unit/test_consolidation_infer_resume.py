@@ -14,6 +14,7 @@ from surreal_memory.engine.consolidation import (
     ConsolidationStrategy,
 )
 from surreal_memory.engine.consolidation_progress import ConsolidationPausedError
+from tests.unit.test_consolidation_group_plan import _PlanStorage
 
 
 class _Progress:
@@ -84,6 +85,93 @@ class _Storage:
         return 0
 
 
+class _DurableProgress(_Progress):
+    def __init__(self, pause_phase: str | None = None) -> None:
+        super().__init__(pause_phase)
+        self.state["run_id"] = "infer-test-run"
+
+
+class _DurableStorage(_Storage):
+    def __init__(self, counts: list[tuple[str, str, int, float]]) -> None:
+        super().__init__()
+        self.counts = counts
+        self.current_brain_id = "infer-test-brain"
+        self.plan_storage = _PlanStorage()
+        self.synapse_pair_probes: list[tuple[str, str]] = []
+        self.prune_ids = ["co_activations:old-a", "co_activations:old-b"]
+        self.pruned_ids: list[str] = []
+
+    def _get_brain_id(self) -> str:
+        return str(self.current_brain_id)
+
+    async def _query(self, sql: str, **params: Any):
+        return await self.plan_storage._query(sql, **params)
+
+    async def iter_co_activation_counts(
+        self,
+        *,
+        since: datetime,
+        until: datetime,
+        min_count: int = 1,
+        after_pair: tuple[str, str] | None = None,
+        page_size: int = 500,
+    ):
+        del since, until
+        rows = sorted(self.counts, key=lambda row: (row[0], row[1]))
+        for row in rows:
+            if row[2] >= min_count and (after_pair is None or row[:2] > after_pair):
+                yield row
+
+    async def find_existing_synapse_pairs(self, pairs: list[tuple[str, str]]):
+        self.synapse_pair_probes.extend(pairs)
+        return {
+            pair
+            for pair in pairs
+            if any(
+                {synapse.source_id, synapse.target_id} == set(pair)
+                for synapse in self.synapses.values()
+            )
+        }
+
+    async def get_co_activation_prune_page(
+        self, older_than: datetime, after_id: str | None = None, *, limit: int = 500
+    ):
+        del older_than
+        remaining = [
+            event_id
+            for event_id in self.prune_ids
+            if event_id not in self.pruned_ids and (after_id is None or event_id > after_id)
+        ]
+        return remaining[:limit]
+
+    async def prune_co_activation_ids(self, event_ids: list[str]) -> int:
+        fresh = [event_id for event_id in event_ids if event_id not in self.pruned_ids]
+        self.pruned_ids.extend(fresh)
+        return len(fresh)
+
+    async def get_synapses(
+        self,
+        source_id: str | None = None,
+        target_id: str | None = None,
+        *,
+        limit: int,
+        offset: int = 0,
+    ):
+        rows = [
+            synapse
+            for synapse in self.synapses.values()
+            if (source_id is None or synapse.source_id == source_id)
+            and (target_id is None or synapse.target_id == target_id)
+        ]
+        return rows[offset : offset + limit]
+
+    async def get_synapse(self, synapse_id: str):
+        return self.synapses.get(synapse_id)
+
+    async def get_fiber(self, _fiber_id: str):
+        return None
+
+
 def _engine(storage: _Storage, progress: _Progress) -> ConsolidationEngine:
     engine = ConsolidationEngine(
         storage,
@@ -94,11 +182,27 @@ def _engine(storage: _Storage, progress: _Progress) -> ConsolidationEngine:
     return engine
 
 
+def _durable_engine(
+    storage: _DurableStorage, progress: _DurableProgress, *, max_per_run: int = 50
+) -> ConsolidationEngine:
+    engine = ConsolidationEngine(
+        storage,
+        ConsolidationConfig(infer_co_activation_threshold=3, infer_max_per_run=max_per_run),
+    )
+    engine._active_strategy = ConsolidationStrategy.INFER
+    engine._progress_session = progress  # type: ignore[assignment]
+    return engine
+
+
 def _pending_operation(progress: _Progress) -> dict[str, Any]:
     pending = progress.strategy_state("infer")["pending"]
     for serialized in pending:
         item = json.loads(serialized)
-        if item.get("kind") != "infer_manifest":
+        if item.get("kind") in {
+            "infer_add_pending",
+            "infer_reinforce_pending",
+            "infer_prune_pending",
+        }:
             return item
     raise AssertionError("pending operation snapshot was not saved")
 
@@ -278,3 +382,75 @@ async def test_reinforcement_applied_before_timeout_replays_exact_snapshot(
     assert storage.synapses[existing.id].reinforced_count == existing.reinforced_count + 1
     assert storage.synapses[existing.id].weight == pending_snapshot["weight"]
     assert report.synapses_inferred == 1
+
+
+@pytest.mark.asyncio
+async def test_durable_infer_stages_and_resumes_without_duplicate_synapse_write() -> None:
+    storage = _DurableStorage(
+        [
+            ("neuron-a", "neuron-b", 4, 0.7),
+            ("neuron-a", "neuron-c", 9, 0.9),
+        ]
+    )
+    progress = _DurableProgress(pause_phase="infer_add_pending")
+    engine = _durable_engine(storage, progress, max_per_run=1)
+    reference_time = datetime.now(UTC)
+
+    with pytest.raises(ConsolidationPausedError, match="simulated interruption"):
+        await engine._infer(ConsolidationReport(), reference_time, dry_run=False)
+
+    staged = list(storage.plan_storage.candidates_by_id.values())
+    assert len(staged) == 2
+    assert storage.synapse_pair_probes == [("neuron-a", "neuron-b"), ("neuron-a", "neuron-c")]
+    pending = _pending_operation(progress)
+    assert pending["synapse"]["source_id"] == "neuron-a"
+    assert pending["synapse"]["target_id"] == "neuron-c"
+    assert storage.add_calls == []
+
+    report = ConsolidationReport()
+    await engine._infer(report, reference_time, dry_run=False)
+
+    assert len(storage.add_calls) == 1
+    assert storage.add_calls[0].target_id == "neuron-c"
+    assert report.synapses_inferred == 1
+
+
+@pytest.mark.asyncio
+async def test_durable_reinforcement_pending_replays_exactly_once() -> None:
+    original = Synapse.create("neuron-a", "neuron-b", SynapseType.CO_OCCURS, weight=0.4)
+    storage = _DurableStorage([("neuron-a", "neuron-b", 4, 0.8)])
+    storage.synapses[original.id] = original
+    progress = _DurableProgress(pause_phase="infer_reinforce_pending")
+    engine = _durable_engine(storage, progress)
+    reference_time = datetime.now(UTC)
+
+    with pytest.raises(ConsolidationPausedError, match="simulated interruption"):
+        await engine._infer(ConsolidationReport(), reference_time, dry_run=False)
+
+    saved = _pending_operation(progress)["synapse"]
+    assert storage.update_calls == []
+    report = ConsolidationReport()
+    await engine._infer(report, reference_time, dry_run=False)
+
+    assert len(storage.update_calls) == 1
+    assert storage.synapses[original.id].reinforced_count == original.reinforced_count + 1
+    assert storage.synapses[original.id].weight == saved["weight"]
+    assert report.synapses_inferred == 1
+
+
+@pytest.mark.asyncio
+async def test_durable_prune_batch_resumes_after_delete_without_second_write() -> None:
+    storage = _DurableStorage([])
+    progress = _DurableProgress(pause_phase="infer_prune")
+    engine = _durable_engine(storage, progress)
+    reference_time = datetime.now(UTC)
+
+    with pytest.raises(ConsolidationPausedError, match="simulated interruption"):
+        await engine._infer(ConsolidationReport(), reference_time, dry_run=False)
+
+    assert storage.pruned_ids == ["co_activations:old-a", "co_activations:old-b"]
+    report = ConsolidationReport()
+    await engine._infer(report, reference_time, dry_run=False)
+
+    assert storage.pruned_ids == ["co_activations:old-a", "co_activations:old-b"]
+    assert report.co_activations_pruned == 2

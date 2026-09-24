@@ -140,6 +140,17 @@ class _PlanStorage:
                 if row.get("kind") == "candidate"
                 and row.get("candidate_id") == params["candidate_id"]
             ][:1]
+        if "AND kind = $kind AND item_key > $after" in sql:
+            found = sorted(
+                (
+                    row
+                    for row in rows
+                    if row.get("kind") == params["kind"]
+                    and str(row.get("item_key", "")) > str(params["after"])
+                ),
+                key=lambda row: str(row["item_key"]),
+            )
+            return found[: int(params["limit"])]
         if "AND kind = $kind AND item_key = $item_key" in sql:
             return [
                 row

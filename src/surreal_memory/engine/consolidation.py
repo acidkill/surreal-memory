@@ -5795,6 +5795,769 @@ class ConsolidationEngine:
         reference_time: datetime,
         dry_run: bool,
     ) -> None:
+        """Use durable bounded inference for SurrealDB; retain adapter fallback."""
+        if (
+            not dry_run
+            and self._progress_session is not None
+            and callable(getattr(self._storage, "_query", None))
+            and callable(getattr(self._storage, "iter_co_activation_counts", None))
+            and callable(getattr(self._storage, "find_existing_synapse_pairs", None))
+            and callable(getattr(self._storage, "get_co_activation_prune_page", None))
+            and callable(getattr(self._storage, "prune_co_activation_ids", None))
+        ):
+            await self._infer_bounded(report, reference_time)
+        elif (
+            dry_run
+            and callable(getattr(self._storage, "_query", None))
+            and callable(getattr(self._storage, "iter_co_activation_counts", None))
+            and callable(getattr(self._storage, "find_existing_synapse_pairs", None))
+        ):
+            await self._infer_preview_bounded(report, reference_time)
+        else:
+            await self._infer_legacy(report, reference_time, dry_run)
+
+    async def _infer_preview_bounded(
+        self,
+        report: ConsolidationReport,
+        reference_time: datetime,
+    ) -> None:
+        """Preview inference with a bounded top-k and paged pair probes."""
+        from datetime import timedelta
+
+        from surreal_memory.engine.associative_inference import InferenceConfig
+
+        config = InferenceConfig(
+            co_activation_threshold=self._config.infer_co_activation_threshold,
+            co_activation_window_days=self._config.infer_window_days,
+            max_inferences_per_run=self._config.infer_max_per_run,
+        )
+        limit = max(0, config.max_inferences_per_run)
+        selected_new: list[tuple[str, int]] = []
+        selected_reinforce: list[tuple[str, int]] = []
+
+        def retain_top(values: list[tuple[str, int]], key: str, count: int) -> None:
+            values.append((key, count))
+            values.sort(key=lambda item: (-item[1], item[0]))
+            del values[limit:]
+
+        page: list[tuple[str, str, str, int]] = []
+
+        async def classify_page() -> None:
+            nonlocal page
+            if not page:
+                return
+            pairs = [(left, right) for _, left, right, _ in page]
+            existing = await self._storage.find_existing_synapse_pairs(pairs)
+            for key, left, right, count in page:
+                target = selected_reinforce if (left, right) in existing else selected_new
+                retain_top(target, key, count)
+            page = []
+
+        async for left, right, count, _strength in self._storage.iter_co_activation_counts(
+            since=reference_time - timedelta(days=config.co_activation_window_days),
+            until=reference_time,
+            min_count=config.co_activation_threshold,
+            after_pair=None,
+            page_size=500,
+        ):
+            source_id, target_id = sorted((left, right))
+            page.append(
+                (
+                    json.dumps((source_id, target_id), separators=(",", ":")),
+                    source_id,
+                    target_id,
+                    count,
+                )
+            )
+            if len(page) >= 128:
+                await classify_page()
+        await classify_page()
+        report.synapses_inferred = len(selected_new) + len(selected_reinforce)
+
+    async def _infer_bounded(
+        self,
+        report: ConsolidationReport,
+        reference_time: datetime,
+    ) -> None:
+        """Stage infer inputs and effects durably with bounded live working sets."""
+        import hashlib
+        import json
+        from dataclasses import asdict
+        from datetime import timedelta
+
+        from surreal_memory.core.synapse import Direction
+        from surreal_memory.engine.associative_inference import (
+            InferenceCandidate,
+            InferenceConfig,
+            compute_inferred_weight,
+            create_inferred_synapse,
+            generate_associative_tags,
+        )
+        from surreal_memory.engine.consolidation_group_plan import (
+            SurrealDBConsolidationGroupPlan,
+        )
+        from surreal_memory.utils.tag_normalizer import TagNormalizer
+
+        progress_session = self._progress_session
+        if progress_session is None:
+            raise RuntimeError("bounded inference requires durable progress")
+        strategy_state = self._strategy_progress_state()
+        persisted_counters = strategy_state.get("counters", {})
+        if not isinstance(persisted_counters, dict):
+            persisted_counters = {}
+        counters: dict[str, int | float] = {
+            "synapses_inferred": int(persisted_counters.get("synapses_inferred", 0)),
+            "co_activations_pruned": int(persisted_counters.get("co_activations_pruned", 0)),
+        }
+        report.synapses_inferred = int(counters["synapses_inferred"])
+        report.co_activations_pruned = int(counters["co_activations_pruned"])
+
+        def pair_key(source_id: str, target_id: str) -> str:
+            return json.dumps(sorted((source_id, target_id)), separators=(",", ":"))
+
+        def encode_pending(value: dict[str, Any]) -> str:
+            return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+        def decode_pending(raw: Any) -> dict[str, Any] | None:
+            if not isinstance(raw, str):
+                return None
+            try:
+                value = json.loads(raw)
+            except (TypeError, ValueError):
+                return None
+            return value if isinstance(value, dict) else None
+
+        manifest: dict[str, Any] = {
+            "kind": "infer_manifest",
+            "created_pairs": [],
+            "completed_add": [],
+            "completed_reinforce": [],
+        }
+        pending_operation: dict[str, Any] | None = None
+        selection_state: dict[str, Any] | None = None
+        for raw in strategy_state.get("pending", []):
+            value = decode_pending(raw)
+            if value is None:
+                continue
+            if value.get("kind") == "infer_manifest":
+                manifest = {
+                    "kind": "infer_manifest",
+                    "created_pairs": sorted(set(value.get("created_pairs", []))),
+                    "completed_add": sorted(set(value.get("completed_add", []))),
+                    "completed_reinforce": sorted(set(value.get("completed_reinforce", []))),
+                }
+            elif value.get("kind") in {
+                "infer_add_pending",
+                "infer_reinforce_pending",
+                "infer_prune_pending",
+            }:
+                pending_operation = value
+            elif value.get("kind") == "infer_selection":
+                selection_state = value
+
+        run_id = str(progress_session.state.get("run_id", ""))
+        brain_id_getter = getattr(self._storage, "_get_brain_id", None)
+        brain_id = str(
+            getattr(progress_session, "brain_id", None)
+            or getattr(self._storage, "current_brain_id", None)
+            or (brain_id_getter() if callable(brain_id_getter) else "")
+        )
+        if not run_id or not brain_id:
+            raise RuntimeError("durable inference requires a run and brain identity")
+
+        config = InferenceConfig(
+            co_activation_threshold=self._config.infer_co_activation_threshold,
+            co_activation_window_days=self._config.infer_window_days,
+            max_inferences_per_run=self._config.infer_max_per_run,
+        )
+        window_start = reference_time - timedelta(days=config.co_activation_window_days)
+        fingerprint = hashlib.sha256(
+            json.dumps(
+                {
+                    "algorithm": "infer-paged-v1",
+                    "reference_time": reference_time.isoformat(),
+                    "window_start": window_start.isoformat(),
+                    "threshold": config.co_activation_threshold,
+                    "max_inferences_per_run": config.max_inferences_per_run,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        plan = SurrealDBConsolidationGroupPlan(
+            self._storage,
+            brain_id=brain_id,
+            run_id=run_id,
+            strategy="infer",
+            fingerprint=fingerprint,
+        )
+        descriptor = {
+            "kind": "infer_plan",
+            "plan_id": plan.plan_id,
+            "fingerprint": fingerprint,
+        }
+        raw_cursor = strategy_state.get("cursor")
+        if strategy_state.get("phase", "").startswith("infer_") and strategy_state.get(
+            "phase"
+        ) not in {
+            "infer_starting",
+            "infer_scan",
+        }:
+            for raw in strategy_state.get("pending", []):
+                value = decode_pending(raw)
+                if value is not None and value.get("kind") == "infer_plan":
+                    if value != descriptor:
+                        raise RuntimeError("infer durable plan identity changed across resume")
+                    break
+            else:
+                raise RuntimeError("infer durable checkpoint has no matching plan descriptor")
+
+        async def checkpoint(
+            phase: str,
+            cursor: str | None,
+            *,
+            operation: dict[str, Any] | None = None,
+            selection: dict[str, Any] | None = None,
+        ) -> None:
+            pending = [encode_pending(descriptor), encode_pending(manifest)]
+            if operation is not None:
+                pending.append(encode_pending(operation))
+            if selection is not None:
+                pending.append(encode_pending(selection))
+            await self._checkpoint_progress(
+                phase,
+                cursor=cursor,
+                pending=pending,
+                counters=counters,
+            )
+
+        def dump_synapse(synapse: Synapse) -> dict[str, Any]:
+            def encode(value: Any) -> Any:
+                if isinstance(value, (SynapseType, Direction)):
+                    return value.value
+                if isinstance(value, datetime):
+                    return value.isoformat()
+                raise TypeError(f"unsupported synapse snapshot value: {type(value).__name__}")
+
+            decoded = json.loads(json.dumps(asdict(synapse), default=encode, sort_keys=True))
+            if not isinstance(decoded, dict):
+                raise TypeError("serialized Synapse snapshot is not a mapping")
+            return decoded
+
+        def load_synapse(payload: dict[str, Any]) -> Synapse:
+            values = dict(payload)
+            values["type"] = SynapseType(values["type"])
+            values["direction"] = Direction(values["direction"])
+            if values.get("last_activated") is not None:
+                values["last_activated"] = datetime.fromisoformat(values["last_activated"])
+            values["created_at"] = datetime.fromisoformat(values["created_at"])
+            return Synapse(**values)
+
+        async def lookup_synapse(source_id: str, target_id: str) -> Synapse | None:
+            rows = await self._storage.get_synapses(
+                source_id=source_id, target_id=target_id, limit=1
+            )
+            if not rows:
+                rows = await self._storage.get_synapses(
+                    source_id=target_id, target_id=source_id, limit=1
+                )
+            return rows[0] if rows else None
+
+        async def apply_saved_operation(operation: dict[str, Any]) -> None:
+            nonlocal pending_operation
+            kind = str(operation.get("kind", ""))
+            if kind == "infer_prune_pending":
+                ids = operation.get("event_ids")
+                if not isinstance(ids, list) or not all(isinstance(item, str) for item in ids):
+                    raise RuntimeError("saved infer prune batch is malformed")
+                await self._storage.prune_co_activation_ids(ids)
+                counters["co_activations_pruned"] = int(counters["co_activations_pruned"]) + len(
+                    ids
+                )
+                report.co_activations_pruned = int(counters["co_activations_pruned"])
+                await checkpoint("infer_prune", str(ids[-1]) if ids else None)
+                pending_operation = None
+                return
+
+            key = str(operation["pair_key"])
+            snapshot = load_synapse(dict(operation["synapse"]))
+            did_apply = False
+            if kind == "infer_add_pending":
+                current_synapse = await lookup_synapse(snapshot.source_id, snapshot.target_id)
+                if current_synapse is None:
+                    try:
+                        await self._storage.add_synapse(snapshot)
+                        current_synapse = await self._storage.get_synapse(snapshot.id)
+                    except ValueError:
+                        current_synapse = await lookup_synapse(
+                            snapshot.source_id, snapshot.target_id
+                        )
+                did_apply = current_synapse is not None and current_synapse.id == snapshot.id
+                if did_apply:
+                    manifest["created_pairs"] = sorted(set(manifest["created_pairs"]) | {key})
+                    counters["synapses_inferred"] = int(counters["synapses_inferred"]) + 1
+                manifest["completed_add"] = sorted(set(manifest["completed_add"]) | {key})
+                report.synapses_inferred = int(counters["synapses_inferred"])
+                await checkpoint("infer_add", key)
+            elif kind == "infer_reinforce_pending":
+                current_synapse = await lookup_synapse(snapshot.source_id, snapshot.target_id)
+                if current_synapse is not None and current_synapse != snapshot:
+                    await self._storage.update_synapse(snapshot)
+                    did_apply = True
+                elif current_synapse == snapshot:
+                    did_apply = True
+                manifest["completed_reinforce"] = sorted(
+                    set(manifest["completed_reinforce"]) | {key}
+                )
+                if did_apply:
+                    counters["synapses_inferred"] = int(counters["synapses_inferred"]) + 1
+                report.synapses_inferred = int(counters["synapses_inferred"])
+                await checkpoint("infer_reinforce", key)
+            else:
+                raise RuntimeError(f"unknown saved infer operation {kind!r}")
+            pending_operation = None
+
+        phase = str(strategy_state.get("phase", ""))
+        cursor = str(raw_cursor) if raw_cursor is not None else None
+        if pending_operation is not None:
+            await apply_saved_operation(pending_operation)
+            phase = str(self._strategy_progress_state().get("phase", phase))
+            current_cursor = self._strategy_progress_state().get("cursor")
+            cursor = str(current_cursor) if current_cursor is not None else None
+
+        completed_counts = phase in {
+            "infer_counts_complete",
+            "infer_classify",
+            "infer_classify_complete",
+            "infer_select",
+            "infer_candidates_complete",
+            "infer_add_pending",
+            "infer_add",
+            "infer_reinforce_pending",
+            "infer_reinforce",
+            "infer_tags_existing_scan",
+            "infer_tags_existing_complete",
+            "infer_tags",
+            "infer_prune_pending",
+            "infer_prune",
+            "infer_prune_complete",
+        }
+        if not completed_counts:
+            after_pair: tuple[str, str] | None = None
+            if phase == "infer_counts" and cursor:
+                decoded_cursor = json.loads(cursor)
+                if (
+                    not isinstance(decoded_cursor, dict)
+                    or decoded_cursor.get("plan_id") != plan.plan_id
+                    or decoded_cursor.get("fingerprint") != fingerprint
+                ):
+                    raise RuntimeError("infer count cursor does not match its durable plan")
+                raw_pair = decoded_cursor.get("after_pair")
+                if isinstance(raw_pair, list) and len(raw_pair) == 2:
+                    after_pair = (str(raw_pair[0]), str(raw_pair[1]))
+
+            count_page: list[tuple[str, Mapping[str, Any], set[str] | frozenset[str]]] = []
+            latest_pair = after_pair
+
+            async def flush_count_page() -> None:
+                nonlocal count_page, latest_pair
+                if not count_page:
+                    return
+                await plan.put_candidates(count_page)
+                cursor_value = json.dumps(
+                    {
+                        "plan_id": plan.plan_id,
+                        "fingerprint": fingerprint,
+                        "after_pair": list(latest_pair) if latest_pair else None,
+                    },
+                    separators=(",", ":"),
+                )
+                await checkpoint("infer_counts", cursor_value)
+                count_page = []
+
+            async for left, right, count, strength in self._storage.iter_co_activation_counts(
+                since=window_start,
+                until=reference_time,
+                min_count=1,
+                after_pair=after_pair,
+                page_size=500,
+            ):
+                await self._check_progress_budget()
+                source_id, target_id = sorted((left, right))
+                key = pair_key(source_id, target_id)
+                payload = {
+                    "neuron_a": source_id,
+                    "neuron_b": target_id,
+                    "co_activation_count": int(count),
+                    "avg_binding_strength": float(strength),
+                }
+                count_page.append((key, payload, set()))
+                latest_pair = (left, right)
+                if len(count_page) >= 500:
+                    await flush_count_page()
+            await flush_count_page()
+            await checkpoint("infer_counts_complete", None)
+            phase = "infer_counts_complete"
+
+        completed_classification = phase in {
+            "infer_classify_complete",
+            "infer_select",
+            "infer_candidates_complete",
+            "infer_add_pending",
+            "infer_add",
+            "infer_reinforce_pending",
+            "infer_reinforce",
+            "infer_tags_existing_scan",
+            "infer_tags_existing_complete",
+            "infer_tags",
+            "infer_prune_pending",
+            "infer_prune",
+            "infer_prune_complete",
+        }
+        if not completed_classification:
+            after_candidate = cursor if phase == "infer_classify" and cursor else ""
+            candidate_class_page: list[tuple[str, dict[str, Any]]] = []
+
+            async def flush_classification_page() -> None:
+                nonlocal candidate_class_page, after_candidate
+                if not candidate_class_page:
+                    return
+                pair_ids = [
+                    (str(payload["neuron_a"]), str(payload["neuron_b"]))
+                    for _, payload in candidate_class_page
+                    if int(payload.get("co_activation_count", 0)) >= config.co_activation_threshold
+                ]
+                existing_pairs_page = await self._storage.find_existing_synapse_pairs(pair_ids)
+                markers: list[tuple[str, str, Mapping[str, Any]]] = []
+                for item_key, payload in candidate_class_page:
+                    pair = (str(payload["neuron_a"]), str(payload["neuron_b"]))
+                    markers.append(
+                        (
+                            "infer_existing_pair",
+                            item_key,
+                            {
+                                "exists": (
+                                    int(payload.get("co_activation_count", 0))
+                                    >= config.co_activation_threshold
+                                    and pair in existing_pairs_page
+                                )
+                            },
+                        )
+                    )
+                await plan.put_items(markers)
+                after_candidate = candidate_class_page[-1][0]
+                await checkpoint("infer_classify", after_candidate)
+                candidate_class_page = []
+
+            async for item_key, payload in plan.iter_candidates(after=after_candidate):
+                await self._check_progress_budget()
+                candidate_class_page.append((item_key, payload))
+                if len(candidate_class_page) >= 128:
+                    await flush_classification_page()
+            await flush_classification_page()
+            await checkpoint("infer_classify_complete", None)
+            phase = "infer_classify_complete"
+
+        selected_new: list[tuple[str, dict[str, Any]]] = []
+        selected_reinforce: list[tuple[str, dict[str, Any]]] = []
+        selection_limit = max(0, int(config.max_inferences_per_run))
+        if phase == "infer_select" and selection_state is not None:
+            after_candidate = str(selection_state.get("after", ""))
+            selected_new = [(str(row[0]), dict(row[1])) for row in selection_state.get("new", [])]
+            selected_reinforce = [
+                (str(row[0]), dict(row[1])) for row in selection_state.get("reinforce", [])
+            ]
+        else:
+            after_candidate = ""
+
+        if phase not in {
+            "infer_candidates_complete",
+            "infer_add_pending",
+            "infer_add",
+            "infer_reinforce_pending",
+            "infer_reinforce",
+            "infer_tags_existing_scan",
+            "infer_tags_existing_complete",
+            "infer_tags",
+            "infer_prune_pending",
+            "infer_prune",
+            "infer_prune_complete",
+        }:
+            selection_page: list[tuple[str, dict[str, Any]]] = []
+
+            def retain_top(
+                selected: list[tuple[str, dict[str, Any]]],
+                item_key: str,
+                payload: dict[str, Any],
+            ) -> None:
+                selected.append((item_key, payload))
+                selected.sort(
+                    key=lambda item: (
+                        -int(item[1]["co_activation_count"]),
+                        item[0],
+                    )
+                )
+                del selected[selection_limit:]
+
+            async def flush_selection_page() -> None:
+                nonlocal selection_page, after_candidate
+                if not selection_page:
+                    return
+                selection = {
+                    "kind": "infer_selection",
+                    "after": after_candidate,
+                    "new": selected_new,
+                    "reinforce": selected_reinforce,
+                }
+                await checkpoint("infer_select", after_candidate, selection=selection)
+                selection_page = []
+
+            async for item_key, payload in plan.iter_candidates(after=after_candidate):
+                await self._check_progress_budget()
+                count_value = payload.get("co_activation_count", 0)
+                if not isinstance(count_value, int) or count_value < config.co_activation_threshold:
+                    after_candidate = item_key
+                    selection_page.append((item_key, payload))
+                else:
+                    marker = await plan.get_item("infer_existing_pair", item_key)
+                    selected = selected_reinforce if bool(marker.get("exists")) else selected_new
+                    retain_top(selected, item_key, payload)
+                    after_candidate = item_key
+                    selection_page.append((item_key, payload))
+                if len(selection_page) >= 500:
+                    await flush_selection_page()
+            await flush_selection_page()
+            for item_key, payload in selected_new:
+                await plan.put_item("infer_selected_new", item_key, payload)
+            for item_key, payload in selected_reinforce:
+                await plan.put_item("infer_selected_reinforce", item_key, payload)
+            await checkpoint("infer_candidates_complete", None)
+            phase = "infer_candidates_complete"
+
+        if phase in {
+            "infer_candidates_complete",
+            "infer_add_pending",
+            "infer_add",
+            "infer_reinforce_pending",
+            "infer_reinforce",
+            "infer_tags_existing_scan",
+            "infer_tags_existing_complete",
+            "infer_tags",
+            "infer_prune_pending",
+            "infer_prune",
+            "infer_prune_complete",
+        }:
+            # Selection rows are capped by config and can be reloaded in bounded memory.
+            async def load_selected(kind: str) -> list[tuple[str, dict[str, Any]]]:
+                selected: list[tuple[str, dict[str, Any]]] = []
+                metadata = {
+                    "plan_id",
+                    "brain_id",
+                    "run_id",
+                    "strategy",
+                    "fingerprint",
+                    "kind",
+                    "item_key",
+                    "id",
+                }
+                async for item_key, row in plan.iter_items(kind):
+                    selected.append(
+                        (
+                            item_key,
+                            {key: value for key, value in row.items() if key not in metadata},
+                        )
+                    )
+                return selected
+
+            selected_new = await load_selected("infer_selected_new")
+            selected_reinforce = await load_selected("infer_selected_reinforce")
+            for selected in (selected_new, selected_reinforce):
+                selected.sort(
+                    key=lambda item: (
+                        -int(item[1]["co_activation_count"]),
+                        item[0],
+                    )
+                )
+
+        completed_add = set(manifest["completed_add"])
+        completed_reinforce = set(manifest["completed_reinforce"])
+        created_pairs = set(manifest["created_pairs"])
+
+        def as_candidate(payload: dict[str, Any]) -> InferenceCandidate:
+            count = int(payload["co_activation_count"])
+            strength = float(payload["avg_binding_strength"])
+            return InferenceCandidate(
+                neuron_a=str(payload["neuron_a"]),
+                neuron_b=str(payload["neuron_b"]),
+                co_activation_count=count,
+                avg_binding_strength=strength,
+                inferred_weight=compute_inferred_weight(count, strength, config),
+            )
+
+        for item_key, payload in selected_new:
+            key = item_key
+            if key in completed_add:
+                continue
+            candidate = as_candidate(payload)
+            snapshot = create_inferred_synapse(candidate)
+            operation = {
+                "kind": "infer_add_pending",
+                "pair_key": key,
+                "synapse": dump_synapse(snapshot),
+            }
+            await checkpoint("infer_add_pending", key, operation=operation)
+            await apply_saved_operation(operation)
+            completed_add = set(manifest["completed_add"])
+            created_pairs = set(manifest["created_pairs"])
+
+        for item_key, payload in selected_reinforce:
+            key = item_key
+            if key in created_pairs or key in completed_reinforce:
+                continue
+            candidate = as_candidate(payload)
+            existing = await lookup_synapse(candidate.neuron_a, candidate.neuron_b)
+            if existing is None:
+                manifest["completed_reinforce"] = sorted(completed_reinforce | {key})
+                completed_reinforce.add(key)
+                await checkpoint("infer_reinforce", key)
+                continue
+            snapshot = existing.reinforce(delta=0.05)
+            operation = {
+                "kind": "infer_reinforce_pending",
+                "pair_key": key,
+                "synapse": dump_synapse(snapshot),
+            }
+            await checkpoint("infer_reinforce_pending", key, operation=operation)
+            await apply_saved_operation(operation)
+            completed_reinforce = set(manifest["completed_reinforce"])
+
+        all_candidates = [as_candidate(payload) for _, payload in selected_new + selected_reinforce]
+        tag_names: set[str] = set()
+        neuron_to_tags: dict[str, set[str]] = {}
+        if all_candidates:
+            neuron_ids = sorted(
+                {
+                    neuron_id
+                    for candidate in all_candidates
+                    for neuron_id in (candidate.neuron_a, candidate.neuron_b)
+                }
+            )
+            neurons = await self._storage.get_neurons_batch(neuron_ids)
+            content_map = {neuron_id: neuron.content for neuron_id, neuron in neurons.items()}
+            assoc_tags = generate_associative_tags(all_candidates, content_map, set())
+            normalizer = TagNormalizer()
+            normalized_by_lower: dict[str, str] = {}
+            for assoc_tag in assoc_tags:
+                normalized = normalizer.normalize(assoc_tag.tag)
+                normalized_by_lower[assoc_tag.tag.lower()] = normalized
+                for neuron_id in assoc_tag.source_neuron_ids:
+                    neuron_to_tags.setdefault(neuron_id, set()).add(normalized)
+            tag_names = set(normalized_by_lower)
+
+        # Existing-tag discovery keeps only names emitted by this bounded candidate set.
+        if tag_names and phase not in {
+            "infer_tags_existing_complete",
+            "infer_tags",
+            "infer_prune_pending",
+            "infer_prune",
+            "infer_prune_complete",
+        }:
+            tag_cursor = cursor if phase == "infer_tags_existing_scan" else None
+            async for fiber_page in self._iter_fiber_census_pages(
+                created_before=getattr(progress_session, "reference_time", None)
+            ):
+                for fiber in fiber_page:
+                    if tag_cursor is not None and fiber.id <= tag_cursor:
+                        continue
+                    existing_tag_page = tag_names.intersection(tag.lower() for tag in fiber.tags)
+                    for tag in existing_tag_page:
+                        await plan.put_item("infer_existing_tag", tag, {"present": True})
+                    tag_cursor = fiber.id
+                    await checkpoint("infer_tags_existing_scan", tag_cursor)
+            await checkpoint("infer_tags_existing_complete", None)
+            phase = "infer_tags_existing_complete"
+
+        completed_tag_scan = phase in {
+            "infer_tags_existing_complete",
+            "infer_tags",
+            "infer_prune_pending",
+            "infer_prune",
+            "infer_prune_complete",
+        }
+        if tag_names and completed_tag_scan:
+            existing_tag_names = {
+                name for name in tag_names if await plan.has_item("infer_existing_tag", name)
+            }
+            existing_normalized_tags = {normalized_by_lower[key] for key in existing_tag_names}
+            for generated in neuron_to_tags.values():
+                generated.difference_update(existing_normalized_tags)
+
+        tag_cursor = cursor if phase == "infer_tags" else None
+        if (
+            neuron_to_tags
+            and phase
+            not in {
+                "infer_prune_pending",
+                "infer_prune",
+                "infer_prune_complete",
+            }
+            and not (phase == "infer_tags" and cursor == "completed")
+        ):
+            async for fiber_page in self._iter_fiber_census_pages(
+                created_before=getattr(progress_session, "reference_time", None)
+            ):
+                for fiber in fiber_page:
+                    if tag_cursor is not None and fiber.id <= tag_cursor:
+                        continue
+                    new_tags = {
+                        tag
+                        for neuron_id in fiber.neuron_ids
+                        for tag in neuron_to_tags.get(neuron_id, set())
+                    }
+                    if new_tags:
+                        current_fiber = await self._storage.get_fiber(fiber.id) or fiber
+                        updated_auto_tags = current_fiber.auto_tags | new_tags
+                        if updated_auto_tags != current_fiber.auto_tags:
+                            await self._storage.update_fiber(
+                                dc_replace(current_fiber, auto_tags=updated_auto_tags)
+                            )
+                    tag_cursor = fiber.id
+                    await checkpoint("infer_tags", tag_cursor)
+            await checkpoint("infer_tags", "completed")
+
+        # A prune batch is durable before deletion; replay checks only still-live IDs.
+        if pending_operation is not None and pending_operation.get("kind") == "infer_prune_pending":
+            await apply_saved_operation(pending_operation)
+            pending_operation = None
+            phase = "infer_prune"
+            current_cursor = self._strategy_progress_state().get("cursor")
+            cursor = str(current_cursor) if current_cursor is not None else None
+        prune_cursor = (
+            cursor if phase == "infer_prune" and cursor not in {None, "completed"} else None
+        )
+        while phase != "infer_prune_complete":
+            await self._check_progress_budget()
+            ids = await self._storage.get_co_activation_prune_page(
+                window_start,
+                prune_cursor,
+                limit=500,
+            )
+            if not ids:
+                await checkpoint("infer_prune_complete", "completed")
+                phase = "infer_prune_complete"
+                break
+            operation = {"kind": "infer_prune_pending", "event_ids": ids}
+            await checkpoint("infer_prune_pending", prune_cursor, operation=operation)
+            await apply_saved_operation(operation)
+            phase = "infer_prune"
+            prune_cursor = ids[-1]
+
+    async def _infer_legacy(
+        self,
+        report: ConsolidationReport,
+        reference_time: datetime,
+        dry_run: bool,
+    ) -> None:
         """Run associative inference with replay-safe durable work-unit checkpoints."""
         import json
         import logging

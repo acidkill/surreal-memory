@@ -827,6 +827,28 @@ class InMemoryStorage(
         ]
         return original_count - len(self._co_activations[brain_id])
 
+    async def get_co_activation_prune_page(
+        self, older_than: datetime, after_id: str | None = None, *, limit: int = 500
+    ) -> list[str]:
+        brain_id = self._get_brain_id()
+        page_limit = max(1, limit)
+        expired = sorted(
+            str(event["id"])
+            for event in self._co_activations[brain_id]
+            if event["created_at"] < older_than
+            and (after_id is None or str(event["id"]) > after_id)
+        )
+        return expired[:page_limit]
+
+    async def prune_co_activation_ids(self, event_ids: list[str]) -> int:
+        brain_id = self._get_brain_id()
+        requested = set(event_ids)
+        events = self._co_activations[brain_id]
+        remaining = [event for event in events if str(event["id"]) not in requested]
+        deleted = len(events) - len(remaining)
+        self._co_activations[brain_id] = remaining
+        return deleted
+
     # ========== Action Event Operations ==========
 
     async def record_action(
