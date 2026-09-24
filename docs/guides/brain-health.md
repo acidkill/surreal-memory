@@ -115,6 +115,15 @@ smem consolidate --strategy mature
 smem_auto(action="process", text="consolidate")
 ```
 
+!!! warning "Bulk imports and resumable consolidation"
+    SurrealDB's `OPTION IMPORT` bypasses changefeeds and events. Do not bulk-import
+    neuron or synapse records into a database while a consolidation run has an
+    unfinished semantic-discovery checkpoint: the source-mutation fence cannot
+    detect those imported writes. Perform imports in a separate namespace or
+    database, or finish the active run first. If an import already happened,
+    stop before resuming and rebuild the affected checkpoint from a verified
+    backup; a normal retry cannot prove the staged source snapshot is valid.
+
 !!! note "Realistic expectations"
     A brand new brain will have 0% consolidation — this is normal. After 1-2 weeks of active use with regular recalls, expect 20-40%. After a month, 50%+.
 
