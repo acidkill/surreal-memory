@@ -89,7 +89,9 @@ DEFINE FIELD content_hash    ON neuron TYPE int DEFAULT 0;
 DEFINE FIELD metadata        ON neuron TYPE object DEFAULT {};
 DEFINE FIELD embedding_vec   ON neuron TYPE option<array<float>>;
 DEFINE FIELD ephemeral       ON neuron TYPE bool DEFAULT false;
-DEFINE FIELD created_at      ON neuron TYPE datetime DEFAULT time::now();
+-- created_at is the immutable boundary used by frozen semantic discovery.
+-- OVERWRITE converges databases that already have the pre-READONLY definition.
+DEFINE FIELD OVERWRITE created_at ON neuron TYPE datetime DEFAULT time::now() READONLY;
 DEFINE FIELD updated_at      ON neuron TYPE datetime DEFAULT time::now();
 DEFINE FIELD access_frequency ON neuron TYPE int DEFAULT 0;
 DEFINE FIELD last_activated  ON neuron TYPE option<datetime>;
@@ -666,7 +668,9 @@ SYNAPSE_V8_DDL: list[str] = [
     # such field exists"), which silently skipped every synapse with non-empty
     # metadata during the v7->v8 migration. FLEXIBLE (after TYPE) allows nested keys.
     "DEFINE FIELD metadata ON synapse TYPE object FLEXIBLE DEFAULT {}",
-    "DEFINE FIELD created_at ON synapse TYPE datetime DEFAULT time::now()",
+    # Immutable timestamp used to exclude post-reference source rows. OVERWRITE
+    # upgrades existing v12 databases without a data migration or checkpoint bump.
+    "DEFINE FIELD OVERWRITE created_at ON synapse TYPE datetime DEFAULT time::now() READONLY",
     "DEFINE FIELD last_activated ON synapse TYPE option<datetime>",
     "DEFINE FIELD reinforced_count ON synapse TYPE int DEFAULT 0",
     "DEFINE INDEX idx_synapse_brain ON synapse FIELDS brain_id",

@@ -28,6 +28,12 @@ class TestSynapseRelationModel:
     def test_schema_version_is_current(self) -> None:
         assert SCHEMA_VERSION == 12
 
+    def test_created_at_is_readonly_without_checkpoint_schema_bump(self) -> None:
+        assert "DEFINE FIELD OVERWRITE created_at ON neuron" in _SCHEMA
+        assert "DEFAULT time::now() READONLY" in _SCHEMA
+        assert "DEFINE FIELD OVERWRITE created_at ON synapse" in _DDL
+        assert "DEFAULT time::now() READONLY" in _DDL
+
     def test_synapse_is_native_relation(self) -> None:
         assert "DEFINE TABLE synapse TYPE RELATION IN neuron OUT neuron SCHEMAFULL" in _DDL
 

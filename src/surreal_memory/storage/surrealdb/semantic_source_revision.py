@@ -175,6 +175,7 @@ class SurrealDBSemanticSourceRevisionMixin:
         if not brain_id:
             raise ValueError("current brain id must not be empty")
         captured_at = await self._server_now()
+        created_at_readonly = await self._source_created_at_is_readonly()
         marker_id = uuid4().hex
         created = False
         try:
@@ -196,6 +197,10 @@ class SurrealDBSemanticSourceRevisionMixin:
                     "brain_id": brain_id,
                     "versionstamp": marker_versionstamp,
                     "captured_at": captured_at.isoformat(timespec="microseconds") + "Z",
+                    # Legacy tokens omit this capability. Only tokens captured
+                    # after verifying both source fields carry READONLY may
+                    # classify a full-row update by created_at alone.
+                    "created_at_readonly": created_at_readonly,
                 },
                 sort_keys=True,
                 separators=(",", ":"),
@@ -225,11 +230,29 @@ class SurrealDBSemanticSourceRevisionMixin:
                         "could not clean up semantic source barrier"
                     ) from exc
 
+    async def _source_created_at_is_readonly(self) -> bool:
+        """Return whether both source tables expose READONLY created_at fields."""
+        for table in _SOURCE_TABLES:
+            try:
+                info = await self._query_response(f"INFO FOR TABLE {table}")
+            except Exception as exc:
+                raise SemanticSourceFenceUnavailableError(
+                    f"could not verify {table} created_at immutability"
+                ) from exc
+            fields = info.get("fields") if isinstance(info, Mapping) else None
+            definition = fields.get("created_at") if isinstance(fields, Mapping) else None
+            if not isinstance(definition, str) or "READONLY" not in definition.upper().split():
+                return False
+        return True
+
     @staticmethod
-    def _decode_token(token: str, brain_id: str) -> tuple[int, datetime]:
+    def _decode_token(token: str, brain_id: str) -> tuple[int, datetime, bool]:
         try:
             data = json.loads(token)
             versionstamp = data.get("versionstamp") if isinstance(data, dict) else None
+            created_at_readonly = (
+                data.get("created_at_readonly", False) if isinstance(data, dict) else None
+            )
             if (
                 not isinstance(data, dict)
                 or data.get("version") != _TOKEN_VERSION
@@ -238,10 +261,11 @@ class SurrealDBSemanticSourceRevisionMixin:
                 or isinstance(versionstamp, bool)
                 or versionstamp < 0
                 or not isinstance(data.get("captured_at"), str)
+                or not isinstance(created_at_readonly, bool)
             ):
                 raise ValueError
             captured_at = SurrealDBSemanticSourceRevisionMixin._parse_datetime(data["captured_at"])
-            return versionstamp, captured_at
+            return versionstamp, captured_at, created_at_readonly
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             raise SemanticSourceFenceExpiredError(
                 "semantic source token is malformed or belongs to another brain"
@@ -253,12 +277,13 @@ class SurrealDBSemanticSourceRevisionMixin:
         """Raise for source changes except provably post-reference-time records.
 
         Without a frozen cutoff, retain the legacy conservative check. With a
-        cutoff, full-record changefeed events whose immutable ``created_at`` is
-        after the cutoff are irrelevant to this run. Pre-cutoff updates and all
-        unclassifiable deletes still invalidate the token.
+        cutoff, full-record events whose ``created_at`` is after the cutoff are
+        irrelevant only when the token attests that both source fields were
+        READONLY at capture. Legacy tokens require a visible post-reference
+        create before later updates/deletes can be ignored.
         """
         brain_id = self._get_brain_id()
-        versionstamp, captured_at = self._decode_token(since_token, brain_id)
+        versionstamp, captured_at, created_at_readonly = self._decode_token(since_token, brain_id)
         server_now = await self._server_now()
         age = server_now - captured_at
         if age < timedelta(0):
@@ -272,7 +297,10 @@ class SurrealDBSemanticSourceRevisionMixin:
 
         if created_before is not None:
             await self._assert_source_unchanged_before(
-                brain_id, versionstamp, self._parse_datetime(created_before)
+                brain_id,
+                versionstamp,
+                self._parse_datetime(created_before),
+                created_at_readonly=created_at_readonly,
             )
             return
 
@@ -296,9 +324,20 @@ class SurrealDBSemanticSourceRevisionMixin:
                 )
 
     async def _assert_source_unchanged_before(
-        self, brain_id: str, versionstamp: int, created_before: datetime
+        self,
+        brain_id: str,
+        versionstamp: int,
+        created_before: datetime,
+        *,
+        created_at_readonly: bool,
     ) -> None:
-        """Page source feeds, ignoring only records provably outside the run."""
+        """Page source feeds, ignoring only records provably outside the run.
+
+        A post-cutoff ``created_at`` on an update is not proof of a post-cutoff
+        creation unless the token was captured after verifying both fields are
+        READONLY. Legacy tokens therefore require a visible create event before
+        later updates/deletes for that id can be ignored.
+        """
         for table in _SOURCE_TABLES:
             cursor = versionstamp
             scanned = 0
@@ -374,6 +413,16 @@ class SurrealDBSemanticSourceRevisionMixin:
                         if action not in {"create", "update"}:
                             raise SemanticSourceFenceUnavailableError(
                                 f"{table} changefeed returned an unknown change type"
+                            )
+                        if action == "update" and record_id_text in post_reference_ids:
+                            if record.get("brain_id") != brain_id:
+                                raise SemanticSourceChangedError(
+                                    f"{table} changed since the semantic source token was captured"
+                                )
+                            continue
+                        if action == "update" and not created_at_readonly:
+                            raise SemanticSourceChangedError(
+                                f"{table} changed since the semantic source token was captured"
                             )
                         if record.get("brain_id") != brain_id:
                             raise SemanticSourceChangedError(

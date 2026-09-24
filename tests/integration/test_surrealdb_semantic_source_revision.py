@@ -26,7 +26,7 @@ from surreal_memory.engine.consolidation_progress import (
     CONSOLIDATION_ENGINE_VERSION,
     PROGRESS_FORMAT_VERSION,
 )
-from surreal_memory.storage.surrealdb.schema import SCHEMA_VERSION
+from surreal_memory.storage.surrealdb.schema import SCHEMA_VERSION, ensure_schema
 from surreal_memory.storage.surrealdb.semantic_discovery_state import (
     SemanticDiscoveryStateConflictError,
 )
@@ -195,6 +195,68 @@ async def test_frozen_reference_ignores_late_inserts_in_scans_and_source_fence(s
         await store.assert_semantic_source_unchanged(token, created_before=reference_time)
 
 
+@pytest.mark.asyncio
+async def test_created_at_readonly_converges_existing_rows_and_preserves_ordinary_updates(
+    store,
+) -> None:
+    # Simulate a v12 database whose existing field definitions predate this
+    # invariant. The field rewrite must preserve data while upgrading in place.
+    await store._query(
+        "DEFINE FIELD OVERWRITE created_at ON neuron TYPE datetime DEFAULT time::now()"
+    )
+    await store._query(
+        "DEFINE FIELD OVERWRITE created_at ON synapse TYPE datetime DEFAULT time::now()"
+    )
+    created_at = utcnow() - timedelta(days=2)
+    neurons = [
+        replace(
+            Neuron.create(type=NeuronType.CONCEPT, content=f"readonly-{i}"), created_at=created_at
+        )
+        for i in range(2)
+    ]
+    for neuron in neurons:
+        await store.add_neuron(neuron)
+    edge = replace(
+        Synapse.create(
+            source_id=neurons[0].id,
+            target_id=neurons[1].id,
+            type=SynapseType.RELATED_TO,
+        ),
+        created_at=created_at,
+    )
+    await store.add_synapse(edge)
+
+    await ensure_schema(store._ensure_conn())
+
+    original_neuron = await store.get_neuron(neurons[0].id)
+    original_edge = await store.get_synapse(edge.id)
+    assert original_neuron is not None and original_neuron.created_at == created_at
+    assert original_edge is not None and original_edge.created_at == created_at
+
+    await store.update_neuron(replace(neurons[0], content="ordinary neuron update"))
+    await store.update_synapse(replace(edge, weight=0.8))
+    updated_neuron = await store.get_neuron(neurons[0].id)
+    updated_edge = await store.get_synapse(edge.id)
+    assert updated_neuron is not None and updated_neuron.created_at == created_at
+    assert updated_edge is not None and updated_edge.created_at == created_at
+
+    # SurrealDB accepts these statements but READONLY discards the field write.
+    await store._query(
+        "UPDATE type::record('neuron', $id) SET created_at = $value",
+        id=neurons[0].id.replace("neuron:", ""),
+        value=utcnow(),
+    )
+    await store._query(
+        "UPDATE type::record('synapse', $id) SET created_at = $value",
+        id=edge.id.replace("synapse:", ""),
+        value=utcnow(),
+    )
+    rejected_neuron_rewrite = await store.get_neuron(neurons[0].id)
+    rejected_edge_rewrite = await store.get_synapse(edge.id)
+    assert rejected_neuron_rewrite is not None and rejected_neuron_rewrite.created_at == created_at
+    assert rejected_edge_rewrite is not None and rejected_edge_rewrite.created_at == created_at
+
+
 async def test_barrier_discovery_pages_past_retained_events(store, monkeypatch) -> None:
     import surreal_memory.storage.surrealdb.semantic_source_revision as revision_module
 
@@ -233,7 +295,8 @@ async def test_raw_versionstamp_is_an_inclusive_barrier_ordered_across_tables(st
     before = Neuron.create(type=NeuronType.CONCEPT, content="before-barrier")
     await store.add_neuron(before)
     token = await store.capture_semantic_source_token()
-    barrier_stamp, _ = store._decode_token(token, store.current_brain_id)
+    barrier_stamp, _, readonly_at_capture = store._decode_token(token, store.current_brain_id)
+    assert readonly_at_capture is True
 
     after = Neuron.create(type=NeuronType.CONCEPT, content="after-barrier")
     await store.add_neuron(after)

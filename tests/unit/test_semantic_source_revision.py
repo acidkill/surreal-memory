@@ -27,11 +27,15 @@ class _RevisionStorage(SurrealDBSemanticSourceRevisionMixin):
         self.queries: list[tuple[str, dict[str, Any]]] = []
         self.marker_id: str | None = None
         self.marker_versionstamp = (100 << 16) + 9
+        self.created_at_readonly = True
 
     def _get_brain_id(self) -> str:
         return self.current_brain_id
 
     async def _query_response(self, sql: str, **params: Any) -> Any:
+        if sql.startswith("INFO FOR TABLE "):
+            readonly = " READONLY" if self.created_at_readonly else ""
+            return {"fields": {"created_at": f"DEFINE FIELD created_at{readonly}"}}
         assert sql == "RETURN time::now()"
         return self.now
 
@@ -56,15 +60,22 @@ class _RevisionStorage(SurrealDBSemanticSourceRevisionMixin):
         return self.change_rows[table]
 
 
-def _token(*, brain_id: str = "brain-a", captured_at: datetime, versionstamp: int = 100) -> str:
-    return json.dumps(
-        {
-            "version": 1,
-            "brain_id": brain_id,
-            "versionstamp": versionstamp,
-            "captured_at": captured_at.isoformat(timespec="microseconds") + "Z",
-        }
-    )
+def _token(
+    *,
+    brain_id: str = "brain-a",
+    captured_at: datetime,
+    versionstamp: int = 100,
+    created_at_readonly: bool = False,
+) -> str:
+    data: dict[str, Any] = {
+        "version": 1,
+        "brain_id": brain_id,
+        "versionstamp": versionstamp,
+        "captured_at": captured_at.isoformat(timespec="microseconds") + "Z",
+    }
+    if created_at_readonly:
+        data["created_at_readonly"] = True
+    return json.dumps(data)
 
 
 async def test_captures_server_time_and_queries_both_source_feeds() -> None:
@@ -74,6 +85,7 @@ async def test_captures_server_time_and_queries_both_source_feeds() -> None:
     payload = json.loads(token)
     assert payload["brain_id"] == "brain-a"
     assert payload["versionstamp"] == storage.marker_versionstamp
+    assert payload["created_at_readonly"] is True
     assert datetime.fromisoformat(payload["captured_at"].replace("Z", "")) == storage.now
     assert any("CREATE type::record('semantic_source_barrier'" in sql for sql, _ in storage.queries)
     assert any("DELETE type::record('semantic_source_barrier'" in sql for sql, _ in storage.queries)
@@ -90,6 +102,16 @@ async def test_captures_server_time_and_queries_both_source_feeds() -> None:
         "neuron",
         "synapse",
     }
+
+
+@pytest.mark.asyncio
+async def test_capture_does_not_claim_readonly_capability_without_both_schema_fields() -> None:
+    storage = _RevisionStorage()
+    storage.created_at_readonly = False
+
+    token = await storage.capture_semantic_source_token()
+
+    assert json.loads(token)["created_at_readonly"] is False
 
 
 @pytest.mark.asyncio
@@ -148,7 +170,11 @@ async def test_frozen_source_fence_ignores_full_rows_created_after_reference_tim
     ]
 
     await storage.assert_semantic_source_unchanged(
-        _token(captured_at=cutoff - timedelta(seconds=1)), created_before=cutoff
+        _token(
+            captured_at=cutoff - timedelta(seconds=1),
+            created_at_readonly=True,
+        ),
+        created_before=cutoff,
     )
 
 
@@ -165,7 +191,9 @@ async def test_frozen_source_fence_rejects_pre_reference_update_and_unknown_dele
                     "update": {
                         "id": "neuron:old-node",
                         "brain_id": "brain-a",
-                        "created_at": cutoff - timedelta(days=1),
+                        # This is the exact unsafe shape: an old row was edited
+                        # and its mutable created_at was rewritten past cutoff.
+                        "created_at": cutoff + timedelta(seconds=1),
                         "updated_at": cutoff + timedelta(seconds=1),
                     }
                 }
@@ -192,7 +220,7 @@ async def test_frozen_source_fence_allows_delete_only_after_proving_post_referen
             "versionstamp": 101,
             "changes": [
                 {
-                    "update": {
+                    "create": {
                         "id": "synapse:late-edge",
                         "brain_id": "brain-a",
                         "created_at": cutoff + timedelta(seconds=1),
@@ -200,7 +228,21 @@ async def test_frozen_source_fence_allows_delete_only_after_proving_post_referen
                 }
             ],
         },
-        {"versionstamp": 102, "changes": [{"delete": {"id": "synapse:late-edge"}}]},
+        {
+            "versionstamp": 102,
+            "changes": [
+                {
+                    "update": {
+                        "id": "synapse:late-edge",
+                        "brain_id": "brain-a",
+                        # Once its post-reference create is proven, later
+                        # edits to that out-of-scope row remain irrelevant.
+                        "created_at": cutoff + timedelta(seconds=2),
+                    }
+                }
+            ],
+        },
+        {"versionstamp": 103, "changes": [{"delete": {"id": "synapse:late-edge"}}]},
     ]
 
     await storage.assert_semantic_source_unchanged(token, created_before=cutoff)
