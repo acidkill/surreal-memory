@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+from dataclasses import replace as dc_replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -471,6 +472,88 @@ async def test_semantic_link_replays_saved_synapse_after_interruption_without_du
     )
 
     assert storage.added_synapses == ["semantic-edge-a-b"]
+    assert report.semantic_synapses_created == 1
+    assert progress.strategy_state("semantic_link")["pending"] == []
+
+
+@pytest.mark.asyncio
+async def test_semantic_link_resume_accepts_store_public_id_normalization_without_duplicate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    neurons = [
+        Neuron.create(
+            NeuronType.CONCEPT,
+            f"concept {suffix}",
+            metadata={"_embedding": [1.0, 0.0]},
+            neuron_id=f"semantic-{suffix}",
+        )
+        for suffix in ("a", "b")
+    ]
+    storage = _Storage(neurons=neurons)
+    planned = Synapse.create(
+        "semantic-a",
+        "semantic-b",
+        SynapseType.SIMILAR_TO,
+        weight=0.54,
+        metadata={"_semantic_discovery": True},
+        synapse_id="similar_to-" + "a" * 32,
+    )
+    result = SemanticDiscoveryResult(
+        neurons_embedded=2,
+        pairs_evaluated=1,
+        synapses_created=1,
+        eligible_total=2,
+        synapses=[planned],
+    )
+
+    async def discover(*_args: Any, **_kwargs: Any) -> SemanticDiscoveryResult:
+        return result
+
+    monkeypatch.setattr(
+        "surreal_memory.engine.semantic_discovery.discover_semantic_synapses", discover
+    )
+
+    async def add_with_surreal_public_id(synapse: Synapse) -> str:
+        persisted = dc_replace(synapse, id=synapse.id.replace("_", "-"))
+        storage.added_synapses.append(synapse.id)
+        storage.synapses[persisted.id] = persisted
+        return persisted.id
+
+    async def get_with_surreal_id(synapse_id: str) -> Synapse | None:
+        return storage.synapses.get(synapse_id) or storage.synapses.get(
+            synapse_id.replace("_", "-")
+        )
+
+    monkeypatch.setattr(storage, "add_synapse", add_with_surreal_public_id)
+    monkeypatch.setattr(storage, "get_synapse", get_with_surreal_id)
+    progress = _Progress("semantic_link")
+    durable_checkpoint = progress.checkpoint
+
+    async def fail_before_apply_checkpoint(
+        strategy: str,
+        phase: str,
+        **kwargs: Any,
+    ) -> None:
+        if phase == "semantic_link_apply":
+            raise ConsolidationPausedError("simulated post-write interruption")
+        await durable_checkpoint(strategy, phase, **kwargs)
+
+    monkeypatch.setattr(progress, "checkpoint", fail_before_apply_checkpoint)
+    with pytest.raises(ConsolidationPausedError, match="post-write interruption"):
+        await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+            ConsolidationReport(), dry_run=False
+        )
+
+    assert storage.added_synapses == [planned.id]
+    assert len(storage.synapses) == 1
+    monkeypatch.setattr(progress, "checkpoint", durable_checkpoint)
+    report = ConsolidationReport()
+    await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+        report, dry_run=False
+    )
+
+    assert storage.added_synapses == [planned.id]
+    assert len(storage.synapses) == 1
     assert report.semantic_synapses_created == 1
     assert progress.strategy_state("semantic_link")["pending"] == []
 

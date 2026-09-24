@@ -6048,7 +6048,20 @@ class ConsolidationEngine:
                 created_at=datetime.fromisoformat(payload["created_at"]),
             )
 
-        async def source_fingerprint(excluded_ids: set[str]) -> str:
+        def canonical_synapse_id(synapse_id: str) -> str:
+            """Match the store's public spelling for record ids with underscores."""
+            return synapse_id.replace("_", "-")
+
+        async def source_fingerprint(excluded_synapses: Sequence[Synapse]) -> str:
+            excluded_edges = {
+                (
+                    canonical_synapse_id(synapse.id),
+                    synapse.source_id,
+                    synapse.target_id,
+                    synapse.type.value,
+                )
+                for synapse in excluded_synapses
+            }
             eligible: list[dict[str, Any]] = []
             for neuron_type in (NeuronType.CONCEPT, NeuronType.ENTITY):
                 offset = 0
@@ -6085,7 +6098,13 @@ class ConsolidationEngine:
                         "type": edge.type.value,
                     }
                     for edge in edge_batch
-                    if edge.id not in excluded_ids
+                    if (
+                        canonical_synapse_id(edge.id),
+                        edge.source_id,
+                        edge.target_id,
+                        edge.type.value,
+                    )
+                    not in excluded_edges
                 )
                 offset += len(edge_batch)
                 if len(edge_batch) < 1000:
@@ -6177,9 +6196,7 @@ class ConsolidationEngine:
                     synapses = [decode_synapse(item) for item in raw_synapses]
                     fingerprint_value = manifest.get("source_fingerprint")
                     if fingerprint_value is not None:
-                        current_fingerprint = await source_fingerprint(
-                            {synapse.id for synapse in synapses}
-                        )
+                        current_fingerprint = await source_fingerprint(synapses)
                         if current_fingerprint != fingerprint_value:
                             raise ConsolidationProgressError(
                                 "semantic-link source data changed after its pending checkpoint"
@@ -6246,7 +6263,7 @@ class ConsolidationEngine:
             }
             result_fingerprint = result.source_fingerprint
             if result_fingerprint is None and synapses:
-                result_fingerprint = await source_fingerprint({synapse.id for synapse in synapses})
+                result_fingerprint = await source_fingerprint(synapses)
             manifest = {
                 "kind": "semantic_link_synapses",
                 "version": 2,
@@ -6296,7 +6313,10 @@ class ConsolidationEngine:
             await self._check_progress_budget()
             existing = await self._storage.get_synapse(synapse.id)
             if existing is not None:
-                if existing != synapse:
+                if (
+                    canonical_synapse_id(existing.id) != canonical_synapse_id(synapse.id)
+                    or dc_replace(existing, id=synapse.id) != synapse
+                ):
                     raise ConsolidationProgressError(
                         f"semantic-link synapse {synapse.id!r} changed after its checkpoint"
                     )
