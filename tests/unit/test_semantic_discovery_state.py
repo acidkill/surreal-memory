@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -118,4 +119,57 @@ async def test_snapshot_load_requires_active_lease_and_exact_manifest_reference(
     assert await storage.load_semantic_discovery_state("state-owner-old", 1) is None
     storage.progress["strategy_states"]["semantic_discovery"]["state_revision"] = 1
     storage.lease["owner_token"] = "rotated"  # noqa: S105 - synthetic lease owner
+    assert await storage.load_semantic_discovery_state("state-owner-old", 1) is None
+
+
+@pytest.mark.asyncio
+async def test_snapshot_load_accepts_nested_json_string_manifest_only_for_exact_reference() -> None:
+    storage = _SnapshotStorage()
+    payload = _payload()
+    await storage.save_semantic_discovery_state("state-owner-old", 1, payload)
+    storage.lease = {"owner_token": "owner-current"}
+    source_ref = {
+        "state_id": "state-owner-old",
+        "revision": 1,
+        "state_revision": 1,
+        "source_token": "source-token-1",
+    }
+    manifest = {
+        "kind": "semantic_link_discovery",
+        "version": 3,
+        "stage": "neurons",
+        "source_state_ref": source_ref,
+    }
+    # This is the persisted shape: pending contains the JSON encoding of a
+    # list whose item is itself a JSON-encoded manifest.
+    pending_manifest = json.dumps(
+        [json.dumps(manifest, sort_keys=True, separators=(",", ":"))],
+        separators=(",", ":"),
+    )
+    storage.progress = {
+        "brain_id": "brain-a",
+        "run_id": "run-1",
+        "owner_token": "owner-current",
+        "strategy_states": {"semantic_link": {"pending": [pending_manifest]}},
+    }
+
+    assert await storage.load_semantic_discovery_state("state-owner-old", 1) == payload
+
+    for field, forged_value in (
+        ("state_id", "other-state"),
+        ("state_revision", 2),
+        ("source_token", "other-source"),
+    ):
+        forged_ref = {**source_ref, field: forged_value}
+        storage.progress["strategy_states"]["semantic_link"]["pending"] = [
+            json.dumps(
+                [json.dumps({**manifest, "source_state_ref": forged_ref})],
+                separators=(",", ":"),
+            )
+        ]
+        assert await storage.load_semantic_discovery_state("state-owner-old", 1) is None
+
+    storage.progress["strategy_states"]["semantic_link"]["pending"] = [
+        "not-json containing state-owner-old and source-token-1"
+    ]
     assert await storage.load_semantic_discovery_state("state-owner-old", 1) is None

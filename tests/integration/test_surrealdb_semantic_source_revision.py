@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import json
 import os
 import uuid
 from dataclasses import replace
@@ -20,11 +21,17 @@ import pytest_asyncio
 from surreal_memory.core.brain import Brain
 from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.core.synapse import Synapse, SynapseType
+from surreal_memory.engine.consolidation_progress import (
+    CONSOLIDATION_ENGINE_VERSION,
+    PROGRESS_FORMAT_VERSION,
+)
+from surreal_memory.storage.surrealdb.schema import SCHEMA_VERSION
 from surreal_memory.storage.surrealdb.semantic_discovery_state import (
     SemanticDiscoveryStateConflictError,
 )
 from surreal_memory.storage.surrealdb.semantic_source_revision import SemanticSourceChangedError
 from surreal_memory.storage.surrealdb.store import SurrealDBStorage
+from surreal_memory.utils.timeutils import utcnow
 
 SURREALDB_URL = os.getenv("SURREALDB_URL")
 SURREALDB_USER = os.getenv("SURREALDB_USER", "root")
@@ -239,3 +246,61 @@ async def test_snapshot_create_is_exactly_idempotent_on_real_surrealdb(store) ->
         await store.save_semantic_discovery_state(
             state_id, 1, {**payload, "candidates": [["neuron-two", 0.9, 1]]}
         )
+
+
+async def test_snapshot_load_follows_serialized_pending_manifest_after_lease_rotation(
+    store,
+) -> None:
+    state_id = uuid.uuid4().hex
+    payload = {
+        "brain_id": store._get_brain_id(),
+        "run_id": "integration-resume-run",
+        "owner_token": "integration-owner-old",
+        "source_token": "integration-source-token",
+        "candidates": [["neuron-one", 0.9, 1]],
+    }
+    await store.save_semantic_discovery_state(state_id, 1, payload)
+
+    current_owner = "integration-owner-current"
+    brain_id = store._get_brain_id()
+    assert await store.acquire_consolidation_lease(brain_id, current_owner, lease_seconds=30)
+    manifest = {
+        "kind": "semantic_link_discovery",
+        "version": 3,
+        "stage": "neurons",
+        "source_state_ref": {
+            "state_id": state_id,
+            "revision": 1,
+            "state_revision": 1,
+            "source_token": payload["source_token"],
+        },
+    }
+    pending_manifest = json.dumps(
+        [json.dumps(manifest, sort_keys=True, separators=(",", ":"))],
+        separators=(",", ":"),
+    )
+    await store.create_consolidation_progress(
+        {
+            "brain_id": brain_id,
+            "run_id": payload["run_id"],
+            "schema_version": SCHEMA_VERSION,
+            "engine_version": CONSOLIDATION_ENGINE_VERSION,
+            "format_version": PROGRESS_FORMAT_VERSION,
+            "requested_strategies": ["semantic_link"],
+            "completed_strategies": [],
+            "options_fingerprint": "integration-options",
+            "reference_time": utcnow(),
+            "owner_token": current_owner,
+            "status": "paused",
+            "current_strategy": "semantic_link",
+            "phase": "semantic_link_discovery_neurons",
+            "cursor": None,
+            "strategy_states": {"semantic_link": {"pending": [pending_manifest]}},
+            "counters": {},
+            "started_at": utcnow(),
+            "updated_at": utcnow(),
+            "last_error": None,
+        }
+    )
+
+    assert await store.load_semantic_discovery_state(state_id, 1) == payload

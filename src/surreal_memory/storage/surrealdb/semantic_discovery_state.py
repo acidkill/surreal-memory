@@ -33,8 +33,36 @@ class SurrealDBSemanticDiscoveryStateMixin:
 
     @staticmethod
     def _manifest_references(
-        value: Any, *, state_id: str, revision: int, source_token: str
+        value: Any,
+        *,
+        state_id: str,
+        revision: int,
+        source_token: str,
+        _depth: int = 0,
     ) -> bool:
+        if _depth > 64:
+            return False
+        if isinstance(value, str):
+            candidate = value.lstrip()
+            if len(value) > _MAX_SNAPSHOT_BYTES or not candidate.startswith(("{", "[")):
+                return False
+            try:
+                encoded_size = len(value.encode("utf-8"))
+            except UnicodeEncodeError:
+                return False
+            if encoded_size > _MAX_SNAPSHOT_BYTES:
+                return False
+            try:
+                decoded = json.loads(value)
+            except (json.JSONDecodeError, RecursionError, ValueError):
+                return False
+            return SurrealDBSemanticDiscoveryStateMixin._manifest_references(
+                decoded,
+                state_id=state_id,
+                revision=revision,
+                source_token=source_token,
+                _depth=_depth + 1,
+            )
         if isinstance(value, Mapping):
             if (
                 value.get("state_id") == state_id
@@ -48,6 +76,7 @@ class SurrealDBSemanticDiscoveryStateMixin:
                     state_id=state_id,
                     revision=revision,
                     source_token=source_token,
+                    _depth=_depth + 1,
                 )
                 for child in value.values()
             )
@@ -58,6 +87,7 @@ class SurrealDBSemanticDiscoveryStateMixin:
                     state_id=state_id,
                     revision=revision,
                     source_token=source_token,
+                    _depth=_depth + 1,
                 )
                 for child in value
             )
