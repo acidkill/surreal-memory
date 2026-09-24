@@ -20,6 +20,9 @@ import pytest_asyncio
 from surreal_memory.core.brain import Brain
 from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.core.synapse import Synapse, SynapseType
+from surreal_memory.storage.surrealdb.semantic_discovery_state import (
+    SemanticDiscoveryStateConflictError,
+)
 from surreal_memory.storage.surrealdb.semantic_source_revision import SemanticSourceChangedError
 from surreal_memory.storage.surrealdb.store import SurrealDBStorage
 
@@ -212,3 +215,27 @@ async def test_raw_versionstamp_is_an_inclusive_barrier_ordered_across_tables(st
 
     with pytest.raises(SemanticSourceChangedError):
         await store.assert_semantic_source_unchanged(token)
+
+
+@pytest.mark.asyncio
+async def test_snapshot_create_is_exactly_idempotent_on_real_surrealdb(store) -> None:
+    """A retry after an interrupted checkpoint must not overwrite a staged revision."""
+    state_id = uuid.uuid4().hex
+    payload = {
+        "brain_id": store._get_brain_id(),
+        "run_id": "integration-run",
+        "owner_token": "integration-owner",
+        "source_token": "integration-source",
+        "candidates": [["neuron-one", 0.9, 1]],
+    }
+    await store.save_semantic_discovery_state(state_id, 1, payload)
+    await store.save_semantic_discovery_state(state_id, 1, payload)
+    rows = await store._query(
+        "SELECT id FROM semantic_discovery_state WHERE state_id = $state_id",
+        state_id=state_id,
+    )
+    assert len(rows) == 1
+    with pytest.raises(SemanticDiscoveryStateConflictError):
+        await store.save_semantic_discovery_state(
+            state_id, 1, {**payload, "candidates": [["neuron-two", 0.9, 1]]}
+        )
