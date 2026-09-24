@@ -15,7 +15,7 @@ import random
 import re
 from collections.abc import Iterator, Sequence
 from dataclasses import replace as dc_replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from hashlib import sha256
 from typing import Any, Literal, TypeVar
 from uuid import uuid4
@@ -1837,8 +1837,8 @@ class SurrealDBStorage(
 
         if retention_days > 0:
             await self._query(
-                f"DELETE decay_pass WHERE brain_id = {lit} AND ran_at < time::ago($days, 'd')",
-                days=retention_days,
+                f"DELETE decay_pass WHERE brain_id = {lit} AND ran_at < $cutoff",
+                cutoff=utcnow() - timedelta(days=retention_days),
             )
         if max_records > 0:
             await self._query(
@@ -3878,15 +3878,16 @@ class SurrealDBStorage(
         a far smaller lie than a constant zero.
         """
         lit = _brain_literal(self._get_brain_id())
-        where = f"brain_id = {lit} AND synced = true AND changed_at < time::ago($days, 'd')"
+        where = f"brain_id = {lit} AND synced = true AND changed_at < $cutoff"
+        cutoff = utcnow() - timedelta(days=older_than_days)
         counted = await self._query(
             f"SELECT count() AS c FROM change_log WHERE {where} GROUP ALL",
-            days=older_than_days,
+            cutoff=cutoff,
         )
         doomed = int(counted[0].get("c", 0) or 0) if counted else 0
         if not doomed:
             return 0
-        await self._query(f"DELETE FROM change_log WHERE {where}", days=older_than_days)
+        await self._query(f"DELETE FROM change_log WHERE {where}", cutoff=cutoff)
         return doomed
 
     async def collapse_pending_updates(self, max_rows: int = _COLLAPSE_MAX_ROWS) -> int:

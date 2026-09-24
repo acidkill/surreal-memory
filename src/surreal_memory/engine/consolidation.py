@@ -1103,22 +1103,9 @@ class ConsolidationEngine:
                             exc_info=True,
                         )
                         failed_strategies.append(f"{strategy.value} ({type(exc).__name__})")
-                        if progress_session is not None:
-                            previous = progress_session.strategy_state(strategy.value)
-                            try:
-                                await progress_session.checkpoint(
-                                    strategy.value,
-                                    "failed",
-                                    cursor=previous.get("cursor"),
-                                    pending=previous.get("pending"),
-                                )
-                            except ConsolidationProgressError as progress_exc:
-                                lease_lost = True
-                                progress_messages.append(
-                                    "Consolidation stopped safely after a checkpoint "
-                                    f"could not be saved: {progress_exc}"
-                                )
-                                break
+                        # Keep the last committed work phase and cursor intact.
+                        # The run-level failure is recorded below; replacing the
+                        # strategy phase with "failed" would restart its scan.
                     finally:
                         logger.info(
                             "Consolidation: %s finished in %.1fs",
@@ -1158,20 +1145,6 @@ class ConsolidationEngine:
                 if paused:
                     report.extra["consolidation_status"] = "paused"
                 elif failed_strategies:
-                    failed_names = [
-                        item.split(" ", 1)[0]
-                        for item in failed_strategies
-                        if item.split(" ", 1)[0] in requested_names
-                    ]
-                    if failed_names:
-                        failed_name = failed_names[0]
-                        failed_state = progress_session.strategy_state(failed_name)
-                        await progress_session.checkpoint(
-                            failed_name,
-                            "failed",
-                            cursor=failed_state.get("cursor"),
-                            pending=failed_state.get("pending"),
-                        )
                     await progress_session.fail("; ".join(failed_strategies))
                     report.extra["consolidation_status"] = "failed"
                 elif set(requested_names).issubset(progress_session.completed_strategies):

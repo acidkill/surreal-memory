@@ -304,6 +304,45 @@ async def test_engine_resumes_after_strategy_timeout_and_reports_progress(
     ]
 
 
+@pytest.mark.asyncio
+async def test_engine_failure_retries_last_committed_phase_without_rescanning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = FakeProgressStorage()
+    engine = ConsolidationEngine(storage)
+    seen_phases: list[str | None] = []
+
+    async def run_strategy(
+        strategy: ConsolidationStrategy,
+        report: Any,
+        reference_time: datetime,
+        dry_run: bool,
+    ) -> None:
+        state = engine._progress_session.strategy_state(strategy.value)
+        seen_phases.append(state.get("phase"))
+        if len(seen_phases) == 1:
+            await engine._checkpoint_progress(
+                "retention_traces",
+                cursor="neuron:last",
+                counters={"synapse_pages": 124, "neuron_pages": 61},
+            )
+            raise RuntimeError("transient retention failure")
+
+    monkeypatch.setattr(engine, "_run_strategy", run_strategy)
+
+    first = await engine.run([ConsolidationStrategy.PRUNE])
+    assert first.extra["consolidation_status"] == "failed"
+    assert storage.progress is not None
+    assert storage.progress["status"] == "failed"
+    committed = storage.progress["strategy_states"]["prune"]
+    assert committed["phase"] == "retention_traces"
+    assert committed["cursor"] == "neuron:last"
+
+    second = await engine.run([ConsolidationStrategy.PRUNE])
+    assert second.extra["consolidation_status"] == "completed"
+    assert seen_phases == ["starting", "retention_traces"]
+
+
 def test_report_summary_renders_saved_checkpoint_details() -> None:
     report = ConsolidationReport()
     report.extra["dedup_resumed_checkpoint"] = "dedup_window_complete"
