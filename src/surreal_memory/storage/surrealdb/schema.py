@@ -10,6 +10,12 @@ logger = logging.getLogger(__name__)
 SCHEMA_VERSION = 12
 
 SOURCE_REVISION_DDL: tuple[str, ...] = (
+    # Old v10/v11 clients still connect to the same DB and would otherwise
+    # overwrite schema_meta:version with their lower TARGET_VERSION.
+    "DEFINE EVENT IF NOT EXISTS smem_schema_version_monotonic ON TABLE schema_meta "
+    'WHEN $event = "UPDATE" AND $after.id = schema_meta:version '
+    "AND $after.version < $before.version "
+    'THEN THROW "Surreal-Memory schema version cannot decrease"',
     "ALTER TABLE neuron CHANGEFEED 7d",
     "ALTER TABLE synapse CHANGEFEED 7d",
     "DEFINE INDEX idx_synapse_pair_in_out ON synapse FIELDS brain_id, in, out",
@@ -113,6 +119,12 @@ DEFINE INDEX idx_state_neuron  ON neuron_state FIELDS brain_id, neuron_id UNIQUE
 
 -- Schema migration metadata: version stamp + migration lock + migration state.
 DEFINE TABLE schema_meta SCHEMALESS;
+-- Reject old client migrations that try to lower a newer schema stamp. This
+-- database-side guard also protects against already-installed v10/v11 clients.
+DEFINE EVENT IF NOT EXISTS smem_schema_version_monotonic ON TABLE schema_meta
+    WHEN $event = "UPDATE" AND $after.id = schema_meta:version
+      AND $after.version < $before.version
+    THEN THROW "Surreal-Memory schema version cannot decrease";
 
 -- Fibers (memory clusters / signal pathways)
 DEFINE TABLE fiber SCHEMALESS;

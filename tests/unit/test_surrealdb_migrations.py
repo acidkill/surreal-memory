@@ -466,6 +466,17 @@ class TestApplyMigrations:
         assert any("UPSERT schema_meta:version SET version" in s for s in sqls)
 
     @pytest.mark.asyncio
+    async def test_newer_database_rejects_old_client_without_downgrading_stamp(self):
+        conn = ScriptedConn()
+        conn.route("SELECT version FROM schema_meta:version", [{"version": M.TARGET_VERSION + 1}])
+
+        with pytest.raises(M.MigrationError, match="newer than this client's"):
+            await M.apply_migrations(conn)
+
+        assert not any("UPSERT schema_meta:version" in sql for sql in conn.sqls())
+        assert not any("CREATE schema_meta:migration_lock" in sql for sql in conn.sqls())
+
+    @pytest.mark.asyncio
     async def test_already_migrated_is_noop(self, monkeypatch):
         conn = ScriptedConn()
         conn.route("SELECT version FROM schema_meta:version", [{"version": M.TARGET_VERSION}])

@@ -349,10 +349,19 @@ async def test_stale_v10_stamp_with_active_v11_progress_migrates_without_losing_
     await conn.query(
         "CREATE consolidation_progress:checkpoint CONTENT $progress", {"progress": progress}
     )
+    # Recreate a pre-v12 database state: old installations lack the guard.
+    await conn.query("REMOVE EVENT smem_schema_version_monotonic ON TABLE schema_meta")
     await conn.query("UPSERT schema_meta:version SET version = 10")
     assert await M._read_stamped_version(conn) == M.VERSION_10
 
     assert await M.apply_migrations(conn) == M.TARGET_VERSION
+    assert await M._read_stamped_version(conn) == M.TARGET_VERSION
+    # A still-installed v10 client attempts this write on every connect. The
+    # database guard must reject it even though that client has no code gate.
+    try:
+        await conn.query("UPSERT schema_meta:version SET version = 10")
+    except Exception:
+        pass
     assert await M._read_stamped_version(conn) == M.TARGET_VERSION
     rows = await conn.query(
         "SELECT brain_id, run_id, status, schema_version, cursor, strategy_states, counters "

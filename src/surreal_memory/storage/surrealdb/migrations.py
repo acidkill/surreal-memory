@@ -772,7 +772,12 @@ async def apply_migrations(conn: Any) -> int:
     (or observe the completed migration and return).
     """
     current = await detect_db_version(conn)
-    if current >= TARGET_VERSION:
+    if current > TARGET_VERSION:
+        raise MigrationError(
+            f"Database schema v{current} is newer than this client's v{TARGET_VERSION}; "
+            "upgrade Surreal-Memory before connecting"
+        )
+    if current == TARGET_VERSION:
         await _stamp_version(conn, TARGET_VERSION)
         return TARGET_VERSION
 
@@ -781,7 +786,12 @@ async def apply_migrations(conn: Any) -> int:
         # Another live holder kept the lock. If it finished, we are done;
         # otherwise surface the contention rather than migrate twice.
         current = await detect_db_version(conn)
-        if current >= TARGET_VERSION:
+        if current > TARGET_VERSION:
+            raise MigrationError(
+                f"Database schema v{current} is newer than this client's v{TARGET_VERSION}; "
+                "upgrade Surreal-Memory before connecting"
+            )
+        if current == TARGET_VERSION:
             return TARGET_VERSION
         raise MigrationLockError(
             "Could not acquire the synapse migration lock and the database is not yet migrated. "
@@ -792,7 +802,12 @@ async def apply_migrations(conn: Any) -> int:
         # Double-checked locking: another process may have finished between the
         # first detect and acquiring the lock.
         current = await detect_db_version(conn)
-        if current >= TARGET_VERSION:
+        if current > TARGET_VERSION:
+            raise MigrationError(
+                f"Database schema v{current} is newer than this client's v{TARGET_VERSION}; "
+                "upgrade Surreal-Memory before connecting"
+            )
+        if current == TARGET_VERSION:
             await _stamp_version(conn, TARGET_VERSION)
             return TARGET_VERSION
 

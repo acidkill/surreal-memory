@@ -123,6 +123,8 @@ smem_auto(action="process", text="consolidate")
     database, or finish the active run first. If an import already happened,
     stop before resuming and rebuild the affected checkpoint from a verified
     backup; a normal retry cannot prove the staged source snapshot is valid.
+    Upgrade all clients with the database: a pre-v12 client attempting to lower
+    the schema version is rejected rather than silently corrupting the stamp.
 
 !!! note "Realistic expectations"
     A brand new brain will have 0% consolidation — this is normal. After 1-2 weeks of active use with regular recalls, expect 20-40%. After a month, 50%+.
