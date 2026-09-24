@@ -102,6 +102,63 @@ class SurrealDBConsolidationStateMixin:
         )
         return dict(rows[0]) if rows else None
 
+    async def compare_and_swap_semantic_link_recovery(
+        self,
+        *,
+        brain_id: str,
+        expected_run_id: str,
+        expected_owner_token: str,
+        expected_options_fingerprint: str,
+        expected_status: str,
+        expected_phase: str,
+        expected_updated_at: Any,
+        expected_reference_time: Any,
+        lease_owner_token: str,
+        new_owner_token: str,
+        strategy_states: Mapping[str, Any],
+        counters: Mapping[str, Any],
+        updated_at: Any,
+    ) -> dict[str, Any] | None:
+        """Reset one unapplied legacy semantic checkpoint under lease and CAS fences.
+
+        The live lease is checked in the same atomic UPDATE as the progress
+        record's run, owner, fingerprint, status, phase, reference time, and
+        updated-at comparisons. A stale preflight can therefore never reset a
+        different checkpoint or proceed after its lease has expired or moved.
+        """
+        record_id = self._consolidation_record_id(brain_id)
+        rows = await self._query(
+            "UPDATE type::record('consolidation_progress', $record_id) "
+            "SET strategy_states = $strategy_states, counters = $counters, "
+            "phase = $new_phase, cursor = NONE, owner_token = $new_owner_token, "
+            "updated_at = $updated_at "
+            "WHERE brain_id = $brain_id AND run_id = $expected_run_id "
+            "AND owner_token = $expected_owner_token "
+            "AND options_fingerprint = $expected_options_fingerprint "
+            "AND status = $expected_status AND current_strategy = 'semantic_link' "
+            "AND phase = $expected_phase AND reference_time = $expected_reference_time "
+            "AND updated_at = $expected_updated_at "
+            "AND array::len((SELECT * FROM type::record('consolidation_lease', $record_id) "
+            "WHERE brain_id = $brain_id AND owner_token = $lease_owner_token "
+            "AND expires_at > time::now())) = 1 RETURN AFTER",
+            record_id=record_id,
+            brain_id=brain_id,
+            expected_run_id=expected_run_id,
+            expected_owner_token=expected_owner_token,
+            expected_options_fingerprint=expected_options_fingerprint,
+            expected_status=expected_status,
+            expected_phase=expected_phase,
+            expected_updated_at=expected_updated_at,
+            expected_reference_time=expected_reference_time,
+            lease_owner_token=lease_owner_token,
+            new_owner_token=new_owner_token,
+            strategy_states=dict(strategy_states),
+            counters=dict(counters),
+            new_phase="semantic_link_restart_pending",
+            updated_at=updated_at,
+        )
+        return dict(rows[0]) if rows else None
+
     async def acquire_consolidation_lease(
         self, brain_id: str, owner_token: str, *, lease_seconds: int = 120
     ) -> bool:
