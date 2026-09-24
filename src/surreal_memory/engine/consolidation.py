@@ -1448,10 +1448,16 @@ class ConsolidationEngine:
             neuron_ids = [neuron.id for neuron in neurons]
             pinned = await storage.get_pinned_neuron_ids()
             fiber_members = await storage.get_fiber_neuron_ids_for(neuron_ids)
+            connected = await storage.get_connected_neuron_ids_for(neuron_ids)
             states = await storage.get_neuron_states_batch(neuron_ids)
             eligible: list[str] = []
             for neuron in neurons:
-                if neuron.id in pinned or neuron.id in fiber_members or neuron.ephemeral:
+                if (
+                    neuron.id in pinned
+                    or neuron.id in fiber_members
+                    or neuron.id in connected
+                    or neuron.ephemeral
+                ):
                     continue
                 state = states.get(neuron.id)
                 access_frequency = state.access_frequency if state else 0

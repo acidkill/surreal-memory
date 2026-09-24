@@ -268,7 +268,7 @@ async def test_prune_dry_run_never_mutates_checkpoint_or_graph() -> None:
 
 
 @pytest.mark.asyncio
-async def test_prune_neuron_candidates_do_not_query_unused_connectivity() -> None:
+async def test_prune_neuron_candidates_check_connectivity() -> None:
     storage = _PruneStorage()
     storage.synapses = {}
     neuron = SimpleNamespace(
@@ -279,9 +279,7 @@ async def test_prune_neuron_candidates_do_not_query_unused_connectivity() -> Non
     storage.find_neurons_after_id = AsyncMock(side_effect=[[neuron], []])  # type: ignore[method-assign]
     storage.find_neurons_by_ids = AsyncMock(side_effect=[[neuron], []])  # type: ignore[method-assign]
     storage.delete_neurons_batch = AsyncMock(return_value=1)  # type: ignore[method-assign]
-    storage.get_connected_neuron_ids_for = AsyncMock(  # type: ignore[method-assign]
-        side_effect=AssertionError("connectivity must not be queried")
-    )
+    storage.get_connected_neuron_ids_for = AsyncMock(return_value=set())  # type: ignore[method-assign]
     engine = ConsolidationEngine(storage, ConsolidationConfig(prune_isolated_neurons=True))
     engine._active_strategy = ConsolidationStrategy.PRUNE
     engine._progress_session = _Progress()  # type: ignore[assignment]
@@ -290,7 +288,31 @@ async def test_prune_neuron_candidates_do_not_query_unused_connectivity() -> Non
     await engine._prune(report, REFERENCE_TIME, dry_run=False)
 
     assert report.neurons_pruned == 1
-    storage.get_connected_neuron_ids_for.assert_not_awaited()
+    assert storage.get_connected_neuron_ids_for.await_count >= 2
+
+
+@pytest.mark.asyncio
+async def test_prune_keeps_unreferenced_neuron_with_a_live_synapse() -> None:
+    storage = _PruneStorage()
+    neuron = SimpleNamespace(
+        id="old-connected-neuron",
+        created_at=REFERENCE_TIME - timedelta(days=30),
+        ephemeral=False,
+    )
+    storage.find_neurons_after_id = AsyncMock(side_effect=[[neuron], []])  # type: ignore[method-assign]
+    storage.delete_neurons_batch = AsyncMock()  # type: ignore[method-assign]
+    storage.get_connected_neuron_ids_for = AsyncMock(  # type: ignore[method-assign]
+        return_value={"old-connected-neuron"}
+    )
+    engine = ConsolidationEngine(storage, ConsolidationConfig(prune_isolated_neurons=True))
+    engine._active_strategy = ConsolidationStrategy.PRUNE
+    engine._progress_session = _Progress()  # type: ignore[assignment]
+
+    report = ConsolidationReport()
+    await engine._prune(report, REFERENCE_TIME, dry_run=False)
+
+    assert report.neurons_pruned == 0
+    storage.delete_neurons_batch.assert_not_awaited()
 
 
 class _PauseAtRetentionPhase(_Progress):
