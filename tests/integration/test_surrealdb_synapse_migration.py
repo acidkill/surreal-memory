@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import os
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 
@@ -312,6 +313,58 @@ async def test_v10_migration_recovers_partial_schemaless_progress_table() -> Non
     progress_info = await conn.query("INFO FOR TABLE consolidation_progress")
     assert "strategy_states" in str(progress_info)
     assert "FLEXIBLE" in str(progress_info).upper()
+
+
+@pytest.mark.asyncio
+async def test_stale_v10_stamp_with_active_v11_progress_migrates_without_losing_checkpoint() -> None:
+    """A partly stamped deployment must preserve the active run on retry."""
+    db = _fresh_db()
+    store = _store(db)
+    await store.initialize()
+    await store.close()
+    conn = await _raw_conn(db)
+    now = datetime.now(UTC)
+    progress = {
+        "brain_id": "brain-a",
+        "run_id": "run-a",
+        "schema_version": 11,
+        "engine_version": "3.11.0",
+        "format_version": 1,
+        "requested_strategies": ["prune"],
+        "completed_strategies": [],
+        "options_fingerprint": "fingerprint",
+        "reference_time": now,
+        "status": "running",
+        "current_strategy": "prune",
+        "phase": "scan",
+        "cursor": "neuron-001",
+        "strategy_states": {"prune": {"phase": "scan", "cursor": "neuron-001"}},
+        "counters": {"scanned": 1},
+        "owner_token": "owner-a",
+        "started_at": now,
+        "updated_at": now,
+    }
+    await conn.query(
+        "CREATE consolidation_progress:checkpoint CONTENT $progress", {"progress": progress}
+    )
+    await conn.query("UPSERT schema_meta:version SET version = 10")
+    assert await M._read_stamped_version(conn) == M.VERSION_10
+
+    assert await M.apply_migrations(conn) == M.TARGET_VERSION
+    assert await M._read_stamped_version(conn) == M.TARGET_VERSION
+    rows = await conn.query(
+        "SELECT brain_id, run_id, status, schema_version, cursor, strategy_states, counters "
+        "FROM consolidation_progress:checkpoint"
+    )
+    assert len(rows) == 1
+    assert rows[0]["brain_id"] == "brain-a"
+    assert rows[0]["run_id"] == "run-a"
+    assert rows[0]["status"] == "running"
+    assert rows[0]["schema_version"] == 11
+    assert rows[0]["cursor"] == "neuron-001"
+    assert rows[0]["strategy_states"]["prune"]["cursor"] == "neuron-001"
+    assert rows[0]["counters"]["scanned"] == 1
+    await conn.close()
 
 
 @pytest.mark.asyncio
