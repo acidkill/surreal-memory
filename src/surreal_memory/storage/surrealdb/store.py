@@ -2413,14 +2413,14 @@ class SurrealDBStorage(
         if not unique_ids:
             return set()
 
-        brain_id = self._get_brain_id()
-
+        # Deleting a neuron cascades *all* incident edges, including legacy
+        # edges with a missing or different brain_id. Protect it on the same
+        # endpoint-only basis to avoid hidden synapse loss during prune.
         async def _matching_endpoints(field: str, prefix: str) -> set[str]:
-            params: dict[str, Any] = {"brain_id": brain_id}
+            params: dict[str, Any] = {}
             record_ids = self._record_id_list("neuron", unique_ids, prefix, params)
             rows = await self._query_values(
-                f"SELECT VALUE {field} FROM synapse "
-                f"WHERE brain_id = $brain_id AND {field} IN {record_ids} GROUP BY {field}",
+                f"SELECT VALUE {field} FROM synapse WHERE {field} IN {record_ids} GROUP BY {field}",
                 **params,
             )
             return {_endpoint_to_id(row, None) for row in rows}

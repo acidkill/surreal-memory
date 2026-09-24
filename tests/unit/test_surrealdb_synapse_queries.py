@@ -378,6 +378,7 @@ class TestBatchedPruneQueries:
         assert st._query_values.await_count == 2
         sql = st._query_values.await_args_list[0].args[0]
         assert "in IN [type::record('neuron', $incoming_id_0)" in sql
+        assert "brain_id" not in sql  # match brain-agnostic delete_neuron cascade
         assert st._query_values.await_args_list[0].kwargs["incoming_id_1"] == "node_2"
 
     @pytest.mark.asyncio
