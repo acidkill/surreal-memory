@@ -6253,6 +6253,8 @@ class ConsolidationEngine:
                     checkpoint=checkpoint_discovery,
                     resume_state=resume_discovery,
                     budget_check=self._check_progress_budget,
+                    run_id=str(self._progress_session.state["run_id"]),
+                    owner_token=self._progress_session.owner_token,
                 )
             except ConsolidationProgressError:
                 raise
