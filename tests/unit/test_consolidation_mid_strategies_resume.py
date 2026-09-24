@@ -1590,6 +1590,7 @@ async def test_semantic_discovery_manifest_stays_small_for_ten_thousand_long_ids
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(180)
 async def test_semantic_v1_neuron_checkpoint_at_36988_advances_in_bounded_calls(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

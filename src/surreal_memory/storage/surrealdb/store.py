@@ -2396,9 +2396,7 @@ class SurrealDBStorage(
                     "WHERE brain_id = $brain_id AND "
                     f"in = type::record('neuron', $source_id_{index}) GROUP ALL)"
                 )
-            result = await self._query_response(
-                "RETURN [" + ", ".join(selections) + "]", **params
-            )
+            result = await self._query_response("RETURN [" + ", ".join(selections) + "]", **params)
             if not isinstance(result, list) or len(result) != len(batch):
                 raise RuntimeError("prune target-count query returned an incomplete source batch")
             for source_id, values in zip(batch, result, strict=True):

@@ -273,9 +273,7 @@ class TestBatchedPruneQueries:
     @pytest.mark.asyncio
     async def test_target_counts_split_indexed_subqueries_into_bounded_batches(self):
         st, _ = _store_with_mock_conn()
-        st._query_response = AsyncMock(
-            side_effect=[[[1]] * 128, [[2]]]
-        )  # type: ignore[method-assign]
+        st._query_response = AsyncMock(side_effect=[[[1]] * 128, [[2]]])  # type: ignore[method-assign]
         sources = [f"source-{index}" for index in range(129)]
 
         counts = await st.get_synapse_target_counts_for_sources(sources)
