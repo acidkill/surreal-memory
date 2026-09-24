@@ -735,7 +735,8 @@ async def _upgrade_consolidation_progress_v11_to_v12(conn: Any) -> None:
     """Advance compatible unfinished v11 checkpoints without changing progress."""
     rows = await _query(
         conn,
-        "SELECT * FROM consolidation_progress "
+        "SELECT id, schema_version, engine_version, format_version "
+        "FROM consolidation_progress "
         "WHERE status IN ['queued', 'running', 'paused', 'failed']",
     )
     compatible: list[dict[str, Any]] = []

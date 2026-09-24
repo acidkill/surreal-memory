@@ -498,7 +498,10 @@ class TestApplyMigrations:
         }
         conn = ScriptedConn()
         conn.route("SELECT version FROM schema_meta:version", [{"version": M.TARGET_VERSION}])
-        conn.route("SELECT * FROM consolidation_progress", [checkpoint])
+        conn.route(
+            "SELECT id, schema_version, engine_version, format_version FROM consolidation_progress",
+            [checkpoint],
+        )
 
         result = await M.apply_migrations(conn)
 
@@ -608,12 +611,15 @@ class TestConsolidationProgressV11:
             "counters": {"processed": 42, "created": 3},
         }
         conn = ScriptedConn().route(
-            "SELECT * FROM consolidation_progress",
+            "SELECT id, schema_version, engine_version, format_version FROM consolidation_progress",
             [checkpoint],
         )
 
         await M._upgrade_consolidation_progress_v11_to_v12(conn)
 
+        select_sql = next(sql for sql in conn.sqls() if "FROM consolidation_progress" in sql)
+        assert "SELECT id, schema_version, engine_version, format_version" in select_sql
+        assert "SELECT *" not in select_sql
         update_calls = [
             (sql, params) for sql, params in conn.calls if sql.lstrip().startswith("UPDATE ")
         ]
@@ -655,7 +661,7 @@ class TestConsolidationProgressV11:
         }
         checkpoint[field] = value
         conn = ScriptedConn().route(
-            "SELECT * FROM consolidation_progress",
+            "SELECT id, schema_version, engine_version, format_version FROM consolidation_progress",
             [checkpoint],
         )
 
