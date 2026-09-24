@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import bisect
 import json
 import sys
+import weakref
 from dataclasses import replace as dc_replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -711,6 +713,182 @@ async def test_semantic_link_resumes_after_synapse_keyset_page(
 
     assert sorted(storage.added_synapses) == expected_synapse_ids
     assert len(storage.added_synapses) == len(set(storage.added_synapses))
+
+
+@pytest.mark.asyncio
+async def test_semantic_link_bounds_candidate_memory_and_replays_large_neuron_pages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    neuron_count = 12_000
+    page_size = 100
+    candidate_cap = 8
+
+    class _SyntheticPagedStorage(_Storage):
+        def __init__(self) -> None:
+            super().__init__()
+            self.live_neurons = 0
+            self.max_live_neurons = 0
+            self.degree_map = {
+                f"{kind}-{index:05d}": 0
+                for kind in ("concept", "entity")
+                for index in range(neuron_count // 2)
+            }
+            self.ordered_ids = sorted(self.degree_map)
+
+        def _release_neuron(self) -> None:
+            self.live_neurons -= 1
+
+        async def find_neurons_after_id(
+            self,
+            cursor_id: str | None,
+            *,
+            limit: int,
+            ephemeral: bool | None = None,
+            include_embedding: bool = False,
+        ) -> list[Neuron]:
+            del ephemeral, include_embedding
+            start = bisect.bisect_right(self.ordered_ids, cursor_id) if cursor_id else 0
+            page_ids = self.ordered_ids[start : start + limit]
+            page = []
+            for neuron_id in page_ids:
+                neuron = Neuron.create(
+                    NeuronType.CONCEPT if neuron_id.startswith("concept-") else NeuronType.ENTITY,
+                    neuron_id,
+                    metadata={"_embedding": [1.0, 0.0, 0.0, 0.0]},
+                    neuron_id=neuron_id,
+                )
+                self.live_neurons += 1
+                weakref.finalize(neuron, self._release_neuron)
+                page.append(neuron)
+            self.max_live_neurons = max(self.max_live_neurons, self.live_neurons)
+            return page
+
+        async def get_synapse_degrees(self) -> dict[str, int]:
+            return self.degree_map
+
+    config = SimpleNamespace(
+        embedding_enabled=True,
+        embedding_provider="fixture",
+        embedding_model="fixture",
+        semantic_discovery_similarity_threshold=0.7,
+        semantic_discovery_max_pairs=50,
+        essence_generator="extractive",
+    )
+    monkeypatch.setattr(
+        "surreal_memory.engine.semantic_discovery._effective_embedding",
+        lambda _config: (True, "fixture", "fixture"),
+    )
+    monkeypatch.setattr(semantic_discovery_module, "_EMBEDDING_PAGE_SIZE", page_size)
+    monkeypatch.setattr(semantic_discovery_module, "MAX_NEURONS_TO_LINK", candidate_cap)
+
+    expected_storage = _SyntheticPagedStorage()
+    expected_storage.brain.config = config
+    expected_progress = _Progress("semantic_link")
+    await _engine(
+        expected_storage, ConsolidationStrategy.SEMANTIC_LINK, expected_progress
+    )._semantic_link(ConsolidationReport(), dry_run=False)
+    expected_synapses = sorted(expected_storage.added_synapses)
+
+    storage = _SyntheticPagedStorage()
+    storage.brain.config = config
+    progress = _Progress(
+        "semantic_link",
+        pause_phase="semantic_link_discovery_neurons",
+        pause_after_phase_calls=2,
+    )
+    with pytest.raises(ConsolidationPausedError, match="simulated interruption"):
+        await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+            ConsolidationReport(), dry_run=False
+        )
+
+    checkpoint = progress.strategy_state("semantic_link")
+    discovery_state = json.loads(checkpoint["pending"][0])
+    assert checkpoint["phase"] == "semantic_link_discovery_neurons"
+    assert discovery_state["stage"] == "neurons"
+    assert discovery_state["cursor"] == "concept-00099"
+    assert storage.added_synapses == []
+
+    await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+        ConsolidationReport(), dry_run=False
+    )
+
+    assert sorted(storage.added_synapses) == expected_synapses
+    assert len(storage.added_synapses) == len(set(storage.added_synapses))
+    assert progress.writes[-1]["phase"] == "semantic_link_complete"
+    discovery_writes = [
+        write
+        for write in progress.writes
+        if write["phase"].startswith("semantic_link_discovery_neurons")
+    ]
+    assert json.loads(discovery_writes[-1]["pending"][0])["eligible_neurons"] == neuron_count
+    assert storage.max_live_neurons <= candidate_cap + (2 * page_size)
+    expected_selected = {
+        *(f"concept-{index:05d}" for index in range(candidate_cap // 2)),
+        *(f"entity-{index:05d}" for index in range(candidate_cap // 2)),
+    }
+    assert all(
+        endpoint in expected_selected
+        for synapse_id in storage.added_synapses
+        for endpoint in (
+            storage.synapses[synapse_id].source_id,
+            storage.synapses[synapse_id].target_id,
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_semantic_link_no_degree_fallback_keeps_interleaved_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    neurons = [
+        Neuron.create(
+            neuron_type,
+            f"{neuron_type.value} candidate {index}",
+            metadata={"_embedding": [1.0, 0.0]},
+            neuron_id=f"{prefix}-{index}",
+        )
+        for neuron_type, prefix in (
+            (NeuronType.CONCEPT, "concept"),
+            (NeuronType.ENTITY, "entity"),
+        )
+        for index in range(4)
+    ]
+    config = SimpleNamespace(
+        embedding_enabled=True,
+        embedding_provider="fixture",
+        embedding_model="fixture",
+        semantic_discovery_similarity_threshold=0.7,
+        semantic_discovery_max_pairs=50,
+        essence_generator="extractive",
+    )
+    monkeypatch.setattr(
+        "surreal_memory.engine.semantic_discovery._effective_embedding",
+        lambda _config: (True, "fixture", "fixture"),
+    )
+    monkeypatch.setattr(semantic_discovery_module, "_EMBEDDING_PAGE_SIZE", 2)
+    monkeypatch.setattr(semantic_discovery_module, "MAX_NEURONS_TO_LINK", 4)
+
+    legacy = await discover_semantic_synapses(_Storage(neurons=neurons), config)
+    resumable_storage = _Storage(neurons=neurons)
+    checkpoints: list[dict[str, Any]] = []
+
+    async def checkpoint(_stage: str, _cursor: str | None, details: dict[str, Any]) -> None:
+        checkpoints.append(details)
+
+    resumable = await discover_semantic_synapses(resumable_storage, config, checkpoint=checkpoint)
+
+    assert sorted(synapse.id for synapse in resumable.synapses) == sorted(
+        synapse.id for synapse in legacy.synapses
+    )
+    assert resumable.eligible_total == 8
+    neuron_checkpoints = [item for item in checkpoints if item["stage"] == "neurons"]
+    assert neuron_checkpoints[-1]["eligible_neurons"] == 8
+    expected_candidates = {"concept-0", "concept-1", "entity-0", "entity-1"}
+    assert all(
+        endpoint in expected_candidates
+        for synapse in resumable.synapses
+        for endpoint in (synapse.source_id, synapse.target_id)
+    )
 
 
 def _semantic_similarity_fixture(

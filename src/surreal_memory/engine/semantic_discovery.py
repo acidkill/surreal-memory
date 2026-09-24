@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import heapq
 import json
 import logging
 import math
@@ -694,14 +695,20 @@ async def _discover_semantic_synapses_resumable(
     saved_cursor = saved.get("cursor")
     brain_id = getattr(storage, "current_brain_id", None)
     fingerprint = _SemanticFingerprintBuilder(brain_id, config)
-    per_type: dict[NeuronType, tuple[list[Neuron], list[list[float]]]] = {
-        NeuronType.CONCEPT: ([], []),
-        NeuronType.ENTITY: ([], []),
-    }
+    eligible: list[Neuron] = []
+    vectors: list[list[float]] = []
+    candidate_priorities: list[int] = []
+    candidate_heap: list[tuple[int, int, str]] = []
+    candidate_map: dict[str, tuple[int, Neuron, list[float]]] = {}
+    degree_by_id: dict[str, int] | None = None
+    degree_probe_complete = False
+    eligible_total = 0
+    type_ranks = {NeuronType.CONCEPT: 0, NeuronType.ENTITY: 0}
 
-    def record_neuron(neuron: Neuron) -> None:
+    async def record_neuron(neuron: Neuron) -> None:
+        nonlocal eligible_total, degree_by_id, degree_probe_complete, candidate_heap
         fingerprint.add_neuron(neuron)
-        if neuron.type not in per_type or not neuron.content.strip():
+        if neuron.type not in type_ranks or not neuron.content.strip():
             return
         # GRAPH_ONLY placeholders all share an artificial vector and must not
         # produce semantic edges.
@@ -710,9 +717,90 @@ async def _discover_semantic_synapses_resumable(
         embedding = neuron.metadata.get("_embedding")
         if not embedding:
             return
-        neurons, vectors = per_type[neuron.type]
-        neurons.append(neuron)
-        vectors.append([float(value) for value in embedding])
+
+        # This is the exact position the old per-type lists occupied after
+        # interleaving: CONCEPT at 2*r, ENTITY at 2*r+1. The key preserves
+        # stable cross-type fairness when candidate degrees tie.
+        type_rank = type_ranks[neuron.type]
+        priority = type_rank * 2 + (0 if neuron.type == NeuronType.CONCEPT else 1)
+        type_ranks[neuron.type] += 1
+        eligible_total += 1
+
+        if eligible_total <= MAX_NEURONS_TO_LINK:
+            eligible.append(neuron)
+            vectors.append(
+                embedding
+                if isinstance(embedding, list) and all(type(value) is float for value in embedding)
+                else [float(value) for value in embedding]
+            )
+            candidate_priorities.append(priority)
+            return
+
+        # Do not retain an unbounded neuron/vector population. Probe only once
+        # the existing safety cap is crossed, matching the legacy behavior on
+        # small graphs. Backends without degree support retain the original
+        # interleaved prefix; capable backends retain the least-connected cap.
+        if not degree_probe_complete:
+            degree_probe_complete = True
+            get_degrees = getattr(storage, "get_synapse_degrees", None)
+            if callable(get_degrees):
+                try:
+                    degree_by_id = await get_degrees()
+                except Exception:
+                    logger.debug(
+                        "get_synapse_degrees failed; falling back to scan-order selection",
+                        exc_info=True,
+                    )
+                    degree_by_id = None
+
+        if not candidate_heap:
+            candidate_map.update(
+                {
+                    candidate.id: (candidate_priority, candidate, vector)
+                    for candidate, vector, candidate_priority in zip(
+                        eligible, vectors, candidate_priorities, strict=True
+                    )
+                }
+            )
+            if degree_by_id:
+                candidate_heap = [
+                    (-degree_by_id.get(candidate.id, 0), -candidate_priority, candidate.id)
+                    for candidate, candidate_priority in zip(
+                        eligible, candidate_priorities, strict=True
+                    )
+                ]
+            else:
+                candidate_heap = [
+                    (0, -candidate_priority, candidate.id)
+                    for candidate, candidate_priority in zip(
+                        eligible, candidate_priorities, strict=True
+                    )
+                ]
+            heapq.heapify(candidate_heap)
+            # The map now owns the bounded candidates. Drop the parallel list
+            # containers so replacement does not leave an extra retained prefix.
+            eligible.clear()
+            vectors.clear()
+            candidate_priorities.clear()
+
+        entry = (
+            (-degree_by_id.get(neuron.id, 0), -priority, neuron.id)
+            if degree_by_id
+            else (0, -priority, neuron.id)
+        )
+        if entry <= candidate_heap[0]:
+            return
+        evicted = heapq.heapreplace(candidate_heap, entry)
+        candidate_map.pop(evicted[2])
+        candidate_map[neuron.id] = (
+            priority,
+            neuron,
+            (
+                embedding
+                if isinstance(embedding, list) and all(type(value) is float for value in embedding)
+                else [float(value) for value in embedding]
+            ),
+        )
 
     async def emit(
         stage: str,
@@ -747,7 +835,7 @@ async def _discover_semantic_synapses_resumable(
                 "neurons",
                 neuron_cursor,
                 prefix_digest=fingerprint.prefix_digest(),
-                eligible_neurons=sum(len(value[0]) for value in per_type.values()),
+                eligible_neurons=eligible_total,
             )
         page = await neuron_fetch(
             neuron_cursor,
@@ -768,7 +856,7 @@ async def _discover_semantic_synapses_resumable(
                 and neuron_id > replay_neuron_cursor
             ):
                 raise RuntimeError("semantic_link neuron cursor changed during resume")
-            record_neuron(neuron)
+            await record_neuron(neuron)
             neuron_cursor = neuron_id
             last_neuron_id = neuron_id
             if replay_neuron and neuron_id == replay_neuron_cursor:
@@ -788,7 +876,7 @@ async def _discover_semantic_synapses_resumable(
             "neurons",
             neuron_cursor,
             prefix_digest=fingerprint.prefix_digest(),
-            eligible_neurons=sum(len(value[0]) for value in per_type.values()),
+            eligible_neurons=eligible_total,
         )
         if len(page) < _EMBEDDING_PAGE_SIZE and not replayed_this_page:
             break
@@ -800,31 +888,36 @@ async def _discover_semantic_synapses_resumable(
     ):
         raise RuntimeError("semantic_link neuron source changed after its checkpoint")
 
-    eligible: list[Neuron] = []
-    vectors: list[list[float]] = []
-    concept_neurons, concept_vectors = per_type[NeuronType.CONCEPT]
-    entity_neurons, entity_vectors = per_type[NeuronType.ENTITY]
-    longest = max(len(concept_neurons), len(entity_neurons))
-    for index in range(longest):
-        if index < len(concept_neurons):
-            eligible.append(concept_neurons[index])
-            vectors.append(concept_vectors[index])
-        if index < len(entity_neurons):
-            eligible.append(entity_neurons[index])
-            vectors.append(entity_vectors[index])
-
-    eligible_total = len(eligible)
-    eligible_before_resample = eligible_total if eligible_total > MAX_NEURONS_TO_LINK else 0
-    if len(eligible) > MAX_NEURONS_TO_LINK:
-        if saved_stage not in {"synapses", "similarity"}:
-            await emit(
-                "selection",
-                last_neuron_id,
-                prefix_digest=neuron_digest,
-                neuron_digest=neuron_digest,
-                eligible_neurons=eligible_total,
+    # Restore the original per-type interleave when the complete set fits the
+    # cap. Above the cap, match _select_candidates: degree order with stable
+    # interleaved ties, or the first interleaved cap when degree lookup fails.
+    if candidate_map:
+        if degree_by_id:
+            selected = sorted(
+                candidate_map.values(),
+                key=lambda item: (degree_by_id.get(item[1].id, 0), item[0]),
             )
-        eligible, vectors = await _select_candidates(storage, eligible, vectors)
+        else:
+            selected = sorted(candidate_map.values(), key=lambda item: item[0])
+        eligible = [item[1] for item in selected]
+        vectors = [item[2] for item in selected]
+    elif eligible:
+        interleaved = sorted(
+            zip(candidate_priorities, eligible, vectors, strict=True),
+            key=lambda item: item[0],
+        )
+        eligible = [item[1] for item in interleaved]
+        vectors = [item[2] for item in interleaved]
+
+    eligible_before_resample = eligible_total if eligible_total > MAX_NEURONS_TO_LINK else 0
+    if eligible_before_resample and saved_stage not in {"synapses", "similarity"}:
+        await emit(
+            "selection",
+            last_neuron_id,
+            prefix_digest=neuron_digest,
+            neuron_digest=neuron_digest,
+            eligible_neurons=eligible_total,
+        )
 
     candidate_ids = {neuron.id for neuron in eligible}
     existing_pairs: set[frozenset[str]] = set()
