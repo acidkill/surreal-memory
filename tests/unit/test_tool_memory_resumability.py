@@ -180,3 +180,104 @@ async def test_strategy_checkpoints_each_marked_batch_and_drains_events(
         ("event-a", {"event-a"}),
         ("event-b", {"event-a", "event-b"}),
     ]
+
+
+@pytest.mark.asyncio
+async def test_strategy_resume_after_durable_batch_restores_cursor_and_counters(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    from types import SimpleNamespace
+
+    from surreal_memory.engine.consolidation import (
+        ConsolidationEngine,
+        ConsolidationReport,
+        ConsolidationStrategy,
+    )
+    from surreal_memory.engine.consolidation_progress import ConsolidationPausedError
+    from surreal_memory.unified_config import UnifiedConfig
+
+    store = _ReplayStore()
+    store.mark_calls = 1  # Avoid the separate simulated graph-write/marker crash.
+    tool_config = ToolMemoryConfig(
+        enabled=True,
+        min_frequency=1,
+        process_batch_size=1,
+        cooccurrence_window_s=60,
+    )
+    monkeypatch.setattr(
+        UnifiedConfig,
+        "load",
+        classmethod(lambda cls: SimpleNamespace(data_dir=tmp_path, tool_memory=tool_config)),
+    )
+
+    class _DurableProgress:
+        def __init__(self, state: dict[str, Any] | None = None) -> None:
+            self.state = dict(state or {})
+            self.checkpoints: list[tuple[str | None, dict[str, int | float]]] = []
+
+        def strategy_state(self, strategy: str) -> dict[str, Any]:
+            assert strategy == ConsolidationStrategy.PROCESS_TOOL_EVENTS.value
+            return dict(self.state)
+
+        async def checkpoint(
+            self,
+            strategy: str,
+            phase: str,
+            *,
+            cursor: str | None,
+            counters: dict[str, int | float],
+            pending: list[str] | None = None,
+        ) -> None:
+            assert strategy == ConsolidationStrategy.PROCESS_TOOL_EVENTS.value
+            assert phase == "batch_committed"
+            self.state = {
+                "phase": phase,
+                "cursor": cursor,
+                "counters": dict(counters),
+                "pending": list(pending or []),
+            }
+            self.checkpoints.append((cursor, dict(counters)))
+
+    first_progress = _DurableProgress()
+    first_engine = ConsolidationEngine(store)  # type: ignore[arg-type]
+    first_engine._progress_session = first_progress  # type: ignore[assignment]
+    first_engine._active_strategy = ConsolidationStrategy.PROCESS_TOOL_EVENTS
+    budget_checks = 0
+
+    async def pause_after_first_saved_batch() -> None:
+        nonlocal budget_checks
+        budget_checks += 1
+        if budget_checks == 2:
+            raise ConsolidationPausedError("simulated restart after durable event batch")
+
+    first_engine._check_progress_budget = pause_after_first_saved_batch  # type: ignore[method-assign]
+    with pytest.raises(ConsolidationPausedError, match="after durable event batch"):
+        await first_engine._process_tool_events(ConsolidationReport(), dry_run=False)
+
+    assert first_progress.state["cursor"] == "event-a"
+    assert first_progress.state["counters"] == {"events_processed": 1, "events_ingested": 0}
+    assert store.processed == {"event-a"}
+    saved_graph = (
+        set(store.neurons),
+        {synapse.id for synapse in store.synapses},
+    )
+
+    # Simulate a fresh process: restore the durable strategy state into a new
+    # progress session and engine while the DB's event markers remain authoritative.
+    restored_progress = _DurableProgress(first_progress.state)
+    resumed_engine = ConsolidationEngine(store)  # type: ignore[arg-type]
+    resumed_engine._progress_session = restored_progress  # type: ignore[assignment]
+    resumed_engine._active_strategy = ConsolidationStrategy.PROCESS_TOOL_EVENTS
+    report = ConsolidationReport()
+    await resumed_engine._process_tool_events(report, dry_run=False)
+
+    assert restored_progress.checkpoints == [
+        ("event-b", {"events_processed": 2, "events_ingested": 0})
+    ]
+    assert restored_progress.state["cursor"] == "event-b"
+    assert store.processed == {"event-a", "event-b"}
+    assert len(store.neurons) == len(set(store.neurons))
+    assert len(store.synapses) == len({synapse.id for synapse in store.synapses})
+    assert saved_graph[0] <= set(store.neurons)
+    assert saved_graph[1] <= {synapse.id for synapse in store.synapses}
+    assert report.extra["tool_events_processed"] == 1

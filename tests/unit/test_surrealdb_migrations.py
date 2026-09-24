@@ -581,6 +581,62 @@ class TestConsolidationProgressV11:
         )
         assert any("UPSERT schema_meta:version" in sql for sql in conn.sqls())
 
+    @pytest.mark.asyncio
+    async def test_v10_to_v11_retries_after_mid_ddl_failure_without_stamping_or_graph_writes(self):
+        class FailOnceAfterProgressDDL(ScriptedConn):
+            def __init__(self) -> None:
+                super().__init__()
+                self.applied_ddl: set[str] = set()
+                self.failed_once = False
+                # Sentinel rows stand in for pre-existing v10 graph data. This
+                # migration is schema-only; ScriptedConn has no row store to mutate.
+                self.graph_rows = {"neuron": 2, "fiber": 3, "synapse": 5}
+
+            async def query(self, sql: str, params: dict | None = None):
+                normalized = sql.strip()
+                is_ddl = normalized.startswith(("DEFINE ", "ALTER TABLE "))
+                if is_ddl and normalized in self.applied_ddl:
+                    self.calls.append((sql, dict(params or {})))
+                    raise AlreadyExistsError("already exists after partial migration")
+                if is_ddl:
+                    self.applied_ddl.add(normalized)
+                if (
+                    not self.failed_once
+                    and "DEFINE TABLE IF NOT EXISTS consolidation_lease" in normalized
+                ):
+                    self.failed_once = True
+                    self.calls.append((sql, dict(params or {})))
+                    raise RuntimeError("simulated v11 DDL interruption")
+                return await super().query(sql, params)
+
+        conn = FailOnceAfterProgressDDL()
+        conn.route("SELECT version FROM schema_meta:version", [{"version": M.VERSION_10}])
+        conn.route("CREATE schema_meta:migration_lock", [])
+        conn.route("DELETE schema_meta:migration_lock", [])
+        original_graph_rows = dict(conn.graph_rows)
+
+        with pytest.raises(RuntimeError, match="v11 DDL interruption"):
+            await M.apply_migrations(conn)
+
+        assert conn.failed_once
+        assert not any("UPSERT schema_meta:version" in sql for sql in conn.sqls())
+        assert conn.graph_rows == original_graph_rows
+
+        # A retry encounters already-created DDL from the failed attempt; the
+        # migration tolerates those definitions and only stamps v11 after all DDL.
+        result = await M.apply_migrations(conn)
+        assert result == M.TARGET_VERSION
+        stamps = [sql for sql in conn.sqls() if "UPSERT schema_meta:version" in sql]
+        assert len(stamps) == 1
+        assert conn.graph_rows == original_graph_rows
+        graph_row_dml = [
+            sql
+            for sql in conn.sqls()
+            if sql.lstrip().startswith(("CREATE ", "UPDATE ", "DELETE ", "RELATE ", "INSERT "))
+            and any(table in sql for table in ("neuron", "fiber", "synapse"))
+        ]
+        assert graph_row_dml == []
+
 
 class TestFailedMigrationNotSilentlyAccepted:
     """Regression tests for the U2 review CRITICAL findings: a migration that
