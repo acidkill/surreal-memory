@@ -51,7 +51,13 @@ def test_the_interface_is_non_trivial() -> None:
 def test_in_memory_storage_implements_every_method() -> None:
     # These optimized SurrealDB operations and process-durable checkpoints are
     # intentionally optional; an in-process adapter must not claim durability.
+    # Semantic source fences depend on a retained database changefeed, while
+    # staged semantic snapshots must survive process restarts.
     optional_capabilities = {
+        "assert_semantic_source_unchanged",
+        "capture_semantic_source_token",
+        "load_semantic_discovery_state",
+        "save_semantic_discovery_state",
         "acquire_consolidation_lease",
         "claim_consolidation_progress",
         "create_consolidation_progress",
