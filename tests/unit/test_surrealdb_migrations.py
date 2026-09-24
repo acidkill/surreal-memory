@@ -559,6 +559,10 @@ class TestConsolidationProgressV11:
         assert any("semantic_discovery_state SCHEMAFULL" in sql for sql in conn.sqls())
         assert any("consolidation_fiber_census SCHEMALESS" in sql for sql in conn.sqls())
         assert any("idx_census_run_page" in sql for sql in conn.sqls())
+        assert any("consolidation_group_plan SCHEMALESS" in sql for sql in conn.sqls())
+        assert any("idx_cgroup_plan_posting" in sql for sql in conn.sqls())
+        assert any("idx_cgroup_plan_event" in sql for sql in conn.sqls())
+        assert any("idx_cgroup_plan_group" in sql for sql in conn.sqls())
         assert any(
             "ALTER TABLE semantic_source_barrier CHANGEFEED 7d" in sql for sql in conn.sqls()
         )

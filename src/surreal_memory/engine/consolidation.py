@@ -13,7 +13,7 @@ import hashlib
 import json
 import logging
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from dataclasses import replace as dc_replace
 from datetime import datetime
@@ -26,6 +26,10 @@ from surreal_memory.core.fiber import Fiber
 from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.core.synapse import Synapse, SynapseType
 from surreal_memory.engine.clustering import UnionFind
+from surreal_memory.engine.consolidation_group_plan import (
+    MAX_GROUP_WORK_ITEMS,
+    SurrealDBConsolidationGroupPlan,
+)
 from surreal_memory.engine.consolidation_progress import (
     ConsolidationLeaseLostError,
     ConsolidationPausedError,
@@ -2544,9 +2548,17 @@ class ConsolidationEngine:
             report.fibers_created = fibers_created
             report.fibers_removed = fibers_removed
             plan = descriptor.get("plan")
-            if plan is not None:
-                plan["next_index"] += 1
-            await _checkpoint("merge_scan", plan, ())
+            if isinstance(plan, dict) and plan.get("kind") == "paged_group_plan":
+                plan["after_group"] = str(descriptor.get("group_root", ""))
+                await self._checkpoint_progress(
+                    "merge_plan_units",
+                    cursor=_encode_descriptor(plan),
+                    counters=_counter_values(),
+                )
+            else:
+                if plan is not None:
+                    plan["next_index"] += 1
+                await _checkpoint("merge_scan", plan, ())
             report.merge_details.append(
                 MergeDetail(
                     original_fiber_ids=tuple(source_ids),
@@ -2728,18 +2740,458 @@ class ConsolidationEngine:
         if not dry_run and phase in resumable_phases:
             descriptor = _decode_descriptor(progress_state.get("cursor"))
             if descriptor.get("plan") is not None:
-                unit_plan = _decode_plan(_encode_descriptor(descriptor["plan"]))
-                plan_members = unit_plan["groups"][unit_plan["next_index"]]
-                if [member[0] for member in plan_members] != descriptor["source_ids"]:
-                    raise RuntimeError(
-                        "merge pending unit does not match its frozen group manifest"
-                    )
+                if descriptor["plan"].get("kind") == "paged_group_plan":
+                    if (
+                        not isinstance(descriptor.get("group_root"), str)
+                        or not descriptor.get("plan", {}).get("plan_id")
+                        or descriptor["plan"].get("after_group", "") >= descriptor["group_root"]
+                    ):
+                        raise RuntimeError("merge pending unit has an invalid paged group cursor")
+                else:
+                    unit_plan = _decode_plan(_encode_descriptor(descriptor["plan"]))
+                    plan_members = unit_plan["groups"][unit_plan["next_index"]]
+                    if [member[0] for member in plan_members] != descriptor["source_ids"]:
+                        raise RuntimeError(
+                            "merge pending unit does not match its frozen group manifest"
+                        )
             pending_ids = [str(value) for value in (progress_state.get("pending") or [])]
             if not pending_ids and phase != "merge_deleting_sources":
                 pending_ids = list(descriptor["source_ids"])
             await _finish_unit(descriptor, phase, pending_ids)
             progress_state = self._strategy_progress_state()
             phase = str(progress_state.get("phase") or "")
+
+        # Persistent backends keep graph state in immutable indexed rows instead
+        # of rebuilding the O(N) candidate list, inverted index, DSU, and group
+        # manifest in process memory. Legacy adapters and dry-runs retain the
+        # compatibility implementation below.
+        run_id = str(getattr(self._progress_session, "state", {}).get("run_id", ""))
+        durable_group_mode = bool(
+            not dry_run
+            and self._progress_session is not None
+            and run_id
+            and callable(getattr(self._storage, "_query", None))
+            and callable(getattr(self._storage, "get_fibers_after_id", None))
+            and phase not in {"merge_scan", "merge_candidate_scan"}
+        )
+        if durable_group_mode:
+            digest = hashlib.sha256()
+            source_count = 0
+            created_before = getattr(self._progress_session, "reference_time", None)
+            async for page in self._iter_fiber_census_pages(created_before=created_before):
+                for fiber in page:
+                    digest.update(fiber.id.encode("utf-8"))
+                    digest.update(b"\0")
+                    digest.update(_fiber_fingerprint(fiber).encode("ascii"))
+                    digest.update(b"\n")
+                    source_count += 1
+            source_fingerprint = digest.hexdigest()
+            plan_fingerprint = hashlib.sha256(
+                json.dumps(
+                    {
+                        "algorithm": "merge-external-graph-v1",
+                        "source": source_fingerprint,
+                        "max_fiber_size": self._config.merge_max_fiber_size,
+                        "overlap_threshold": self._config.merge_overlap_threshold,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            brain_id = str(
+                getattr(self._progress_session, "brain_id", None)
+                or getattr(self._storage, "_get_brain_id", lambda: "")()
+            )
+            group_plan = SurrealDBConsolidationGroupPlan(
+                self._storage,
+                brain_id=brain_id,
+                run_id=run_id,
+                strategy="merge",
+                fingerprint=plan_fingerprint,
+            )
+            durable_cursor: dict[str, Any] = {}
+            if phase.startswith("merge_plan_") or phase == "merge_plan_units":
+                raw = progress_state.get("cursor")
+                try:
+                    decoded = json.loads(str(raw))
+                except (TypeError, ValueError) as exc:
+                    raise RuntimeError("merge paged-plan cursor is malformed") from exc
+                if (
+                    not isinstance(decoded, dict)
+                    or decoded.get("version") != 2
+                    or decoded.get("kind") != "paged_group_plan"
+                    or decoded.get("plan_id") != group_plan.plan_id
+                    or decoded.get("fingerprint") != plan_fingerprint
+                ):
+                    raise RuntimeError(
+                        "merge paged-plan cursor does not match this source snapshot"
+                    )
+                durable_cursor = decoded
+            if phase == "merge_plan_complete":
+                return
+
+            if phase in {"", "merge_plan_stage"}:
+                after_candidate = (
+                    str(durable_cursor.get("after_candidate", ""))
+                    if phase == "merge_plan_stage"
+                    else ""
+                )
+                async for page in self._iter_fiber_census_pages(created_before=created_before):
+                    staged_candidates: list[
+                        tuple[str, Mapping[str, Any], set[str] | frozenset[str]]
+                    ] = []
+                    for fiber in page:
+                        if fiber.id <= after_candidate:
+                            continue
+                        candidate = _MergeCandidate(
+                            id=fiber.id,
+                            signature=_fiber_fingerprint(fiber),
+                            neuron_ids=frozenset(fiber.neuron_ids),
+                            verbatim=bool(fiber.metadata.get("_verbatim", False)),
+                            has_pattern_marker=bool(
+                                fiber.metadata.get("_habit_pattern")
+                                or fiber.metadata.get("_reasoning_pattern")
+                            ),
+                            pinned=fiber.pinned,
+                            created_at=fiber.created_at,
+                        )
+                        payload = {
+                            "signature": candidate.signature,
+                            "neuron_ids": sorted(candidate.neuron_ids),
+                            "verbatim": candidate.verbatim,
+                            "has_pattern_marker": candidate.has_pattern_marker,
+                            "pinned": candidate.pinned,
+                            "created_at": (
+                                candidate.created_at.isoformat()
+                                if candidate.created_at is not None
+                                else None
+                            ),
+                        }
+                        staged_candidates.append(
+                            (
+                                candidate.id,
+                                payload,
+                                candidate.neuron_ids
+                                if len(candidate.neuron_ids) <= self._config.merge_max_fiber_size
+                                else set(),
+                            )
+                        )
+                    if not staged_candidates:
+                        continue
+                    await group_plan.put_candidates(staged_candidates)
+                    after_candidate = page[-1].id
+                    await self._checkpoint_progress(
+                        "merge_plan_stage",
+                        cursor=json.dumps(
+                            {
+                                "version": 2,
+                                "kind": "paged_group_plan",
+                                "plan_id": group_plan.plan_id,
+                                "fingerprint": plan_fingerprint,
+                                "after_candidate": after_candidate,
+                            },
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ),
+                        counters={"merge_plan_candidates": source_count},
+                    )
+                durable_cursor = {
+                    "version": 2,
+                    "kind": "paged_group_plan",
+                    "plan_id": group_plan.plan_id,
+                    "fingerprint": plan_fingerprint,
+                    "next_sequence": 0,
+                    "after_feature": "",
+                    "active_feature": None,
+                    "after_left": "",
+                    "after_right": "",
+                }
+                await self._checkpoint_progress(
+                    "merge_plan_pairs",
+                    cursor=json.dumps(durable_cursor, sort_keys=True, separators=(",", ":")),
+                    counters={"merge_plan_candidates": source_count},
+                )
+                phase = "merge_plan_pairs"
+
+            if phase in {"merge_plan_pairs", "merge_plan_stage"}:
+                next_sequence = int(durable_cursor.get("next_sequence", 0))
+                if next_sequence < 0:
+                    raise RuntimeError("merge paged-plan pair cursor is invalid")
+                after_feature = str(durable_cursor.get("after_feature", ""))
+                active_feature_value = durable_cursor.get("active_feature")
+                active_feature = (
+                    str(active_feature_value) if active_feature_value is not None else None
+                )
+                after_left = str(durable_cursor.get("after_left", ""))
+                after_right = str(durable_cursor.get("after_right", ""))
+                if active_feature is None and (after_left or after_right):
+                    raise RuntimeError("merge paged-plan pair cursor has an orphaned pair key")
+                sequence = next_sequence
+                features_since_checkpoint = 0
+                async for feature, candidate_ids in group_plan.iter_postings(
+                    posting_limit=100,
+                    after_feature=after_feature if active_feature is None else "",
+                    start_feature=active_feature,
+                ):
+                    if not candidate_ids:
+                        after_feature = feature
+                        active_feature = None
+                        after_left = after_right = ""
+                        features_since_checkpoint += 1
+                        if features_since_checkpoint >= 100:
+                            durable_cursor = {
+                                "version": 2,
+                                "kind": "paged_group_plan",
+                                "plan_id": group_plan.plan_id,
+                                "fingerprint": plan_fingerprint,
+                                "next_sequence": sequence,
+                                "after_feature": after_feature,
+                                "active_feature": None,
+                                "after_left": "",
+                                "after_right": "",
+                            }
+                            await self._checkpoint_progress(
+                                "merge_plan_pairs",
+                                cursor=json.dumps(
+                                    durable_cursor, sort_keys=True, separators=(",", ":")
+                                ),
+                                counters={"merge_pairs_examined": sequence},
+                            )
+                            features_since_checkpoint = 0
+                        continue
+                    candidates = {
+                        candidate_id: await group_plan.get_candidate(candidate_id)
+                        for candidate_id in candidate_ids
+                    }
+                    for left_index, left_id in enumerate(candidate_ids):
+                        first = candidates[left_id]
+                        first_neurons = set(first.get("neuron_ids") or [])
+                        first_created = first.get("created_at")
+                        for right_id in candidate_ids[left_index + 1 :]:
+                            if active_feature == feature and (left_id, right_id) <= (
+                                after_left,
+                                after_right,
+                            ):
+                                continue
+                            second = candidates[right_id]
+                            second_neurons = set(second.get("neuron_ids") or [])
+                            if (
+                                first.get("verbatim") == second.get("verbatim")
+                                and not first.get("has_pattern_marker")
+                                and not second.get("has_pattern_marker")
+                                and not first.get("pinned")
+                                and not second.get("pinned")
+                            ):
+                                union_size = len(first_neurons | second_neurons)
+                                if union_size:
+                                    jaccard = len(first_neurons & second_neurons) / union_size
+                                    second_created = second.get("created_at")
+                                    if first_created and second_created:
+                                        first_time = datetime.fromisoformat(str(first_created))
+                                        second_time = datetime.fromisoformat(str(second_created))
+                                        time_diff = abs((first_time - second_time).total_seconds())
+                                    else:
+                                        time_diff = float("inf")
+                                    threshold = (
+                                        self._config.merge_overlap_threshold * 0.6
+                                        if time_diff < 3600
+                                        else self._config.merge_overlap_threshold
+                                    )
+                                    if jaccard >= threshold:
+                                        await group_plan.union(left_id, right_id, sequence)
+                            sequence += 1
+                            if sequence % 1000 == 0:
+                                await asyncio.sleep(0)
+                                durable_cursor = {
+                                    "version": 2,
+                                    "kind": "paged_group_plan",
+                                    "plan_id": group_plan.plan_id,
+                                    "fingerprint": plan_fingerprint,
+                                    "next_sequence": sequence,
+                                    "after_feature": after_feature,
+                                    "active_feature": feature,
+                                    "after_left": left_id,
+                                    "after_right": right_id,
+                                }
+                                await self._checkpoint_progress(
+                                    "merge_plan_pairs",
+                                    cursor=json.dumps(
+                                        durable_cursor,
+                                        sort_keys=True,
+                                        separators=(",", ":"),
+                                    ),
+                                    counters={"merge_pairs_examined": sequence},
+                                )
+                                active_feature = feature
+                                after_left, after_right = left_id, right_id
+                    after_feature = feature
+                    active_feature = None
+                    after_left = after_right = ""
+                    features_since_checkpoint += 1
+                    if features_since_checkpoint >= 100:
+                        durable_cursor = {
+                            "version": 2,
+                            "kind": "paged_group_plan",
+                            "plan_id": group_plan.plan_id,
+                            "fingerprint": plan_fingerprint,
+                            "next_sequence": sequence,
+                            "after_feature": after_feature,
+                            "active_feature": None,
+                            "after_left": "",
+                            "after_right": "",
+                        }
+                        await self._checkpoint_progress(
+                            "merge_plan_pairs",
+                            cursor=json.dumps(
+                                durable_cursor, sort_keys=True, separators=(",", ":")
+                            ),
+                            counters={"merge_pairs_examined": sequence},
+                        )
+                        features_since_checkpoint = 0
+                durable_cursor = {
+                    "version": 2,
+                    "kind": "paged_group_plan",
+                    "plan_id": group_plan.plan_id,
+                    "fingerprint": plan_fingerprint,
+                    "next_sequence": sequence,
+                    "after_feature": after_feature,
+                    "active_feature": None,
+                    "after_left": "",
+                    "after_right": "",
+                }
+                await self._checkpoint_progress(
+                    "merge_plan_members",
+                    cursor=json.dumps(durable_cursor, sort_keys=True, separators=(",", ":")),
+                    counters={"merge_pairs_examined": sequence},
+                )
+                phase = "merge_plan_members"
+
+            if phase == "merge_plan_members":
+                next_candidate = str(durable_cursor.get("after_candidate", ""))
+                sequence = int(durable_cursor.get("next_sequence", 0))
+                processed = 0
+                membership_batch: list[tuple[str, str, str | None]] = []
+
+                async def flush_membership_batch() -> None:
+                    if membership_batch:
+                        await group_plan.add_members(membership_batch)
+                        membership_batch.clear()
+
+                async for candidate_id, _payload in group_plan.iter_candidates():
+                    if candidate_id <= next_candidate:
+                        continue
+                    root_id = await group_plan.find(candidate_id, sequence)
+                    membership_batch.append(
+                        (root_id, candidate_id, str(_payload.get("signature", "")))
+                    )
+                    processed += 1
+                    if len(membership_batch) >= 100:
+                        await flush_membership_batch()
+                    if processed % 500 == 0:
+                        await flush_membership_batch()
+                        await self._checkpoint_progress(
+                            "merge_plan_members",
+                            cursor=json.dumps(
+                                {
+                                    "version": 2,
+                                    "kind": "paged_group_plan",
+                                    "plan_id": group_plan.plan_id,
+                                    "fingerprint": plan_fingerprint,
+                                    "next_sequence": sequence,
+                                    "after_candidate": candidate_id,
+                                },
+                                sort_keys=True,
+                                separators=(",", ":"),
+                            ),
+                            counters={"merge_plan_members": processed},
+                        )
+                await flush_membership_batch()
+                durable_cursor = {
+                    "version": 2,
+                    "kind": "paged_group_plan",
+                    "plan_id": group_plan.plan_id,
+                    "fingerprint": plan_fingerprint,
+                    "next_sequence": sequence,
+                    "after_group": "",
+                }
+                await self._checkpoint_progress(
+                    "merge_plan_units",
+                    cursor=json.dumps(durable_cursor, sort_keys=True, separators=(",", ":")),
+                    counters={"merge_plan_members": source_count},
+                )
+                phase = "merge_plan_units"
+
+            if phase == "merge_plan_units":
+                after_group = str(durable_cursor.get("after_group", ""))
+                sequence = int(durable_cursor.get("next_sequence", 0))
+                skipped_singletons = 0
+                async for root_id in group_plan.iter_groups(after=after_group):
+                    memberships: list[tuple[str, str | None]] = []
+                    async for fiber_id, signature in group_plan.iter_member_signatures(root_id):
+                        memberships.append((fiber_id, signature))
+                        if len(memberships) > MAX_GROUP_WORK_ITEMS:
+                            raise RuntimeError(
+                                "merge component exceeds the bounded work-unit limit "
+                                f"of {MAX_GROUP_WORK_ITEMS}; no effects were started for "
+                                f"component {root_id!r}"
+                            )
+                        if len(memberships) % 100 == 0:
+                            await self._check_progress_budget()
+                    if len(memberships) < 2:
+                        after_group = root_id
+                        skipped_singletons += 1
+                        if skipped_singletons % 500 == 0:
+                            durable_cursor["after_group"] = after_group
+                            await self._checkpoint_progress(
+                                "merge_plan_units",
+                                cursor=json.dumps(
+                                    durable_cursor, sort_keys=True, separators=(",", ":")
+                                ),
+                                counters=_counter_values(),
+                            )
+                        continue
+                    member_fibers: list[Fiber] = []
+                    for fiber_id, signature in memberships:
+                        await self._check_progress_budget()
+                        current = await self._storage.get_fiber(fiber_id)
+                        if current is None or _fiber_fingerprint(current) != signature:
+                            raise RuntimeError(
+                                f"merge planned source {fiber_id!r} changed before its work unit"
+                            )
+                        member_fibers.append(current)
+                    descriptor = await _make_descriptor(member_fibers)
+                    descriptor["group_root"] = root_id
+                    descriptor["plan"] = {
+                        "version": 2,
+                        "kind": "paged_group_plan",
+                        "plan_id": group_plan.plan_id,
+                        "fingerprint": plan_fingerprint,
+                        "after_group": after_group,
+                        "next_sequence": sequence,
+                    }
+                    source_ids = list(descriptor["source_ids"])
+                    await _checkpoint("merge_pending", descriptor, source_ids)
+                    await _finish_unit(descriptor, "merge_pending", source_ids)
+                    progress_state = self._strategy_progress_state()
+                    phase = str(progress_state.get("phase") or "")
+                    raw_cursor = progress_state.get("cursor")
+                    try:
+                        updated = json.loads(str(raw_cursor))
+                    except (TypeError, ValueError) as exc:
+                        raise RuntimeError("merge paged-plan unit checkpoint is malformed") from exc
+                    if (
+                        not isinstance(updated, dict)
+                        or updated.get("kind") != "paged_group_plan"
+                        or updated.get("plan_id") != group_plan.plan_id
+                        or updated.get("after_group") != root_id
+                    ):
+                        raise RuntimeError("merge paged-plan work-unit cursor did not advance")
+                    durable_cursor = updated
+                    after_group = root_id
+                await self._checkpoint_progress(
+                    "merge_plan_complete", cursor=None, counters=_counter_values()
+                )
+                return
 
         plan: dict[str, Any] | None = None
         if not dry_run and phase == "merge_scan" and progress_state.get("cursor"):

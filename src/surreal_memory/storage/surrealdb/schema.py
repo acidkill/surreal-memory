@@ -40,6 +40,14 @@ SOURCE_REVISION_DDL: tuple[str, ...] = (
     # Immutable run-scoped source pages for resumable consolidation census.
     "DEFINE TABLE IF NOT EXISTS consolidation_fiber_census SCHEMALESS",
     "DEFINE INDEX idx_census_run_page ON consolidation_fiber_census FIELDS run_id, strategy, filter_fingerprint, page_index UNIQUE",
+    # Append-only external candidate graph for bounded consolidation grouping.
+    "DEFINE TABLE IF NOT EXISTS consolidation_group_plan SCHEMALESS",
+    "DEFINE INDEX idx_cgroup_plan_item ON consolidation_group_plan FIELDS plan_id, kind, item_key UNIQUE",
+    "DEFINE INDEX idx_cgroup_plan_candidate ON consolidation_group_plan FIELDS plan_id, kind, candidate_id",
+    "DEFINE INDEX idx_cgroup_plan_posting ON consolidation_group_plan FIELDS plan_id, kind, feature, candidate_id",
+    "DEFINE INDEX idx_cgroup_plan_event ON consolidation_group_plan FIELDS plan_id, kind, candidate_id, sequence",
+    "DEFINE INDEX idx_cgroup_plan_member ON consolidation_group_plan FIELDS plan_id, kind, root_id, candidate_id",
+    "DEFINE INDEX idx_cgroup_plan_group ON consolidation_group_plan FIELDS plan_id, kind, root_id",
 )
 
 SCHEMA_SQL = """

@@ -16,6 +16,7 @@ from surreal_memory.engine.consolidation import (
 )
 from surreal_memory.engine.consolidation_progress import ConsolidationPausedError
 from surreal_memory.engine.memory_stages import MaturationRecord, MemoryStage
+from tests.unit.test_consolidation_group_plan import _PlanStorage
 
 REFERENCE_TIME = datetime(2026, 9, 20, 12, 30)
 
@@ -26,7 +27,11 @@ class _SimulatedCrash(BaseException):
 
 class _Progress:
     def __init__(self, pause_phase: str | None = None, pause_occurrence: int = 1) -> None:
-        self.state: dict[str, Any] = {"strategy_states": {"merge": {}}}
+        self.state: dict[str, Any] = {
+            "run_id": "merge-resume-run",
+            "strategy_states": {"merge": {}},
+        }
+        self.brain_id = "merge-brain"
         self.pause_phase = pause_phase
         self.pause_occurrence = pause_occurrence
         self.phase_counts: dict[str, int] = {}
@@ -130,6 +135,22 @@ class _FiberStorage:
     async def save_maturation(self, record: MaturationRecord) -> None:
         self.maturations[record.fiber_id] = record
         self._crash_if("save_maturation")
+
+
+class _DurableFiberStorage(_FiberStorage):
+    async def get_fibers_after_id(
+        self,
+        cursor: str | None,
+        *,
+        limit: int = 500,
+        created_before: datetime | None = None,
+    ) -> list[Fiber]:
+        return [
+            fiber
+            for fiber in sorted(self.fibers.values(), key=lambda item: item.id)
+            if (cursor is None or fiber.id > cursor)
+            and (created_before is None or fiber.created_at <= created_before)
+        ][:limit]
 
 
 def _sources() -> list[Fiber]:
@@ -431,3 +452,167 @@ async def test_merge_resumes_next_planned_group_without_repeating_completed_one(
     assert report.fibers_merged == 1200
     assert report.fibers_created == 12
     assert report.fibers_removed == 1200
+
+
+@pytest.mark.asyncio
+async def test_merge_durable_group_plan_replays_pending_unit_after_restart() -> None:
+    storage = _DurableFiberStorage()
+    plan_store = _PlanStorage()
+    storage._query = plan_store._query  # type: ignore[attr-defined,method-assign]
+    progress = _Progress("merge_pending")
+    engine = _engine(storage, progress)
+
+    with pytest.raises(ConsolidationPausedError, match="simulated merge budget"):
+        await engine._merge(ConsolidationReport(), dry_run=False)
+    assert progress.strategy_state("merge")["phase"] == "merge_pending"
+
+    progress.pause_phase = None
+    await _resume_and_assert_complete(engine, storage)
+    assert any(row.get("kind") == "parent" for row in plan_store.records.values())
+    assert all(
+        len(row.get("payload", {})) <= 6
+        for row in plan_store.records.values()
+        if row.get("kind") == "candidate"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "pause_phase",
+    ["merge_plan_stage", "merge_plan_pairs", "merge_plan_members", "merge_plan_units"],
+)
+async def test_merge_durable_group_plan_resumes_after_each_plan_phase(pause_phase: str) -> None:
+    storage = _DurableFiberStorage(typed=False, matured=False)
+    plan_store = _PlanStorage()
+    storage._query = plan_store._query  # type: ignore[attr-defined,method-assign]
+    progress = _Progress(pause_phase)
+    engine = _engine(storage, progress)
+
+    with pytest.raises(ConsolidationPausedError):
+        await engine._merge(ConsolidationReport(), dry_run=False)
+    assert progress.strategy_state("merge")["phase"] == pause_phase
+
+    progress.pause_phase = None
+    report = ConsolidationReport()
+    await engine._merge(report, dry_run=False)
+    assert report.fibers_created == 1
+    assert report.fibers_removed == 2
+    assert len(storage.fibers) == 1
+
+
+@pytest.mark.asyncio
+async def test_merge_durable_plan_refuses_source_mutation_after_pending_checkpoint() -> None:
+    storage = _DurableFiberStorage(typed=False, matured=False)
+    plan_store = _PlanStorage()
+    storage._query = plan_store._query  # type: ignore[attr-defined,method-assign]
+    progress = _Progress("merge_pending")
+    engine = _engine(storage, progress)
+
+    with pytest.raises(ConsolidationPausedError):
+        await engine._merge(ConsolidationReport(), dry_run=False)
+    storage.fibers["src-0"] = replace(storage.fibers["src-0"], summary="changed")
+
+    with pytest.raises(RuntimeError, match="changed after its checkpoint"):
+        await engine._merge(ConsolidationReport(), dry_run=False)
+    assert {"src-0", "src-1"}.issubset(storage.fibers)
+    assert not any(fiber.metadata.get("merged_from") for fiber in storage.fibers.values())
+
+
+@pytest.mark.asyncio
+async def test_merge_durable_plan_streams_more_than_ten_thousand_singletons() -> None:
+    storage = _DurableFiberStorage(typed=False, matured=False)
+    storage.fibers = {
+        f"solo-{index:05d}": Fiber(
+            id=f"solo-{index:05d}",
+            neuron_ids=set(),
+            synapse_ids=set(),
+            anchor_neuron_id=f"anchor-{index:05d}",
+            created_at=REFERENCE_TIME,
+        )
+        for index in range(10_005)
+    }
+    plan_store = _PlanStorage()
+    storage._query = plan_store._query  # type: ignore[attr-defined,method-assign]
+    progress = _Progress()
+    engine = _engine(storage, progress)
+
+    report = ConsolidationReport()
+    await engine._merge(report, dry_run=False)
+
+    candidate_rows = [row for row in plan_store.records.values() if row.get("kind") == "candidate"]
+    assert len(candidate_rows) == 10_005
+    assert report.fibers_created == 0
+    assert max(plan_store.page_limits) <= 500
+    assert all(
+        "parents" not in str(write.get("cursor")) and "groups" not in str(write.get("cursor"))
+        for write in progress.writes
+    )
+
+
+@pytest.mark.asyncio
+async def test_merge_durable_plan_fails_closed_for_oversized_component() -> None:
+    storage = _DurableFiberStorage(typed=False, matured=False)
+    storage.fibers = {
+        f"chain-{index:04d}": Fiber(
+            id=f"chain-{index:04d}",
+            neuron_ids={f"node-{index:04d}", f"node-{index + 1:04d}"},
+            synapse_ids=set(),
+            anchor_neuron_id=f"node-{index:04d}",
+            pathway=[f"node-{index:04d}"],
+            created_at=REFERENCE_TIME,
+        )
+        for index in range(501)
+    }
+    plan_store = _PlanStorage()
+    storage._query = plan_store._query  # type: ignore[attr-defined,method-assign]
+    progress = _Progress()
+    engine = ConsolidationEngine(
+        storage,
+        ConsolidationConfig(merge_overlap_threshold=0.3),
+    )
+    engine._active_strategy = ConsolidationStrategy.MERGE
+    engine._progress_session = progress  # type: ignore[assignment]
+
+    with pytest.raises(RuntimeError, match="bounded work-unit limit of 500"):
+        await engine._merge(ConsolidationReport(), dry_run=False)
+
+    assert len(storage.fibers) == 501
+    assert not any(fiber.metadata.get("merged_from") for fiber in storage.fibers.values())
+
+
+@pytest.mark.asyncio
+async def test_merge_durable_pair_scan_resumes_inside_a_posting() -> None:
+    import json
+
+    storage = _DurableFiberStorage(typed=False, matured=False)
+    storage.fibers = {
+        f"pair-{index:03d}": Fiber(
+            id=f"pair-{index:03d}",
+            neuron_ids={"shared-a", "shared-b", "shared-c"},
+            synapse_ids=set(),
+            anchor_neuron_id="shared-a",
+            pathway=["shared-a"],
+            created_at=REFERENCE_TIME,
+        )
+        for index in range(60)
+    }
+    plan_store = _PlanStorage()
+    storage._query = plan_store._query  # type: ignore[attr-defined,method-assign]
+    progress = _Progress("merge_plan_pairs", pause_occurrence=2)
+    engine = _engine(storage, progress)
+
+    with pytest.raises(ConsolidationPausedError):
+        await engine._merge(ConsolidationReport(), dry_run=False)
+
+    saved = progress.strategy_state("merge")
+    pair_cursor = json.loads(saved["cursor"])
+    assert saved["phase"] == "merge_plan_pairs"
+    assert pair_cursor["next_sequence"] == 1_000
+    assert pair_cursor["active_feature"] == "shared-a"
+    assert pair_cursor["after_left"] and pair_cursor["after_right"]
+
+    report = ConsolidationReport()
+    await engine._merge(report, dry_run=False)
+    assert report.fibers_merged == 60
+    assert report.fibers_created == 1
+    assert len(storage.fibers) == 1
