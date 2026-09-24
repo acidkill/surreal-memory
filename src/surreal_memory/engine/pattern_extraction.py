@@ -11,6 +11,7 @@ experiences (specific events) generalize into concepts (abstract knowledge).
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -63,7 +64,7 @@ class ExtractionReport:
 
 def extract_patterns(
     fibers: list[Fiber],
-    maturations: dict[str, MaturationRecord],
+    maturations: Mapping[str, MaturationRecord] | None,
     min_rehearsal_count: int = 3,
     min_cluster_size: int = 3,
     tag_overlap_threshold: float = 0.5,
@@ -75,7 +76,9 @@ def extract_patterns(
 
     Args:
         fibers: All fibers to consider
-        maturations: Maturation records keyed by fiber_id
+        maturations: Maturation records keyed by fiber_id. ``None`` means
+            callers have already filtered the candidate stream by stage and
+            rehearsal count, avoiding a second per-fiber lookup map.
         min_rehearsal_count: Minimum rehearsals to be eligible
         min_cluster_size: Minimum fibers per cluster to extract pattern
         tag_overlap_threshold: Minimum Jaccard similarity for clustering
@@ -86,14 +89,17 @@ def extract_patterns(
     report = ExtractionReport()
 
     # Filter to eligible episodic fibers
-    eligible = [
-        f
-        for f in fibers
-        if f.id in maturations
-        and maturations[f.id].stage == MemoryStage.EPISODIC
-        and maturations[f.id].rehearsal_count >= min_rehearsal_count
-        and f.tags  # Must have tags for clustering
-    ]
+    if maturations is None:
+        eligible = [f for f in fibers if f.tags]
+    else:
+        eligible = [
+            f
+            for f in fibers
+            if f.id in maturations
+            and maturations[f.id].stage == MemoryStage.EPISODIC
+            and maturations[f.id].rehearsal_count >= min_rehearsal_count
+            and f.tags  # Must have tags for clustering
+        ]
     report.fibers_analyzed = len(eligible)
 
     if len(eligible) < min_cluster_size:

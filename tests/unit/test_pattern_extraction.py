@@ -113,6 +113,22 @@ class TestPatternExtraction:
         assert len(patterns) >= 1
         assert len(patterns[0].synapses) > 0
 
+    def test_prefiltered_candidates_need_no_maturation_map(self) -> None:
+        """The caller may pass the same eligible candidates without a join map."""
+        common_neurons = {"n1", "n2"}
+        fibers = [_make_fiber(f"f{i}", common_neurons, {"tag-a", "tag-b"}) for i in range(4)]
+        maturations = {fiber.id: _make_maturation(fiber.id) for fiber in fibers}
+
+        mapped_patterns, mapped_report = extract_patterns(
+            fibers, maturations, min_cluster_size=3, tag_overlap_threshold=0.3
+        )
+        filtered_patterns, filtered_report = extract_patterns(
+            fibers, None, min_cluster_size=3, tag_overlap_threshold=0.3
+        )
+
+        assert len(filtered_patterns) == len(mapped_patterns)
+        assert filtered_report.fibers_analyzed == mapped_report.fibers_analyzed == len(fibers)
+
     def test_disjoint_tags_no_cluster(self) -> None:
         """Fibers with disjoint tags should not cluster."""
         fibers = [

@@ -99,6 +99,7 @@ class _Storage:
         self.cleanup_calls = 0
         self.backfill_calls = 0
         self.maturation_page_calls = 0
+        self.find_maturations_calls = 0
         self.semantic_source_generation = 0
         self.semantic_discovery_states: dict[tuple[str, int], dict[str, Any]] = {}
 
@@ -115,7 +116,11 @@ class _Storage:
         return len(self.fibers)
 
     async def find_maturations(self) -> list[MaturationRecord]:
+        self.find_maturations_calls += 1
         return list(self.maturations.values())
+
+    async def get_fiber(self, fiber_id: str) -> Fiber | None:
+        return self.fibers.get(fiber_id)
 
     async def find_maturations_after_id(
         self, cursor_id: str | None, *, limit: int = 250
@@ -494,6 +499,56 @@ async def test_mature_rejects_pattern_snapshot_when_fiber_data_changes() -> None
 
     assert storage.added_neurons == []
     assert storage.added_synapses == []
+
+
+@pytest.mark.asyncio
+async def test_mature_rejects_pattern_snapshot_when_maturation_changes() -> None:
+    fibers, maturations = _pattern_fixtures()
+    storage = _Storage(fibers=fibers, maturations=maturations)
+    progress = _Progress("mature", pause_phase="mature_pattern_pending")
+
+    with pytest.raises(ConsolidationPausedError, match="simulated interruption"):
+        await _engine(storage, ConsolidationStrategy.MATURE, progress)._mature(
+            ConsolidationReport(), _REFERENCE_TIME, dry_run=False
+        )
+
+    first = maturations[0]
+    storage.maturations[first.fiber_id] = dc_replace(
+        first, rehearsal_count=first.rehearsal_count + 1
+    )
+
+    with pytest.raises(ConsolidationProgressError, match="source data changed"):
+        await _engine(storage, ConsolidationStrategy.MATURE, progress)._mature(
+            ConsolidationReport(), _REFERENCE_TIME, dry_run=False
+        )
+
+    assert storage.added_neurons == []
+    assert storage.added_synapses == []
+
+
+@pytest.mark.asyncio
+async def test_mature_pattern_source_uses_bounded_maturation_pages() -> None:
+    records = [
+        MaturationRecord(
+            fiber_id=f"fiber-{index:03d}",
+            brain_id="brain-1",
+            stage=MemoryStage.SHORT_TERM,
+            stage_entered_at=_REFERENCE_TIME,
+        )
+        for index in range(251)
+    ]
+    storage = _Storage(maturations=records)
+    progress = _Progress("mature")
+    progress.strategy_state("mature").update(phase="mature_pattern", cursor=None)
+
+    await _engine(storage, ConsolidationStrategy.MATURE, progress)._mature(
+        ConsolidationReport(), _REFERENCE_TIME, dry_run=False
+    )
+
+    # Fingerprinting and candidate collection each traverse two bounded pages;
+    # neither path falls back to the full-table collector.
+    assert storage.maturation_page_calls == 4
+    assert storage.find_maturations_calls == 0
 
 
 @pytest.mark.asyncio

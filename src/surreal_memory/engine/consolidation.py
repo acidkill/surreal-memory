@@ -5921,7 +5921,6 @@ class ConsolidationEngine:
             )
 
         async def pattern_source_fingerprint() -> str:
-            source_maturations = await self._storage.find_maturations()
             encoder = json.JSONEncoder(sort_keys=True, separators=(",", ":"), default=str)
             digest = hashlib.sha256()
             digest.update(b'{"fibers":[')
@@ -5943,23 +5942,68 @@ class ConsolidationEngine:
                         ).encode("utf-8")
                     )
             digest.update(b'],"maturations":[')
-            for index, record in enumerate(
-                sorted(source_maturations, key=lambda item: item.fiber_id)
-            ):
-                if index:
-                    digest.update(b",")
-                digest.update(
-                    encoder.encode(
-                        {
-                            "fiber_id": record.fiber_id,
-                            "brain_id": record.brain_id,
-                            "stage": record.stage.value,
-                            "stage_entered_at": record.stage_entered_at.isoformat(),
-                            "rehearsal_count": record.rehearsal_count,
-                            "reinforcement_timestamps": list(record.reinforcement_timestamps),
-                        }
-                    ).encode("utf-8")
-                )
+            first_maturation = True
+            maturity_page_method = (
+                getattr(self._storage, "find_maturations_after_id", None)
+                if callable(getattr(type(self._storage), "find_maturations_after_id", None))
+                else None
+            )
+            if callable(maturity_page_method):
+                maturity_cursor: str | None = None
+                while True:
+                    page = await maturity_page_method(maturity_cursor, limit=250)
+                    if not page:
+                        break
+                    previous_id = maturity_cursor
+                    for record_id, record in page:
+                        record_id = str(record_id)
+                        if not record_id.startswith("maturation:") or (
+                            previous_id is not None and record_id <= previous_id
+                        ):
+                            raise ConsolidationProgressError(
+                                "maturation source page is not ordered by record ID"
+                            )
+                        if not first_maturation:
+                            digest.update(b",")
+                        first_maturation = False
+                        digest.update(
+                            encoder.encode(
+                                {
+                                    "fiber_id": record.fiber_id,
+                                    "brain_id": record.brain_id,
+                                    "stage": record.stage.value,
+                                    "stage_entered_at": record.stage_entered_at.isoformat(),
+                                    "rehearsal_count": record.rehearsal_count,
+                                    "reinforcement_timestamps": list(
+                                        record.reinforcement_timestamps
+                                    ),
+                                }
+                            ).encode("utf-8")
+                        )
+                        previous_id = record_id
+                    if len(page) < 250:
+                        break
+                    maturity_cursor = previous_id
+            else:
+                # Compatibility for adapters without a durable keyset method.
+                # Persistent SurrealDB runs take the bounded page branch above.
+                records = await self._storage.find_maturations()
+                for record in sorted(records, key=lambda item: item.fiber_id):
+                    if not first_maturation:
+                        digest.update(b",")
+                    first_maturation = False
+                    digest.update(
+                        encoder.encode(
+                            {
+                                "fiber_id": record.fiber_id,
+                                "brain_id": record.brain_id,
+                                "stage": record.stage.value,
+                                "stage_entered_at": record.stage_entered_at.isoformat(),
+                                "rehearsal_count": record.rehearsal_count,
+                                "reinforcement_timestamps": list(record.reinforcement_timestamps),
+                            }
+                        ).encode("utf-8")
+                    )
             digest.update(b"]}")
             return digest.hexdigest()
 
@@ -6304,20 +6348,73 @@ class ConsolidationEngine:
             )
             return
 
-        maturations = await self._storage.find_maturations()
-        maturation_map = {m.fiber_id: m for m in maturations}
+        # Read maturation rows in stable keyset pages and point-read only eligible
+        # fibers.  Keeping all maturation rows here used to duplicate the complete
+        # table in both ``maturations`` and ``maturation_map`` before extracting a
+        # single pattern.
+        maturity_page_method = (
+            getattr(self._storage, "find_maturations_after_id", None)
+            if callable(getattr(type(self._storage), "find_maturations_after_id", None))
+            else None
+        )
+        if callable(maturity_page_method):
+            maturity_cursor = None
+
+            async def maturation_pages() -> AsyncIterator[list[tuple[str, Any]]]:
+                nonlocal maturity_cursor
+                while True:
+                    await self._check_progress_budget()
+                    page = await maturity_page_method(maturity_cursor, limit=250)
+                    if not page:
+                        return
+                    previous_id = maturity_cursor
+                    for record_id, _record in page:
+                        record_id = str(record_id)
+                        if not record_id.startswith("maturation:") or (
+                            previous_id is not None and record_id <= previous_id
+                        ):
+                            raise ConsolidationProgressError(
+                                "maturation pattern page is not ordered by record ID"
+                            )
+                        previous_id = record_id
+                    maturity_cursor = previous_id
+                    yield page
+                    if len(page) < 250:
+                        return
+
+            maturity_pages_iter = maturation_pages()
+        else:
+            # Compatibility for lightweight/non-SurrealDB adapters. The
+            # production storage implements the bounded keyset API above.
+            legacy_records = await self._storage.find_maturations()
+            legacy_records.sort(key=lambda item: item.fiber_id)
+
+            async def legacy_maturation_pages() -> AsyncIterator[list[tuple[str, Any]]]:
+                for offset in range(0, len(legacy_records), 250):
+                    yield [
+                        (f"maturation:{record.brain_id}_{record.fiber_id}", record)
+                        for record in legacy_records[offset : offset + 250]
+                    ]
+
+            maturity_pages_iter = legacy_maturation_pages()
+
         pattern_inputs: list[_PatternCandidate] = []
-        async for page in self._iter_fiber_census_pages(
-            created_before=getattr(self._progress_session, "reference_time", None)
-        ):
-            for fiber in page:
-                maturation = maturation_map.get(fiber.id)
-                if (
-                    maturation is not None
-                    and maturation.stage == MemoryStage.EPISODIC
-                    and maturation.rehearsal_count >= 3
-                    and fiber.tags
-                ):
+        created_before = getattr(self._progress_session, "reference_time", None)
+        get_fiber = getattr(self._storage, "get_fiber", None)
+        if not callable(get_fiber):
+            raise ConsolidationProgressError(
+                "maturation pattern extraction requires point fiber reads"
+            )
+        async for page in maturity_pages_iter:
+            for _record_id, maturation in page:
+                if maturation.stage == MemoryStage.EPISODIC and maturation.rehearsal_count >= 3:
+                    fiber = await get_fiber(maturation.fiber_id)
+                    if (
+                        fiber is None
+                        or (created_before is not None and fiber.created_at > created_before)
+                        or not fiber.tags
+                    ):
+                        continue
                     pattern_inputs.append(
                         _PatternCandidate(
                             id=fiber.id,
@@ -6328,7 +6425,7 @@ class ConsolidationEngine:
         pattern_inputs.sort(key=lambda item: item.id)
         patterns, extraction_report = extract_patterns(
             fibers=cast("list[Fiber]", pattern_inputs),
-            maturations=maturation_map,
+            maturations=None,
             min_cluster_size=self._config.summarize_min_cluster_size,
             tag_overlap_threshold=self._config.summarize_tag_overlap_threshold,
         )
