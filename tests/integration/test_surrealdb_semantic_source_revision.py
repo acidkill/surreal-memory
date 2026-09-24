@@ -13,6 +13,7 @@ import json
 import os
 import uuid
 from dataclasses import replace
+from datetime import timedelta
 from urllib.parse import urlparse
 
 import pytest
@@ -136,6 +137,62 @@ async def test_changefeed_fence_detects_synapse_create_update_and_delete(store) 
     assert await store.delete_synapse(synapse.id)
     with pytest.raises(SemanticSourceChangedError):
         await store.assert_semantic_source_unchanged(token)
+
+
+@pytest.mark.asyncio
+async def test_frozen_reference_ignores_late_inserts_in_scans_and_source_fence(store) -> None:
+    reference_time = store._parse_datetime(await store._query_response("RETURN time::now()"))
+    before = reference_time - timedelta(seconds=2)
+    source = replace(
+        Neuron.create(type=NeuronType.CONCEPT, content="frozen-source"), created_at=before
+    )
+    target = replace(
+        Neuron.create(type=NeuronType.ENTITY, content="frozen-target"), created_at=before
+    )
+    await store.add_neuron(source)
+    await store.add_neuron(target)
+    await asyncio.sleep(1.1)
+    reference_time = store._parse_datetime(await store._query_response("RETURN time::now()"))
+    token = await store.capture_semantic_source_token()
+
+    late = replace(
+        Neuron.create(type=NeuronType.CONCEPT, content="post-reference"),
+        created_at=reference_time + timedelta(seconds=5),
+    )
+    await store.add_neuron(late)
+    late_edge = replace(
+        Synapse.create(
+            source_id=source.id,
+            target_id=late.id,
+            type=SynapseType.RELATED_TO,
+        ),
+        created_at=reference_time + timedelta(seconds=5),
+    )
+    await store.add_synapse(late_edge)
+
+    neurons = await store.find_neurons_after_id(
+        None, limit=100, created_before=reference_time, ephemeral=None
+    )
+    synapses = await store.get_synapses_after_id(None, limit=100, created_before=reference_time)
+    degrees = await store.get_synapse_degrees(created_before=reference_time)
+    existing = await store.find_existing_synapse_pairs(
+        [(source.id, late.id)], created_before=reference_time
+    )
+    assert {neuron.id for neuron in neurons} == {source.id, target.id}
+    assert synapses == []
+    assert source.id not in degrees
+    assert existing == set()
+    await store.assert_semantic_source_unchanged(token, created_before=reference_time)
+
+    await store.update_neuron(replace(source, content="pre-reference-source-edited"))
+    with pytest.raises(SemanticSourceChangedError):
+        await store.assert_semantic_source_unchanged(token, created_before=reference_time)
+
+    await asyncio.sleep(1.1)
+    token = await store.capture_semantic_source_token()
+    assert await store.delete_neuron(target.id)
+    with pytest.raises(SemanticSourceChangedError):
+        await store.assert_semantic_source_unchanged(token, created_before=reference_time)
 
 
 async def test_barrier_discovery_pages_past_retained_events(store, monkeypatch) -> None:

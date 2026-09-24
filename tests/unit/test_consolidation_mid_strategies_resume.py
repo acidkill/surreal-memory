@@ -101,6 +101,7 @@ class _Storage:
         self.maturation_page_calls = 0
         self.find_maturations_calls = 0
         self.semantic_source_generation = 0
+        self.post_reference_source_generations: set[int] = set()
         self.semantic_discovery_states: dict[tuple[str, int], dict[str, Any]] = {}
 
     async def get_brain(self, _brain_id: str) -> Any:
@@ -170,8 +171,17 @@ class _Storage:
     async def capture_semantic_source_token(self) -> str:
         return str(self.semantic_source_generation)
 
-    async def assert_semantic_source_unchanged(self, token: str) -> None:
-        if token != str(self.semantic_source_generation):
+    async def assert_semantic_source_unchanged(
+        self, token: str, *, created_before: datetime | None = None
+    ) -> None:
+        if token == str(self.semantic_source_generation):
+            return
+        if created_before is not None and all(
+            generation in self.post_reference_source_generations
+            for generation in range(int(token) + 1, self.semantic_source_generation + 1)
+        ):
+            return
+        else:
             raise RuntimeError("semantic source mutation fence detected a write")
 
     async def save_semantic_discovery_state(
@@ -198,12 +208,16 @@ class _Storage:
         return json.loads(json.dumps(payload)) if payload is not None else None
 
     async def find_existing_synapse_pairs(
-        self, pairs: list[tuple[str, str]]
+        self,
+        pairs: list[tuple[str, str]],
+        *,
+        created_before: datetime | None = None,
     ) -> set[tuple[str, str]]:
         requested = {tuple(sorted(pair)) for pair in pairs}
         return {
             tuple(sorted((synapse.source_id, synapse.target_id)))
             for synapse in self.synapses.values()
+            if created_before is None or synapse.created_at <= created_before
             if tuple(sorted((synapse.source_id, synapse.target_id))) in requested
         }
 
@@ -228,8 +242,11 @@ class _Storage:
         limit: int,
         ephemeral: bool | None = None,
         include_embedding: bool = False,
+        created_before: datetime | None = None,
     ) -> list[Neuron]:
         found = sorted(self.neurons.values(), key=lambda neuron: neuron.id)
+        if created_before is not None:
+            found = [neuron for neuron in found if neuron.created_at <= created_before]
         if cursor_id is not None:
             found = [neuron for neuron in found if neuron.id > cursor_id]
         return found[:limit]
@@ -252,8 +269,11 @@ class _Storage:
         cursor_id: str | None,
         *,
         limit: int,
+        created_before: datetime | None = None,
     ) -> list[Synapse]:
         found = sorted(self.synapses.values(), key=lambda edge: edge.id)
+        if created_before is not None:
+            found = [edge for edge in found if edge.created_at <= created_before]
         if cursor_id is not None:
             found = [edge for edge in found if edge.id > cursor_id]
         return found[:limit]
@@ -863,6 +883,91 @@ async def test_semantic_link_resumes_after_first_durable_discovery_page(
             changed_storage, ConsolidationStrategy.SEMANTIC_LINK, changed_progress
         )._semantic_link(ConsolidationReport(), dry_run=False)
     assert changed_storage.added_synapses == []
+
+
+@pytest.mark.asyncio
+async def test_legacy_semantic_stage_rebuilds_only_for_proven_post_reference_creates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    neurons = [
+        dc_replace(
+            Neuron.create(
+                NeuronType.CONCEPT if index % 2 == 0 else NeuronType.ENTITY,
+                f"frozen semantic candidate {index}",
+                metadata={"_embedding": [1.0 - index * 0.01, index * 0.01]},
+                neuron_id=f"frozen-node-{index}",
+            ),
+            created_at=_REFERENCE_TIME - timedelta(days=1),
+        )
+        for index in range(4)
+    ]
+    config = SimpleNamespace(
+        embedding_enabled=True,
+        embedding_provider="fixture",
+        embedding_model="fixture",
+        semantic_discovery_similarity_threshold=0.7,
+        semantic_discovery_max_pairs=50,
+        essence_generator="extractive",
+    )
+    monkeypatch.setattr(
+        "surreal_memory.engine.semantic_discovery._effective_embedding",
+        lambda _config: (True, "fixture", "fixture"),
+    )
+    monkeypatch.setattr("surreal_memory.engine.semantic_discovery._EMBEDDING_PAGE_SIZE", 2)
+    monkeypatch.setattr("surreal_memory.engine.semantic_discovery._SYNAPSE_PAGE_SIZE", 2)
+
+    storage = _Storage(neurons=neurons)
+    storage.brain.config = config
+    progress = _Progress(
+        "semantic_link",
+        pause_phase="semantic_link_discovery_neurons",
+        pause_after_phase_calls=2,
+    )
+    progress.reference_time = _REFERENCE_TIME
+    prior_state = {"phase": "complete", "counters": {"kept": 19}}
+    progress.state["strategy_states"]["prior_strategy"] = prior_state.copy()
+
+    with pytest.raises(ConsolidationPausedError, match="simulated interruption"):
+        await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+            ConsolidationReport(), dry_run=False
+        )
+    checkpoint = progress.strategy_state("semantic_link")
+    manifest, staged = _staged_semantic_state(storage, checkpoint["pending"])
+    assert manifest["stage"] == "neurons"
+    # Simulate the production checkpoint written before snapshots recorded the
+    # frozen reference-time marker. Its source token and immutable run id remain.
+    staged.pop("reference_time")
+
+    late_neuron = dc_replace(
+        Neuron.create(
+            NeuronType.CONCEPT,
+            "created after the consolidation reference",
+            metadata={"_embedding": [0.0, 1.0]},
+            neuron_id="late-node",
+        ),
+        created_at=_REFERENCE_TIME + timedelta(seconds=1),
+    )
+    storage.neurons[late_neuron.id] = late_neuron
+    storage.semantic_source_generation += 1
+    storage.post_reference_source_generations.add(storage.semantic_source_generation)
+
+    report = ConsolidationReport()
+    await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+        report, dry_run=False
+    )
+
+    assert report.extra["semantic_link_stage_rebuilt_for_reference_time"] is True
+    assert progress.strategy_state("semantic_link")["phase"] == "semantic_link_complete"
+    assert progress.state["strategy_states"]["prior_strategy"] == prior_state
+    assert storage.added_synapses
+    assert all(
+        endpoint != late_neuron.id
+        for synapse_id in storage.added_synapses
+        for endpoint in (
+            storage.synapses[synapse_id].source_id,
+            storage.synapses[synapse_id].target_id,
+        )
+    )
 
 
 @pytest.mark.asyncio

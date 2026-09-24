@@ -10372,32 +10372,41 @@ class ConsolidationEngine:
                 )
                 for synapse in excluded_synapses
             }
+            reference_time = getattr(self._progress_session, "reference_time", None)
             eligible: list[dict[str, Any]] = []
-            for neuron_type in (NeuronType.CONCEPT, NeuronType.ENTITY):
-                offset = 0
-                while True:
-                    batch = await self._storage.find_neurons(
-                        type=neuron_type, limit=1000, offset=offset
-                    )
-                    if not batch:
-                        break
-                    eligible.extend(
-                        {
-                            "id": neuron.id,
-                            "type": neuron.type.value,
-                            "content": neuron.content,
-                            "embedding": neuron.metadata.get("_embedding"),
-                        }
-                        for neuron in batch
-                    )
-                    offset += len(batch)
-                    if len(batch) < 1000:
-                        break
+            cursor: str | None = None
+            while True:
+                options: dict[str, Any] = {
+                    "limit": 1000,
+                    "ephemeral": None,
+                    "include_embedding": True,
+                }
+                if reference_time is not None:
+                    options["created_before"] = reference_time
+                batch = await self._storage.find_neurons_after_id(cursor, **options)
+                if not batch:
+                    break
+                eligible.extend(
+                    {
+                        "id": neuron.id,
+                        "type": neuron.type.value,
+                        "content": neuron.content,
+                        "embedding": neuron.metadata.get("_embedding"),
+                    }
+                    for neuron in batch
+                    if neuron.type in {NeuronType.CONCEPT, NeuronType.ENTITY}
+                )
+                cursor = batch[-1].id
+                if len(batch) < 1000:
+                    break
 
             edges: list[dict[str, Any]] = []
-            offset = 0
+            cursor = None
             while True:
-                edge_batch = await self._storage.get_synapses(limit=1000, offset=offset)
+                options = {"limit": 1000}
+                if reference_time is not None:
+                    options["created_before"] = reference_time
+                edge_batch = await self._storage.get_synapses_after_id(cursor, **options)
                 if not edge_batch:
                     break
                 edges.extend(
@@ -10416,7 +10425,7 @@ class ConsolidationEngine:
                     )
                     not in excluded_edges
                 )
-                offset += len(edge_batch)
+                cursor = edge_batch[-1].id
                 if len(edge_batch) < 1000:
                     break
 
@@ -10430,6 +10439,7 @@ class ConsolidationEngine:
             return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
         state = self._strategy_progress_state()
+        reference_time = getattr(self._progress_session, "reference_time", None)
         if dry_run:
             result = await discover_semantic_synapses(self._storage, brain.config)
             report.semantic_synapses_skipped += result.skipped_existing
@@ -10504,6 +10514,36 @@ class ConsolidationEngine:
                     if not isinstance(raw_synapses, list):
                         raise ValueError("synapses is not a list")
                     synapses = [decode_synapse(item) for item in raw_synapses]
+                    manifest_reference_time = manifest.get("reference_time")
+                    expected_reference_time = (
+                        reference_time.isoformat(timespec="microseconds")
+                        if reference_time is not None
+                        else None
+                    )
+                    if manifest_reference_time not in (None, expected_reference_time):
+                        raise ConsolidationProgressError(
+                            "semantic-link pending snapshot reference_time changed"
+                        )
+                    source_token = manifest.get("source_token")
+                    if source_token is not None:
+                        verify_source = getattr(
+                            self._storage, "assert_semantic_source_unchanged", None
+                        )
+                        if not callable(verify_source):
+                            raise ConsolidationProgressError(
+                                "semantic-link source mutation fence is unavailable"
+                            )
+                        try:
+                            if reference_time is None:
+                                await verify_source(source_token)
+                            else:
+                                await verify_source(
+                                    source_token, created_before=reference_time
+                                )
+                        except RuntimeError as exc:
+                            raise ConsolidationProgressError(
+                                f"semantic-link source fence failed: {exc}"
+                            ) from exc
                     fingerprint_value = manifest.get("source_fingerprint")
                     if fingerprint_value is not None:
                         current_fingerprint = await source_fingerprint(synapses)
@@ -10524,6 +10564,17 @@ class ConsolidationEngine:
             except (KeyError, TypeError, ValueError) as exc:
                 raise ConsolidationProgressError("invalid semantic-link pending snapshot") from exc
 
+        raw_strategy_counters = state.get("counters")
+        semantic_written = (
+            raw_strategy_counters.get("semantic_synapses_created")
+            if isinstance(raw_strategy_counters, dict)
+            else None
+        )
+        discovery_only_checkpoint = (
+            resume_discovery is not None
+            and str(state.get("phase") or "").startswith("semantic_link_discovery_")
+            and semantic_written in (None, 0)
+        )
         if manifest is None:
 
             async def checkpoint_discovery(
@@ -10558,6 +10609,8 @@ class ConsolidationEngine:
                     budget_check=self._check_progress_budget,
                     run_id=str(self._progress_session.state["run_id"]),
                     owner_token=self._progress_session.owner_token,
+                    reference_time=reference_time,
+                    allow_reference_time_rebuild=discovery_only_checkpoint,
                 )
             except ConsolidationProgressError:
                 raise
@@ -10572,6 +10625,7 @@ class ConsolidationEngine:
                 "eligible_total": result.eligible_total,
                 "neurons_embedded": result.neurons_embedded,
                 "truncated": result.truncated,
+                "reference_time_rebuilt": result.reference_time_rebuilt,
             }
             result_fingerprint = result.source_fingerprint
             if result_fingerprint is None and synapses:
@@ -10580,6 +10634,12 @@ class ConsolidationEngine:
                 "kind": "semantic_link_synapses",
                 "version": 2,
                 "source_fingerprint": result_fingerprint,
+                "source_token": result.source_token if reference_time is not None else None,
+                "reference_time": (
+                    reference_time.isoformat(timespec="microseconds")
+                    if reference_time is not None
+                    else None
+                ),
                 "metrics": metrics,
                 "synapses": [encode_synapse(synapse) for synapse in synapses],
             }
@@ -10600,6 +10660,8 @@ class ConsolidationEngine:
             # The final manifest starts a separate, deterministic apply cursor.
             cursor = None
 
+        if metrics.get("reference_time_rebuilt"):
+            report.extra["semantic_link_stage_rebuilt_for_reference_time"] = True
         report.semantic_synapses_skipped += int(metrics.get("skipped_existing", 0))
         if metrics.get("skipped_created_this_run"):
             report.extra["semantic_pairs_seen_twice"] = int(

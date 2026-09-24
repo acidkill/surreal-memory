@@ -9,6 +9,7 @@ shapes for deletes and cannot miss a relevant write.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
@@ -18,6 +19,8 @@ _TOKEN_MAX_AGE = timedelta(days=6, hours=15, minutes=36)
 _TOKEN_VERSION = 1
 _BARRIER_CHANGEFEED_PAGE_SIZE = 128
 _BARRIER_CHANGEFEED_MAX_ROWS = 100_000
+_SOURCE_CHANGEFEED_PAGE_SIZE = 128
+_SOURCE_CHANGEFEED_MAX_ROWS = 100_000
 _SOURCE_TABLES = ("neuron", "synapse")
 
 
@@ -244,8 +247,16 @@ class SurrealDBSemanticSourceRevisionMixin:
                 "semantic source token is malformed or belongs to another brain"
             ) from exc
 
-    async def assert_semantic_source_unchanged(self, since_token: str) -> None:
-        """Raise if either source table changed or changefeed history is uncertain."""
+    async def assert_semantic_source_unchanged(
+        self, since_token: str, *, created_before: datetime | None = None
+    ) -> None:
+        """Raise for source changes except provably post-reference-time records.
+
+        Without a frozen cutoff, retain the legacy conservative check. With a
+        cutoff, full-record changefeed events whose immutable ``created_at`` is
+        after the cutoff are irrelevant to this run. Pre-cutoff updates and all
+        unclassifiable deletes still invalidate the token.
+        """
         brain_id = self._get_brain_id()
         versionstamp, captured_at = self._decode_token(since_token, brain_id)
         server_now = await self._server_now()
@@ -258,6 +269,12 @@ class SurrealDBSemanticSourceRevisionMixin:
             raise SemanticSourceFenceExpiredError(
                 "semantic source token is older than the safe changefeed window"
             )
+
+        if created_before is not None:
+            await self._assert_source_unchanged_before(
+                brain_id, versionstamp, self._parse_datetime(created_before)
+            )
+            return
 
         for table in _SOURCE_TABLES:
             try:
@@ -277,3 +294,121 @@ class SurrealDBSemanticSourceRevisionMixin:
                 raise SemanticSourceChangedError(
                     f"{table} changed since the semantic source token was captured"
                 )
+
+    async def _assert_source_unchanged_before(
+        self, brain_id: str, versionstamp: int, created_before: datetime
+    ) -> None:
+        """Page source feeds, ignoring only records provably outside the run."""
+        for table in _SOURCE_TABLES:
+            cursor = versionstamp
+            scanned = 0
+            post_reference_ids: set[str] = set()
+            while scanned < _SOURCE_CHANGEFEED_MAX_ROWS:
+                limit = min(
+                    _SOURCE_CHANGEFEED_PAGE_SIZE,
+                    _SOURCE_CHANGEFEED_MAX_ROWS - scanned,
+                )
+                try:
+                    events = await self._query(
+                        f"SHOW CHANGES FOR TABLE {table} SINCE {cursor} LIMIT {limit}"
+                    )
+                except Exception as exc:
+                    message = str(exc).lower()
+                    if any(word in message for word in ("expired", "retention", "changefeed")):
+                        raise SemanticSourceFenceExpiredError(
+                            f"{table} changefeed history is unavailable"
+                        ) from exc
+                    raise SemanticSourceFenceUnavailableError(
+                        f"could not inspect {table} changefeed"
+                    ) from exc
+
+                if not events:
+                    break
+
+                page_start = cursor
+                skipped_inclusive_boundary = False
+                advanced = False
+                for event in events:
+                    raw_stamp = event.get("versionstamp")
+                    if (
+                        not isinstance(raw_stamp, int)
+                        or isinstance(raw_stamp, bool)
+                        or raw_stamp < 0
+                        or raw_stamp < cursor
+                    ):
+                        raise SemanticSourceFenceUnavailableError(
+                            f"{table} changefeed returned an invalid versionstamp"
+                        )
+                    if raw_stamp == page_start and not skipped_inclusive_boundary:
+                        skipped_inclusive_boundary = True
+                        continue
+
+                    changes = event.get("changes")
+                    if not isinstance(changes, (list, tuple)) or not changes:
+                        raise SemanticSourceFenceUnavailableError(
+                            f"{table} changefeed returned an invalid event"
+                        )
+                    for change in changes:
+                        if not isinstance(change, Mapping) or len(change) != 1:
+                            raise SemanticSourceFenceUnavailableError(
+                                f"{table} changefeed returned an unclassifiable change"
+                            )
+                        action, record = next(iter(change.items()))
+                        if not isinstance(record, Mapping):
+                            raise SemanticSourceFenceUnavailableError(
+                                f"{table} changefeed returned an invalid record"
+                            )
+                        record_id = record.get("id")
+                        record_id_text = str(record_id) if record_id is not None else ""
+                        if not record_id_text.startswith(f"{table}:"):
+                            raise SemanticSourceFenceUnavailableError(
+                                f"{table} changefeed returned an invalid record id"
+                            )
+                        if action == "delete":
+                            if record_id_text in post_reference_ids:
+                                post_reference_ids.remove(record_id_text)
+                                continue
+                            raise SemanticSourceChangedError(
+                                f"{table} changed since the semantic source token was captured"
+                            )
+                        if action not in {"create", "update"}:
+                            raise SemanticSourceFenceUnavailableError(
+                                f"{table} changefeed returned an unknown change type"
+                            )
+                        if record.get("brain_id") != brain_id:
+                            raise SemanticSourceChangedError(
+                                f"{table} changed since the semantic source token was captured"
+                            )
+                        created_at = record.get("created_at")
+                        if created_at is None:
+                            raise SemanticSourceChangedError(
+                                f"{table} changed since the semantic source token was captured"
+                            )
+                        try:
+                            created_at = self._parse_datetime(created_at)
+                        except (TypeError, ValueError) as exc:
+                            raise SemanticSourceFenceUnavailableError(
+                                f"{table} changefeed returned an invalid created_at"
+                            ) from exc
+                        if created_at <= created_before:
+                            raise SemanticSourceChangedError(
+                                f"{table} changed since the semantic source token was captured"
+                            )
+                        post_reference_ids.add(record_id_text)
+
+                    cursor = raw_stamp
+                    scanned += 1
+                    advanced = True
+                    if scanned >= _SOURCE_CHANGEFEED_MAX_ROWS:
+                        break
+
+                if scanned >= _SOURCE_CHANGEFEED_MAX_ROWS:
+                    raise SemanticSourceFenceUnavailableError(
+                        f"{table} changefeed exceeded the bounded scan limit"
+                    )
+                if len(events) < limit:
+                    break
+                if not advanced:
+                    raise SemanticSourceFenceUnavailableError(
+                        f"{table} changefeed pagination did not advance"
+                    )

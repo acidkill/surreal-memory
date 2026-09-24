@@ -24,7 +24,8 @@ import struct
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Protocol
+from datetime import datetime
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from surreal_memory.core.constants import GRAPH_ONLY_PLACEHOLDER
 from surreal_memory.core.neuron import Neuron, NeuronType
@@ -123,6 +124,8 @@ class SemanticDiscoveryResult:
     draining one capped run at a time.
     """
     source_fingerprint: str | None = None
+    source_token: str | None = None
+    reference_time_rebuilt: bool = False
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -375,6 +378,8 @@ async def discover_semantic_synapses(
     budget_check: SemanticDiscoveryBudgetCheck | None = None,
     run_id: str | None = None,
     owner_token: str | None = None,
+    reference_time: datetime | None = None,
+    allow_reference_time_rebuild: bool = False,
 ) -> SemanticDiscoveryResult:
     """Discover SIMILAR_TO synapses between CONCEPT/ENTITY neurons.
 
@@ -411,7 +416,11 @@ async def discover_semantic_synapses(
             budget_check=budget_check,
             run_id=run_id,
             owner_token=owner_token,
+            reference_time=reference_time,
+            allow_reference_time_rebuild=allow_reference_time_rebuild,
         )
+    if reference_time is not None:
+        raise RuntimeError("frozen semantic discovery requires durable keyset checkpoints")
 
     # Collect eligible neurons that already carry a stored embedding (no re-embed).
     # Ask for the two eligible types separately so the filter runs in the DB's
@@ -908,13 +917,18 @@ async def _capture_source_token(storage: NeuralStorage) -> Any:
     return token
 
 
-async def _assert_source_unchanged(storage: NeuralStorage, token: Any) -> None:
+async def _assert_source_unchanged(
+    storage: NeuralStorage, token: Any, *, created_before: datetime | None = None
+) -> None:
     verify = getattr(storage, "assert_semantic_source_unchanged", None)
     if not callable(verify):
         raise RuntimeError("storage does not support semantic source mutation fencing")
     if not isinstance(token, str) or not token:
         raise RuntimeError("semantic source rebuild checkpoint has no valid mutation token")
-    await verify(token)
+    if created_before is None:
+        await verify(token)
+    else:
+        await verify(token, created_before=created_before)
 
 
 async def _load_source_state(
@@ -958,6 +972,8 @@ async def _discover_semantic_synapses_resumable(
     budget_check: SemanticDiscoveryBudgetCheck | None,
     run_id: str | None = None,
     owner_token: str | None = None,
+    reference_time: datetime | None = None,
+    allow_reference_time_rebuild: bool = False,
 ) -> SemanticDiscoveryResult:
     """Discover links in durable pages; replay only the committed prefix on resume."""
     for name, value in (("run_id", run_id), ("owner_token", owner_token)):
@@ -970,6 +986,14 @@ async def _discover_semantic_synapses_resumable(
         raise RuntimeError(
             "semantic_link discovery requires keyset scans and indexed pair lookup support"
         )
+
+    async def _get_degrees() -> dict[str, int]:
+        get_degrees = getattr(storage, "get_synapse_degrees", None)
+        if not callable(get_degrees):
+            raise RuntimeError("storage cannot restore semantic_link degree ranking")
+        if reference_time is None:
+            return cast("dict[str, int]", await get_degrees())
+        return cast("dict[str, int]", await get_degrees(created_before=reference_time))
 
     manifest = dict(resume_state or {})
     manifest_stage = str(manifest.get("stage") or "")
@@ -1021,11 +1045,42 @@ async def _discover_semantic_synapses_resumable(
     token = saved.get("source_token")
     if isinstance(durable_neuron_state, Mapping):
         token = durable_neuron_state.get("source_token")
+    reference_time_rebuilt = False
+    if reference_time is not None:
+        expected_reference_time = reference_time.isoformat(timespec="microseconds")
+        staged_reference_time = (
+            durable_neuron_state.get("reference_time")
+            if isinstance(durable_neuron_state, Mapping)
+            else None
+        )
+        has_staged_checkpoint = bool(manifest or saved or durable_neuron_state)
+        if has_staged_checkpoint and staged_reference_time is None:
+            if not allow_reference_time_rebuild:
+                raise RuntimeError(
+                    "legacy semantic_link checkpoint has no frozen reference-time marker"
+                )
+            if not isinstance(token, str) or not token:
+                raise RuntimeError(
+                    "legacy semantic_link checkpoint has no source token to validate"
+                )
+            # Prove that only post-reference records changed before replacing the
+            # staged source. Pre-reference updates/deletes still invalidate it.
+            await _assert_source_unchanged(storage, token, created_before=reference_time)
+            token = await _capture_source_token(storage)
+            reference_time_rebuilt = True
+            durable_neuron_state = None
+            state_id = None
+            state_revision = 0
+            saved = {}
+            saved_stage = ""
+            saved_cursor = None
+        elif has_staged_checkpoint and staged_reference_time != expected_reference_time:
+            raise RuntimeError("semantic_link checkpoint reference_time changed")
     capture_fence = getattr(storage, "capture_semantic_source_token", None)
     verify_fence = getattr(storage, "assert_semantic_source_unchanged", None)
     fence_available = callable(capture_fence) and callable(verify_fence)
     if token is not None:
-        await _assert_source_unchanged(storage, token)
+        await _assert_source_unchanged(storage, token, created_before=reference_time)
     elif fence_available:
         token = await _capture_source_token(storage)
     else:
@@ -1111,10 +1166,7 @@ async def _discover_semantic_synapses_resumable(
         bounded = bool(durable_neuron_state.get("bounded"))
         degree_mode = bool(durable_neuron_state.get("degree_mode"))
         if bounded and degree_mode:
-            get_degrees = getattr(storage, "get_synapse_degrees", None)
-            if not callable(get_degrees):
-                raise RuntimeError("storage cannot restore semantic_link degree ranking")
-            degree_by_id = await get_degrees()
+            degree_by_id = await _get_degrees()
         if bounded:
             degree_probe_complete = True
             for candidate_id, priority, stored_degree in candidate_state:
@@ -1212,6 +1264,11 @@ async def _discover_semantic_synapses_resumable(
             bounded = False
         return {
             **source_rebuild,
+            "reference_time": (
+                reference_time.isoformat(timespec="microseconds")
+                if reference_time is not None
+                else None
+            ),
             "fingerprint": fingerprint.export_state(),
             "eligible_total": eligible_total,
             "type_ranks": {kind.value: rank for kind, rank in type_ranks.items()},
@@ -1305,7 +1362,7 @@ async def _discover_semantic_synapses_resumable(
             get_degrees = getattr(storage, "get_synapse_degrees", None)
             if callable(get_degrees):
                 try:
-                    degree_by_id = await get_degrees()
+                    degree_by_id = await _get_degrees()
                 except Exception:
                     logger.debug(
                         "get_synapse_degrees failed; falling back to scan-order selection",
@@ -1411,15 +1468,17 @@ async def _discover_semantic_synapses_resumable(
                 eligible_neurons=eligible_total,
             )
         if token is not None:
-            await _assert_source_unchanged(storage, token)
+            await _assert_source_unchanged(storage, token, created_before=reference_time)
         if budget_check is not None and source_rebuild is not None:
             await budget_check()
-        page = await neuron_fetch(
-            neuron_cursor,
-            limit=_EMBEDDING_PAGE_SIZE,
-            ephemeral=None,
-            include_embedding=True,
-        )
+        neuron_page_options: dict[str, Any] = {
+            "limit": _EMBEDDING_PAGE_SIZE,
+            "ephemeral": None,
+            "include_embedding": True,
+        }
+        if reference_time is not None:
+            neuron_page_options["created_before"] = reference_time
+        page = await neuron_fetch(neuron_cursor, **neuron_page_options)
         if not page:
             if replay_neuron and not replay_neuron_found:
                 raise RuntimeError("semantic_link neuron cursor disappeared during resume")
@@ -1451,7 +1510,7 @@ async def _discover_semantic_synapses_resumable(
             raise RuntimeError("semantic_link neuron cursor disappeared during resume")
         if replay_neuron:
             if token is not None:
-                await _assert_source_unchanged(storage, token)
+                await _assert_source_unchanged(storage, token, created_before=reference_time)
                 await emit(
                     "neurons",
                     neuron_cursor,
@@ -1462,7 +1521,7 @@ async def _discover_semantic_synapses_resumable(
         if not replay_neuron_found:
             continue
         if token is not None:
-            await _assert_source_unchanged(storage, token)
+            await _assert_source_unchanged(storage, token, created_before=reference_time)
         await emit(
             "neurons",
             neuron_cursor,
@@ -1541,10 +1600,13 @@ async def _discover_semantic_synapses_resumable(
         raise RuntimeError("semantic_link neuron source changed before synapse scan")
     while not bool(source_rebuild.get("edge_complete")):
         if token is not None:
-            await _assert_source_unchanged(storage, token)
+            await _assert_source_unchanged(storage, token, created_before=reference_time)
         if budget_check is not None:
             await budget_check()
-        page = await synapse_fetch(edge_cursor, limit=min(_SYNAPSE_PAGE_SIZE, 2000))
+        synapse_page_options: dict[str, Any] = {"limit": min(_SYNAPSE_PAGE_SIZE, 2000)}
+        if reference_time is not None:
+            synapse_page_options["created_before"] = reference_time
+        page = await synapse_fetch(edge_cursor, **synapse_page_options)
         if not page:
             if replay_edge and not replay_edge_found:
                 raise RuntimeError("semantic_link synapse cursor disappeared during resume")
@@ -1568,7 +1630,7 @@ async def _discover_semantic_synapses_resumable(
             # Even an unvalidated legacy prefix advances only the staged source
             # cursor; the pending manifest continues to name its old cursor.
             if token is not None:
-                await _assert_source_unchanged(storage, token)
+                await _assert_source_unchanged(storage, token, created_before=reference_time)
             await emit(
                 "synapses",
                 edge_cursor,
@@ -1578,7 +1640,7 @@ async def _discover_semantic_synapses_resumable(
             )
             continue
         if token is not None:
-            await _assert_source_unchanged(storage, token)
+            await _assert_source_unchanged(storage, token, created_before=reference_time)
         await emit(
             "synapses",
             edge_cursor,
@@ -1591,7 +1653,7 @@ async def _discover_semantic_synapses_resumable(
             break
 
     if token is not None:
-        await _assert_source_unchanged(storage, token)
+        await _assert_source_unchanged(storage, token, created_before=reference_time)
     source_fingerprint = fingerprint.finish()
     source_rebuild["source_complete"] = True
     source_rebuild["source_fingerprint"] = source_fingerprint
@@ -1608,8 +1670,12 @@ async def _discover_semantic_synapses_resumable(
 
     if len(eligible) < 2:
         if token is not None:
-            await _assert_source_unchanged(storage, token)
-        return SemanticDiscoveryResult(source_fingerprint=source_fingerprint)
+            await _assert_source_unchanged(storage, token, created_before=reference_time)
+        return SemanticDiscoveryResult(
+            source_fingerprint=source_fingerprint,
+            source_token=token,
+            reference_time_rebuilt=reference_time_rebuilt,
+        )
 
     logger.debug(
         "semantic discovery: %d eligible neurons",
@@ -1665,7 +1731,10 @@ async def _discover_semantic_synapses_resumable(
     async def _existing_pairs(pairs: list[tuple[str, str]]) -> set[tuple[str, str]]:
         if not pairs:
             return set()
-        found = await pair_lookup(pairs)
+        if reference_time is None:
+            found = await pair_lookup(pairs)
+        else:
+            found = await pair_lookup(pairs, created_before=reference_time)
         if not isinstance(found, (set, frozenset, list, tuple)):
             raise RuntimeError("storage returned invalid semantic-link pair lookup results")
         normalized: set[tuple[str, str]] = set()
@@ -1888,7 +1957,7 @@ async def _discover_semantic_synapses_resumable(
             "pairs_evaluated": pairs_evaluated,
         }
         if token is not None:
-            await _assert_source_unchanged(storage, token)
+            await _assert_source_unchanged(storage, token, created_before=reference_time)
             details["source_token"] = token
         source_rebuild["similarity_rebuild"] = None
         source_rebuild["legacy_checkpoint"] = details
@@ -1897,7 +1966,7 @@ async def _discover_semantic_synapses_resumable(
 
     async def persist_v1_similarity_rebuild(next_row: int, *, cursor_verified: bool) -> None:
         if token is not None:
-            await _assert_source_unchanged(storage, token)
+            await _assert_source_unchanged(storage, token, created_before=reference_time)
         source_rebuild["similarity_rebuild"] = {
             "next_row": next_row,
             "cursor_verified": cursor_verified,
@@ -2061,7 +2130,7 @@ async def _discover_semantic_synapses_resumable(
     if resume_row is not None and not resumed_row_found:
         raise RuntimeError("semantic_link similarity cursor is beyond the candidate rows")
     if token is not None:
-        await _assert_source_unchanged(storage, token)
+        await _assert_source_unchanged(storage, token, created_before=reference_time)
     return SemanticDiscoveryResult(
         neurons_embedded=len(vectors),
         pairs_evaluated=pairs_evaluated,
@@ -2072,4 +2141,6 @@ async def _discover_semantic_synapses_resumable(
         synapses=new_synapses,
         truncated=len(new_synapses) >= max_pairs,
         source_fingerprint=source_fingerprint,
+        source_token=token,
+        reference_time_rebuilt=reference_time_rebuilt,
     )

@@ -2303,7 +2303,10 @@ class SurrealDBStorage(
         return synapses
 
     async def find_existing_synapse_pairs(
-        self, pairs: Sequence[tuple[str, str]]
+        self,
+        pairs: Sequence[tuple[str, str]],
+        *,
+        created_before: datetime | None = None,
     ) -> set[tuple[str, str]]:
         """Return candidate neuron pairs already joined by any synapse type.
 
@@ -2317,6 +2320,11 @@ class SurrealDBStorage(
 
         brain_id = self._get_brain_id()
         found: set[tuple[str, str]] = set()
+        time_filter = ""
+        time_params: dict[str, Any] = {}
+        if created_before is not None:
+            time_filter = " AND (created_at IS NONE OR created_at <= $created_before)"
+            time_params["created_before"] = created_before
         semaphore = asyncio.Semaphore(_BATCH_FETCH_CONCURRENCY)
 
         async def _exists(pair: tuple[str, str]) -> tuple[tuple[str, str], bool]:
@@ -2335,10 +2343,12 @@ class SurrealDBStorage(
                         f"SELECT id FROM synapse WITH INDEX {index} "
                         f"WHERE brain_id = $brain_id "
                         f"AND {left_field} = type::record('neuron', $left_id) "
-                        f"AND {right_field} = type::record('neuron', $right_id) LIMIT 1",
+                        f"AND {right_field} = type::record('neuron', $right_id)"
+                        f"{time_filter} LIMIT 1",
                         brain_id=brain_id,
                         left_id=_to_surreal_id(left),
                         right_id=_to_surreal_id(right),
+                        **time_params,
                     )
                     if rows:
                         return pair, True
@@ -4424,7 +4434,9 @@ class SurrealDBStorage(
             connected.add(_from_surreal_id(str(rid)))
         return connected
 
-    async def get_synapse_degrees(self, brain_id: str | None = None) -> dict[str, int]:
+    async def get_synapse_degrees(
+        self, brain_id: str | None = None, *, created_before: datetime | None = None
+    ) -> dict[str, int]:
         """Per-neuron synapse degree via DB ``GROUP BY`` on the RELATE endpoints.
 
         Replaces loading every synapse into Python just to count endpoints
@@ -4432,12 +4444,17 @@ class SurrealDBStorage(
         real ``in``/``out`` record links — the ``source_id``/``target_id``
         fields are computed and do not aggregate."""
         bid = brain_id or self._get_brain_id()
+        time_filter = ""
+        params: dict[str, Any] = {"bid": bid}
+        if created_before is not None:
+            time_filter = " AND (created_at IS NONE OR created_at <= $created_before)"
+            params["created_before"] = created_before
 
         async def _degree(field: str) -> list[Any]:
             return await self._query(
                 f"SELECT {field} AS nid, count() AS deg FROM synapse"
-                f" WHERE brain_id = $bid GROUP BY {field}",
-                bid=bid,
+                f" WHERE brain_id = $bid{time_filter} GROUP BY {field}",
+                **params,
             )
 
         # The in/out degree scans are independent — run them concurrently.

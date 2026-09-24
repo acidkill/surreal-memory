@@ -125,3 +125,82 @@ async def test_changefeed_query_error_fails_closed() -> None:
 
     with pytest.raises(SemanticSourceFenceUnavailableError, match="could not inspect neuron"):
         await storage.assert_semantic_source_unchanged(token)
+
+
+@pytest.mark.asyncio
+async def test_frozen_source_fence_ignores_full_rows_created_after_reference_time() -> None:
+    storage = _RevisionStorage()
+    cutoff = storage.now
+    storage.change_rows["neuron"] = [
+        {
+            "versionstamp": 101,
+            "changes": [
+                {
+                    "update": {
+                        "id": "neuron:late-node",
+                        "brain_id": "brain-a",
+                        "created_at": cutoff + timedelta(seconds=1),
+                        "updated_at": cutoff + timedelta(seconds=1),
+                    }
+                }
+            ],
+        }
+    ]
+
+    await storage.assert_semantic_source_unchanged(
+        _token(captured_at=cutoff - timedelta(seconds=1)), created_before=cutoff
+    )
+
+
+@pytest.mark.asyncio
+async def test_frozen_source_fence_rejects_pre_reference_update_and_unknown_delete() -> None:
+    storage = _RevisionStorage()
+    cutoff = storage.now
+    token = _token(captured_at=cutoff - timedelta(seconds=1))
+    storage.change_rows["neuron"] = [
+        {
+            "versionstamp": 101,
+            "changes": [
+                {
+                    "update": {
+                        "id": "neuron:old-node",
+                        "brain_id": "brain-a",
+                        "created_at": cutoff - timedelta(days=1),
+                        "updated_at": cutoff + timedelta(seconds=1),
+                    }
+                }
+            ],
+        }
+    ]
+    with pytest.raises(SemanticSourceChangedError, match="neuron changed"):
+        await storage.assert_semantic_source_unchanged(token, created_before=cutoff)
+
+    storage.change_rows["neuron"] = [
+        {"versionstamp": 102, "changes": [{"delete": {"id": "neuron:unknown"}}]}
+    ]
+    with pytest.raises(SemanticSourceChangedError, match="neuron changed"):
+        await storage.assert_semantic_source_unchanged(token, created_before=cutoff)
+
+
+@pytest.mark.asyncio
+async def test_frozen_source_fence_allows_delete_only_after_proving_post_reference_create() -> None:
+    storage = _RevisionStorage()
+    cutoff = storage.now
+    token = _token(captured_at=cutoff - timedelta(seconds=1))
+    storage.change_rows["synapse"] = [
+        {
+            "versionstamp": 101,
+            "changes": [
+                {
+                    "update": {
+                        "id": "synapse:late-edge",
+                        "brain_id": "brain-a",
+                        "created_at": cutoff + timedelta(seconds=1),
+                    }
+                }
+            ],
+        },
+        {"versionstamp": 102, "changes": [{"delete": {"id": "synapse:late-edge"}}]},
+    ]
+
+    await storage.assert_semantic_source_unchanged(token, created_before=cutoff)
