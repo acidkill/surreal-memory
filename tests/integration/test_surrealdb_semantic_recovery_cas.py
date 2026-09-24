@@ -114,7 +114,10 @@ async def test_recovery_cas_requires_live_lease_and_exact_snapshot(store) -> Non
 
 
 @pytest.mark.asyncio
-async def test_legacy_discovery_recovery_preserves_completed_run_and_reopens(store) -> None:
+@pytest.mark.parametrize("readonly_field_present", [False, True])
+async def test_legacy_discovery_recovery_preserves_completed_run_and_reopens(
+    store, readonly_field_present: bool
+) -> None:
     brain_id = store._get_brain_id()
     run_id = "run-legacy-test"
     reference_time = utcnow()
@@ -122,16 +125,15 @@ async def test_legacy_discovery_recovery_preserves_completed_run_and_reopens(sto
         item.value for item in ConsolidationStrategy if item is not ConsolidationStrategy.ALL
     }
     completed = sorted(strategies - {"semantic_link"})
-    token = json.dumps(
-        {
-            "version": 1,
-            "brain_id": brain_id,
-            "versionstamp": 0,
-            "captured_at": utcnow().isoformat(),
-            "created_at_readonly": None,
-        },
-        sort_keys=True,
-    )
+    token_fields = {
+        "version": 1,
+        "brain_id": brain_id,
+        "versionstamp": 0,
+        "captured_at": utcnow().isoformat(),
+    }
+    if readonly_field_present:
+        token_fields["created_at_readonly"] = None
+    token = json.dumps(token_fields, sort_keys=True)
     manifest = {
         "kind": "semantic_link_discovery",
         "version": 3,

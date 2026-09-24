@@ -191,7 +191,7 @@ def _legacy_invalid_source_token(manifest: Mapping[str, Any], brain_id: str, run
         or type(decoded.get("versionstamp")) is not int
         or decoded["versionstamp"] < 0
         or not isinstance(captured_at, str)
-        or decoded.get("created_at_readonly", object()) is not None
+        or decoded.get("created_at_readonly") is not None
     ):
         raise ConsolidationResumeMismatchError(
             "semantic source token is not the invalid legacy v1 token eligible for recovery"
