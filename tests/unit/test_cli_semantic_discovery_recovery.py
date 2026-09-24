@@ -60,9 +60,7 @@ def test_recovery_cli_requires_typed_run_id_before_execute(
         ) as recovery,
         pytest.raises(typer.Exit),
     ):
-        tools.recover_semantic_discovery(
-            run_id="run-123", confirm_run_id="different", execute=True
-        )
+        tools.recover_semantic_discovery(run_id="run-123", confirm_run_id="different", execute=True)
     recovery.assert_not_awaited()
 
 
@@ -80,9 +78,7 @@ def test_recovery_cli_execute_uses_current_run_fingerprint(
             return_value={"run_id": "run-123", "reference_time": "2026-09-24T00:00:00Z"},
         ) as recovery,
     ):
-        tools.recover_semantic_discovery(
-            run_id="run-123", confirm_run_id="run-123", execute=True
-        )
+        tools.recover_semantic_discovery(run_id="run-123", confirm_run_id="run-123", execute=True)
     recovery.assert_awaited_once()
     assert recovery.await_args.kwargs["dry_run"] is False
     assert recovery.await_args.kwargs["expected_status"] == "paused"

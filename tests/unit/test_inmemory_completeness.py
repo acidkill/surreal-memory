@@ -60,6 +60,7 @@ def test_in_memory_storage_implements_every_method() -> None:
         "save_semantic_discovery_state",
         "acquire_consolidation_lease",
         "claim_consolidation_progress",
+        "compare_and_swap_semantic_link_recovery",
         "create_consolidation_progress",
         "find_neurons_after_id",
         "get_connected_neuron_ids_for",

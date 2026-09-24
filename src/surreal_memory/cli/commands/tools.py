@@ -1206,7 +1206,8 @@ def recover_semantic_discovery(
     ] = None,
     brain: Annotated[str | None, typer.Option("--brain", "-b", help="Brain to repair")] = None,
     execute: Annotated[
-        bool, typer.Option("--execute", help="Apply the recovery after preflight (default: preview)")
+        bool,
+        typer.Option("--execute", help="Apply the recovery after preflight (default: preview)"),
     ] = False,
 ) -> None:
     """Preview or explicitly restart an unapplied legacy semantic discovery checkpoint.

@@ -2742,6 +2742,26 @@ class NeuralStorage(ABC):
     ) -> dict[str, Any] | None:
         raise NotImplementedError
 
+    async def compare_and_swap_semantic_link_recovery(
+        self,
+        *,
+        brain_id: str,
+        expected_run_id: str,
+        expected_owner_token: str,
+        expected_options_fingerprint: str,
+        expected_status: str,
+        expected_phase: str,
+        expected_updated_at: Any,
+        expected_reference_time: Any,
+        lease_owner_token: str,
+        new_owner_token: str,
+        strategy_states: Mapping[str, Any],
+        counters: Mapping[str, Any],
+        updated_at: Any,
+    ) -> dict[str, Any] | None:
+        """Optional fenced operator recovery for an unapplied semantic discovery."""
+        raise NotImplementedError
+
     async def acquire_consolidation_lease(
         self, brain_id: str, owner_token: str, *, lease_seconds: int = 120
     ) -> bool:
