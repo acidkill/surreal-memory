@@ -1,10 +1,8 @@
 """Tests for the drift-detection storage mixins (tag_cooccurrence + drift_clusters).
 
-Exercised against InMemoryStorage — a synchronous, dependency-free stand-in for
-the SurrealDB mixin (storage/surrealdb/drift.py). The two mixins are written to
-share identical semantics (see memory_drift.py's docstring), so these tests
-document the storage contract that test_surrealdb_drift_live.py verifies again
-against the real backend.
+Most operations are exercised against InMemoryStorage, a synchronous,
+dependency-free stand-in for the SurrealDB mixin. The paged fiber census has
+focused mock tests here and is separately covered by the live-backend suite.
 """
 
 from __future__ import annotations
@@ -19,6 +17,7 @@ from surreal_memory.core.brain import Brain, BrainConfig
 from surreal_memory.core.fiber import Fiber
 from surreal_memory.engine.encoder import MemoryEncoder
 from surreal_memory.storage.memory_store import InMemoryStorage
+from surreal_memory.storage.surrealdb.drift import SurrealDBDriftMixin
 
 
 @pytest_asyncio.fixture
@@ -126,22 +125,63 @@ async def test_get_tag_fiber_counts_empty_brain(store: InMemoryStorage) -> None:
     assert await store.get_tag_fiber_counts() == {}
 
 
-def test_both_backends_cap_the_fiber_scan_at_the_same_bound() -> None:
-    """The two mixins must truncate Jaccard's denominator identically.
+@pytest.mark.asyncio
+async def test_surrealdb_fiber_counts_page_past_full_batch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A full page advances the record-ID cursor; later fibers still count."""
 
-    Regression guard: the in-memory mixin originally had NO cap while the
-    SurrealDB one stopped at 10000, so every test written against the
-    in-memory backend proved something untrue about production — precisely
-    the divergence memory_drift.py's docstring promises does not exist.
-    Past the cap the numerator (cumulative pair_count) and the denominator
-    (a truncated fiber sample) describe different populations, so a mismatch
-    here silently skews cluster confidences on exactly the large, long-lived
-    brains where drift detection matters most.
-    """
-    from surreal_memory.storage.memory_drift import _MAX_FIBER_SCAN as MEMORY_CAP
-    from surreal_memory.storage.surrealdb.drift import _MAX_FIBER_SCAN as SURREAL_CAP
+    from surreal_memory.storage.surrealdb import drift as drift_module
 
-    assert MEMORY_CAP == SURREAL_CAP
+    class StubStorage(SurrealDBDriftMixin):
+        def __init__(self) -> None:
+            self.queries: list[tuple[str, dict[str, object]]] = []
+            self.pages = [
+                [
+                    {"id": "fiber:alpha", "auto_tags": ["shared"], "agent_tags": ["shared"]},
+                    {"id": "fiber:beta", "auto_tags": ["shared", "early"], "agent_tags": []},
+                ],
+                [{"id": "fiber:omega", "auto_tags": ["shared", "late"], "agent_tags": []}],
+            ]
+
+        def _get_brain_id(self) -> str:
+            return "brain-1"
+
+        async def _query(self, sql: str, **params: object) -> list[dict[str, object]]:
+            self.queries.append((sql, params))
+            return self.pages.pop(0)
+
+    monkeypatch.setattr(drift_module, "_FIBER_PAGE_SIZE", 2)
+    storage = StubStorage()
+
+    counts = await storage.get_tag_fiber_counts()
+
+    assert counts == {"shared": 3, "early": 1, "late": 1}
+    assert len(storage.queries) == 2
+    first_sql, first_params = storage.queries[0]
+    second_sql, second_params = storage.queries[1]
+    assert "ORDER BY id LIMIT $limit" in first_sql
+    assert "id > type::record('fiber', $cursor_id)" not in first_sql
+    assert first_params["limit"] == 2
+    assert "id > type::record('fiber', $cursor_id)" in second_sql
+    assert second_params["cursor_id"] == "beta"
+    assert second_params["limit"] == 2
+
+
+@pytest.mark.asyncio
+async def test_surrealdb_fiber_counts_empty_page_ends_scan() -> None:
+    class StubStorage(SurrealDBDriftMixin):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def _get_brain_id(self) -> str:
+            return "brain-1"
+
+        async def _query(self, sql: str, **params: object) -> list[dict[str, object]]:
+            self.calls += 1
+            return []
+
+    storage = StubStorage()
+    assert await storage.get_tag_fiber_counts() == {}
+    assert storage.calls == 1
 
 
 def test_both_backends_cap_pair_generation_at_the_same_bound() -> None:

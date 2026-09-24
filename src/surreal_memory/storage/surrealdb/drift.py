@@ -26,20 +26,17 @@ these queries have no such ambiguity. Binding is kept as the safer default.
 from __future__ import annotations
 
 import hashlib
-import logging
 from typing import Any
 
+from surreal_memory.storage.surrealdb._ids import _to_surreal_id
 from surreal_memory.utils.timeutils import utcnow
-
-logger = logging.getLogger(__name__)
 
 # Tag-pair generation is O(n^2); this caps it on a fiber with an unusually
 # large tag set, mirroring the removed SQLite mixin's cap exactly.
 _MAX_PAIRS_PER_CALL = 100
 
-# Upper bound on the fiber scan behind Jaccard's denominator. Same value the
-# removed SQLite mixin used; see get_tag_fiber_counts for what happens at it.
-_MAX_FIBER_SCAN = 10000
+# Keep each fiber census query bounded while still scanning the complete brain.
+_FIBER_PAGE_SIZE = 500
 
 
 def _pair_record_id(brain_id: str, tag_a: str, tag_b: str) -> str:
@@ -127,51 +124,33 @@ class SurrealDBDriftMixin:
     async def get_tag_fiber_counts(self) -> dict[str, int]:
         """Get fiber count per tag for Jaccard's denominator.
 
-        Scans up to ``_MAX_FIBER_SCAN`` fibers and counts in Python — no
-        dedicated tag-fiber index exists (or is worth building for a
-        consolidation-time-only read).
-
-        The cap is inherited from the removed SQLite mixin, but two things are
-        NOT inherited, because the original was silently wrong past it:
-
-        * ``ORDER BY id`` makes the sample deterministic. Without it the slice
-          was storage-order dependent, so two consecutive passes over an
-          unchanged brain could read different counts and emit different
-          confidences for the same tag pair.
-        * hitting the cap is logged. Past it, Jaccard's numerator
-          (``tag_cooccurrence.pair_count``, cumulative and uncapped) and its
-          denominator (this truncated sample) describe different populations,
-          so confidences skew in BOTH directions — an undercounted denominator
-          inflates a score, while a tag missing from the sample entirely
-          collapses it to 0.0 via ``compute_jaccard``'s zero-count guard. The
-          caller cannot detect that from the returned dict, so it is surfaced
-          here rather than left to be discovered on a large brain.
+        Reads deterministic, keyset-paged batches so query results stay
+        bounded without truncating the population used as Jaccard's denominator.
         """
         brain_id = self._get_brain_id()
-        rows = await self._query(
-            # `id` is projected only because SurrealDB requires every ORDER BY
-            # idiom to appear in the selection ("Missing order idiom `id` in
-            # statement selection" otherwise) — the value itself is unused.
-            "SELECT id, auto_tags, agent_tags FROM fiber WHERE brain_id = $bid"
-            " ORDER BY id LIMIT $limit",
-            bid=brain_id,
-            limit=_MAX_FIBER_SCAN,
-        )
-        if len(rows) >= _MAX_FIBER_SCAN:
-            logger.warning(
-                "Drift detection scanned the %d-fiber cap on brain %r; tag counts are a "
-                "truncated sample while co-occurrence counts are cumulative, so cluster "
-                "confidences past this point are approximate.",
-                _MAX_FIBER_SCAN,
-                brain_id,
-            )
         tag_counts: dict[str, int] = {}
-        for r in rows:
-            auto = r.get("auto_tags") or []
-            agent = r.get("agent_tags") or []
-            all_tags = {str(t) for t in (*auto, *agent)}
-            for tag in all_tags:
-                tag_counts[tag] = tag_counts.get(tag, 0) + 1
+        cursor_id: str | None = None
+        while True:
+            conditions = ["brain_id = $bid"]
+            params: dict[str, Any] = {"bid": brain_id, "limit": _FIBER_PAGE_SIZE}
+            if cursor_id is not None:
+                conditions.append("id > type::record('fiber', $cursor_id)")
+                params["cursor_id"] = _to_surreal_id(cursor_id)
+            rows = await self._query(
+                "SELECT id, auto_tags, agent_tags FROM fiber WHERE "
+                + " AND ".join(conditions)
+                + " ORDER BY id LIMIT $limit",
+                **params,
+            )
+            for row in rows:
+                auto = row.get("auto_tags") or []
+                agent = row.get("agent_tags") or []
+                all_tags = {str(tag) for tag in (*auto, *agent)}
+                for tag in all_tags:
+                    tag_counts[tag] = tag_counts.get(tag, 0) + 1
+            if len(rows) < _FIBER_PAGE_SIZE:
+                break
+            cursor_id = str(rows[-1]["id"])
         return tag_counts
 
     # ------------------------------------------------------------------
