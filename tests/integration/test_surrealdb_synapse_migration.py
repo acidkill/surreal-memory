@@ -366,7 +366,6 @@ async def test_stale_v10_stamp_with_active_v11_progress_migrates_without_losing_
     assert rows[0]["cursor"] == "neuron-001"
     assert rows[0]["strategy_states"]["prune"]["cursor"] == "neuron-001"
     assert rows[0]["counters"]["scanned"] == 1
-    await conn.close()
 
 
 @pytest.mark.asyncio
