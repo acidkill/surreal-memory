@@ -866,7 +866,9 @@ class ConsolidationEngine:
             ConsolidationStrategy.ESSENCE_BACKFILL: lambda: self._essence_backfill(report, dry_run),
             ConsolidationStrategy.REPLAY: lambda: self._replay(report, dry_run),
             ConsolidationStrategy.SCHEMA: lambda: self._schema(report, dry_run),
-            ConsolidationStrategy.INTERFERENCE: lambda: self._interference(report, dry_run),
+            ConsolidationStrategy.INTERFERENCE: lambda: self._interference(
+                report, reference_time, dry_run
+            ),
             ConsolidationStrategy.DETECT_DRIFT: lambda: self._detect_drift(report, dry_run),
         }
         handler = dispatch.get(strategy)
@@ -8733,9 +8735,13 @@ class ConsolidationEngine:
     async def _interference(
         self,
         report: ConsolidationReport,
+        reference_time: datetime,
         dry_run: bool,
     ) -> None:
-        """Run the read-only interference scan with a durable result checkpoint."""
+        """Count fan effects through a durable, bounded neuron/tag census."""
+        import base64
+        from collections import Counter
+
         from surreal_memory.engine.interference import batch_interference_scan
 
         brain_id = self._storage.current_brain_id
@@ -8753,21 +8759,145 @@ class ConsolidationEngine:
             )
             return
 
-        if not dry_run:
-            await self._check_progress_budget()
-        result = await batch_interference_scan(
+        enabled = getattr(brain.config, "interference_detection_enabled", False)
+        if enabled is not True:
+            report.extra["interference_fan_effects"] = 0
+            if not dry_run:
+                await self._checkpoint_progress(
+                    "completed",
+                    cursor="completed",
+                    pending=[],
+                    counters={"interference_fan_effects": 0},
+                )
+            return
+        threshold = getattr(brain.config, "fan_effect_threshold", 15)
+        threshold = int(threshold) if isinstance(threshold, (int, float)) else 15
+        progress = self._progress_session
+        keyset = getattr(self._storage, "find_neurons_after_id", None)
+        if (
+            dry_run
+            or progress is None
+            or not callable(getattr(type(self._storage), "_query", None))
+            or not callable(keyset)
+        ):
+            result = await batch_interference_scan(self._storage, brain.config, dry_run=dry_run)
+            report.extra["interference_fan_effects"] = result.fan_effects_flagged
+            if not dry_run:
+                await self._checkpoint_progress(
+                    "completed",
+                    cursor="completed",
+                    pending=[],
+                    counters={"interference_fan_effects": result.fan_effects_flagged},
+                )
+            return
+
+        run_id = str(progress.state.get("run_id") or "")
+        if not run_id:
+            raise ConsolidationProgressError("interference plan requires a run ID")
+        fingerprint = hashlib.sha256(
+            json.dumps(
+                {
+                    "algorithm": "interference-paged-v1",
+                    "reference_time": reference_time.isoformat(),
+                    "threshold": threshold,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+        plan = SurrealDBConsolidationGroupPlan(
             self._storage,
-            brain.config,
-            dry_run=dry_run,
+            brain_id=brain_id,
+            run_id=run_id,
+            strategy="interference",
+            fingerprint=fingerprint,
         )
-        report.extra["interference_fan_effects"] = result.fan_effects_flagged
-        if not dry_run:
+        phase = str(state.get("phase") or "")
+        if phase not in {"interference_aggregate", "completed"}:
+            cursor = str(state.get("cursor") or "") if phase == "interference_scan" else ""
+            while True:
+                await self._check_progress_budget()
+                batch = await keyset(
+                    cursor or None,
+                    limit=250,
+                    created_before=reference_time,
+                    include_embedding=False,
+                )
+                if not batch:
+                    break
+                counts: Counter[str] = Counter()
+                source_rows: list[tuple[str, list[str]]] = []
+                for neuron in batch:
+                    tags = list(neuron.metadata.get("tags", []) if neuron.metadata else [])
+                    counts.update(tags)
+                    source_rows.append((neuron.id, tags))
+                page_key = f"{len(cursor)}:{cursor}"
+                signature = hashlib.sha256(
+                    json.dumps(source_rows, sort_keys=True, separators=(",", ":")).encode()
+                ).hexdigest()
+                # The marker is written first: a crash during the page's tag
+                # writes will verify the exact same frozen source on replay.
+                await plan.put_item(
+                    "interference_page",
+                    page_key,
+                    {"last_id": batch[-1].id, "signature": signature},
+                )
+                await plan.put_items(
+                    [
+                        (
+                            "interference_tag_page",
+                            f"{base64.urlsafe_b64encode(tag.encode()).decode()}:{page_key}",
+                            {"tag": tag, "count": count},
+                        )
+                        for tag, count in counts.items()
+                    ]
+                )
+                cursor = batch[-1].id
+                await self._checkpoint_progress("interference_scan", cursor=cursor, pending=[])
+                if len(batch) < 250:
+                    break
             await self._checkpoint_progress(
-                "completed",
-                cursor="completed",
+                "interference_aggregate",
                 pending=[],
-                counters={"interference_fan_effects": result.fan_effects_flagged},
+                counters={"interference_fan_effects": 0},
             )
+            state = self._strategy_progress_state()
+
+        cursor = (
+            str(state.get("cursor") or "") if state.get("phase") == "interference_aggregate" else ""
+        )
+        pending = state.get("pending") or []
+        partial = json.loads(pending[0]) if pending else {"tag": None, "count": 0}
+        current_tag = partial.get("tag")
+        current_count = int(partial.get("count") or 0)
+        fan_effects = int((state.get("counters") or {}).get("interference_fan_effects", 0))
+        processed = 0
+        async for item_key, item in plan.iter_items("interference_tag_page", after=cursor):
+            tag = str(item["tag"])
+            if current_tag is not None and tag != current_tag:
+                fan_effects += int(current_count >= threshold)
+                current_count = 0
+            current_tag = tag
+            current_count += int(item["count"])
+            cursor = item_key
+            processed += 1
+            if processed >= 100:
+                await self._checkpoint_progress(
+                    "interference_aggregate",
+                    cursor=cursor,
+                    pending=[json.dumps({"tag": current_tag, "count": current_count})],
+                    counters={"interference_fan_effects": fan_effects},
+                )
+                processed = 0
+        if current_tag is not None:
+            fan_effects += int(current_count >= threshold)
+        report.extra["interference_fan_effects"] = fan_effects
+        await self._checkpoint_progress(
+            "completed",
+            cursor="completed",
+            pending=[],
+            counters={"interference_fan_effects": fan_effects},
+        )
 
     async def _learn_habits(
         self,
