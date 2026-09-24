@@ -1473,33 +1473,47 @@ class ConsolidationEngine:
             if len(page) < neuron_page_size:
                 break
 
-        await _save_checkpoint(
+        retention_phases = (
             "retention_start",
-            cursor=None,
-            pending=[],
-            counters={
-                "synapses_pruned": synapses_pruned,
-                "neurons_pruned": neurons_pruned,
-                "synapse_pages": synapse_pages,
-                "neuron_pages": neuron_pages,
-            },
+            "retention_entity_refs",
+            "retention_traces",
+            "retention_decay",
+            "retention_change_log",
+            "retention_done",
         )
+        if phase.startswith("retention_"):
+            if phase not in retention_phases:
+                raise ConsolidationProgressError(f"unknown prune retention phase: {phase}")
+        else:
+            phase = "retention_start"
+            await _save_checkpoint(
+                phase,
+                cursor=None,
+                pending=[],
+                counters=counters,
+            )
 
-        # Prune old unpromoted entity refs (lazy entity promotion cleanup)
-        if not dry_run and hasattr(self._storage, "prune_old_entity_refs"):
-            prune_days = getattr(self._config, "lazy_entity_prune_days", 90)
-            try:
+        report.retrieval_traces_pruned = int(counters.get("retrieval_traces_pruned", 0))
+        report.decay_passes_pruned = int(counters.get("decay_passes_pruned", 0))
+        report.change_log_collapsed = int(counters.get("change_log_collapsed", 0))
+
+        async def _advance_retention(next_phase: str) -> None:
+            nonlocal phase
+            await _save_checkpoint(next_phase, cursor=None, pending=[], counters=counters)
+            phase = next_phase
+
+        if phase == "retention_start":
+            await self._check_progress_budget()
+            if not dry_run and hasattr(self._storage, "prune_old_entity_refs"):
+                prune_days = getattr(self._config, "lazy_entity_prune_days", 90)
                 pruned_refs = await self._storage.prune_old_entity_refs(prune_days)
                 if pruned_refs > 0:
                     logger.info("Pruned %d old unpromoted entity refs", pruned_refs)
-            except Exception:
-                logger.debug("Entity ref pruning skipped (table may not exist)")
+            await _advance_retention("retention_entity_refs")
 
-        # Prune old retrieval traces (telemetry TTL + max-count cap) — U4. Runs even
-        # when tracing is currently disabled so a re-disable still cleans up its
-        # accumulated traces; on a never-traced brain this is a cheap empty DELETE.
-        if not dry_run and hasattr(self._storage, "prune_retrieval_traces"):
-            try:
+        if phase == "retention_entity_refs":
+            await self._check_progress_budget()
+            if not dry_run and hasattr(self._storage, "prune_retrieval_traces"):
                 from surreal_memory.unified_config import get_config
 
                 trace_cfg = get_config().trace
@@ -1507,17 +1521,15 @@ class ConsolidationEngine:
                     retention_days=trace_cfg.retention_days,
                     max_traces=trace_cfg.max_traces,
                 )
+                counters["retrieval_traces_pruned"] = report.retrieval_traces_pruned + pruned_traces
+                report.retrieval_traces_pruned = int(counters["retrieval_traces_pruned"])
                 if pruned_traces > 0:
                     logger.info("Pruned %d old retrieval traces", pruned_traces)
-                    report.retrieval_traces_pruned = pruned_traces
-            except Exception:
-                logger.debug("Retrieval trace pruning skipped", exc_info=True)
+            await _advance_retention("retention_traces")
 
-        # Prune decay telemetry. Runs even when telemetry is currently disabled,
-        # so turning it off still cleans up what it accumulated — same reasoning
-        # as the retrieval-trace prune above.
-        if not dry_run and hasattr(self._storage, "prune_decay_passes"):
-            try:
+        if phase == "retention_traces":
+            await self._check_progress_budget()
+            if not dry_run and hasattr(self._storage, "prune_decay_passes"):
                 from surreal_memory.unified_config import get_config
 
                 dt_cfg = get_config().decay_telemetry
@@ -1525,39 +1537,34 @@ class ConsolidationEngine:
                     retention_days=dt_cfg.retention_days,
                     max_records=dt_cfg.max_records,
                 )
+                counters["decay_passes_pruned"] = report.decay_passes_pruned + pruned_passes
+                report.decay_passes_pruned = int(counters["decay_passes_pruned"])
                 if pruned_passes > 0:
                     logger.info("Pruned %d decay telemetry rows", pruned_passes)
-                    report.decay_passes_pruned = pruned_passes
-            except Exception:
-                logger.debug("Decay telemetry pruning skipped", exc_info=True)
+            await _advance_retention("retention_decay")
 
-        # Collapse superseded pending change-log updates.
-        #
-        # This is the ONLY retention path for a brain whose sync never completes.
-        # prune_synced_changes can only remove rows that were successfully synced,
-        # so where sync is configured but never lands, nothing ever removed a row
-        # and the table grew without bound -- and the dashboard card that would
-        # have revealed it was itself too slow to load at that size, so the defect
-        # hid its own symptom. Collapsing is lossless: replication converges on the
-        # newest payload per entity, so superseded updates cannot change the
-        # outcome for any peer, at any sync position.
-        if not dry_run and hasattr(self._storage, "collapse_pending_updates"):
-            try:
-                collapsed = await self._storage.collapse_pending_updates(
-                    max_rows=_CHANGE_LOG_COLLAPSE_CAP
-                )
-                report.change_log_collapsed = collapsed
-                if collapsed:
-                    logger.info("Collapsed %d superseded change-log updates", collapsed)
-                if collapsed >= _CHANGE_LOG_COLLAPSE_CAP:
-                    report.extra["change_log_collapse_truncated"] = True
-                    try:
-                        stats = await self._storage.get_change_log_stats()
-                        report.extra["change_log_pending_after"] = int(stats.get("pending", 0) or 0)
-                    except Exception:
-                        logger.debug("Change-log stats unavailable after collapse", exc_info=True)
-            except Exception:
-                logger.debug("Change-log collapse skipped", exc_info=True)
+        if phase == "retention_decay":
+            await _advance_retention("retention_change_log")
+
+        while phase == "retention_change_log":
+            await self._check_progress_budget()
+            if dry_run or not hasattr(self._storage, "collapse_pending_updates"):
+                await _advance_retention("retention_done")
+                break
+            collapsed = await self._storage.collapse_pending_updates(
+                max_rows=_CHANGE_LOG_COLLAPSE_CAP
+            )
+            counters["change_log_collapsed"] = report.change_log_collapsed + collapsed
+            report.change_log_collapsed = int(counters["change_log_collapsed"])
+            if collapsed:
+                logger.info("Collapsed %d superseded change-log updates", collapsed)
+            if collapsed < _CHANGE_LOG_COLLAPSE_CAP:
+                await _advance_retention("retention_done")
+                break
+            # A capped pass is partial work, not completion. Persist it before
+            # checking the budget and continue from the next bounded batch.
+            report.extra["change_log_collapse_truncated"] = True
+            await _advance_retention("retention_change_log")
 
     async def _prune_legacy(
         self,

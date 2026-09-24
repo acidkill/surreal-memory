@@ -291,3 +291,101 @@ async def test_prune_neuron_candidates_do_not_query_unused_connectivity() -> Non
 
     assert report.neurons_pruned == 1
     storage.get_connected_neuron_ids_for.assert_not_awaited()
+
+
+class _PauseAtRetentionPhase(_Progress):
+    def __init__(self, phase: str) -> None:
+        super().__init__()
+        self.pause_phase = phase
+
+    async def checkpoint(
+        self,
+        strategy: str,
+        phase: str,
+        *,
+        cursor: str | None = None,
+        pending: list[str] | None = None,
+        counters: dict[str, int | float] | None = None,
+    ) -> None:
+        await super().checkpoint(strategy, phase, cursor=cursor, pending=pending, counters=counters)
+        if phase == self.pause_phase:
+            self.pause_phase = ""
+            raise ConsolidationPausedError("simulated retention pause")
+
+
+@pytest.mark.asyncio
+async def test_prune_retention_resumes_after_completed_substep() -> None:
+    storage = _PruneStorage()
+    storage.synapses.clear()
+    storage.prune_old_entity_refs = AsyncMock(return_value=3)  # type: ignore[attr-defined]
+    storage.prune_retrieval_traces = AsyncMock(return_value=2)  # type: ignore[attr-defined]
+    storage.prune_decay_passes = AsyncMock(return_value=4)  # type: ignore[attr-defined]
+    storage.collapse_pending_updates = AsyncMock(return_value=5)  # type: ignore[attr-defined]
+    progress = _PauseAtRetentionPhase("retention_traces")
+    engine = ConsolidationEngine(storage, ConsolidationConfig(prune_isolated_neurons=True))
+    engine._active_strategy = ConsolidationStrategy.PRUNE
+    engine._progress_session = progress  # type: ignore[assignment]
+
+    with pytest.raises(ConsolidationPausedError, match="retention pause"):
+        await engine._prune(ConsolidationReport(), REFERENCE_TIME, dry_run=False)
+
+    assert progress.strategy_state("prune")["phase"] == "retention_traces"
+    report = ConsolidationReport()
+    await engine._prune(report, REFERENCE_TIME, dry_run=False)
+
+    storage.prune_old_entity_refs.assert_awaited_once()  # type: ignore[attr-defined]
+    storage.prune_retrieval_traces.assert_awaited_once()  # type: ignore[attr-defined]
+    storage.prune_decay_passes.assert_awaited_once()  # type: ignore[attr-defined]
+    storage.collapse_pending_updates.assert_awaited_once()  # type: ignore[attr-defined]
+    assert report.retrieval_traces_pruned == 2
+    assert report.decay_passes_pruned == 4
+    assert report.change_log_collapsed == 5
+    assert progress.strategy_state("prune")["phase"] == "retention_done"
+
+
+@pytest.mark.asyncio
+async def test_prune_retention_failure_preserves_phase_for_retry() -> None:
+    storage = _PruneStorage()
+    storage.synapses.clear()
+    storage.prune_old_entity_refs = AsyncMock(return_value=0)  # type: ignore[attr-defined]
+    storage.prune_retrieval_traces = AsyncMock(  # type: ignore[attr-defined]
+        side_effect=[RuntimeError("storage unavailable"), 0]
+    )
+    progress = _Progress()
+    engine = ConsolidationEngine(storage, ConsolidationConfig(prune_isolated_neurons=True))
+    engine._active_strategy = ConsolidationStrategy.PRUNE
+    engine._progress_session = progress  # type: ignore[assignment]
+
+    with pytest.raises(RuntimeError, match="storage unavailable"):
+        await engine._prune(ConsolidationReport(), REFERENCE_TIME, dry_run=False)
+    assert progress.strategy_state("prune")["phase"] == "retention_entity_refs"
+
+    await engine._prune(ConsolidationReport(), REFERENCE_TIME, dry_run=False)
+    storage.prune_old_entity_refs.assert_awaited_once()  # type: ignore[attr-defined]
+    assert storage.prune_retrieval_traces.await_count == 2  # type: ignore[attr-defined]
+    assert progress.strategy_state("prune")["phase"] == "retention_done"
+
+
+@pytest.mark.asyncio
+async def test_prune_retention_capped_change_log_passes_resume_until_drained() -> None:
+    from surreal_memory.engine.consolidation import _CHANGE_LOG_COLLAPSE_CAP
+
+    storage = _PruneStorage()
+    storage.synapses.clear()
+    storage.collapse_pending_updates = AsyncMock(  # type: ignore[attr-defined]
+        side_effect=[_CHANGE_LOG_COLLAPSE_CAP, 7]
+    )
+    progress = _PauseAtRetentionPhase("retention_change_log")
+    engine = ConsolidationEngine(storage, ConsolidationConfig(prune_isolated_neurons=True))
+    engine._active_strategy = ConsolidationStrategy.PRUNE
+    engine._progress_session = progress  # type: ignore[assignment]
+
+    with pytest.raises(ConsolidationPausedError):
+        await engine._prune(ConsolidationReport(), REFERENCE_TIME, dry_run=False)
+
+    report = ConsolidationReport()
+    await engine._prune(report, REFERENCE_TIME, dry_run=False)
+
+    assert storage.collapse_pending_updates.await_count == 2  # type: ignore[attr-defined]
+    assert report.change_log_collapsed == _CHANGE_LOG_COLLAPSE_CAP + 7
+    assert progress.strategy_state("prune")["phase"] == "retention_done"
