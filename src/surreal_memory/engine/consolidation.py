@@ -5367,7 +5367,13 @@ class ConsolidationEngine:
                         counters=stage_counts,
                     )
 
-            page_method = getattr(self._storage, "find_maturations_after_id", None)
+            # AsyncMock fabricates callable attributes for methods its target
+            # does not implement. Inspect the concrete type before opting in.
+            page_method = (
+                getattr(self._storage, "find_maturations_after_id", None)
+                if callable(getattr(type(self._storage), "find_maturations_after_id", None))
+                else None
+            )
             if callable(page_method):
                 # New checkpoints carry the exact maturation record ID. Older
                 # checkpoints carried a fiber ID, so scan from the beginning once

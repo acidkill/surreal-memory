@@ -1376,6 +1376,30 @@ class NeuralStorage(ABC):
         """
         return []
 
+    async def find_maturations_after_id(
+        self,
+        cursor_id: str | None,
+        *,
+        limit: int = 250,
+        stage: MemoryStage | None = None,
+        min_rehearsal_count: int = 0,
+    ) -> list[tuple[str, MaturationRecord]]:
+        """Return a stable page; SurrealDB overrides this with a bounded query.
+
+        The in-memory fallback preserves the same cursor contract but may
+        materialize all rows. Only the SurrealDB implementation is bounded.
+        """
+        if cursor_id is not None and not cursor_id.startswith("maturation:"):
+            raise ValueError("maturation cursor must be a record ID")
+        records = await self.find_maturations(stage=stage, min_rehearsal_count=min_rehearsal_count)
+        rows = sorted(
+            ((f"maturation:{record.brain_id}_{record.fiber_id}", record) for record in records),
+            key=lambda item: item[0],
+        )
+        return [row for row in rows if cursor_id is None or row[0] > cursor_id][
+            : max(1, min(int(limit), 250))
+        ]
+
     async def cleanup_orphaned_maturations(self) -> int:
         """Delete maturation records whose fiber no longer exists.
 
