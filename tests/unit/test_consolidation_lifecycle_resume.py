@@ -200,6 +200,14 @@ async def test_lifecycle_scans_beyond_ten_thousand_without_singleton_reads_for_n
             super().__init__(neurons)
             self.singleton_reads = 0
             self.pages = 0
+            self.state_batch_sizes: list[int] = []
+
+        async def get_all_neuron_states(self) -> list[NeuronState]:
+            raise AssertionError("lifecycle must not materialize every neuron state")
+
+        async def get_neuron_states_batch(self, neuron_ids: list[str]) -> dict[str, NeuronState]:
+            self.state_batch_sizes.append(len(neuron_ids))
+            return await super().get_neuron_states_batch(neuron_ids)
 
         async def find_neurons_after_id(
             self,
@@ -239,6 +247,8 @@ async def test_lifecycle_scans_beyond_ten_thousand_without_singleton_reads_for_n
     assert progress.checkpoints == 21
     assert storage.singleton_reads == 0
     assert storage.pages == 21
+    assert len(storage.state_batch_sizes) == 21
+    assert max(storage.state_batch_sizes) == 500
     assert storage.updates == []
 
 

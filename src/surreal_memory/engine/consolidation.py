@@ -10001,29 +10001,9 @@ class ConsolidationEngine:
         offset = 0
         pending: list[str] = list(strategy_state.get("pending") or [])
 
-        prefetched_states: dict[str, Any] | None = None
-        attempted_state_prefetch = False
-
         async def _states_for(neurons: list[Neuron]) -> dict[str, Any]:
-            nonlocal prefetched_states, attempted_state_prefetch
-            if not attempted_state_prefetch:
-                attempted_state_prefetch = True
-                try:
-                    prefetched_states = {
-                        state.neuron_id: state
-                        for state in await self._storage.get_all_neuron_states()
-                    }
-                except Exception:
-                    _logger.debug(
-                        "LIFECYCLE: get_all_neuron_states failed; falling back to a batch fetch",
-                        exc_info=True,
-                    )
-            if prefetched_states is not None:
-                return {
-                    neuron.id: prefetched_states[neuron.id]
-                    for neuron in neurons
-                    if neuron.id in prefetched_states
-                }
+            # Fetch only the states for this bounded neuron page. Prefetching
+            # every state makes the otherwise-keyset scan O(brain size) in RAM.
             return await self._storage.get_neuron_states_batch([neuron.id for neuron in neurons])
 
         def _desired_state(neuron: Neuron, state_map: dict[str, Any]) -> str:
