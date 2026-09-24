@@ -8735,8 +8735,8 @@ class ConsolidationEngine:
     async def _interference(
         self,
         report: ConsolidationReport,
-        reference_time: datetime,
-        dry_run: bool,
+        reference_time: datetime | None = None,
+        dry_run: bool = False,
     ) -> None:
         """Count fan effects through a durable, bounded neuron/tag census."""
         import base64
@@ -8750,6 +8750,9 @@ class ConsolidationEngine:
         brain = await self._storage.get_brain(brain_id)
         if not brain:
             return
+        reference_time = (
+            reference_time or getattr(self._progress_session, "reference_time", None) or utcnow()
+        )
 
         state = self._strategy_progress_state() if not dry_run else {}
         counters = state.get("counters") or {}
