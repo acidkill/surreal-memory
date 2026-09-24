@@ -1,13 +1,27 @@
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from surreal_memory.core.fiber import Fiber
+from surreal_memory.engine.consolidation import (
+    ConsolidationConfig,
+    ConsolidationEngine,
+    ConsolidationReport,
+    ConsolidationStrategy,
+    _iter_summary_source_ids,
+)
 from surreal_memory.engine.consolidation_group_plan import (
     ConsolidationGroupPlanError,
     SurrealDBConsolidationGroupPlan,
+)
+from surreal_memory.engine.consolidation_progress import (
+    ConsolidationPausedError,
+    ConsolidationProgressError,
 )
 
 
@@ -350,3 +364,205 @@ async def test_immutable_plan_rejects_changed_candidate_payload() -> None:
     resumed = _plan(storage)
     with pytest.raises(ConsolidationGroupPlanError, match="conflicts"):
         await resumed.put_candidate("fiber-a", {"signature": "changed"}, {"tag-a"})
+
+
+@pytest.mark.asyncio
+async def test_summary_source_reader_supports_legacy_list_and_paged_manifest() -> None:
+    old = Fiber.create(
+        neuron_ids={"anchor-a"},
+        synapse_ids=set(),
+        anchor_neuron_id="anchor-a",
+        summary="old summary",
+        tags={"old"},
+        metadata={"_consolidation": "summary_fiber", "source_fibers": ["old-a", "old-b"]},
+        fiber_id="summary-old",
+    )
+    assert [source_id async for source_id in _iter_summary_source_ids(old, object())] == [
+        "old-a",
+        "old-b",
+    ]
+
+    store = _PlanStorage()
+    plan = SurrealDBConsolidationGroupPlan(
+        store,
+        brain_id="brain",
+        run_id="run",
+        strategy="summarize",
+        fingerprint="fingerprint",
+    )
+    await plan.put_candidates(
+        [(source_id, {"signature": f"sig-{source_id}"}, set()) for source_id in ("new-a", "new-b")]
+    )
+    await plan.add_members(
+        [("group-root", "new-a", "sig-new-a"), ("group-root", "new-b", "sig-new-b")]
+    )
+    manifest = {
+        "plan_id": plan.plan_id,
+        "brain_id": "brain",
+        "run_id": "run",
+        "strategy": "summarize",
+        "fingerprint": "fingerprint",
+        "root_id": "group-root",
+        "source_count": 2,
+    }
+    current = Fiber.create(
+        neuron_ids={"anchor-a"},
+        synapse_ids=set(),
+        anchor_neuron_id="anchor-a",
+        summary="new summary",
+        tags={"new"},
+        metadata={
+            "_consolidation": "summary_fiber",
+            "_cluster_key": "cluster-key",
+            "source_fibers_manifest": manifest,
+        },
+        fiber_id="summary-new",
+    )
+    assert [source_id async for source_id in _iter_summary_source_ids(current, store)] == [
+        "new-a",
+        "new-b",
+    ]
+
+    current.metadata["source_fibers_manifest"]["source_count"] = 3
+    with pytest.raises(ConsolidationProgressError, match="manifest is incomplete"):
+        [source_id async for source_id in _iter_summary_source_ids(current, store)]
+
+
+@pytest.mark.asyncio
+async def test_durable_summarize_handles_component_larger_than_group_page() -> None:
+    class Progress:
+        def __init__(self) -> None:
+            self.state: dict[str, Any] = {"run_id": "summary-run", "strategy_states": {}}
+            self.brain_id = "brain"
+            self.pause_before_apply = True
+
+        def strategy_state(self, strategy: str) -> dict[str, Any]:
+            return self.state["strategy_states"].setdefault(strategy, {})
+
+        async def checkpoint(
+            self,
+            strategy: str,
+            phase: str,
+            *,
+            cursor: str | None = None,
+            pending: list[str] | None = None,
+            counters: dict[str, int | float] | None = None,
+        ) -> None:
+            self.strategy_state(strategy).update(
+                phase=phase,
+                cursor=cursor,
+                pending=list(pending or []),
+                counters=dict(counters or {}),
+                updated_at=datetime.now(UTC),
+            )
+            if phase == "summarize_plan_units" and pending and self.pause_before_apply:
+                self.pause_before_apply = False
+                raise ConsolidationPausedError("simulated interruption before summary apply")
+
+    class Storage(_PlanStorage):
+        def __init__(self, fibers: list[Fiber]) -> None:
+            super().__init__()
+            self.fibers = {fiber.id: fiber for fiber in fibers}
+            self.neurons = {
+                fiber.anchor_neuron_id: SimpleNamespace(id=fiber.anchor_neuron_id)
+                for fiber in fibers
+            }
+            self.synapses: dict[str, Any] = {}
+            self.crash_after_fiber = False
+
+        async def get_fiber(self, fiber_id: str) -> Fiber | None:
+            return self.fibers.get(fiber_id)
+
+        async def get_neuron(self, neuron_id: str) -> Any:
+            return self.neurons.get(neuron_id)
+
+        async def get_synapse(self, synapse_id: str) -> Any:
+            return self.synapses.get(synapse_id)
+
+        async def add_neuron(self, neuron: Any) -> str:
+            self.neurons[neuron.id] = neuron
+            return neuron.id
+
+        async def add_synapse(self, synapse: Any) -> str:
+            self.synapses[synapse.id] = synapse
+            return synapse.id
+
+        async def add_fiber(self, fiber: Fiber) -> str:
+            self.fibers[fiber.id] = fiber
+            if self.crash_after_fiber:
+                self.crash_after_fiber = False
+                raise RuntimeError("simulated crash after durable summary fiber write")
+            return fiber.id
+
+        def _get_brain_id(self) -> str:
+            return "brain"
+
+        async def get_fibers_after_id(
+            self,
+            after_id: str | None,
+            *,
+            limit: int,
+            created_before: datetime | None = None,
+        ) -> list[Fiber]:
+            fibers = sorted(self.fibers.values(), key=lambda fiber: fiber.id)
+            return [fiber for fiber in fibers if after_id is None or fiber.id > after_id][:limit]
+
+    count = 501
+    fibers = []
+    for index in range(count):
+        tags = set()
+        if index:
+            tags.add(f"edge-{index - 1:04d}")
+        if index < count - 1:
+            tags.add(f"edge-{index:04d}")
+        fibers.append(
+            Fiber.create(
+                neuron_ids={f"anchor-{index:04d}"},
+                synapse_ids=set(),
+                anchor_neuron_id=f"anchor-{index:04d}",
+                summary=f"source {index}",
+                tags=tags,
+                fiber_id=f"fiber-{index:04d}",
+            )
+        )
+    storage = Storage(fibers)
+    progress = Progress()
+    engine = ConsolidationEngine(
+        storage,
+        ConsolidationConfig(
+            summarize_min_cluster_size=3,
+            summarize_tag_overlap_threshold=0.2,
+        ),
+    )
+    engine._active_strategy = ConsolidationStrategy.SUMMARIZE
+    engine._progress_session = progress  # type: ignore[assignment]
+
+    async def paged_fibers(*, created_before: datetime | None = None):
+        yield fibers[:300]
+        yield fibers[300:]
+
+    engine._iter_fiber_census_pages = paged_fibers  # type: ignore[method-assign]
+    report = ConsolidationReport()
+    with pytest.raises(ConsolidationPausedError, match="before summary apply"):
+        await engine._summarize(report, dry_run=False)
+    assert not any(
+        fiber.metadata.get("_consolidation") == "summary_fiber" for fiber in storage.fibers.values()
+    )
+    storage.crash_after_fiber = True
+    with pytest.raises(RuntimeError, match="after durable summary fiber write"):
+        await engine._summarize(report, dry_run=False)
+    await engine._summarize(report, dry_run=False)
+
+    summaries = [
+        fiber
+        for fiber in storage.fibers.values()
+        if fiber.metadata.get("_consolidation") == "summary_fiber"
+    ]
+    assert report.summaries_created == 1
+    assert len(summaries) == 1
+    assert "source_fibers" not in summaries[0].metadata
+    assert summaries[0].metadata["source_fibers_manifest"]["source_count"] == count
+    source_ids = [source_id async for source_id in _iter_summary_source_ids(summaries[0], storage)]
+    assert source_ids == [fiber.id for fiber in sorted(fibers, key=lambda item: item.id)]
+    assert summaries[0].tags == set().union(*(fiber.tags for fiber in fibers))
+    assert len(summaries[0].neuron_ids) == count + 1

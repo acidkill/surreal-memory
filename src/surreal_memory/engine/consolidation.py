@@ -159,6 +159,48 @@ def _summary_source_signature(fiber: Fiber) -> str:
     )
 
 
+async def _iter_summary_source_ids(fiber: Fiber, storage: Any) -> AsyncIterator[str]:
+    """Yield a summary's source IDs from either legacy inline data or a manifest.
+
+    Older summaries keep ``source_fibers`` as a list. New durable summaries use
+    the membership rows already stored by their immutable group plan, avoiding a
+    second unbounded copy of the component in Fiber metadata.
+    """
+    legacy = fiber.metadata.get("source_fibers")
+    if isinstance(legacy, list):
+        for source_id in legacy:
+            if isinstance(source_id, str) and source_id:
+                yield source_id
+        return
+
+    manifest = fiber.metadata.get("source_fibers_manifest")
+    if not isinstance(manifest, dict):
+        return
+    try:
+        plan = SurrealDBConsolidationGroupPlan(
+            storage,
+            brain_id=str(manifest["brain_id"]),
+            run_id=str(manifest["run_id"]),
+            strategy=str(manifest["strategy"]),
+            fingerprint=str(manifest["fingerprint"]),
+        )
+        root_id = str(manifest["root_id"])
+        if not root_id or plan.plan_id != str(manifest["plan_id"]):
+            raise ValueError("summary provenance manifest identity does not match its plan")
+        expected_count = int(manifest["source_count"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ConsolidationProgressError("summary provenance manifest is malformed") from exc
+
+    count = 0
+    async for source_id, _signature in plan.iter_member_signatures(root_id):
+        count += 1
+        yield source_id
+    if count != expected_count:
+        raise ConsolidationProgressError(
+            "summary provenance manifest is incomplete or has unexpected members"
+        )
+
+
 _MERGED_SUMMARY_MAX_CHARS = 500
 
 
@@ -3900,6 +3942,488 @@ class ConsolidationEngine:
                 keys.add(_summary_cluster_key_from_ids(str(s) for s in sources))
         return keys
 
+    async def _summarize_durable(
+        self, report: ConsolidationReport, *, run_id: str, phase: str
+    ) -> None:
+        """Summarize with a paged durable candidate graph and provenance manifest."""
+        state = self._strategy_progress_state()
+        created_before = getattr(self._progress_session, "reference_time", None)
+        digest = hashlib.sha256()
+        digest.update(
+            json.dumps(
+                {
+                    "algorithm": "summarize-external-graph-v1",
+                    "min_cluster_size": self._config.summarize_min_cluster_size,
+                    "tag_overlap_threshold": self._config.summarize_tag_overlap_threshold,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+        fiber_count = 0
+        candidate_count = 0
+        brain_id = str(
+            getattr(self._progress_session, "brain_id", None)
+            or getattr(self._storage, "_get_brain_id", lambda: "")()
+        )
+        if not brain_id:
+            raise ConsolidationProgressError("summarize durable plan has no brain identity")
+
+        # Census rows are already durable and ordered. Hash one eligible source at
+        # a time so plan identity never requires retaining the whole input set.
+        async for page in self._iter_fiber_census_pages(created_before=created_before):
+            fiber_count += len(page)
+            for fiber in page:
+                if fiber.metadata.get("_consolidation") == "summary_fiber":
+                    continue
+                if not fiber.tags:
+                    continue
+                candidate_count += 1
+                digest.update(
+                    json.dumps(
+                        {
+                            "id": fiber.id,
+                            "anchor_neuron_id": fiber.anchor_neuron_id,
+                            "salience": fiber.salience,
+                            "summary": fiber.summary,
+                            "tags": sorted(fiber.tags),
+                            "source_signature": _summary_source_signature(fiber),
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                )
+                digest.update(b"\n")
+        if fiber_count < self._config.summarize_min_cluster_size or candidate_count < (
+            self._config.summarize_min_cluster_size
+        ):
+            return
+
+        fingerprint = digest.hexdigest()
+        plan = SurrealDBConsolidationGroupPlan(
+            self._storage,
+            brain_id=brain_id,
+            run_id=run_id,
+            strategy="summarize",
+            fingerprint=fingerprint,
+        )
+        cursor: dict[str, Any] = {}
+        if phase.startswith("summarize_plan_") or phase == "summarize_plan_complete":
+            try:
+                decoded = json.loads(str(state.get("cursor", "")))
+            except (TypeError, ValueError) as exc:
+                raise ConsolidationProgressError(
+                    "summarize paged-plan cursor is malformed"
+                ) from exc
+            if (
+                not isinstance(decoded, dict)
+                or decoded.get("version") != 1
+                or decoded.get("kind") != "summary_paged_group_plan"
+                or decoded.get("plan_id") != plan.plan_id
+                or decoded.get("fingerprint") != fingerprint
+            ):
+                raise ConsolidationProgressError(
+                    "summarize inputs or algorithm changed; refusing to skip its checkpoint"
+                )
+            cursor = decoded
+        elif phase == "summarize_scan":
+            return
+        elif phase not in {"", "summarize_plan_stage"}:
+            # Existing v2 checkpoints continue through the compatibility path in
+            # _summarize; this method is selected only for new durable runs.
+            raise ConsolidationProgressError(
+                "summarize legacy checkpoint cannot be interpreted as a paged group plan"
+            )
+        if phase == "summarize_plan_complete":
+            return
+
+        def encode_cursor(**values: Any) -> str:
+            return json.dumps(
+                {
+                    "version": 1,
+                    "kind": "summary_paged_group_plan",
+                    "plan_id": plan.plan_id,
+                    "fingerprint": fingerprint,
+                    **values,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+
+        # Stage compact candidates and inverted-index postings. Previously written
+        # summaries become immutable markers so duplicate suppression is also paged.
+        if phase in {"", "summarize_plan_stage"}:
+            after_fiber = str(cursor.get("after_fiber", "")) if cursor else ""
+            async for page in self._iter_fiber_census_pages(created_before=created_before):
+                staged: list[tuple[str, Mapping[str, Any], set[str] | frozenset[str]]] = []
+                markers: list[str] = []
+                for fiber in page:
+                    if fiber.id <= after_fiber:
+                        continue
+                    if fiber.metadata.get("_consolidation") == "summary_fiber":
+                        cluster_key = fiber.metadata.get("_cluster_key")
+                        if not cluster_key:
+                            source_ids: list[str] = []
+                            async for source_id in _iter_summary_source_ids(fiber, self._storage):
+                                source_ids.append(source_id)
+                            if source_ids:
+                                cluster_key = _summary_cluster_key_from_ids(source_ids)
+                        if cluster_key:
+                            markers.append(str(cluster_key))
+                        continue
+                    if not fiber.tags:
+                        continue
+                    staged.append(
+                        (
+                            fiber.id,
+                            {
+                                "anchor_neuron_id": fiber.anchor_neuron_id,
+                                "salience": fiber.salience,
+                                "summary": fiber.summary,
+                                "tags": sorted(fiber.tags),
+                                "signature": _summary_source_signature(fiber),
+                            },
+                            frozenset(fiber.tags),
+                        )
+                    )
+                if staged:
+                    await plan.put_candidates(staged)
+                for key in markers:
+                    await plan.put_item("existing_summary", key, {"cluster_key": key})
+                if page:
+                    after_fiber = page[-1].id
+                    await self._checkpoint_progress(
+                        "summarize_plan_stage",
+                        cursor=encode_cursor(after_fiber=after_fiber),
+                        counters={"summarize_plan_candidates": candidate_count},
+                    )
+            cursor = {
+                "after_feature": "",
+                "next_sequence": 0,
+                "pairs_examined": 0,
+            }
+            await self._checkpoint_progress(
+                "summarize_plan_pairs",
+                cursor=encode_cursor(**cursor),
+                counters={"summarize_plan_candidates": candidate_count},
+            )
+            phase = "summarize_plan_pairs"
+
+        if phase == "summarize_plan_pairs":
+            after_feature = str(cursor.get("after_feature", ""))
+            sequence = int(cursor.get("next_sequence", 0))
+            pairs_examined = int(cursor.get("pairs_examined", 0))
+            if sequence < 0 or pairs_examined < 0:
+                raise ConsolidationProgressError("summarize pair cursor is invalid")
+            async for feature, candidate_ids in plan.iter_postings(
+                posting_limit=100, after_feature=after_feature
+            ):
+                if candidate_ids:
+                    candidates = {
+                        candidate_id: await plan.get_candidate(candidate_id)
+                        for candidate_id in candidate_ids
+                    }
+                    for left_index, left_id in enumerate(candidate_ids):
+                        left_tags = set(candidates[left_id].get("tags") or [])
+                        for right_id in candidate_ids[left_index + 1 :]:
+                            if sequence % 1000 == 0:
+                                await self._check_progress_budget()
+                                await asyncio.sleep(0)
+                            right_tags = set(candidates[right_id].get("tags") or [])
+                            union_size = len(left_tags | right_tags)
+                            if union_size and len(left_tags & right_tags) / union_size >= (
+                                self._config.summarize_tag_overlap_threshold
+                            ):
+                                await plan.union(left_id, right_id, sequence)
+                            sequence += 1
+                            pairs_examined += 1
+                after_feature = feature
+                await self._checkpoint_progress(
+                    "summarize_plan_pairs",
+                    cursor=encode_cursor(
+                        after_feature=after_feature,
+                        next_sequence=sequence,
+                        pairs_examined=pairs_examined,
+                    ),
+                    counters={"summarize_pairs_examined": pairs_examined},
+                )
+            cursor = {
+                "after_candidate": "",
+                "next_sequence": sequence,
+                "pairs_examined": pairs_examined,
+            }
+            await self._checkpoint_progress(
+                "summarize_plan_members",
+                cursor=encode_cursor(**cursor),
+                counters={"summarize_pairs_examined": pairs_examined},
+            )
+            phase = "summarize_plan_members"
+
+        if phase == "summarize_plan_members":
+            after_candidate = str(cursor.get("after_candidate", ""))
+            sequence = int(cursor.get("next_sequence", 0))
+            processed = 0
+            batch: list[tuple[str, str, str | None]] = []
+            async for candidate_id, payload in plan.iter_candidates(after=after_candidate):
+                root_id = await plan.find(candidate_id, sequence)
+                batch.append((root_id, candidate_id, str(payload.get("signature", ""))))
+                processed += 1
+                if len(batch) >= 100:
+                    await plan.add_members(batch)
+                    batch.clear()
+                if processed % 500 == 0:
+                    if batch:
+                        await plan.add_members(batch)
+                        batch.clear()
+                    after_candidate = candidate_id
+                    await self._checkpoint_progress(
+                        "summarize_plan_members",
+                        cursor=encode_cursor(
+                            after_candidate=after_candidate,
+                            next_sequence=sequence,
+                            pairs_examined=int(cursor.get("pairs_examined", 0)),
+                        ),
+                        counters={"summarize_plan_members": processed},
+                    )
+            if batch:
+                await plan.add_members(batch)
+            cursor = {
+                "after_group": "",
+                "next_sequence": sequence,
+                "pairs_examined": int(cursor.get("pairs_examined", 0)),
+            }
+            await self._checkpoint_progress(
+                "summarize_plan_units",
+                cursor=encode_cursor(**cursor),
+                counters={"summarize_plan_members": candidate_count},
+            )
+            phase = "summarize_plan_units"
+
+        async def manifest(root_id: str, source_count: int) -> dict[str, Any]:
+            return {
+                "plan_id": plan.plan_id,
+                "brain_id": brain_id,
+                "run_id": run_id,
+                "strategy": "summarize",
+                "fingerprint": fingerprint,
+                "root_id": root_id,
+                "source_count": source_count,
+            }
+
+        async def collect_group(root_id: str) -> dict[str, Any] | None:
+            source_count = 0
+            previous = ""
+            cluster_hash = hashlib.sha256()
+            summary_parts: list[str] = []
+            all_tags: set[str] = set()
+            anchor_ids: set[str] = set()
+            async for fiber_id, signature in plan.iter_member_signatures(root_id):
+                payload = await plan.get_candidate(fiber_id)
+                current = await self._storage.get_fiber(fiber_id)
+                if current is None or _summary_source_signature(current) != signature:
+                    raise ConsolidationProgressError(
+                        f"summary source fiber {fiber_id!r} changed after its checkpoint"
+                    )
+                source_count += 1
+                if previous:
+                    cluster_hash.update(b"|")
+                cluster_hash.update(fiber_id.encode("utf-8"))
+                previous = fiber_id
+                if len(summary_parts) < 10 and payload.get("summary"):
+                    summary_parts.append(str(payload["summary"]))
+                all_tags.update(str(tag) for tag in payload.get("tags", []))
+                anchor_ids.add(str(payload["anchor_neuron_id"]))
+            if source_count < self._config.summarize_min_cluster_size:
+                return None
+            cluster_key = cluster_hash.hexdigest()[:32]
+            summary_content = (
+                "; ".join(summary_parts)
+                if summary_parts
+                else (f"Cluster of {source_count} memories")
+            )
+            tag_label = ", ".join(sorted(all_tags)[:5])
+            concept_content = f"[{tag_label}] {summary_content[:200]}"
+            valid_anchor_ids: list[str] = []
+            for anchor_id in sorted(anchor_ids):
+                await self._check_progress_budget()
+                if await self._storage.get_neuron(anchor_id) is not None:
+                    valid_anchor_ids.append(anchor_id)
+            return {
+                "kind": "summary_cluster",
+                "version": 2,
+                "fingerprint": fingerprint,
+                "cluster_key": cluster_key,
+                "group_root": root_id,
+                "source_count": source_count,
+                "concept_content": concept_content,
+                "tags": sorted(all_tags),
+                "concept_neuron_id": str(uuid4()),
+                "anchor_ids": valid_anchor_ids,
+                "synapses": [
+                    {"anchor_id": anchor_id, "id": str(uuid4())}
+                    for anchor_id in valid_anchor_ids[:10]
+                ],
+                "summary_fiber_id": str(uuid4()),
+            }
+
+        async def apply_snapshot(snapshot: dict[str, Any]) -> None:
+            concept_id = str(snapshot["concept_neuron_id"])
+            concept = await self._storage.get_neuron(concept_id)
+            if concept is None:
+                await self._check_progress_budget()
+                concept = Neuron.create(
+                    type=NeuronType.CONCEPT,
+                    content=str(snapshot["concept_content"]),
+                    neuron_id=concept_id,
+                    metadata={
+                        "_consolidation": "summary",
+                        "_cluster_key": str(snapshot["cluster_key"]),
+                        "cluster_size": int(snapshot["source_count"]),
+                        "tags": list(snapshot["tags"]),
+                    },
+                )
+                await self._storage.add_neuron(concept)
+            synapse_ids: set[str] = set()
+            for edge in snapshot["synapses"]:
+                synapse_id = str(edge["id"])
+                if await self._storage.get_synapse(synapse_id) is None:
+                    await self._check_progress_budget()
+                    await self._storage.add_synapse(
+                        Synapse.create(
+                            source_id=concept_id,
+                            target_id=str(edge["anchor_id"]),
+                            type=SynapseType.RELATED_TO,
+                            weight=0.6,
+                            synapse_id=synapse_id,
+                        )
+                    )
+                synapse_ids.add(synapse_id)
+            summary_fiber_id = str(snapshot["summary_fiber_id"])
+            if await self._storage.get_fiber(summary_fiber_id) is None:
+                await self._check_progress_budget()
+                anchors = {str(anchor_id) for anchor_id in snapshot["anchor_ids"]}
+                await self._storage.add_fiber(
+                    Fiber.create(
+                        neuron_ids={concept_id} | anchors,
+                        synapse_ids=synapse_ids,
+                        anchor_neuron_id=concept_id,
+                        summary=str(snapshot["concept_content"]),
+                        tags={str(tag) for tag in snapshot["tags"]},
+                        metadata={
+                            "_consolidation": "summary_fiber",
+                            "_cluster_key": str(snapshot["cluster_key"]),
+                            "source_fibers_manifest": await manifest(
+                                str(snapshot["group_root"]), int(snapshot["source_count"])
+                            ),
+                        },
+                        fiber_id=summary_fiber_id,
+                    )
+                )
+
+        async def replay_pending(serialized: str) -> dict[str, Any]:
+            try:
+                snapshot = json.loads(serialized)
+                if (
+                    snapshot["kind"] != "summary_cluster"
+                    or snapshot["version"] != 2
+                    or snapshot["fingerprint"] != fingerprint
+                ):
+                    raise ValueError("incompatible summary snapshot")
+                root_id = str(snapshot["group_root"])
+                cluster_key = str(snapshot["cluster_key"])
+                checked = await collect_group(root_id)
+                if (
+                    checked is None
+                    or checked["cluster_key"] != cluster_key
+                    or checked["source_count"] != int(snapshot["source_count"])
+                ):
+                    raise ValueError("summary group no longer matches its manifest")
+            except (TypeError, ValueError, KeyError) as exc:
+                raise ConsolidationProgressError(
+                    "summarize pending checkpoint is malformed or incompatible"
+                ) from exc
+            await apply_snapshot(snapshot)
+            return cast("dict[str, Any]", snapshot)
+
+        pending = state.get("pending")
+        if not isinstance(pending, (list, tuple)) or len(pending) not in (0, 1):
+            raise ConsolidationProgressError("summarize pending checkpoint is malformed")
+        after_group = str(cursor.get("after_group", ""))
+        if pending:
+            snapshot = await replay_pending(str(pending[0]))
+            pending_root = str(snapshot["group_root"])
+            if pending_root <= after_group:
+                raise ConsolidationProgressError(
+                    "summarize pending group is not after its committed cursor"
+                )
+            after_group = pending_root
+            report.summaries_created += 1
+            await self._checkpoint_progress(
+                "summarize_plan_units",
+                cursor=encode_cursor(
+                    after_group=after_group,
+                    next_sequence=int(cursor.get("next_sequence", 0)),
+                    pairs_examined=int(cursor.get("pairs_examined", 0)),
+                ),
+                counters={"summaries_created": report.summaries_created},
+            )
+
+        async for root_id in plan.iter_groups(after=after_group):
+            group = await collect_group(root_id)
+            if group is None:
+                await self._checkpoint_progress(
+                    "summarize_plan_units",
+                    cursor=encode_cursor(
+                        after_group=root_id,
+                        next_sequence=int(cursor.get("next_sequence", 0)),
+                        pairs_examined=int(cursor.get("pairs_examined", 0)),
+                    ),
+                    counters={"summaries_created": report.summaries_created},
+                )
+                continue
+            cluster_key = str(group["cluster_key"])
+            if await plan.has_item("existing_summary", cluster_key):
+                await self._checkpoint_progress(
+                    "summarize_plan_units",
+                    cursor=encode_cursor(
+                        after_group=root_id,
+                        next_sequence=int(cursor.get("next_sequence", 0)),
+                        pairs_examined=int(cursor.get("pairs_examined", 0)),
+                    ),
+                    counters={"summaries_created": report.summaries_created},
+                )
+                continue
+            serialized = json.dumps(
+                group, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            )
+            await self._checkpoint_progress(
+                "summarize_plan_units",
+                cursor=encode_cursor(
+                    after_group=after_group,
+                    next_sequence=int(cursor.get("next_sequence", 0)),
+                    pairs_examined=int(cursor.get("pairs_examined", 0)),
+                ),
+                pending=[serialized],
+                counters={"summaries_created": report.summaries_created},
+            )
+            await apply_snapshot(group)
+            report.summaries_created += 1
+            await self._checkpoint_progress(
+                "summarize_plan_units",
+                cursor=encode_cursor(
+                    after_group=root_id,
+                    next_sequence=int(cursor.get("next_sequence", 0)),
+                    pairs_examined=int(cursor.get("pairs_examined", 0)),
+                ),
+                counters={"summaries_created": report.summaries_created},
+            )
+        await self._checkpoint_progress(
+            "summarize_plan_complete",
+            cursor=encode_cursor(after_group=after_group),
+            counters={"summaries_created": report.summaries_created},
+        )
+
     async def _summarize(
         self,
         report: ConsolidationReport,
@@ -3911,6 +4435,23 @@ class ConsolidationEngine:
         output and artifact IDs are saved as the pending work unit before graph
         writes, so replay can finish partial writes without duplicating them.
         """
+        progress_state = self._strategy_progress_state()
+        progress_phase = str(progress_state.get("phase") or "")
+        run_id = str(getattr(self._progress_session, "state", {}).get("run_id", ""))
+        durable_group_mode = bool(
+            not dry_run
+            and self._progress_session is not None
+            and run_id
+            and callable(getattr(self._storage, "_query", None))
+            and callable(getattr(self._storage, "get_fibers_after_id", None))
+            and (
+                progress_phase in {"", "summarize_plan_stage"}
+                or progress_phase.startswith("summarize_plan_")
+            )
+        )
+        if durable_group_mode:
+            await self._summarize_durable(report, run_id=run_id, phase=progress_phase)
+            return
         import json
 
         source_fibers: list[_SummaryCandidate] = []
