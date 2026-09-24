@@ -303,6 +303,7 @@ async def test_v10_migration_recovers_partial_schemaless_progress_table() -> Non
     await conn.query("DEFINE FIELD brain_id ON consolidation_progress TYPE string;")
 
     await M._migrate_10_to_11(conn)
+    assert await M._read_stamped_version(conn) == M.VERSION_11
 
     info = await conn.query("INFO FOR DB")
     tables = info.get("tables", {}) if isinstance(info, dict) else {}
