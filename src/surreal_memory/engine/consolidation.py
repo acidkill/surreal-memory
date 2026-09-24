@@ -5326,11 +5326,9 @@ class ConsolidationEngine:
                 )
 
         if not stage_done:
-            all_maturations = await self._storage.find_maturations()
-            all_maturations.sort(key=lambda record: record.fiber_id)
-            for record in all_maturations:
-                if resumable and stage_cursor is not None and record.fiber_id <= stage_cursor:
-                    continue
+
+            async def advance_stage_record(record_id: str, record: Any) -> None:
+                nonlocal stage_cursor
                 if resumable:
                     await self._check_progress_budget()
                 advanced = compute_stage_transition(record, now=reference_time)
@@ -5351,22 +5349,85 @@ class ConsolidationEngine:
                                     record.fiber_id,
                                 )
                                 if resumable:
-                                    stage_cursor = record.fiber_id
+                                    stage_cursor = record_id
                                     await self._checkpoint_progress(
                                         "mature_stage",
                                         cursor=stage_cursor,
                                         pending=[],
                                         counters=stage_counts,
                                     )
-                                continue
+                                return
                             raise
                 if resumable:
-                    stage_cursor = record.fiber_id
+                    stage_cursor = record_id
                     await self._checkpoint_progress(
                         "mature_stage",
                         cursor=stage_cursor,
                         pending=[],
                         counters=stage_counts,
+                    )
+
+            page_method = getattr(self._storage, "find_maturations_after_id", None)
+            if callable(page_method):
+                # New checkpoints carry the exact maturation record ID. Older
+                # checkpoints carried a fiber ID, so scan from the beginning once
+                # and retain the former fiber-order skip semantics while advancing
+                # the durable cursor into the new record-ID format.
+                page_cursor = (
+                    stage_cursor
+                    if stage_cursor is not None and stage_cursor.startswith("maturation:")
+                    else None
+                )
+                legacy_fiber_cursor = (
+                    stage_cursor
+                    if resumable and stage_cursor is not None and page_cursor is None
+                    else None
+                )
+                while True:
+                    if resumable:
+                        await self._check_progress_budget()
+                    page = await page_method(page_cursor, limit=250)
+                    if not page:
+                        break
+                    previous_id = page_cursor
+                    for record_id, record in page:
+                        record_id = str(record_id)
+                        if not record_id.startswith("maturation:") or (
+                            previous_id is not None and record_id <= previous_id
+                        ):
+                            raise ConsolidationProgressError(
+                                "maturation stage page is not ordered by record ID"
+                            )
+                        previous_id = record_id
+                        if (
+                            legacy_fiber_cursor is not None
+                            and record.fiber_id <= legacy_fiber_cursor
+                        ):
+                            page_cursor = record_id
+                            if resumable:
+                                stage_cursor = record_id
+                                await self._checkpoint_progress(
+                                    "mature_stage",
+                                    cursor=stage_cursor,
+                                    pending=[],
+                                    counters=stage_counts,
+                                )
+                            continue
+                        await advance_stage_record(record_id, record)
+                        page_cursor = record_id
+                    if len(page) < 250:
+                        break
+            else:
+                # Compatibility for non-SurrealDB adapters that do not implement
+                # the durable keyset API. Persistent SurrealDB progress always
+                # takes the bounded branch above.
+                all_maturations = await self._storage.find_maturations()
+                all_maturations.sort(key=lambda record: record.fiber_id)
+                for record in all_maturations:
+                    if resumable and stage_cursor is not None and record.fiber_id <= stage_cursor:
+                        continue
+                    await advance_stage_record(
+                        f"maturation:{record.brain_id}_{record.fiber_id}", record
                     )
             if resumable:
                 await self._checkpoint_progress(

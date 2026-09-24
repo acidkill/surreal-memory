@@ -98,6 +98,7 @@ class _Storage:
         self.saved_maturations: list[str] = []
         self.cleanup_calls = 0
         self.backfill_calls = 0
+        self.maturation_page_calls = 0
         self.semantic_source_generation = 0
         self.semantic_discovery_states: dict[tuple[str, int], dict[str, Any]] = {}
 
@@ -115,6 +116,21 @@ class _Storage:
 
     async def find_maturations(self) -> list[MaturationRecord]:
         return list(self.maturations.values())
+
+    async def find_maturations_after_id(
+        self, cursor_id: str | None, *, limit: int = 250
+    ) -> list[tuple[str, MaturationRecord]]:
+        self.maturation_page_calls += 1
+        rows = sorted(
+            (
+                (f"maturation:{record.brain_id}_{record.fiber_id}", record)
+                for record in self.maturations.values()
+            ),
+            key=lambda item: item[0],
+        )
+        if cursor_id is not None:
+            rows = [item for item in rows if item[0] > cursor_id]
+        return rows[:limit]
 
     async def save_maturation(self, record: MaturationRecord) -> None:
         self.saved_maturations.append(record.fiber_id)
@@ -338,6 +354,9 @@ async def test_mature_replays_completed_stage_unit_without_saving_twice() -> Non
 
     assert storage.saved_maturations == ["fiber-stage"]
     assert storage.maturations["fiber-stage"].stage == MemoryStage.WORKING
+    stage_checkpoint = next(write for write in progress.writes if write["phase"] == "mature_stage")
+    assert stage_checkpoint["cursor"].startswith("maturation:")
+    assert storage.maturation_page_calls == 1
 
     await _engine(storage, ConsolidationStrategy.MATURE, progress)._mature(
         ConsolidationReport(), _REFERENCE_TIME, dry_run=False
@@ -345,6 +364,85 @@ async def test_mature_replays_completed_stage_unit_without_saving_twice() -> Non
 
     assert storage.saved_maturations == ["fiber-stage"]
     assert progress.strategy_state("mature")["phase"] == "mature_complete"
+    assert storage.maturation_page_calls >= 2
+
+
+@pytest.mark.asyncio
+async def test_mature_stage_scan_resumes_across_keyset_pages() -> None:
+    records = [
+        MaturationRecord(
+            fiber_id=f"fiber-{index:03d}",
+            brain_id="brain-1",
+            stage=MemoryStage.SHORT_TERM,
+            stage_entered_at=_REFERENCE_TIME - timedelta(days=2),
+        )
+        for index in range(252)
+    ]
+    storage = _Storage(maturations=records)
+    progress = _Progress("mature", pause_phase="mature_stage", pause_after_phase_calls=251)
+
+    with pytest.raises(ConsolidationPausedError, match="simulated interruption"):
+        await _engine(storage, ConsolidationStrategy.MATURE, progress)._mature(
+            ConsolidationReport(), _REFERENCE_TIME, dry_run=False
+        )
+
+    completed_before_pause = len(storage.saved_maturations)
+    assert completed_before_pause == 251
+    assert progress.strategy_state("mature")["cursor"].startswith("maturation:")
+
+    await _engine(storage, ConsolidationStrategy.MATURE, progress)._mature(
+        ConsolidationReport(), _REFERENCE_TIME, dry_run=False
+    )
+
+    assert len(storage.saved_maturations) == 252
+    assert len(set(storage.saved_maturations)) == 252
+    assert all(record.stage == MemoryStage.WORKING for record in storage.maturations.values())
+
+
+@pytest.mark.asyncio
+async def test_mature_stage_migrates_legacy_fiber_cursor_to_record_id() -> None:
+    records = [
+        MaturationRecord(
+            fiber_id=fiber_id,
+            brain_id="brain-1",
+            stage=MemoryStage.SHORT_TERM,
+            stage_entered_at=_REFERENCE_TIME - timedelta(days=2),
+        )
+        for fiber_id in ("fiber-010", "fiber-100")
+    ]
+    storage = _Storage(maturations=records)
+    progress = _Progress("mature")
+    progress.strategy_state("mature").update(phase="mature_stage", cursor="fiber-010")
+
+    await _engine(storage, ConsolidationStrategy.MATURE, progress)._mature(
+        ConsolidationReport(), _REFERENCE_TIME, dry_run=False
+    )
+
+    assert storage.saved_maturations == ["fiber-100"]
+    stage_checkpoint = next(write for write in progress.writes if write["phase"] == "mature_stage")
+    assert stage_checkpoint["cursor"].startswith("maturation:")
+
+
+@pytest.mark.asyncio
+async def test_mature_stage_dry_run_advances_keyset_pages_without_writes() -> None:
+    records = [
+        MaturationRecord(
+            fiber_id=f"fiber-{index:03d}",
+            brain_id="brain-1",
+            stage=MemoryStage.SHORT_TERM,
+            stage_entered_at=_REFERENCE_TIME - timedelta(days=2),
+        )
+        for index in range(252)
+    ]
+    storage = _Storage(maturations=records)
+    progress = _Progress("mature")
+
+    await _engine(storage, ConsolidationStrategy.MATURE, progress)._mature(
+        ConsolidationReport(), _REFERENCE_TIME, dry_run=True
+    )
+
+    assert storage.maturation_page_calls == 2
+    assert storage.saved_maturations == []
 
 
 @pytest.mark.asyncio
