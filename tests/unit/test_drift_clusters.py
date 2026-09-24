@@ -399,14 +399,15 @@ class TestDetectDriftStrategy:
         assert "Why nothing changed" in summary
 
     @pytest.mark.asyncio
-    async def test_detect_drift_survives_a_storage_failure(
+    async def test_detect_drift_keeps_run_unfinished_after_storage_failure(
         self, drift_storage: InMemoryStorage
     ) -> None:
-        """A raising storage layer must degrade to 0, never abort the pass."""
+        """A failed census must not be reported as a completed zero-result pass."""
         drift_storage.get_tag_cooccurrence = AsyncMock(  # type: ignore[method-assign]
             side_effect=RuntimeError("boom")
         )
         engine = ConsolidationEngine(drift_storage)
         report = await engine.run(strategies=[ConsolidationStrategy.DETECT_DRIFT])
 
-        assert report.drift_clusters_found == 0
+        assert report.extra["consolidation_status"] == "failed"
+        assert report.extra["failed_strategies"] == ["detect_drift (RuntimeError)"]

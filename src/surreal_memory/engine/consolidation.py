@@ -10726,10 +10726,10 @@ class ConsolidationEngine:
             )
             tag_fiber_counts = await self._storage.get_tag_fiber_counts()
         except Exception:
-            _logger.warning("Failed to read tag data for drift detection", exc_info=True)
-            report.drift_clusters_found = 0
-            report.drift_clusters_persisted = 0
-            return
+            _logger.exception("Failed to read tag data for drift detection")
+            # The census is part of the strategy, not an optional preview. A
+            # transient read failure must leave the durable run unfinished.
+            raise
 
         clusters = sorted(
             detect_clusters(cooccurrences, tag_fiber_counts),
