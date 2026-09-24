@@ -1,0 +1,127 @@
+from __future__ import annotations
+
+import json
+from datetime import datetime, timedelta
+from typing import Any
+
+import pytest
+
+from surreal_memory.storage.surrealdb.semantic_source_revision import (
+    SemanticSourceChangedError,
+    SemanticSourceFenceExpiredError,
+    SemanticSourceFenceUnavailableError,
+    SurrealDBSemanticSourceRevisionMixin,
+)
+
+
+class _RevisionStorage(SurrealDBSemanticSourceRevisionMixin):
+    def __init__(self) -> None:
+        self.current_brain_id = "brain-a"
+        self.now = datetime(2026, 9, 24, 12, 0)
+        self.change_rows: dict[str, list[dict[str, Any]]] = {
+            "neuron": [],
+            "synapse": [],
+        }
+        self.fail_table: str | None = None
+        self.fail_message = "test transport failure"
+        self.queries: list[tuple[str, dict[str, Any]]] = []
+        self.marker_id: str | None = None
+        self.marker_versionstamp = (100 << 16) + 9
+
+    def _get_brain_id(self) -> str:
+        return self.current_brain_id
+
+    async def _query_response(self, sql: str, **params: Any) -> Any:
+        assert sql == "RETURN time::now()"
+        return self.now
+
+    async def _query(self, sql: str, **params: Any) -> list[dict[str, Any]]:
+        self.queries.append((sql, params))
+        if sql.startswith("DELETE semantic_source_barrier WHERE"):
+            return []
+        if sql.startswith("CREATE type::record('semantic_source_barrier'"):
+            self.marker_id = str(params["token_id"])
+            return []
+        if sql.startswith("SHOW CHANGES FOR TABLE semantic_source_barrier"):
+            assert self.marker_id is not None
+            return [
+                {
+                    "versionstamp": self.marker_versionstamp,
+                    "changes": [{"update": {"id": f"semantic_source_barrier:{self.marker_id}"}}],
+                }
+            ]
+        table = "neuron" if "neuron" in sql else "synapse"
+        if self.fail_table == table:
+            raise RuntimeError(self.fail_message)
+        return self.change_rows[table]
+
+
+def _token(*, brain_id: str = "brain-a", captured_at: datetime, versionstamp: int = 100) -> str:
+    return json.dumps(
+        {
+            "version": 1,
+            "brain_id": brain_id,
+            "versionstamp": versionstamp,
+            "captured_at": captured_at.isoformat(timespec="microseconds") + "Z",
+        }
+    )
+
+
+async def test_captures_server_time_and_queries_both_source_feeds() -> None:
+    storage = _RevisionStorage()
+
+    token = await storage.capture_semantic_source_token()
+    payload = json.loads(token)
+    assert payload["brain_id"] == "brain-a"
+    assert payload["versionstamp"] == storage.marker_versionstamp
+    assert datetime.fromisoformat(payload["captured_at"].replace("Z", "")) == storage.now
+    assert any("CREATE type::record('semantic_source_barrier'" in sql for sql, _ in storage.queries)
+    assert any("DELETE type::record('semantic_source_barrier'" in sql for sql, _ in storage.queries)
+
+    await storage.assert_semantic_source_unchanged(token)
+    source_queries = [
+        (sql, params)
+        for sql, params in storage.queries
+        if sql.startswith(("SHOW CHANGES FOR TABLE neuron", "SHOW CHANGES FOR TABLE synapse"))
+    ]
+    assert len(source_queries) == 2
+    assert all(f"SINCE {storage.marker_versionstamp} LIMIT 10" in sql for sql, _ in source_queries)
+    assert {sql.split("TABLE ", 1)[1].split()[0] for sql, _ in source_queries} == {
+        "neuron",
+        "synapse",
+    }
+
+
+@pytest.mark.asyncio
+async def test_any_source_table_mutation_invalidates_token() -> None:
+    storage = _RevisionStorage()
+    token = _token(captured_at=storage.now - timedelta(seconds=1))
+    storage.change_rows["synapse"] = [{"versionstamp": 42, "changes": [{"delete": {}}]}]
+
+    with pytest.raises(SemanticSourceChangedError, match="synapse changed"):
+        await storage.assert_semantic_source_unchanged(token)
+
+
+@pytest.mark.asyncio
+async def test_expired_and_cross_brain_tokens_fail_closed() -> None:
+    storage = _RevisionStorage()
+
+    with pytest.raises(SemanticSourceFenceExpiredError, match="safe changefeed window"):
+        await storage.assert_semantic_source_unchanged(
+            _token(captured_at=storage.now - timedelta(days=6, hours=16))
+        )
+    storage.current_brain_id = "brain-b"
+    with pytest.raises(SemanticSourceFenceExpiredError, match="malformed"):
+        await storage.assert_semantic_source_unchanged(
+            _token(captured_at=storage.now - timedelta(seconds=1))
+        )
+
+
+@pytest.mark.asyncio
+async def test_changefeed_query_error_fails_closed() -> None:
+    storage = _RevisionStorage()
+    storage.fail_table = "neuron"
+    token = _token(captured_at=storage.now - timedelta(seconds=1))
+
+    with pytest.raises(SemanticSourceFenceUnavailableError, match="could not inspect neuron"):
+        await storage.assert_semantic_source_unchanged(token)

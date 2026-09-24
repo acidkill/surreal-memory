@@ -15,10 +15,9 @@ migrations, the 7->8 step moves data in resumable phases
 cursor. ``schema_meta:version`` is stamped to 8 only after verification passes,
 so a partially-migrated DB never reads as "done".
 
-Later additive steps advance v8->v9, v9->v10, and v10->v11. The v11 step
-creates durable consolidation progress and lease tables without moving memory
-rows; it promotes a previously auto-created SCHEMALESS progress table before
-defining its FLEXIBLE checkpoint fields.
+Later additive steps advance v8->v9, v9->v10, v10->v11, and v11->v12. The v11
+step creates durable consolidation progress and lease tables; v12 enables one-hour changefeeds on neuron and synapse and adds a short-lived
+barrier table for fail-closed semantic source revision checks.
 
 Version detection (no ``schema_meta:version`` present) is structural, via
 ``INFO FOR DB``: a ``synapse`` table defined ``TYPE RELATION`` is already v8; a
@@ -45,11 +44,16 @@ from surreal_memory.storage.surrealdb.connection import (
     MIN_SERVER_VERSION,
     parse_server_version,
 )
-from surreal_memory.storage.surrealdb.schema import SCHEMA_VERSION, SYNAPSE_V8_DDL
+from surreal_memory.storage.surrealdb.schema import (
+    SCHEMA_VERSION,
+    SOURCE_REVISION_DDL,
+    SYNAPSE_V8_DDL,
+)
 
 logger = logging.getLogger(__name__)
 
-TARGET_VERSION = SCHEMA_VERSION  # 11
+TARGET_VERSION = SCHEMA_VERSION  # 12
+VERSION_11 = 11
 VERSION_10 = 10
 SOURCE_VERSION = 7  # flat synapse table (pre 7->8 migration)
 RELATION_SYNAPSE_VERSION = 8  # synapse became a RELATION table in the 7->8 migration
@@ -157,10 +161,10 @@ async def detect_db_version(conn: Any) -> int:
     """Return the schema version of the connected database.
 
     An explicit version stamp wins, and an unfinished v7->v8 migration forces
-    a full migration re-verification. Otherwise use structural markers:
-    flat synapse is v7; RELATION without retrieval_trace is v8; retrieval_trace
-    without both v11 checkpoint tables is conservatively v9. Replaying the
-    additive 9->10 and 10->11 DDL is safe for an unstamped v10 database.
+    a full migration re-verification. Otherwise use structural markers. A
+    structurally complete v12 requires both source feeds, both pair indexes,
+    and the schemafull barrier table with its fields, lookup index and feed; a
+    partially applied v12 migration remains v11 so its idempotent DDL resumes.
     """
     stamped = await _read_stamped_version(conn)
     if stamped is not None:
@@ -168,8 +172,6 @@ async def detect_db_version(conn: Any) -> int:
 
     state = await _get_state(conn)
     if state is not None and state.get("phase") != PHASE_DONE:
-        # A migration was started and has not verified — do not trust the table
-        # shape; force a resume so verification runs and fails loudly on loss.
         return SOURCE_VERSION
 
     info = await conn.query("INFO FOR DB")
@@ -178,25 +180,88 @@ async def detect_db_version(conn: Any) -> int:
         tables = info.get("tables") or {}
     elif isinstance(info, list) and info and isinstance(info[0], dict):
         tables = info[0].get("tables") or {}
-
     if not isinstance(tables, dict):
         tables = {}
+
     synapse_def = str(tables.get("synapse", "") or "").upper()
     if not synapse_def:
-        return TARGET_VERSION  # fresh DB; ensure_schema already built latest schema
+        return TARGET_VERSION
     if "TYPE RELATION" not in synapse_def:
         return SOURCE_VERSION
-
-    has_trace = "retrieval_trace" in tables
-    if not has_trace:
+    if "retrieval_trace" not in tables:
         return RELATION_SYNAPSE_VERSION
 
     progress_def = str(tables.get("consolidation_progress", "") or "").upper()
     lease_def = str(tables.get("consolidation_lease", "") or "").upper()
     has_v11_state = "SCHEMAFULL" in progress_def and "SCHEMAFULL" in lease_def
+    if not has_v11_state:
+        return TYPED_VALIDITY_VERSION
+
+    neuron_def = str(tables.get("neuron", "") or "").upper()
+    if "CHANGEFEED" not in neuron_def or "CHANGEFEED" not in synapse_def:
+        return VERSION_11
+
+    async def _table_info(table: str) -> dict[str, Any]:
+        response = await conn.query(f"INFO FOR TABLE {table}")
+        if isinstance(response, list):
+            response = response[0] if response and isinstance(response[0], dict) else {}
+        return response if isinstance(response, dict) else {}
+
+    synapse_info = await _table_info("synapse")
+    synapse_indexes = synapse_info.get("indexes") or {}
+    if not isinstance(synapse_indexes, dict):
+        synapse_indexes = {}
+    has_pair_indexes = {
+        "idx_synapse_pair_in_out",
+        "idx_synapse_pair_out_in",
+    }.issubset(synapse_indexes)
+
+    barrier_def = str(tables.get("semantic_source_barrier", "") or "").upper()
+    if "SCHEMAFULL" not in barrier_def or "CHANGEFEED" not in barrier_def:
+        return VERSION_11
+    barrier_info = await _table_info("semantic_source_barrier")
+    barrier_fields = barrier_info.get("fields") or {}
+    barrier_indexes = barrier_info.get("indexes") or {}
+    if not isinstance(barrier_fields, dict):
+        barrier_fields = {}
+    if not isinstance(barrier_indexes, dict):
+        barrier_indexes = {}
+    has_barrier_structure = {"brain_id", "created_at"}.issubset(
+        barrier_fields
+    ) and "idx_ssbarrier_brain_time" in barrier_indexes
+    state_def = str(tables.get("semantic_discovery_state", "") or "").upper()
+    if "SCHEMAFULL" not in state_def:
+        return VERSION_11
+    state_info = await _table_info("semantic_discovery_state")
+    state_fields = state_info.get("fields") or {}
+    state_indexes = state_info.get("indexes") or {}
+    if not isinstance(state_fields, dict):
+        state_fields = {}
+    if not isinstance(state_indexes, dict):
+        state_indexes = {}
+    required_state_fields = {
+        "state_id",
+        "revision",
+        "brain_id",
+        "run_id",
+        "owner_token",
+        "source_token",
+        "payload",
+        "created_at",
+    }
+    required_state_indexes = {
+        "idx_sds_state_revision",
+        "idx_sds_brain_run",
+        "idx_sds_created_at",
+    }
+    has_state_structure = required_state_fields.issubset(state_fields) and (
+        required_state_indexes.issubset(state_indexes)
+    )
     return (
-        TARGET_VERSION if has_v11_state else TYPED_VALIDITY_VERSION
-    )  # flat/NORMAL table — needs the 7->8 migration
+        TARGET_VERSION
+        if has_pair_indexes and has_barrier_structure and has_state_structure
+        else VERSION_11
+    )
 
 
 async def _stamp_version(conn: Any, version: int) -> None:
@@ -663,6 +728,20 @@ async def _migrate_10_to_11(conn: Any) -> None:
             else:
                 logger.error("v11 migration statement failed: %s (%s)", stmt[:80], exc)
                 raise
+    await _stamp_version(conn, VERSION_11)
+
+
+async def _migrate_11_to_12(conn: Any) -> None:
+    """Enable mutation fences and bounded immutable discovery snapshots."""
+    for stmt in SOURCE_REVISION_DDL:
+        try:
+            await conn.query(stmt + ";")
+        except Exception as exc:
+            if _already_exists(exc):
+                logger.debug("v12 migration statement skipped (already exists): %s", stmt[:100])
+            else:
+                logger.error("v12 migration statement failed: %s (%s)", stmt[:100], exc)
+                raise
     await _stamp_version(conn, TARGET_VERSION)
 
 
@@ -675,7 +754,8 @@ MIGRATIONS = {
     # stamp without ever running the v10 DDL.
     (RELATION_SYNAPSE_VERSION, TYPED_VALIDITY_VERSION): _migrate_8_to_9,  # (8, 9)
     (TYPED_VALIDITY_VERSION, VERSION_10): _migrate_9_to_10,  # (9, 10)
-    (VERSION_10, TARGET_VERSION): _migrate_10_to_11,  # (10, 11)
+    (VERSION_10, VERSION_11): _migrate_10_to_11,  # (10, 11)
+    (VERSION_11, TARGET_VERSION): _migrate_11_to_12,  # (11, 12)
 }
 
 

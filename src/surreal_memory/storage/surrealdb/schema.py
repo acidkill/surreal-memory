@@ -7,7 +7,31 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
+
+SOURCE_REVISION_DDL: tuple[str, ...] = (
+    "ALTER TABLE neuron CHANGEFEED 7d",
+    "ALTER TABLE synapse CHANGEFEED 7d",
+    "DEFINE INDEX idx_synapse_pair_in_out ON synapse FIELDS brain_id, in, out",
+    "DEFINE INDEX idx_synapse_pair_out_in ON synapse FIELDS brain_id, out, in",
+    "DEFINE TABLE IF NOT EXISTS semantic_source_barrier SCHEMAFULL",
+    "DEFINE FIELD brain_id ON semantic_source_barrier TYPE string",
+    "DEFINE FIELD created_at ON semantic_source_barrier TYPE datetime",
+    "DEFINE INDEX idx_ssbarrier_brain_time ON semantic_source_barrier FIELDS brain_id, created_at",
+    "ALTER TABLE semantic_source_barrier CHANGEFEED 7d",
+    "DEFINE TABLE IF NOT EXISTS semantic_discovery_state SCHEMAFULL",
+    "DEFINE FIELD state_id ON semantic_discovery_state TYPE string",
+    "DEFINE FIELD revision ON semantic_discovery_state TYPE int",
+    "DEFINE FIELD brain_id ON semantic_discovery_state TYPE string",
+    "DEFINE FIELD run_id ON semantic_discovery_state TYPE string",
+    "DEFINE FIELD owner_token ON semantic_discovery_state TYPE string",
+    "DEFINE FIELD source_token ON semantic_discovery_state TYPE string",
+    "DEFINE FIELD payload ON semantic_discovery_state TYPE object FLEXIBLE",
+    "DEFINE FIELD created_at ON semantic_discovery_state TYPE datetime DEFAULT time::now()",
+    "DEFINE INDEX idx_sds_state_revision ON semantic_discovery_state FIELDS state_id, revision UNIQUE",
+    "DEFINE INDEX idx_sds_brain_run ON semantic_discovery_state FIELDS brain_id, run_id",
+    "DEFINE INDEX idx_sds_created_at ON semantic_discovery_state FIELDS created_at",
+)
 
 SCHEMA_SQL = """
 -- ============================================================
@@ -704,6 +728,7 @@ async def ensure_schema(conn: Any, embedding_dim: int = 3072) -> None:
     synapse_definition = str(table_definitions.get("synapse", "") or "").upper()
     if not synapse_definition or "TYPE RELATION" in synapse_definition:
         statements.extend(SYNAPSE_V8_DDL)
+        statements.extend(SOURCE_REVISION_DDL)
     else:
         logger.debug("Deferring synapse RELATION DDL until legacy migration completes")
 

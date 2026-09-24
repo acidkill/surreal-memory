@@ -149,7 +149,7 @@ class TestDetectVersion:
                 }
             },
         )
-        assert await M.detect_db_version(conn) == M.TARGET_VERSION
+        assert await M.detect_db_version(conn) == M.VERSION_11
 
     @pytest.mark.asyncio
     async def test_flat_table_is_v7(self):
@@ -534,8 +534,26 @@ class TestConsolidationProgressV11:
         stamp = next(
             (params for sql, params in conn.calls if "UPSERT schema_meta:version" in sql), None
         )
+        assert stamp == {"v": M.VERSION_11}
+        assert M.VERSION_11 == 11
+
+    @pytest.mark.asyncio
+    async def test_v11_to_v12_enables_neuron_and_synapse_changefeeds(self):
+        conn = ScriptedConn()
+        await M._migrate_11_to_12(conn)
+
+        assert any("ALTER TABLE neuron CHANGEFEED 7d" in sql for sql in conn.sqls())
+        assert any("ALTER TABLE synapse CHANGEFEED 7d" in sql for sql in conn.sqls())
+        assert any("semantic_source_barrier SCHEMAFULL" in sql for sql in conn.sqls())
+        assert any("semantic_discovery_state SCHEMAFULL" in sql for sql in conn.sqls())
+        assert any(
+            "ALTER TABLE semantic_source_barrier CHANGEFEED 7d" in sql for sql in conn.sqls()
+        )
+        stamp = next(
+            (params for sql, params in conn.calls if "UPSERT schema_meta:version" in sql), None
+        )
         assert stamp == {"v": M.TARGET_VERSION}
-        assert M.TARGET_VERSION == 11
+        assert M.TARGET_VERSION == 12
 
     @pytest.mark.asyncio
     async def test_v10_to_v11_promotes_partial_schemaless_progress_table(self):
@@ -579,6 +597,8 @@ class TestConsolidationProgressV11:
         assert any(
             "DEFINE TABLE IF NOT EXISTS consolidation_progress" in sql for sql in conn.sqls()
         )
+        assert any("ALTER TABLE neuron CHANGEFEED 7d" in sql for sql in conn.sqls())
+        assert any("ALTER TABLE synapse CHANGEFEED 7d" in sql for sql in conn.sqls())
         assert any("UPSERT schema_meta:version" in sql for sql in conn.sqls())
 
     @pytest.mark.asyncio
@@ -636,6 +656,118 @@ class TestConsolidationProgressV11:
             and any(table in sql for table in ("neuron", "fiber", "synapse"))
         ]
         assert graph_row_dml == []
+
+    @pytest.mark.asyncio
+    async def test_structural_v12_changefeed_state_is_detected(self):
+        conn = ScriptedConn()
+        conn.route("SELECT version FROM schema_meta:version", [])
+        conn.route(
+            "INFO FOR DB",
+            {
+                "tables": {
+                    "synapse": "DEFINE TABLE synapse TYPE RELATION CHANGEFEED 7d",
+                    "neuron": "DEFINE TABLE neuron CHANGEFEED 7d",
+                    "retrieval_trace": "DEFINE TABLE retrieval_trace SCHEMAFULL",
+                    "consolidation_progress": "DEFINE TABLE consolidation_progress SCHEMAFULL",
+                    "consolidation_lease": "DEFINE TABLE consolidation_lease SCHEMAFULL",
+                    "semantic_source_barrier": "DEFINE TABLE semantic_source_barrier SCHEMAFULL CHANGEFEED 7d",
+                    "semantic_discovery_state": "DEFINE TABLE semantic_discovery_state SCHEMAFULL",
+                }
+            },
+        )
+        conn.route(
+            "INFO FOR TABLE synapse",
+            {"indexes": {"idx_synapse_pair_in_out": {}, "idx_synapse_pair_out_in": {}}},
+        )
+        conn.route(
+            "INFO FOR TABLE semantic_source_barrier",
+            {
+                "fields": {
+                    "brain_id": "DEFINE FIELD brain_id",
+                    "created_at": "DEFINE FIELD created_at",
+                },
+                "indexes": {"idx_ssbarrier_brain_time": {}},
+            },
+        )
+        conn.route(
+            "INFO FOR TABLE semantic_discovery_state",
+            {
+                "fields": {
+                    name: f"DEFINE FIELD {name}"
+                    for name in (
+                        "state_id",
+                        "revision",
+                        "brain_id",
+                        "run_id",
+                        "owner_token",
+                        "source_token",
+                        "payload",
+                        "created_at",
+                    )
+                },
+                "indexes": {
+                    "idx_sds_state_revision": {},
+                    "idx_sds_brain_run": {},
+                    "idx_sds_created_at": {},
+                },
+            },
+        )
+        assert await M.detect_db_version(conn) == M.TARGET_VERSION
+
+    @pytest.mark.asyncio
+    async def test_partial_v12_without_discovery_state_remains_v11(self):
+        conn = ScriptedConn()
+        conn.route("SELECT version FROM schema_meta:version", [])
+        conn.route(
+            "INFO FOR DB",
+            {
+                "tables": {
+                    "synapse": "DEFINE TABLE synapse TYPE RELATION CHANGEFEED 7d",
+                    "neuron": "DEFINE TABLE neuron CHANGEFEED 7d",
+                    "retrieval_trace": "DEFINE TABLE retrieval_trace SCHEMAFULL",
+                    "consolidation_progress": "DEFINE TABLE consolidation_progress SCHEMAFULL",
+                    "consolidation_lease": "DEFINE TABLE consolidation_lease SCHEMAFULL",
+                    "semantic_source_barrier": "DEFINE TABLE semantic_source_barrier SCHEMAFULL CHANGEFEED 7d",
+                }
+            },
+        )
+        conn.route(
+            "INFO FOR TABLE synapse",
+            {"indexes": {"idx_synapse_pair_in_out": {}, "idx_synapse_pair_out_in": {}}},
+        )
+        conn.route(
+            "INFO FOR TABLE semantic_source_barrier",
+            {
+                "fields": {
+                    "brain_id": "DEFINE FIELD brain_id",
+                    "created_at": "DEFINE FIELD created_at",
+                },
+                "indexes": {"idx_ssbarrier_brain_time": {}},
+            },
+        )
+        assert await M.detect_db_version(conn) == M.VERSION_11
+
+    @pytest.mark.asyncio
+    async def test_partial_v12_source_feeds_without_barrier_remains_v11(self):
+        conn = ScriptedConn()
+        conn.route("SELECT version FROM schema_meta:version", [])
+        conn.route(
+            "INFO FOR DB",
+            {
+                "tables": {
+                    "synapse": "DEFINE TABLE synapse TYPE RELATION CHANGEFEED 7d",
+                    "neuron": "DEFINE TABLE neuron CHANGEFEED 7d",
+                    "retrieval_trace": "DEFINE TABLE retrieval_trace SCHEMAFULL",
+                    "consolidation_progress": "DEFINE TABLE consolidation_progress SCHEMAFULL",
+                    "consolidation_lease": "DEFINE TABLE consolidation_lease SCHEMAFULL",
+                }
+            },
+        )
+        conn.route(
+            "INFO FOR TABLE synapse",
+            {"indexes": {"idx_synapse_pair_in_out": {}, "idx_synapse_pair_out_in": {}}},
+        )
+        assert await M.detect_db_version(conn) == M.VERSION_11
 
 
 class TestFailedMigrationNotSilentlyAccepted:

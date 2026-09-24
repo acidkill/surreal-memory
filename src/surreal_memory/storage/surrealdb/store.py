@@ -13,7 +13,7 @@ import logging
 import math
 import random
 import re
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import replace as dc_replace
 from datetime import datetime
 from hashlib import sha256
@@ -45,6 +45,12 @@ from surreal_memory.storage.surrealdb.reasoning_traces import SurrealDBReasoning
 from surreal_memory.storage.surrealdb.retrieval_trace import SurrealDBRetrievalTraceMixin
 from surreal_memory.storage.surrealdb.review_schedules import SurrealDBReviewSchedulesMixin
 from surreal_memory.storage.surrealdb.schema import ensure_schema
+from surreal_memory.storage.surrealdb.semantic_discovery_state import (
+    SurrealDBSemanticDiscoveryStateMixin,
+)
+from surreal_memory.storage.surrealdb.semantic_source_revision import (
+    SurrealDBSemanticSourceRevisionMixin,
+)
 from surreal_memory.storage.surrealdb.sources import SurrealDBSourcesMixin
 from surreal_memory.storage.surrealdb.tool_events import SurrealDBToolEventsMixin
 from surreal_memory.storage.surrealdb.training_files import SurrealDBTrainingFilesMixin
@@ -85,6 +91,8 @@ _BRAIN_SCOPED_TABLES: tuple[str, ...] = (
     "co_activations",
     "consolidation_lease",
     "consolidation_progress",
+    "semantic_source_barrier",
+    "semantic_discovery_state",
     "cognitive_state",
     "decay_pass",
     "compression_backups",
@@ -629,9 +637,11 @@ class SurrealDBStorage(
     SurrealDBKeywordEntityMixin,
     SurrealDBCompressionMixin,
     SurrealDBConsolidationStateMixin,
+    SurrealDBSemanticDiscoveryStateMixin,
     SurrealDBActivityMixin,
     SurrealDBDepthPriorsMixin,
     SurrealDBReasoningTracesMixin,
+    SurrealDBSemanticSourceRevisionMixin,
     SurrealDBToolEventsMixin,
     SurrealDBDriftMixin,
     SurrealDBPinningMixin,
@@ -2291,6 +2301,55 @@ class SurrealDBStorage(
             )
             synapses.extend(_row_to_synapse(row) for row in rows)
         return synapses
+
+    async def find_existing_synapse_pairs(
+        self, pairs: Sequence[tuple[str, str]]
+    ) -> set[tuple[str, str]]:
+        """Return candidate neuron pairs already joined by any synapse type.
+
+        Matching is undirected, regardless of a synapse's direction/type. Each
+        candidate is an exact, brain-scoped index probe in both endpoint orders;
+        work and in-flight queries remain bounded even for high-degree neurons.
+        """
+        unique_pairs = list(dict.fromkeys((source, target) for source, target in pairs))
+        if not unique_pairs:
+            return set()
+
+        brain_id = self._get_brain_id()
+        found: set[tuple[str, str]] = set()
+        semaphore = asyncio.Semaphore(_BATCH_FETCH_CONCURRENCY)
+
+        async def _exists(pair: tuple[str, str]) -> tuple[tuple[str, str], bool]:
+            source_id, target_id = pair
+            if not source_id or not target_id:
+                return pair, False
+            async with semaphore:
+                for index, left, right in (
+                    ("idx_synapse_pair_in_out", source_id, target_id),
+                    ("idx_synapse_pair_out_in", source_id, target_id),
+                ):
+                    left_field, right_field = (
+                        ("in", "out") if index == "idx_synapse_pair_in_out" else ("out", "in")
+                    )
+                    rows = await self._query(
+                        f"SELECT id FROM synapse WITH INDEX {index} "
+                        f"WHERE brain_id = $brain_id "
+                        f"AND {left_field} = type::record('neuron', $left_id) "
+                        f"AND {right_field} = type::record('neuron', $right_id) LIMIT 1",
+                        brain_id=brain_id,
+                        left_id=_to_surreal_id(left),
+                        right_id=_to_surreal_id(right),
+                    )
+                    if rows:
+                        return pair, True
+            return pair, False
+
+        # Bound task creation as well as the number of simultaneous DB calls.
+        for start in range(0, len(unique_pairs), 128):
+            batch = unique_pairs[start : start + 128]
+            results = await asyncio.gather(*(_exists(pair) for pair in batch))
+            found.update(pair for pair, exists in results if exists)
+        return found
 
     async def get_synapses_for_sources(self, source_ids: list[str] | set[str]) -> list[Synapse]:
         """Fetch outgoing edges for a bounded source-neuron page."""
