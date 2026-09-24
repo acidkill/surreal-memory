@@ -9156,37 +9156,13 @@ class ConsolidationEngine:
             AliasLinkOutcome,
             ensure_alias_edge,
         )
+        from surreal_memory.engine.dedup_census import DedupAnchorCensus
         from surreal_memory.utils.simhash import is_near_duplicate
 
         logger = logging.getLogger(__name__)
 
         brain_id = self._storage.current_brain_id
         if not brain_id:
-            return
-
-        # Paginate through neurons to collect the bounded anchor window.
-        batch_size = 5000
-        offset = 0
-        all_anchors: list[Neuron] = []
-        while True:
-            # Anchors are selected on metadata alone, so skip the embedding vector
-            # — it is ~4-8 KB/row and only inflates the response.
-            batch = await self._storage.find_neurons(
-                limit=batch_size, offset=offset, ephemeral=False, include_embedding=False
-            )
-            if not batch:
-                break
-            all_anchors.extend(n for n in batch if n.metadata.get("is_anchor", False))
-            offset += len(batch)
-            if len(batch) < batch_size:
-                break
-
-        # Report the census input, even when this pass resumes a bounded window.
-        anchors_total = len(all_anchors)
-        report.extra["dedup_anchors_total"] = anchors_total
-
-        if anchors_total < 2:
-            report.extra["dedup_anchors_scanned"] = anchors_total
             return
 
         progress_state = self._strategy_progress_state()
@@ -9216,59 +9192,228 @@ class ConsolidationEngine:
             report.extra["dedup_resumed_checkpoint"] = "dedup_window_complete"
             return
 
-        # The cursor describes a stable anchor-ID window and the next unprocessed
-        # outer anchor. This bounds replay after cancellation while alias edge IDs
-        # make re-applying the last uncommitted batch safe.
         cap = max(2, int(self._config.dedup_max_anchors))
         cursor = 0
         next_outer_index = 0
         cursor_payload: dict[str, Any]
-        if progress_phase == "dedup_pairs":
+        window_anchor_ids: list[str] = []
+        resumed_seen_ids: list[str] = []
+
+        def _saved_pair_cursor() -> tuple[int, int, list[str], list[str]]:
             try:
-                cursor_payload = json.loads(str(progress_state.get("cursor") or "{}"))
-                cursor = int(cursor_payload["window_start"])
-                next_outer_index = int(cursor_payload["next_i"])
-                saved_pending = [str(value) for value in (progress_state.get("pending") or [])]
-                window_anchor_ids = [
-                    value.removeprefix("window:")
-                    for value in saved_pending
-                    if value.startswith("window:")
+                parsed = json.loads(str(progress_state.get("cursor") or "{}"))
+                window_ids = [
+                    str(value).removeprefix("window:")
+                    for value in (progress_state.get("pending") or [])
+                    if str(value).startswith("window:")
                 ]
-                resumed_seen_ids = [
-                    value.removeprefix("seen:")
-                    for value in saved_pending
-                    if value.startswith("seen:")
+                seen_ids = [
+                    str(value).removeprefix("seen:")
+                    for value in (progress_state.get("pending") or [])
+                    if str(value).startswith("seen:")
                 ]
-                if not window_anchor_ids or not 0 <= next_outer_index <= len(window_anchor_ids):
+                saved_next = int(parsed["next_i"])
+                saved_window_start = int(parsed["window_start"])
+                if not window_ids or not 0 <= saved_next <= len(window_ids):
                     raise ValueError("dedup outer cursor is outside the saved anchor window")
+                return saved_window_start, saved_next, window_ids, seen_ids
             except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
                 raise RuntimeError(
                     "dedup progress checkpoint is malformed; refusing to skip its window"
                 ) from exc
-            anchors_by_id = {str(anchor.id): anchor for anchor in all_anchors}
-            anchors: list[Neuron | None] = [
-                anchors_by_id.get(anchor_id) for anchor_id in window_anchor_ids
-            ]
+
+        # Durable consolidated runs freeze bounded pages of the complete census.
+        # The comparison window is then rehydrated from that immutable plan, never
+        # by rescanning mutable neurons after a pause.
+        progress = getattr(self, "_progress_session", None)
+        active_strategy = getattr(self, "_active_strategy", None)
+        strategy_name = active_strategy.value if active_strategy is not None else "dedup"
+        run_id = str(getattr(progress, "state", {}).get("run_id", "")) if progress else ""
+        brain_id = str(
+            getattr(progress, "brain_id", None)
+            or getattr(self._storage, "_get_brain_id", lambda: "")()
+            or self._storage.current_brain_id
+            or ""
+        )
+        reference_time = getattr(progress, "reference_time", None) if progress else None
+        durable_plan: DedupAnchorCensus | None = None
+        can_use_plan = bool(
+            not dry_run
+            and progress is not None
+            and active_strategy is not None
+            and run_id
+            and brain_id
+            and callable(getattr(self._storage, "_query", None))
+            and supports_storage_methods(self._storage, ("find_neurons_after_id",))
+        )
+        if can_use_plan:
+            durable_plan = DedupAnchorCensus(
+                self._storage,
+                run_id=run_id,
+                brain_id=brain_id,
+                strategy=strategy_name,
+                reference_time=reference_time,
+                checkpoint_state=progress_state,
+                checkpoint=self._checkpoint_progress,
+                check_budget=self._check_progress_budget,
+            )
+            anchors_total = await durable_plan.build()
         else:
-            if anchors_total > cap:
-                cursor = await self._dedup_cursor(anchors_total)
-                window = all_anchors[cursor : cursor + cap]
-                if len(window) < cap:
-                    # Wrap around so the window keeps its size at the end of the list.
-                    window += all_anchors[: cap - len(window)]
-                all_anchors = window
+            # Legacy stores and explicit one-shot runs keep only the selected
+            # window in memory. Two bounded scans preserve the existing rotating
+            # index semantics without constructing the brain-sized anchor list.
+            page_size = 500
+
+            async def _pages() -> AsyncIterator[list[Neuron]]:
+                if supports_storage_methods(self._storage, ("find_neurons_after_id",)):
+                    source_cursor: str | None = None
+                    while True:
+                        page = await self._storage.find_neurons_after_id(
+                            source_cursor,
+                            limit=page_size,
+                            created_before=reference_time,
+                            ephemeral=False,
+                            include_embedding=False,
+                        )
+                        if not page:
+                            return
+                        if page != sorted(page, key=lambda neuron: neuron.id) or (
+                            source_cursor is not None and page[0].id <= source_cursor
+                        ):
+                            raise RuntimeError(
+                                "dedup neuron keyset page is unordered or did not advance"
+                            )
+                        yield page
+                        source_cursor = page[-1].id
+                else:
+                    offset = 0
+                    while True:
+                        page = await self._storage.find_neurons(
+                            limit=page_size,
+                            offset=offset,
+                            ephemeral=False,
+                            include_embedding=False,
+                        )
+                        if not page:
+                            return
+                        yield page
+                        offset += len(page)
+                        if len(page) < page_size:
+                            return
+
+            anchors_total = 0
+            wanted_ids: set[str] | None = None
+            if progress_phase == "dedup_pairs":
+                cursor, next_outer_index, window_anchor_ids, resumed_seen_ids = _saved_pair_cursor()
+                wanted_ids = set(window_anchor_ids)
+                async for page in _pages():
+                    anchors_total += sum(
+                        bool(neuron.metadata.get("is_anchor", False)) for neuron in page
+                    )
+            else:
+                async for page in _pages():
+                    anchors_total += sum(
+                        bool(neuron.metadata.get("is_anchor", False)) for neuron in page
+                    )
+            if progress_phase != "dedup_pairs":
+                cursor = await self._dedup_cursor(anchors_total) if anchors_total > cap else 0
+            selected_indices = (
+                {(cursor + offset) % anchors_total for offset in range(min(cap, anchors_total))}
+                if anchors_total
+                else set()
+            )
+            selected: list[Neuron] = []
+            index = 0
+            # Reiterate the keyset and keep only the selected window. Legacy
+            # resume IDs are authoritative: fail closed if the live source no
+            # longer contains one rather than silently dropping comparisons.
+            async for page in _pages():
+                for neuron in page:
+                    if not neuron.metadata.get("is_anchor", False):
+                        continue
+                    if wanted_ids is not None:
+                        if neuron.id in wanted_ids:
+                            selected.append(neuron)
+                    elif index in selected_indices:
+                        selected.append(neuron)
+                    index += 1
+            if wanted_ids is not None:
+                by_id = {str(neuron.id): neuron for neuron in selected}
+                if set(by_id) != wanted_ids:
+                    raise RuntimeError("saved dedup window anchors changed before resume")
+                selected = [by_id[anchor_id] for anchor_id in window_anchor_ids]
+            elif anchors_total > cap:
                 report.extra["dedup_anchors_truncated"] = True
                 report.extra["dedup_window_start"] = cursor
-                # INFO, not WARNING: truncation is steady state for a brain above
-                # the configured cap; the report carries that limitation.
                 logger.info(
-                    "Dedup census truncated: %d anchors present, only the first %d are compared. "
-                    "The reported duplicate count covers that window, not the whole brain.",
+                    "Dedup census truncated: %d anchors present, only %d are compared. "
+                    "The reported duplicate count covers that rotating window.",
                     anchors_total,
                     cap,
                 )
+            all_anchors = selected
+            cursor_payload = {"window_start": cursor, "next_i": next_outer_index}
+
+        report.extra["dedup_anchors_total"] = anchors_total
+        if anchors_total < 2:
+            report.extra["dedup_anchors_scanned"] = anchors_total
+            return
+
+        if durable_plan is not None:
+            if progress_phase == "dedup_pairs":
+                cursor, next_outer_index, window_anchor_ids, resumed_seen_ids = _saved_pair_cursor()
+                wanted_ids = set(window_anchor_ids)
+                frozen_by_id: dict[str, Neuron] = {}
+                async for anchor in durable_plan.iter_anchors():
+                    if anchor.id in wanted_ids:
+                        frozen_by_id[anchor.id] = anchor
+                if set(frozen_by_id) != wanted_ids:
+                    raise ConsolidationProgressError(
+                        "saved dedup window is missing from its census plan"
+                    )
+                all_anchors = [frozen_by_id[anchor_id] for anchor_id in window_anchor_ids]
+                report.extra["dedup_window_start"] = cursor
+            else:
+                cursor = await self._dedup_cursor(anchors_total) if anchors_total > cap else 0
+                selected_indices = {
+                    (cursor + offset) % anchors_total for offset in range(min(cap, anchors_total))
+                }
+                all_anchors = []
+                index = 0
+                async for anchor in durable_plan.iter_anchors():
+                    if index in selected_indices:
+                        all_anchors.append(anchor)
+                    index += 1
+                if index != anchors_total or len(all_anchors) != min(cap, anchors_total):
+                    raise ConsolidationProgressError(
+                        "dedup comparison window does not match the frozen anchor census"
+                    )
+                if anchors_total > cap:
+                    report.extra["dedup_anchors_truncated"] = True
+                    report.extra["dedup_window_start"] = cursor
+                    logger.info(
+                        "Dedup census truncated: %d anchors present, only %d are compared. "
+                        "The reported duplicate count covers that rotating window.",
+                        anchors_total,
+                        cap,
+                    )
+                window_anchor_ids = [str(anchor.id) for anchor in all_anchors]
+                cursor_payload = {"window_start": cursor, "next_i": 0}
+                if not dry_run:
+                    await self._checkpoint_progress(
+                        "dedup_pairs",
+                        cursor=json.dumps(cursor_payload, separators=(",", ":")),
+                        pending=[f"window:{anchor_id}" for anchor_id in window_anchor_ids],
+                        counters={
+                            "duplicates_found": report.duplicates_found,
+                            "new_alias_links": report.new_alias_links,
+                            "alias_links_existing": report.alias_links_existing,
+                        },
+                    )
+        elif progress_phase == "dedup_pairs":
+            cursor_payload = {"window_start": cursor, "next_i": next_outer_index}
+        else:
             window_anchor_ids = [str(anchor.id) for anchor in all_anchors]
-            anchors = list(all_anchors)
             cursor_payload = {"window_start": cursor, "next_i": 0}
             if not dry_run:
                 await self._checkpoint_progress(
@@ -9282,7 +9427,17 @@ class ConsolidationEngine:
                     },
                 )
 
-        report.extra["dedup_anchors_scanned"] = sum(anchor is not None for anchor in anchors)
+        if progress_phase == "dedup_pairs" and durable_plan is None:
+            cursor, next_outer_index, window_anchor_ids, resumed_seen_ids = _saved_pair_cursor()
+            cursor_payload = {"window_start": cursor, "next_i": next_outer_index}
+
+        if progress_phase == "dedup_pairs":
+            anchors = list(all_anchors)
+            if [str(anchor.id) for anchor in anchors] != window_anchor_ids:
+                raise RuntimeError("dedup census plan does not match the saved anchor window")
+        else:
+            anchors = list(all_anchors)
+        report.extra["dedup_anchors_scanned"] = len(anchors)
 
         # This pass re-derives the *same* duplicate pairs on every run, so without
         # a memory of what already exists it re-inserts its whole alias edge set
