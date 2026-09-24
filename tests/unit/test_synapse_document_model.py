@@ -26,7 +26,7 @@ _SCHEMA = re.sub(r"[ \t]+", " ", SCHEMA_SQL)
 
 class TestSynapseRelationModel:
     def test_schema_version_is_current(self) -> None:
-        assert SCHEMA_VERSION == 11
+        assert SCHEMA_VERSION == 12
 
     def test_synapse_is_native_relation(self) -> None:
         assert "DEFINE TABLE synapse TYPE RELATION IN neuron OUT neuron SCHEMAFULL" in _DDL

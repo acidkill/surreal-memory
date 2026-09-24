@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
     from surreal_memory.core.alert import Alert
     from surreal_memory.core.brain import Brain, BrainSnapshot
@@ -2614,6 +2614,49 @@ class NeuralStorage(ABC):
     async def watch_get_stats(self) -> dict[str, Any]:
         """Aggregate watch-state stats for the current brain."""
         return {"total_files": 0, "total_neurons": 0, "by_status": {}}
+
+    # Semantic discovery uses a source mutation fence and immutable staged
+    # snapshots. Only backends with durable changefeeds/state should override
+    # the fence and stage defaults; failing explicitly is safer than resuming
+    # from stale semantic candidates.
+    async def capture_semantic_source_token(self) -> str:
+        """Capture a durable high-water token for neuron/synapse mutations."""
+        raise NotImplementedError
+
+    async def assert_semantic_source_unchanged(self, since_token: str) -> None:
+        """Raise when source data changed after a captured token or history expired."""
+        raise NotImplementedError
+
+    async def save_semantic_discovery_state(
+        self, state_id: str, revision: int, payload: Mapping[str, Any]
+    ) -> None:
+        """Persist an immutable semantic-discovery snapshot revision."""
+        raise NotImplementedError
+
+    async def load_semantic_discovery_state(
+        self, state_id: str, revision: int
+    ) -> Mapping[str, Any] | None:
+        """Load the exact semantic-discovery snapshot referenced by active progress."""
+        raise NotImplementedError
+
+    async def find_existing_synapse_pairs(
+        self, pairs: Sequence[tuple[str, str]]
+    ) -> set[tuple[str, str]]:
+        """Return already-connected candidate pairs, regardless of edge direction/type.
+
+        Persistent backends should override with bounded indexed probes. This
+        generic fallback is suitable for small in-memory/test stores.
+        """
+        existing: set[tuple[str, str]] = set()
+        for source_id, target_id in dict.fromkeys(pairs):
+            if not source_id or not target_id:
+                continue
+            rows = await self.get_synapses(source_id=source_id, target_id=target_id, limit=1)
+            if not rows:
+                rows = await self.get_synapses(source_id=target_id, target_id=source_id, limit=1)
+            if rows:
+                existing.add((source_id, target_id))
+        return existing
 
     # Durable consolidation state is optional for adapters that execute the
     # engine outside the persistent SurrealDB service. Concrete implementations
