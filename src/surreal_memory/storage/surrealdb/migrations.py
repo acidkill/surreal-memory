@@ -16,7 +16,7 @@ cursor. ``schema_meta:version`` is stamped to 8 only after verification passes,
 so a partially-migrated DB never reads as "done".
 
 Later additive steps advance v8->v9, v9->v10, v10->v11, and v11->v12. The v11
-step creates durable consolidation progress and lease tables; v12 enables one-hour changefeeds on neuron and synapse and adds a short-lived
+step creates durable consolidation progress and lease tables; v12 enables seven-day changefeeds on neuron and synapse and adds a short-lived
 barrier table for fail-closed semantic source revision checks.
 
 Version detection (no ``schema_meta:version`` present) is structural, via
