@@ -59,7 +59,11 @@ pytestmark = [
 
 class _Progress:
     def __init__(self) -> None:
-        self.state: dict[str, Any] = {"strategy_states": {"semantic_link": {}}}
+        self.state: dict[str, Any] = {
+            "run_id": "semantic-link-id-normalization-it",
+            "strategy_states": {"semantic_link": {}},
+        }
+        self.owner_token = uuid.uuid4().hex
         self.fail_before_apply_checkpoint = True
 
     def strategy_state(self, strategy: str) -> dict[str, Any]:
