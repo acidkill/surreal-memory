@@ -18,7 +18,7 @@ from dataclasses import asdict, dataclass, field
 from dataclasses import replace as dc_replace
 from datetime import datetime
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 from surreal_memory.core.constants import GRAPH_ONLY_PLACEHOLDER
@@ -2791,10 +2791,11 @@ class ConsolidationEngine:
             return ConsolidationConfig()
 
     async def _all_fibers_paged(self, *, created_before: datetime | None = None) -> list[Fiber]:
-        """Build a complete fiber census through bounded keyset reads.
+        """Build a complete census from bounded reads and durable page checkpoints.
 
-        Group-based strategies need all members at once, but no single storage
-        query may silently truncate the brain at a fixed top-N threshold.
+        Staged source pages let a paused consolidation continue at its last
+        committed fiber instead of re-reading the entire prefix. Consumers that
+        need a global group index still materialize the returned list.
         """
         get_page = getattr(self._storage, "get_fibers_after_id", None)
         if get_page is None or not hasattr(type(self._storage), "get_fibers_after_id"):
@@ -2804,18 +2805,258 @@ class ConsolidationEngine:
             if len(legacy_fibers) >= 10000:
                 raise RuntimeError("fiber census requires get_fibers_after_id for 10000+ fibers")
             return list(legacy_fibers)
+
+        page_size = 500
+        progress = self._progress_session
+        if created_before is None and progress is not None:
+            created_before = getattr(progress, "reference_time", None)
+        strategy = self._active_strategy.value if self._active_strategy is not None else None
+        run_id = str(getattr(progress, "state", {}).get("run_id", "")) if progress else ""
+        brain_id = str(
+            getattr(progress, "brain_id", None)
+            or getattr(self._storage, "_get_brain_id", lambda: "")()
+        )
+        filter_payload = {
+            "created_before": created_before.isoformat() if created_before else None,
+        }
+        filter_fingerprint = hashlib.sha256(
+            json.dumps(filter_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        resumable = bool(
+            progress is not None
+            and strategy
+            and run_id
+            and callable(getattr(self._storage, "_query", None))
+        )
+        storage_query = cast(
+            "Callable[..., Awaitable[list[dict[str, Any]]]]",
+            getattr(self._storage, "_query", None),
+        )
+
+        def encode_fiber(fiber: Fiber) -> dict[str, Any]:
+            return {
+                "id": fiber.id,
+                "neuron_ids": sorted(fiber.neuron_ids),
+                "synapse_ids": sorted(fiber.synapse_ids),
+                "anchor_neuron_id": fiber.anchor_neuron_id,
+                "pathway": list(fiber.pathway),
+                "conductivity": fiber.conductivity,
+                "last_conducted": fiber.last_conducted.isoformat()
+                if fiber.last_conducted
+                else None,
+                "time_start": fiber.time_start.isoformat() if fiber.time_start else None,
+                "time_end": fiber.time_end.isoformat() if fiber.time_end else None,
+                "coherence": fiber.coherence,
+                "salience": fiber.salience,
+                "frequency": fiber.frequency,
+                "summary": fiber.summary,
+                "essence": fiber.essence,
+                "last_ghost_shown_at": (
+                    fiber.last_ghost_shown_at.isoformat() if fiber.last_ghost_shown_at else None
+                ),
+                "auto_tags": sorted(fiber.auto_tags),
+                "agent_tags": sorted(fiber.agent_tags),
+                "metadata": fiber.metadata,
+                "compression_tier": fiber.compression_tier,
+                "pinned": fiber.pinned,
+                "created_at": fiber.created_at.isoformat(),
+            }
+
+        def decode_fiber(row: dict[str, Any]) -> Fiber:
+            def parse_time(key: str) -> datetime | None:
+                value = row.get(key)
+                return datetime.fromisoformat(value) if isinstance(value, str) else None
+
+            return Fiber(
+                id=str(row["id"]),
+                neuron_ids=set(row.get("neuron_ids") or []),
+                synapse_ids=set(row.get("synapse_ids") or []),
+                anchor_neuron_id=str(row.get("anchor_neuron_id", "")),
+                pathway=list(row.get("pathway") or []),
+                conductivity=float(row.get("conductivity", 1.0)),
+                last_conducted=parse_time("last_conducted"),
+                time_start=parse_time("time_start"),
+                time_end=parse_time("time_end"),
+                coherence=float(row.get("coherence", 0.0)),
+                salience=float(row.get("salience", 0.0)),
+                frequency=int(row.get("frequency", 0)),
+                summary=row.get("summary"),
+                essence=row.get("essence"),
+                last_ghost_shown_at=parse_time("last_ghost_shown_at"),
+                auto_tags=set(row.get("auto_tags") or []),
+                agent_tags=set(row.get("agent_tags") or []),
+                metadata=dict(row.get("metadata") or {}),
+                compression_tier=int(row.get("compression_tier", 0)),
+                pinned=bool(row.get("pinned", False)),
+                created_at=parse_time("created_at") or utcnow(),
+            )
+
+        state = self._strategy_progress_state() if resumable else {}
+        raw_cursor = state.get("cursor") if state.get("phase") == "fiber_census" else None
+        checkpoint: dict[str, Any] | None = None
+        if raw_cursor is not None:
+            try:
+                parsed = json.loads(str(raw_cursor))
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise ConsolidationProgressError("fiber census checkpoint is malformed") from exc
+            if (
+                not isinstance(parsed, dict)
+                or parsed.get("version") != 1
+                or parsed.get("run_id") != run_id
+                or parsed.get("brain_id") != brain_id
+                or parsed.get("strategy") != strategy
+                or parsed.get("filter_fingerprint") != filter_fingerprint
+                or not isinstance(parsed.get("next_page_index"), int)
+                or parsed["next_page_index"] < 0
+                or not isinstance(parsed.get("complete"), bool)
+            ):
+                raise ConsolidationProgressError(
+                    "fiber census checkpoint does not match this run, strategy, brain, or filter"
+                )
+            last_fiber_id = parsed.get("last_fiber_id")
+            if last_fiber_id is not None and not isinstance(last_fiber_id, str):
+                raise ConsolidationProgressError("fiber census checkpoint cursor is invalid")
+            checkpoint = parsed
+
+        if resumable:
+            await storage_query("DEFINE TABLE IF NOT EXISTS consolidation_fiber_census SCHEMALESS")
+            if checkpoint is None:
+                await storage_query(
+                    "DELETE consolidation_fiber_census WHERE run_id = $run_id "
+                    "AND strategy = $strategy AND filter_fingerprint = $filter_fingerprint",
+                    run_id=run_id,
+                    strategy=strategy,
+                    filter_fingerprint=filter_fingerprint,
+                )
+                checkpoint = {
+                    "version": 1,
+                    "run_id": run_id,
+                    "brain_id": brain_id,
+                    "strategy": strategy,
+                    "filter_fingerprint": filter_fingerprint,
+                    "last_fiber_id": None,
+                    "next_page_index": 0,
+                    "complete": False,
+                }
+
         fibers: list[Fiber] = []
-        cursor: str | None = None
+        if resumable and checkpoint is not None and checkpoint["next_page_index"]:
+            after_page = -1
+            for expected_page in range(checkpoint["next_page_index"]):
+                rows = await storage_query(
+                    "SELECT * FROM consolidation_fiber_census WHERE run_id = $run_id "
+                    "AND strategy = $strategy AND filter_fingerprint = $filter_fingerprint "
+                    "AND page_index > $after_page ORDER BY page_index ASC LIMIT $limit",
+                    run_id=run_id,
+                    strategy=strategy,
+                    filter_fingerprint=filter_fingerprint,
+                    after_page=after_page,
+                    limit=1,
+                )
+                if not rows or int(rows[0].get("page_index", -1)) != expected_page:
+                    raise ConsolidationProgressError(
+                        "fiber census staged page is missing; refusing to rescan an incomplete prefix"
+                    )
+                row = rows[0]
+                raw_fibers = row.get("fibers")
+                page_fingerprint = (
+                    hashlib.sha256(
+                        json.dumps(
+                            raw_fibers, sort_keys=True, separators=(",", ":"), default=str
+                        ).encode()
+                    ).hexdigest()
+                    if isinstance(raw_fibers, list)
+                    else ""
+                )
+                if (
+                    not isinstance(raw_fibers, list)
+                    or not raw_fibers
+                    or str(row.get("page_fingerprint")) != page_fingerprint
+                    or str(row.get("first_fiber_id")) != str(raw_fibers[0].get("id"))
+                    or str(row.get("last_fiber_id")) != str(raw_fibers[-1].get("id"))
+                    or str(row.get("run_id")) != run_id
+                    or str(row.get("brain_id")) != brain_id
+                    or str(row.get("filter_fingerprint")) != filter_fingerprint
+                ):
+                    raise ConsolidationProgressError("fiber census staged page is invalid")
+                page = [decode_fiber(item) for item in raw_fibers]
+                if page != sorted(page, key=lambda item: item.id):
+                    raise ConsolidationProgressError("fiber census staged page is out of order")
+                fibers.extend(page)
+                after_page = expected_page
+            if not fibers or fibers[-1].id != checkpoint["last_fiber_id"]:
+                raise ConsolidationProgressError(
+                    "fiber census staged pages do not match the saved source cursor"
+                )
+            if checkpoint["complete"]:
+                return fibers
+
+        last_id = checkpoint["last_fiber_id"] if checkpoint is not None else None
+        cursor = str(last_id) if last_id is not None else None
+        page_index = int(checkpoint["next_page_index"]) if checkpoint else 0
         while True:
             await self._check_progress_budget()
-            page = await get_page(cursor, limit=500, created_before=created_before)
+            page = await get_page(cursor, limit=page_size, created_before=created_before)
             if not page:
+                if resumable and checkpoint is not None:
+                    checkpoint["complete"] = True
+                    await self._checkpoint_progress(
+                        "fiber_census",
+                        cursor=json.dumps(checkpoint, sort_keys=True, separators=(",", ":")),
+                        pending=[],
+                        counters={"pages": page_index, "fibers": len(fibers)},
+                    )
                 return fibers
             if cursor is not None and page[0].id <= cursor:
                 raise RuntimeError("fiber keyset page did not advance")
+            if page != sorted(page, key=lambda item: item.id):
+                raise RuntimeError("fiber keyset page is not ordered by fiber id")
+
             fibers.extend(page)
-            cursor = page[-1].id
-            if len(page) < 500:
+            last_fiber_id = page[-1].id
+            if resumable and checkpoint is not None:
+                serialized = [encode_fiber(fiber) for fiber in page]
+                page_fingerprint = hashlib.sha256(
+                    json.dumps(
+                        serialized, sort_keys=True, separators=(",", ":"), default=str
+                    ).encode()
+                ).hexdigest()
+                stage_key = hashlib.sha256(
+                    f"{run_id}:{strategy}:{filter_fingerprint}:{page_index}".encode()
+                ).hexdigest()
+                stage = {
+                    "run_id": run_id,
+                    "brain_id": brain_id,
+                    "strategy": strategy,
+                    "filter_fingerprint": filter_fingerprint,
+                    "page_index": page_index,
+                    "first_fiber_id": page[0].id,
+                    "last_fiber_id": last_fiber_id,
+                    "page_fingerprint": page_fingerprint,
+                    "fibers": serialized,
+                    "created_at": utcnow().isoformat(),
+                }
+                await storage_query(
+                    "UPSERT type::record('consolidation_fiber_census', $stage_id) CONTENT $row",
+                    stage_id=stage_key,
+                    row=stage,
+                )
+                checkpoint.update(
+                    last_fiber_id=last_fiber_id,
+                    next_page_index=page_index + 1,
+                    complete=len(page) < page_size,
+                )
+                await self._checkpoint_progress(
+                    "fiber_census",
+                    cursor=json.dumps(checkpoint, sort_keys=True, separators=(",", ":")),
+                    pending=[],
+                    counters={"pages": page_index + 1, "fibers": len(fibers)},
+                )
+                page_index += 1
+                if checkpoint["complete"]:
+                    return fibers
+            cursor = last_fiber_id
+            if len(page) < page_size:
                 return fibers
             await asyncio.sleep(0)
 
