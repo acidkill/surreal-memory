@@ -1199,6 +1199,64 @@ def prune_orphan_states(
     run_async(_prune())
 
 
+def recover_semantic_discovery(
+    run_id: Annotated[str, typer.Option("--run-id", help="Exact unfinished run ID")],
+    confirm_run_id: Annotated[
+        str | None, typer.Option("--confirm-run-id", help="Type the run ID to authorize repair")
+    ] = None,
+    brain: Annotated[str | None, typer.Option("--brain", "-b", help="Brain to repair")] = None,
+    execute: Annotated[
+        bool, typer.Option("--execute", help="Apply the recovery after preflight (default: preview)")
+    ] = False,
+) -> None:
+    """Preview or explicitly restart an unapplied legacy semantic discovery checkpoint.
+
+    This is an exceptional operator action. It preserves the current run and
+    the completed strategies; ordinary `smem consolidate` never resets it.
+    """
+    from surreal_memory.engine.consolidation_progress import (
+        ConsolidationProgressError,
+        recover_legacy_semantic_link_discovery,
+    )
+
+    async def _recover() -> None:
+        config = get_config()
+        brain_name = resolve_brain(brain, config)
+        storage = await get_storage(config, brain_name=brain_name)
+        state = await storage.get_consolidation_progress(brain_name)
+        if not state or state.get("run_id") != run_id:
+            typer.secho("Recovery refused: run ID does not match current brain state.", fg="red")
+            raise typer.Exit(1)
+        if execute and confirm_run_id != run_id:
+            typer.secho("Recovery refused: --confirm-run-id must match --run-id.", fg="red")
+            raise typer.Exit(1)
+        try:
+            result = await recover_legacy_semantic_link_discovery(
+                storage,
+                run_id=run_id,
+                expected_options_fingerprint=str(state.get("options_fingerprint") or ""),
+                expected_status=str(state.get("status") or ""),
+                confirmation_run_id=run_id if not execute else str(confirm_run_id),
+                dry_run=not execute,
+            )
+        except ConsolidationProgressError as exc:
+            typer.secho(f"Recovery refused: {exc}", fg="red")
+            raise typer.Exit(1) from exc
+        if execute:
+            typer.echo(
+                f"Recovered run {result['run_id']}: semantic_link discovery will restart "
+                "from the original reference time; completed strategies were preserved."
+            )
+        else:
+            typer.echo(
+                f"Recovery preflight passed for run {result['run_id']} "
+                f"(reference time: {result['reference_time']}). No changes were made."
+            )
+            typer.echo("To apply, repeat with --execute --confirm-run-id <same run ID>.")
+
+    run_async(_recover())
+
+
 def register(app: typer.Typer) -> None:
     """Register tool commands on the app."""
     app.command()(mcp)
@@ -1209,6 +1267,7 @@ def register(app: typer.Typer) -> None:
     app.command()(serve)
     app.command()(decay)
     app.command()(consolidate)
+    app.command(name="recover-semantic-discovery")(recover_semantic_discovery)
     app.command()(hooks)
     app.command()(flush)
     app.command(name="install-skills")(install_skills)
