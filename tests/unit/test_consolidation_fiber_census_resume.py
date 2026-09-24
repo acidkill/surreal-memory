@@ -212,6 +212,29 @@ async def test_fiber_census_staging_is_isolated_between_run_ids() -> None:
 
 
 @pytest.mark.asyncio
+async def test_fiber_census_streams_more_than_ten_thousand_fibers_in_bounded_pages() -> None:
+    storage = _PagedStorage(_fibers(10_001))
+    engine = ConsolidationEngine(storage, ConsolidationConfig())
+    engine._progress_session = _Progress()  # type: ignore[assignment]
+    engine._active_strategy = ConsolidationStrategy.MERGE
+    engine._check_progress_budget = _completed_budget_check  # type: ignore[method-assign]
+
+    fiber_ids: list[str] = []
+    largest_page = 0
+    page_count = 0
+    async for page in engine._iter_fiber_census_pages():
+        page_count += 1
+        largest_page = max(largest_page, len(page))
+        fiber_ids.extend(fiber.id for fiber in page)
+
+    assert len(fiber_ids) == 10_001
+    assert fiber_ids == sorted(fiber_ids)
+    assert largest_page == 500
+    assert page_count == 21
+    assert len(storage.staged) == page_count + 1  # one immutable completion marker
+
+
+@pytest.mark.asyncio
 async def test_fiber_census_rejects_checkpoint_from_another_run() -> None:
     storage = _PagedStorage(_fibers(1))
     progress = _Progress("current-run")
@@ -283,7 +306,10 @@ async def test_fiber_census_concurrent_identical_writers_are_idempotent() -> Non
     )
 
     assert [fiber.id for fiber in first] == [fiber.id for fiber in second]
-    assert len(storage.staged) == 2
+    assert len(storage.staged) == 3
+    markers = [row for row in storage.staged.values() if row.get("complete") is True]
+    assert len(markers) == 1
+    assert markers[0]["fibers"] == []
 
 
 @pytest.mark.asyncio

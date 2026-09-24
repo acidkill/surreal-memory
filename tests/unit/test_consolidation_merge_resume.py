@@ -285,11 +285,7 @@ async def test_merge_scans_every_posting_after_fifty_thousand_candidate_pairs() 
     storage = _FiberStorage(typed=False, matured=False)
     engine = _engine(storage, _Progress())
     fibers = _large_disjoint_merge_groups()
-
-    async def all_fibers(*, created_before: datetime | None = None) -> list[Fiber]:
-        return list(reversed(fibers))
-
-    engine._all_fibers_paged = all_fibers  # type: ignore[method-assign]
+    storage.fibers = {fiber.id: fiber for fiber in fibers}
     report = ConsolidationReport()
     await engine._merge(report, dry_run=True)
 

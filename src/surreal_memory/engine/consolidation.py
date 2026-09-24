@@ -108,6 +108,53 @@ def _summary_cluster_key(cluster_fibers: Sequence[Fiber]) -> str:
     return _summary_cluster_key_from_ids(f.id for f in cluster_fibers)
 
 
+@dataclass(frozen=True)
+class _MergeCandidate:
+    """Small immutable feature record used while scanning global merge groups."""
+
+    id: str
+    signature: str
+    neuron_ids: frozenset[str]
+    verbatim: bool
+    has_pattern_marker: bool
+    pinned: bool
+    created_at: datetime | None
+
+
+@dataclass(frozen=True)
+class _SummaryCandidate:
+    """Grouping fields retained after each bounded census page is released."""
+
+    id: str
+    anchor_neuron_id: str
+    salience: float
+    summary: str | None
+    tags: frozenset[str]
+    source_signature: str
+
+
+@dataclass(frozen=True)
+class _PatternCandidate:
+    """Fields consumed by pattern extraction, without retaining source Fibers."""
+
+    id: str
+    tags: frozenset[str]
+    neuron_ids: frozenset[str]
+
+
+def _summary_source_signature(fiber: Fiber) -> str:
+    return options_fingerprint(
+        {
+            "id": fiber.id,
+            "anchor_neuron_id": fiber.anchor_neuron_id,
+            "salience": fiber.salience,
+            "summary": fiber.summary,
+            "tags": sorted(fiber.tags),
+            "consolidation_kind": fiber.metadata.get("_consolidation"),
+        }
+    )
+
+
 _MERGED_SUMMARY_MAX_CHARS = 500
 
 
@@ -2545,12 +2592,12 @@ class ConsolidationEngine:
             return plan
 
         async def _candidate_groups(
-            fibers: list[Fiber], scan_state: dict[str, Any] | None = None
-        ) -> list[list[Fiber]]:
+            fibers: list[_MergeCandidate], scan_state: dict[str, Any] | None = None
+        ) -> list[list[_MergeCandidate]]:
             fiber_list = sorted(fibers, key=lambda item: item.id)
             if len(fiber_list) < 2 and scan_state is None:
                 return []
-            snapshot_hash = _fingerprint([_fiber_fingerprint(fiber) for fiber in fiber_list])
+            snapshot_hash = _fingerprint([fiber.signature for fiber in fiber_list])
             neuron_to_fibers: dict[str, set[int]] = {}
             for idx, fiber in enumerate(fiber_list):
                 if len(fiber.neuron_ids) > self._config.merge_max_fiber_size:
@@ -2630,13 +2677,9 @@ class ConsolidationEngine:
                         first = fiber_list[left]
                         second = fiber_list[right]
                         if (
-                            first.metadata.get("_verbatim", False)
-                            == second.metadata.get("_verbatim", False)
-                            and not any(
-                                fiber.metadata.get(marker)
-                                for fiber in (first, second)
-                                for marker in ("_habit_pattern", "_reasoning_pattern")
-                            )
+                            first.verbatim == second.verbatim
+                            and not first.has_pattern_marker
+                            and not second.has_pattern_marker
                             and not first.pinned
                             and not second.pinned
                         ):
@@ -2666,7 +2709,7 @@ class ConsolidationEngine:
                 if (posting_idx + 1) % 1000 == 0 and not dry_run:
                     await save_scan(posting_idx + 1, 0)
 
-            groups: list[list[Fiber]] = []
+            groups: list[list[_MergeCandidate]] = []
             for members in uf.groups().values():
                 if len(members) >= 2:
                     groups.append(
@@ -2702,11 +2745,27 @@ class ConsolidationEngine:
         if not dry_run and phase == "merge_scan" and progress_state.get("cursor"):
             plan = _decode_plan(progress_state["cursor"])
 
-        groups: list[list[Fiber]] = []
+        groups: list[list[_MergeCandidate]] = []
         if plan is None:
-            fibers = await self._all_fibers_paged(
+            fibers: list[_MergeCandidate] = []
+            async for page in self._iter_fiber_census_pages(
                 created_before=getattr(self._progress_session, "reference_time", None)
-            )
+            ):
+                fibers.extend(
+                    _MergeCandidate(
+                        id=fiber.id,
+                        signature=_fiber_fingerprint(fiber),
+                        neuron_ids=frozenset(fiber.neuron_ids),
+                        verbatim=bool(fiber.metadata.get("_verbatim", False)),
+                        has_pattern_marker=bool(
+                            fiber.metadata.get("_habit_pattern")
+                            or fiber.metadata.get("_reasoning_pattern")
+                        ),
+                        pinned=fiber.pinned,
+                        created_at=fiber.created_at,
+                    )
+                    for fiber in page
+                )
             scan_state: dict[str, Any] | None = None
             if not dry_run and phase == "merge_candidate_scan":
                 raw_cursor = progress_state.get("cursor")
@@ -2722,9 +2781,7 @@ class ConsolidationEngine:
             plan = {
                 "version": 2,
                 "kind": "plan",
-                "groups": [
-                    [[fiber.id, _fiber_fingerprint(fiber)] for fiber in group] for group in groups
-                ],
+                "groups": [[[fiber.id, fiber.signature] for fiber in group] for group in groups],
                 "next_index": 0,
             }
             if not dry_run:
@@ -2733,17 +2790,14 @@ class ConsolidationEngine:
 
         for group_index in range(plan["next_index"], len(plan["groups"])):
             members = plan["groups"][group_index]
-            if dry_run:
-                member_fibers = groups[group_index]
-            else:
-                member_fibers = []
-                for fiber_id, signature in members:
-                    current = await self._storage.get_fiber(fiber_id)
-                    if current is None or _fiber_fingerprint(current) != signature:
-                        raise RuntimeError(
-                            f"merge planned source {fiber_id!r} changed before its work unit"
-                        )
-                    member_fibers.append(current)
+            member_fibers = []
+            for fiber_id, signature in members:
+                current = await self._storage.get_fiber(fiber_id)
+                if current is None or _fiber_fingerprint(current) != signature:
+                    raise RuntimeError(
+                        f"merge planned source {fiber_id!r} changed before its work unit"
+                    )
+                member_fibers.append(current)
             if dry_run:
                 source_ids = sorted(fiber.id for fiber in member_fibers)
                 descriptor_id = _fingerprint(source_ids)[:32]
@@ -2791,22 +2845,31 @@ class ConsolidationEngine:
             return ConsolidationConfig()
 
     async def _all_fibers_paged(self, *, created_before: datetime | None = None) -> list[Fiber]:
-        """Build a complete census from bounded reads and durable page checkpoints.
+        """Compatibility collector; strategy code should consume bounded pages."""
+        fibers: list[Fiber] = []
+        async for page in self._iter_fiber_census_pages(created_before=created_before):
+            fibers.extend(page)
+        return fibers
 
-        Staged source pages let a paused consolidation continue at its last
-        committed fiber instead of re-reading the entire prefix. Consumers that
-        need a global group index still materialize the returned list.
+    async def _iter_fiber_census_pages(
+        self, *, created_before: datetime | None = None
+    ) -> AsyncIterator[list[Fiber]]:
+        """Yield ordered source pages without retaining the complete fiber census.
+
+        Durable consolidation runs stage each page immutably, then rehydrate one
+        page at a time. The empty completion row lets a later strategy phase reuse
+        the frozen census after the active progress cursor has moved on.
         """
+        page_size = 500
         get_page = getattr(self._storage, "get_fibers_after_id", None)
         if get_page is None or not hasattr(type(self._storage), "get_fibers_after_id"):
-            # Legacy/mock storage adapters expose only the bounded list API.
-            # They must fail visibly if they hit its ceiling.
             legacy_fibers = await self._storage.get_fibers(limit=10000)
             if len(legacy_fibers) >= 10000:
                 raise RuntimeError("fiber census requires get_fibers_after_id for 10000+ fibers")
-            return list(legacy_fibers)
+            for offset in range(0, len(legacy_fibers), page_size):
+                yield legacy_fibers[offset : offset + page_size]
+            return
 
-        page_size = 500
         progress = self._progress_session
         if created_before is None and progress is not None:
             created_before = getattr(progress, "reference_time", None)
@@ -2828,9 +2891,24 @@ class ConsolidationEngine:
             and run_id
             and callable(getattr(self._storage, "_query", None))
         )
+        if not resumable:
+            cursor: str | None = None
+            while True:
+                await self._check_progress_budget()
+                page = await get_page(cursor, limit=page_size, created_before=created_before)
+                if not page:
+                    return
+                if cursor is not None and page[0].id <= cursor:
+                    raise RuntimeError("fiber keyset page did not advance")
+                if page != sorted(page, key=lambda item: item.id):
+                    raise RuntimeError("fiber keyset page is not ordered by fiber id")
+                yield page
+                cursor = page[-1].id
+                await asyncio.sleep(0)
+
         storage_query = cast(
             "Callable[..., Awaitable[list[dict[str, Any]]]]",
-            getattr(self._storage, "_query", None),
+            cast("Any", self._storage)._query,
         )
 
         def encode_fiber(fiber: Fiber) -> dict[str, Any]:
@@ -2891,7 +2969,83 @@ class ConsolidationEngine:
                 created_at=parse_time("created_at") or utcnow(),
             )
 
-        state = self._strategy_progress_state() if resumable else {}
+        async def read_page(page_index: int) -> dict[str, Any] | None:
+            rows = await storage_query(
+                "SELECT * FROM consolidation_fiber_census WHERE run_id = $run_id "
+                "AND strategy = $strategy AND filter_fingerprint = $filter_fingerprint "
+                "AND page_index > $after_page ORDER BY page_index ASC LIMIT $limit",
+                run_id=run_id,
+                strategy=strategy,
+                filter_fingerprint=filter_fingerprint,
+                after_page=page_index - 1,
+                limit=1,
+            )
+            return (
+                dict(rows[0]) if rows and int(rows[0].get("page_index", -1)) == page_index else None
+            )
+
+        def validate_page(row: dict[str, Any], page_index: int) -> list[Fiber]:
+            raw_fibers = row.get("fibers")
+            fingerprint = (
+                hashlib.sha256(
+                    json.dumps(
+                        raw_fibers, sort_keys=True, separators=(",", ":"), default=str
+                    ).encode("utf-8")
+                ).hexdigest()
+                if isinstance(raw_fibers, list)
+                else ""
+            )
+            if (
+                int(row.get("page_index", -1)) != page_index
+                or not isinstance(raw_fibers, list)
+                or not raw_fibers
+                or len(raw_fibers) > page_size
+                or str(row.get("page_fingerprint")) != fingerprint
+                or str(row.get("first_fiber_id")) != str(raw_fibers[0].get("id"))
+                or str(row.get("last_fiber_id")) != str(raw_fibers[-1].get("id"))
+                or str(row.get("run_id")) != run_id
+                or str(row.get("brain_id")) != brain_id
+                or str(row.get("strategy")) != strategy
+                or str(row.get("filter_fingerprint")) != filter_fingerprint
+            ):
+                raise ConsolidationProgressError("fiber census staged page is invalid")
+            page = [decode_fiber(item) for item in raw_fibers]
+            if page != sorted(page, key=lambda item: item.id):
+                raise ConsolidationProgressError("fiber census staged page is out of order")
+            return page
+
+        async def create_immutable_row(row: dict[str, Any], page_index: int) -> None:
+            stage_key = hashlib.sha256(
+                f"{run_id}:{strategy}:{filter_fingerprint}:{page_index}".encode()
+            ).hexdigest()
+            try:
+                await storage_query(
+                    "CREATE type::record('consolidation_fiber_census', $stage_id) CONTENT $row",
+                    stage_id=stage_key,
+                    row=row,
+                )
+            except Exception as exc:
+                if not is_duplicate_key_error(exc):
+                    raise
+                existing_rows = await storage_query(
+                    "SELECT * FROM type::record('consolidation_fiber_census', $stage_id)",
+                    stage_id=stage_key,
+                )
+                if len(existing_rows) != 1:
+                    raise ConsolidationProgressError(
+                        "immutable fiber census page already exists but could not be verified"
+                    ) from exc
+                existing = dict(existing_rows[0])
+                existing.pop("id", None)
+                if json.dumps(
+                    existing, sort_keys=True, separators=(",", ":"), default=str
+                ) != json.dumps(row, sort_keys=True, separators=(",", ":"), default=str):
+                    raise ConsolidationProgressError(
+                        "immutable fiber census page conflicts with this source page; "
+                        "refusing a stale-owner overwrite"
+                    ) from exc
+
+        state = self._strategy_progress_state()
         raw_cursor = state.get("cursor") if state.get("phase") == "fiber_census" else None
         checkpoint: dict[str, Any] | None = None
         if raw_cursor is not None:
@@ -2913,12 +3067,49 @@ class ConsolidationEngine:
                 raise ConsolidationProgressError(
                     "fiber census checkpoint does not match this run, strategy, brain, or filter"
                 )
-            last_fiber_id = parsed.get("last_fiber_id")
-            if last_fiber_id is not None and not isinstance(last_fiber_id, str):
+            if parsed.get("last_fiber_id") is not None and not isinstance(
+                parsed.get("last_fiber_id"), str
+            ):
                 raise ConsolidationProgressError("fiber census checkpoint cursor is invalid")
             checkpoint = parsed
 
-        if resumable:
+        marker: dict[str, Any] | None = None
+        after_page = -1
+        while True:
+            staged_rows = await storage_query(
+                "SELECT * FROM consolidation_fiber_census WHERE run_id = $run_id "
+                "AND strategy = $strategy AND filter_fingerprint = $filter_fingerprint "
+                "AND page_index > $after_page ORDER BY page_index ASC LIMIT $limit",
+                run_id=run_id,
+                strategy=strategy,
+                filter_fingerprint=filter_fingerprint,
+                after_page=after_page,
+                limit=1,
+            )
+            if not staged_rows:
+                break
+            staged_row = dict(staged_rows[0])
+            staged_index = int(staged_row.get("page_index", -1))
+            if staged_index <= after_page:
+                raise ConsolidationProgressError("fiber census staged page cursor did not advance")
+            if staged_row.get("complete") is True:
+                marker = staged_row
+                break
+            after_page = staged_index
+        if marker is not None:
+            marker_index = int(marker.get("page_index", -1))
+            empty_fingerprint = hashlib.sha256(b"[]").hexdigest()
+            if (
+                marker_index < 0
+                or marker.get("fibers") != []
+                or str(marker.get("page_fingerprint")) != empty_fingerprint
+                or str(marker.get("run_id")) != run_id
+                or str(marker.get("brain_id")) != brain_id
+                or str(marker.get("strategy")) != strategy
+                or str(marker.get("filter_fingerprint")) != filter_fingerprint
+            ):
+                raise ConsolidationProgressError("fiber census completion marker is invalid")
+        else:
             if checkpoint is None:
                 checkpoint = {
                     "version": 1,
@@ -2931,82 +3122,44 @@ class ConsolidationEngine:
                     "complete": False,
                 }
 
-        fibers: list[Fiber] = []
-        if resumable and checkpoint is not None and checkpoint["next_page_index"]:
-            after_page = -1
-            for expected_page in range(checkpoint["next_page_index"]):
-                rows = await storage_query(
-                    "SELECT * FROM consolidation_fiber_census WHERE run_id = $run_id "
-                    "AND strategy = $strategy AND filter_fingerprint = $filter_fingerprint "
-                    "AND page_index > $after_page ORDER BY page_index ASC LIMIT $limit",
-                    run_id=run_id,
-                    strategy=strategy,
-                    filter_fingerprint=filter_fingerprint,
-                    after_page=after_page,
-                    limit=1,
-                )
-                if not rows or int(rows[0].get("page_index", -1)) != expected_page:
+            page_count = int(checkpoint["next_page_index"])
+            last_staged_id: str | None = None
+            fiber_count = 0
+            for expected_page in range(page_count):
+                row = await read_page(expected_page)
+                if row is None:
                     raise ConsolidationProgressError(
                         "fiber census staged page is missing; refusing to rescan an incomplete prefix"
                     )
-                row = rows[0]
-                raw_fibers = row.get("fibers")
-                page_fingerprint = (
-                    hashlib.sha256(
-                        json.dumps(
-                            raw_fibers, sort_keys=True, separators=(",", ":"), default=str
-                        ).encode()
-                    ).hexdigest()
-                    if isinstance(raw_fibers, list)
-                    else ""
-                )
-                if (
-                    not isinstance(raw_fibers, list)
-                    or not raw_fibers
-                    or str(row.get("page_fingerprint")) != page_fingerprint
-                    or str(row.get("first_fiber_id")) != str(raw_fibers[0].get("id"))
-                    or str(row.get("last_fiber_id")) != str(raw_fibers[-1].get("id"))
-                    or str(row.get("run_id")) != run_id
-                    or str(row.get("brain_id")) != brain_id
-                    or str(row.get("filter_fingerprint")) != filter_fingerprint
-                ):
-                    raise ConsolidationProgressError("fiber census staged page is invalid")
-                page = [decode_fiber(item) for item in raw_fibers]
-                if page != sorted(page, key=lambda item: item.id):
-                    raise ConsolidationProgressError("fiber census staged page is out of order")
-                fibers.extend(page)
-                after_page = expected_page
-            if not fibers or fibers[-1].id != checkpoint["last_fiber_id"]:
+                page = validate_page(row, expected_page)
+                fiber_count += len(page)
+                last_staged_id = page[-1].id
+            if page_count and last_staged_id != checkpoint.get("last_fiber_id"):
                 raise ConsolidationProgressError(
                     "fiber census staged pages do not match the saved source cursor"
                 )
-            if checkpoint["complete"]:
-                return fibers
+            if not page_count and checkpoint.get("last_fiber_id") is not None:
+                raise ConsolidationProgressError("fiber census staged cursor has no source pages")
 
-        last_id = checkpoint["last_fiber_id"] if checkpoint is not None else None
-        cursor = str(last_id) if last_id is not None else None
-        page_index = int(checkpoint["next_page_index"]) if checkpoint else 0
-        while True:
-            await self._check_progress_budget()
-            page = await get_page(cursor, limit=page_size, created_before=created_before)
-            if not page:
-                if resumable and checkpoint is not None:
+            cursor = str(last_staged_id) if last_staged_id is not None else None
+            complete = bool(checkpoint["complete"])
+            while not complete:
+                await self._check_progress_budget()
+                page = await get_page(cursor, limit=page_size, created_before=created_before)
+                if not page:
+                    complete = True
                     checkpoint["complete"] = True
                     await self._checkpoint_progress(
                         "fiber_census",
                         cursor=json.dumps(checkpoint, sort_keys=True, separators=(",", ":")),
                         pending=[],
-                        counters={"pages": page_index, "fibers": len(fibers)},
+                        counters={"pages": page_count, "fibers": fiber_count},
                     )
-                return fibers
-            if cursor is not None and page[0].id <= cursor:
-                raise RuntimeError("fiber keyset page did not advance")
-            if page != sorted(page, key=lambda item: item.id):
-                raise RuntimeError("fiber keyset page is not ordered by fiber id")
-
-            fibers.extend(page)
-            last_fiber_id = page[-1].id
-            if resumable and checkpoint is not None:
+                    break
+                if cursor is not None and page[0].id <= cursor:
+                    raise RuntimeError("fiber keyset page did not advance")
+                if page != sorted(page, key=lambda item: item.id):
+                    raise RuntimeError("fiber keyset page is not ordered by fiber id")
                 serialized = json.loads(
                     json.dumps(
                         [encode_fiber(fiber) for fiber in page],
@@ -3018,70 +3171,112 @@ class ConsolidationEngine:
                 page_fingerprint = hashlib.sha256(
                     json.dumps(serialized, sort_keys=True, separators=(",", ":")).encode()
                 ).hexdigest()
-                stage_key = hashlib.sha256(
-                    f"{run_id}:{strategy}:{filter_fingerprint}:{page_index}".encode()
-                ).hexdigest()
-                stage = {
+                last_fiber_id = page[-1].id
+                staged = {
                     "run_id": run_id,
                     "brain_id": brain_id,
                     "strategy": strategy,
                     "filter_fingerprint": filter_fingerprint,
-                    "page_index": page_index,
+                    "page_index": page_count,
                     "first_fiber_id": page[0].id,
                     "last_fiber_id": last_fiber_id,
                     "page_fingerprint": page_fingerprint,
                     "fibers": serialized,
                 }
-                # Stage IDs are stable for the whole run, including across lease
-                # transfer. CREATE prevents a stale owner from replacing a page;
-                # the duplicate path below accepts only an identical retry.
-                try:
-                    await storage_query(
-                        "CREATE type::record('consolidation_fiber_census', $stage_id) CONTENT $row",
-                        stage_id=stage_key,
-                        row=stage,
-                    )
-                except Exception as exc:
-                    if not is_duplicate_key_error(exc):
-                        raise
-                    existing_rows = await storage_query(
-                        "SELECT * FROM type::record('consolidation_fiber_census', $stage_id)",
-                        stage_id=stage_key,
-                    )
-                    if len(existing_rows) != 1:
-                        raise ConsolidationProgressError(
-                            "immutable fiber census page already exists but could not be verified"
-                        ) from exc
-                    existing = dict(existing_rows[0])
-                    existing.pop("id", None)
-                    existing_payload = json.dumps(
-                        existing, sort_keys=True, separators=(",", ":"), default=str
-                    )
-                    requested_payload = json.dumps(
-                        stage, sort_keys=True, separators=(",", ":"), default=str
-                    )
-                    if existing_payload != requested_payload:
-                        raise ConsolidationProgressError(
-                            "immutable fiber census page conflicts with this source page; "
-                            "refusing a stale-owner overwrite"
-                        ) from exc
+                await create_immutable_row(staged, page_count)
+                fiber_count += len(page)
+                cursor = last_fiber_id
+                page_count += 1
+                complete = len(page) < page_size
                 checkpoint.update(
                     last_fiber_id=last_fiber_id,
-                    next_page_index=page_index + 1,
-                    complete=len(page) < page_size,
+                    next_page_index=page_count,
+                    complete=complete,
                 )
                 await self._checkpoint_progress(
                     "fiber_census",
                     cursor=json.dumps(checkpoint, sort_keys=True, separators=(",", ":")),
                     pending=[],
-                    counters={"pages": page_index + 1, "fibers": len(fibers)},
+                    counters={"pages": page_count, "fibers": fiber_count},
                 )
-                page_index += 1
-                if checkpoint["complete"]:
-                    return fibers
-            cursor = last_fiber_id
-            if len(page) < page_size:
-                return fibers
+                if not complete:
+                    await asyncio.sleep(0)
+
+            last_fiber_id = str(checkpoint.get("last_fiber_id") or "")
+            marker_row: dict[str, Any] = {
+                "run_id": run_id,
+                "brain_id": brain_id,
+                "strategy": strategy,
+                "filter_fingerprint": filter_fingerprint,
+                "page_index": page_count,
+                "first_fiber_id": None,
+                "last_fiber_id": last_fiber_id or None,
+                "page_fingerprint": hashlib.sha256(b"[]").hexdigest(),
+                "fibers": [],
+                "complete": True,
+            }
+            await create_immutable_row(marker_row, page_count)
+            checkpoint["complete"] = True
+            await self._checkpoint_progress(
+                "fiber_census",
+                cursor=json.dumps(checkpoint, sort_keys=True, separators=(",", ":")),
+                pending=[],
+                counters={"pages": page_count, "fibers": fiber_count},
+            )
+            marker = marker_row
+            marker_index = page_count
+
+        marker_page_index = marker.get("page_index") if marker is not None else -1
+        if not isinstance(marker_page_index, int):
+            raise ConsolidationProgressError("fiber census completion marker index is invalid")
+        marker_index = marker_page_index
+        expected_last_id = marker.get("last_fiber_id") if marker is not None else None
+        last_seen_id: str | None = None
+        for page_index in range(marker_index):
+            await self._check_progress_budget()
+            row = await read_page(page_index)
+            if row is None:
+                raise ConsolidationProgressError(
+                    "fiber census staged page is missing; refusing an incomplete frozen snapshot"
+                )
+            page = validate_page(row, page_index)
+            if last_seen_id is not None and page[0].id <= last_seen_id:
+                raise ConsolidationProgressError(
+                    "fiber census staged pages overlap or are unordered"
+                )
+            last_seen_id = page[-1].id
+            yield page
+        if last_seen_id != expected_last_id:
+            if marker_index == 0 and expected_last_id is None:
+                return
+            raise ConsolidationProgressError(
+                "fiber census staged pages do not match the completion marker"
+            )
+
+    async def _iter_current_fiber_pages(
+        self, *, created_before: datetime | None = None
+    ) -> AsyncIterator[list[Fiber]]:
+        """Read live sources a page at a time for resume-time mutation guards."""
+        get_page = getattr(self._storage, "get_fibers_after_id", None)
+        if get_page is None or not hasattr(type(self._storage), "get_fibers_after_id"):
+            async for page in self._iter_fiber_census_pages(created_before=created_before):
+                yield page
+            return
+
+        if created_before is None and self._progress_session is not None:
+            created_before = getattr(self._progress_session, "reference_time", None)
+        cursor: str | None = None
+        while True:
+            await self._check_progress_budget()
+            page = await get_page(cursor, limit=500, created_before=created_before)
+            if not page:
+                return
+            if cursor is not None and page[0].id <= cursor:
+                raise RuntimeError("fiber keyset page did not advance")
+            if page != sorted(page, key=lambda item: item.id):
+                raise RuntimeError("fiber keyset page is not ordered by fiber id")
+            yield page
+            cursor = page[-1].id
             await asyncio.sleep(0)
 
     async def _all_synapses_paged(self) -> list[Synapse]:
@@ -3266,15 +3461,43 @@ class ConsolidationEngine:
         """
         import json
 
-        fibers = await self._all_fibers_paged(
+        source_fibers: list[_SummaryCandidate] = []
+        existing_cluster_keys: set[str] = set()
+        fiber_count = 0
+        async for page in self._iter_fiber_census_pages(
             created_before=getattr(self._progress_session, "reference_time", None)
-        )
-        if len(fibers) < self._config.summarize_min_cluster_size:
+        ):
+            fiber_count += len(page)
+            for fiber in page:
+                is_summary = fiber.metadata.get("_consolidation") == "summary_fiber"
+                if is_summary:
+                    key = fiber.metadata.get("_cluster_key")
+                    if key:
+                        existing_cluster_keys.add(str(key))
+                    else:
+                        sources = fiber.metadata.get("source_fibers")
+                        if isinstance(sources, list) and sources:
+                            existing_cluster_keys.add(
+                                _summary_cluster_key_from_ids(str(source) for source in sources)
+                            )
+                    continue
+                if fiber.tags:
+                    source_fibers.append(
+                        _SummaryCandidate(
+                            id=fiber.id,
+                            anchor_neuron_id=fiber.anchor_neuron_id,
+                            salience=fiber.salience,
+                            summary=fiber.summary,
+                            tags=frozenset(fiber.tags),
+                            source_signature=_summary_source_signature(fiber),
+                        )
+                    )
+        if fiber_count < self._config.summarize_min_cluster_size:
             return
 
         # Stable order is important both for pair enumeration and for resuming
         # the same cluster sequence after a process interruption.
-        source_fibers = sorted(self._summarize_input_fibers(fibers), key=lambda f: f.id)
+        source_fibers.sort(key=lambda fiber: fiber.id)
 
         if len(source_fibers) < self._config.summarize_min_cluster_size:
             return
@@ -3299,8 +3522,8 @@ class ConsolidationEngine:
 
         n = len(source_fibers)
         tag_to_fibers: dict[str, set[int]] = {}
-        for idx, fiber in enumerate(source_fibers):
-            for tag in sorted(fiber.tags):
+        for idx, candidate in enumerate(source_fibers):
+            for tag in sorted(candidate.tags):
                 tag_to_fibers.setdefault(tag, set()).add(idx)
 
         parent: dict[int, int] = {i: i for i in range(n)}
@@ -3453,15 +3676,37 @@ class ConsolidationEngine:
         for i in range(n):
             grouped_members.setdefault(find(i), []).append(i)
 
-        cluster_work: list[tuple[str, list[Fiber]]] = []
+        cluster_work: list[tuple[str, list[_SummaryCandidate]]] = []
         for members in grouped_members.values():
             if len(members) < self._config.summarize_min_cluster_size:
                 continue
             cluster_fibers = [source_fibers[i] for i in members]
-            cluster_work.append((_summary_cluster_key(cluster_fibers), cluster_fibers))
+            cluster_work.append(
+                (
+                    _summary_cluster_key_from_ids(fiber.id for fiber in cluster_fibers),
+                    cluster_fibers,
+                )
+            )
         cluster_work.sort(key=lambda item: item[0])
 
-        existing_cluster_keys = self._existing_summary_cluster_keys(fibers)
+        async def validate_summary_sources(cluster_key: str) -> None:
+            cluster_fibers = next(
+                (members for key, members in cluster_work if key == cluster_key), None
+            )
+            if cluster_fibers is None:
+                raise ConsolidationProgressError(
+                    "summary cluster is not in the current input snapshot"
+                )
+            for candidate in cluster_fibers:
+                current = await self._storage.get_fiber(candidate.id)
+                if (
+                    current is None
+                    or _summary_source_signature(current) != candidate.source_signature
+                ):
+                    raise ConsolidationProgressError(
+                        f"summary source fiber {candidate.id!r} changed after its checkpoint"
+                    )
+
         last_cluster_key = ""
         created_count = 0
         skipped_count = 0
@@ -3562,6 +3807,7 @@ class ConsolidationEngine:
                         "summarize pending checkpoint is malformed or incompatible"
                     ) from exc
                 await self._check_progress_budget()
+                await validate_summary_sources(cluster_key)
                 await apply_snapshot(snapshot)
                 return cluster_key
 
@@ -3594,6 +3840,9 @@ class ConsolidationEngine:
             if len(cluster_fibers) < self._config.summarize_min_cluster_size:
                 continue
 
+            if resumable and not dry_run:
+                await validate_summary_sources(cluster_key)
+
             if cluster_key in existing_cluster_keys:
                 if resumable:
                     skipped_count += 1
@@ -3615,10 +3864,10 @@ class ConsolidationEngine:
                     )
                 continue
 
-            summaries = [fiber.summary for fiber in cluster_fibers if fiber.summary]
+            summaries = [candidate.summary for candidate in cluster_fibers if candidate.summary]
             all_tags: set[str] = set()
-            for fiber in cluster_fibers:
-                all_tags |= fiber.tags
+            for candidate in cluster_fibers:
+                all_tags |= candidate.tags
 
             summary_content = (
                 "; ".join(summaries[:10])
@@ -3644,7 +3893,7 @@ class ConsolidationEngine:
                 )
                 await self._storage.add_neuron(concept_neuron)
 
-                anchor_ids = {fiber.anchor_neuron_id for fiber in cluster_fibers}
+                anchor_ids = {candidate.anchor_neuron_id for candidate in cluster_fibers}
                 valid_anchor_ids: set[str] = set()
                 for anchor_id in sorted(anchor_ids):
                     anchor_neuron = await self._storage.get_neuron(anchor_id)
@@ -3672,7 +3921,7 @@ class ConsolidationEngine:
                     metadata={
                         "_consolidation": "summary_fiber",
                         "_cluster_key": cluster_key,
-                        "source_fibers": [fiber.id for fiber in cluster_fibers],
+                        "source_fibers": [candidate.id for candidate in cluster_fibers],
                     },
                 )
                 await self._storage.add_fiber(summary_fiber)
@@ -3680,7 +3929,9 @@ class ConsolidationEngine:
                 continue
 
             await self._check_progress_budget()
-            cluster_anchor_ids = sorted({fiber.anchor_neuron_id for fiber in cluster_fibers})
+            cluster_anchor_ids = sorted(
+                {candidate.anchor_neuron_id for candidate in cluster_fibers}
+            )
             snapshot_anchor_ids: list[str] = []
             for anchor_id in cluster_anchor_ids:
                 await self._check_progress_budget()
@@ -3693,7 +3944,7 @@ class ConsolidationEngine:
                 "version": 1,
                 "fingerprint": snapshot_fingerprint,
                 "cluster_key": cluster_key,
-                "source_fiber_ids": [fiber.id for fiber in cluster_fibers],
+                "source_fiber_ids": [candidate.id for candidate in cluster_fibers],
                 "concept_content": concept_content,
                 "tags": sorted(all_tags),
                 "concept_neuron_id": str(uuid4()),
@@ -3836,33 +4087,47 @@ class ConsolidationEngine:
             )
 
         async def pattern_source_fingerprint() -> str:
-            source_fibers = await self._all_fibers_paged(
-                created_before=getattr(self._progress_session, "reference_time", None)
-            )
             source_maturations = await self._storage.find_maturations()
-            payload = {
-                "fibers": [
-                    {
-                        "id": fiber.id,
-                        "neuron_ids": sorted(fiber.neuron_ids),
-                        "tags": sorted(fiber.tags),
-                    }
-                    for fiber in sorted(source_fibers, key=lambda item: item.id)
-                ],
-                "maturations": [
-                    {
-                        "fiber_id": record.fiber_id,
-                        "brain_id": record.brain_id,
-                        "stage": record.stage.value,
-                        "stage_entered_at": record.stage_entered_at.isoformat(),
-                        "rehearsal_count": record.rehearsal_count,
-                        "reinforcement_timestamps": list(record.reinforcement_timestamps),
-                    }
-                    for record in sorted(source_maturations, key=lambda item: item.fiber_id)
-                ],
-            }
-            encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
-            return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+            encoder = json.JSONEncoder(sort_keys=True, separators=(",", ":"), default=str)
+            digest = hashlib.sha256()
+            digest.update(b'{"fibers":[')
+            first = True
+            async for page in self._iter_current_fiber_pages(
+                created_before=getattr(self._progress_session, "reference_time", None)
+            ):
+                for fiber in page:
+                    if not first:
+                        digest.update(b",")
+                    first = False
+                    digest.update(
+                        encoder.encode(
+                            {
+                                "id": fiber.id,
+                                "neuron_ids": sorted(fiber.neuron_ids),
+                                "tags": sorted(fiber.tags),
+                            }
+                        ).encode("utf-8")
+                    )
+            digest.update(b'],"maturations":[')
+            for index, record in enumerate(
+                sorted(source_maturations, key=lambda item: item.fiber_id)
+            ):
+                if index:
+                    digest.update(b",")
+                digest.update(
+                    encoder.encode(
+                        {
+                            "fiber_id": record.fiber_id,
+                            "brain_id": record.brain_id,
+                            "stage": record.stage.value,
+                            "stage_entered_at": record.stage_entered_at.isoformat(),
+                            "rehearsal_count": record.rehearsal_count,
+                            "reinforcement_timestamps": list(record.reinforcement_timestamps),
+                        }
+                    ).encode("utf-8")
+                )
+            digest.update(b"]}")
+            return digest.hexdigest()
 
         _hop_keys = {
             (MemoryStage.SHORT_TERM, MemoryStage.WORKING): "stm_to_working",
@@ -4140,11 +4405,28 @@ class ConsolidationEngine:
 
         maturations = await self._storage.find_maturations()
         maturation_map = {m.fiber_id: m for m in maturations}
-        fibers = await self._all_fibers_paged(
+        pattern_inputs: list[_PatternCandidate] = []
+        async for page in self._iter_fiber_census_pages(
             created_before=getattr(self._progress_session, "reference_time", None)
-        )
+        ):
+            for fiber in page:
+                maturation = maturation_map.get(fiber.id)
+                if (
+                    maturation is not None
+                    and maturation.stage == MemoryStage.EPISODIC
+                    and maturation.rehearsal_count >= 3
+                    and fiber.tags
+                ):
+                    pattern_inputs.append(
+                        _PatternCandidate(
+                            id=fiber.id,
+                            tags=frozenset(fiber.tags),
+                            neuron_ids=frozenset(fiber.neuron_ids),
+                        )
+                    )
+        pattern_inputs.sort(key=lambda item: item.id)
         patterns, extraction_report = extract_patterns(
-            fibers=fibers,
+            fibers=cast("list[Fiber]", pattern_inputs),
             maturations=maturation_map,
             min_cluster_size=self._config.summarize_min_cluster_size,
             tag_overlap_threshold=self._config.summarize_tag_overlap_threshold,
@@ -4313,41 +4595,43 @@ class ConsolidationEngine:
 
         # Dry runs and legacy adapters do not mutate progress state.
         if self._progress_session is None or dry_run:
-            fibers = await self._all_fibers_paged()
-            candidates = [fiber for fiber in fibers if not fiber.essence]
-
             backfilled = 0
-            for idx, fiber in enumerate(candidates):
-                if idx % 50 == 0 and idx > 0:
-                    await asyncio.sleep(0)
+            candidate_index = 0
+            async for page in self._iter_fiber_census_pages():
+                for fiber in page:
+                    if fiber.essence:
+                        continue
+                    if candidate_index % 50 == 0 and candidate_index > 0:
+                        await asyncio.sleep(0)
+                    candidate_index += 1
 
-                anchor = await self._storage.get_neuron(fiber.anchor_neuron_id)
-                if not anchor or not anchor.content:
-                    continue
+                    anchor = await self._storage.get_neuron(fiber.anchor_neuron_id)
+                    if not anchor or not anchor.content:
+                        continue
 
-                # Get priority from typed memory for cost guard
-                priority = 5
-                try:
-                    typed_mem = await self._storage.get_typed_memory(fiber.id)
-                    if (
-                        typed_mem
-                        and hasattr(typed_mem, "priority")
-                        and isinstance(typed_mem.priority, (int, float))
-                    ):
-                        priority = int(typed_mem.priority)
-                except Exception:
-                    pass
+                    # Get priority from typed memory for cost guard
+                    priority = 5
+                    try:
+                        typed_mem = await self._storage.get_typed_memory(fiber.id)
+                        if (
+                            typed_mem
+                            and hasattr(typed_mem, "priority")
+                            and isinstance(typed_mem.priority, (int, float))
+                        ):
+                            priority = int(typed_mem.priority)
+                    except Exception:
+                        pass
 
-                essence = await generator.generate(anchor.content, priority=priority)
-                if not essence:
-                    continue
+                    essence = await generator.generate(anchor.content, priority=priority)
+                    if not essence:
+                        continue
 
-                if dry_run:
+                    if dry_run:
+                        backfilled += 1
+                        continue
+
+                    await self._storage.update_fiber(fiber.with_essence(essence))
                     backfilled += 1
-                    continue
-
-                await self._storage.update_fiber(fiber.with_essence(essence))
-                backfilled += 1
 
             if backfilled > 0:
                 logger.info("Essence backfill: %d fibers updated", backfilled)
@@ -4396,16 +4680,29 @@ class ConsolidationEngine:
 
         page_cursor = cursor
         page_size = 250
+        legacy_pages: AsyncIterator[list[Fiber]] | None = None
+        legacy_page: list[Fiber] = []
+        legacy_offset = 0
         while True:
             await self._check_progress_budget()
             get_page = getattr(self._storage, "get_fibers_after_id", None)
             if get_page is None or not hasattr(type(self._storage), "get_fibers_after_id"):
-                legacy = await self._all_fibers_paged()
-                page = [
-                    fiber
-                    for fiber in sorted(legacy, key=lambda f: f.id)
-                    if page_cursor is None or fiber.id > page_cursor
-                ][:page_size]
+                if legacy_pages is None:
+                    legacy_pages = self._iter_fiber_census_pages(
+                        created_before=getattr(self._progress_session, "reference_time", None)
+                    )
+                page = []
+                while len(page) < page_size:
+                    if legacy_offset >= len(legacy_page):
+                        try:
+                            legacy_page = await anext(legacy_pages)
+                        except StopAsyncIteration:
+                            break
+                        legacy_offset = 0
+                    fiber = legacy_page[legacy_offset]
+                    legacy_offset += 1
+                    if page_cursor is None or fiber.id > page_cursor:
+                        page.append(fiber)
             else:
                 page = await get_page(
                     page_cursor,
@@ -4805,41 +5102,45 @@ class ConsolidationEngine:
             }
             neurons = await self._storage.get_neurons_batch(sorted(neuron_ids))
             content_map = {neuron_id: neuron.content for neuron_id, neuron in neurons.items()}
-            fibers = await self._all_fibers_paged(
-                created_before=getattr(self._progress_session, "reference_time", None)
-            )
             existing_tags: set[str] = set()
-            for fiber in fibers:
-                existing_tags |= fiber.tags
+            async for page in self._iter_fiber_census_pages(
+                created_before=getattr(self._progress_session, "reference_time", None)
+            ):
+                for fiber in page:
+                    existing_tags |= fiber.tags
             assoc_tags = generate_associative_tags(all_candidates, content_map, existing_tags)
             normalizer = TagNormalizer()
-            neuron_to_fiber_idx: dict[str, set[int]] = {}
-            for index, fiber in enumerate(fibers):
-                for neuron_id in fiber.neuron_ids:
-                    neuron_to_fiber_idx.setdefault(neuron_id, set()).add(index)
-            fiber_new_tags: dict[int, set[str]] = {}
+            neuron_to_tags: dict[str, set[str]] = {}
             for assoc_tag in assoc_tags:
                 normalized_tag = normalizer.normalize(assoc_tag.tag)
-                affected: set[int] = set()
                 for neuron_id in assoc_tag.source_neuron_ids:
-                    affected |= neuron_to_fiber_idx.get(neuron_id, set())
-                for index in affected:
-                    fiber_new_tags.setdefault(index, set()).add(normalized_tag)
-            for index, new_tags in sorted(fiber_new_tags.items()):
-                fiber = fibers[index]
-                if strategy_state.get("phase") == "infer_tags":
-                    tag_cursor = strategy_state.get("cursor")
-                    if tag_cursor is not None and fiber.id <= str(tag_cursor):
+                    neuron_to_tags.setdefault(neuron_id, set()).add(normalized_tag)
+            tag_cursor_value = strategy_state.get("cursor")
+            tag_cursor = str(tag_cursor_value) if tag_cursor_value is not None else None
+            async for page in self._iter_fiber_census_pages(
+                created_before=getattr(self._progress_session, "reference_time", None)
+            ):
+                for fiber in page:
+                    if (
+                        strategy_state.get("phase") == "infer_tags"
+                        and tag_cursor is not None
+                        and fiber.id <= tag_cursor
+                    ):
                         continue
-                updated_auto_tags = fiber.auto_tags | new_tags
-                if updated_auto_tags != fiber.auto_tags:
-                    try:
-                        await self._storage.update_fiber(
-                            dc_replace(fiber, auto_tags=updated_auto_tags)
-                        )
-                    except Exception:
-                        logger.debug("Associative tag update failed", exc_info=True)
-                await checkpoint("infer_tags", fiber.id)
+                    new_tags: set[str] = set()
+                    for neuron_id in fiber.neuron_ids:
+                        new_tags.update(neuron_to_tags.get(neuron_id, set()))
+                    if not new_tags:
+                        continue
+                    updated_auto_tags = fiber.auto_tags | new_tags
+                    if updated_auto_tags != fiber.auto_tags:
+                        try:
+                            await self._storage.update_fiber(
+                                dc_replace(fiber, auto_tags=updated_auto_tags)
+                            )
+                        except Exception:
+                            logger.debug("Associative tag update failed", exc_info=True)
+                    await checkpoint("infer_tags", fiber.id)
 
             for drift_report in normalizer.detect_drift(existing_tags):
                 logger.info(
@@ -4908,33 +5209,48 @@ class ConsolidationEngine:
         async def source_fingerprint(excluded_ids: set[str]) -> str:
             causal = await self._storage.get_synapses(type=SynapseType.CAUSED_BY)
             related = await self._storage.get_synapses_paged(type=SynapseType.RELATED_TO)
-            fibers = await self._all_fibers_paged(
+            encoder = json.JSONEncoder(sort_keys=True, separators=(",", ":"), default=str)
+            digest = hashlib.sha256()
+            digest.update(b'{"causal":[')
+            first_item = True
+            for item in sorted(causal, key=lambda edge: edge.id):
+                if item.id in excluded_ids:
+                    continue
+                if not first_item:
+                    digest.update(b",")
+                digest.update(encoder.encode(encode_synapse(item)).encode("utf-8"))
+                first_item = False
+            digest.update(b'],"fibers":[')
+            first_item = True
+            async for page in self._iter_current_fiber_pages(
                 created_before=getattr(self._progress_session, "reference_time", None)
-            )
-            payload = {
-                "causal": [
-                    encode_synapse(item)
-                    for item in sorted(causal, key=lambda edge: edge.id)
-                    if item.id not in excluded_ids
-                ],
-                "related": [
-                    encode_synapse(item)
-                    for item in sorted(related, key=lambda edge: edge.id)
-                    if item.id not in excluded_ids
-                ],
-                "fibers": [
-                    {
-                        "id": fiber.id,
-                        "anchor_neuron_id": fiber.anchor_neuron_id,
-                        "neuron_ids": sorted(fiber.neuron_ids),
-                        "tags": sorted(fiber.tags),
-                        "salience": fiber.salience,
-                    }
-                    for fiber in sorted(fibers, key=lambda item: item.id)
-                ],
-            }
-            encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
-            return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+            ):
+                for fiber in page:
+                    if not first_item:
+                        digest.update(b",")
+                    digest.update(
+                        encoder.encode(
+                            {
+                                "id": fiber.id,
+                                "anchor_neuron_id": fiber.anchor_neuron_id,
+                                "neuron_ids": sorted(fiber.neuron_ids),
+                                "tags": sorted(fiber.tags),
+                                "salience": fiber.salience,
+                            }
+                        ).encode("utf-8")
+                    )
+                    first_item = False
+            digest.update(b'],"related":[')
+            first_item = True
+            for item in sorted(related, key=lambda edge: edge.id):
+                if item.id in excluded_ids:
+                    continue
+                if not first_item:
+                    digest.update(b",")
+                digest.update(encoder.encode(encode_synapse(item)).encode("utf-8"))
+                first_item = False
+            digest.update(b"]}")
+            return digest.hexdigest()
 
         result = await enrich(self._storage)
         all_synapses = sorted(
