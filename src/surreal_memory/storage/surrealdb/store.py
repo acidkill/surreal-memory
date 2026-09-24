@@ -2373,27 +2373,40 @@ class SurrealDBStorage(
     async def get_synapse_target_counts_for_sources(
         self, source_ids: list[str] | set[str]
     ) -> dict[str, int]:
-        """Count distinct outgoing targets in the database without returning edge rows."""
+        """Count distinct outgoing targets with indexed per-source subqueries.
+
+        A single grouped IN query selects the brain-wide index and filters
+        the entire synapse table on SurrealDB 3.2. Batched scalar subqueries
+        seek the composite source index with one round trip per batch.
+        """
         unique_ids = list(dict.fromkeys(source_ids))
         if not unique_ids:
             return {}
 
         brain_id = self._get_brain_id()
         target_counts: dict[str, int] = {}
-        for start in range(0, len(unique_ids), 256):
-            batch = unique_ids[start : start + 256]
+        for start in range(0, len(unique_ids), 128):
+            batch = unique_ids[start : start + 128]
             params: dict[str, Any] = {"brain_id": brain_id}
-            record_ids = self._record_id_list("neuron", batch, "source_id", params)
-            rows = await self._query(
-                "SELECT in AS source_id, "
-                "array::len(array::group(out)) AS target_count "
-                "FROM synapse WHERE brain_id = $brain_id "
-                f"AND in IN {record_ids} GROUP BY in",
-                **params,
+            selections: list[str] = []
+            for index, source_id in enumerate(batch):
+                params[f"source_id_{index}"] = _to_surreal_id(source_id)
+                selections.append(
+                    "(SELECT VALUE array::len(array::group(out)) FROM synapse "
+                    "WHERE brain_id = $brain_id AND "
+                    f"in = type::record('neuron', $source_id_{index}) GROUP ALL)"
+                )
+            result = await self._query_response(
+                "RETURN [" + ", ".join(selections) + "]", **params
             )
-            for row in rows:
-                source_id = _endpoint_to_id(row.get("source_id"), None)
-                target_counts[source_id] = int(row.get("target_count") or 0)
+            if not isinstance(result, list) or len(result) != len(batch):
+                raise RuntimeError("prune target-count query returned an incomplete source batch")
+            for source_id, values in zip(batch, result, strict=True):
+                if not isinstance(values, list) or len(values) > 1:
+                    raise RuntimeError("prune target-count query returned an invalid aggregate")
+                count = int(values[0]) if values else 0
+                if count > 0:
+                    target_counts[source_id] = count
         return target_counts
 
     async def get_connected_neuron_ids_for(self, neuron_ids: list[str] | set[str]) -> set[str]:

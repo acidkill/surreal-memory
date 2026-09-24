@@ -258,19 +258,32 @@ class TestBatchedPruneQueries:
     @pytest.mark.asyncio
     async def test_target_counts_aggregate_without_returning_synapse_rows(self):
         st, _ = _store_with_mock_conn()
-        st._query = AsyncMock(
-            return_value=[{"source_id": _FakeRID("neuron", "source_1"), "target_count": 2}]
-        )  # type: ignore[method-assign]
+        st._query_response = AsyncMock(return_value=[[2]])  # type: ignore[method-assign]
 
         counts = await st.get_synapse_target_counts_for_sources(["source-1"])
 
         assert counts == {"source-1": 2}
-        sql = st._query.await_args.args[0]
-        params = st._query.await_args.kwargs
-        assert "array::len(array::group(out)) AS target_count" in sql
-        assert "GROUP BY in" in sql
-        assert "in IN [type::record('neuron', $source_id_0)]" in sql
+        sql = st._query_response.await_args.args[0]
+        params = st._query_response.await_args.kwargs
+        assert "array::len(array::group(out))" in sql
+        assert "GROUP ALL" in sql
+        assert "in = type::record('neuron', $source_id_0)" in sql
         assert params["source_id_0"] == "source_1"
+
+    @pytest.mark.asyncio
+    async def test_target_counts_split_indexed_subqueries_into_bounded_batches(self):
+        st, _ = _store_with_mock_conn()
+        st._query_response = AsyncMock(
+            side_effect=[[[1]] * 128, [[2]]]
+        )  # type: ignore[method-assign]
+        sources = [f"source-{index}" for index in range(129)]
+
+        counts = await st.get_synapse_target_counts_for_sources(sources)
+
+        assert counts == {source: (1 if index < 128 else 2) for index, source in enumerate(sources)}
+        assert st._query_response.await_count == 2
+        assert "$source_id_127" in st._query_response.await_args_list[0].args[0]
+        assert "$source_id_128" not in st._query_response.await_args_list[0].args[0]
 
     @pytest.mark.asyncio
     async def test_synapse_keyset_page_binds_frozen_reference_and_cursor(self):
