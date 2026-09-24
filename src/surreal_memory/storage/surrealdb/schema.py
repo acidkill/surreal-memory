@@ -20,6 +20,7 @@ SOURCE_REVISION_DDL: tuple[str, ...] = (
     "ALTER TABLE synapse CHANGEFEED 7d",
     "DEFINE INDEX idx_synapse_pair_in_out ON synapse FIELDS brain_id, in, out",
     "DEFINE INDEX idx_synapse_pair_out_in ON synapse FIELDS brain_id, out, in",
+    "DEFINE INDEX idx_coact_pair_cursor ON co_activations FIELDS brain_id, neuron_a, neuron_b, id",
     "DEFINE TABLE IF NOT EXISTS semantic_source_barrier SCHEMAFULL",
     "DEFINE FIELD brain_id ON semantic_source_barrier TYPE string",
     "DEFINE FIELD created_at ON semantic_source_barrier TYPE datetime",
@@ -469,6 +470,7 @@ DEFINE FIELD source_anchor    ON co_activations TYPE option<string>;
 DEFINE FIELD created_at       ON co_activations TYPE datetime DEFAULT time::now();
 DEFINE INDEX idx_coact_brain  ON co_activations FIELDS brain_id;
 DEFINE INDEX idx_coact_pair   ON co_activations FIELDS brain_id, neuron_a, neuron_b;
+DEFINE INDEX idx_coact_pair_cursor ON co_activations FIELDS brain_id, neuron_a, neuron_b, id;
 DEFINE INDEX idx_coact_time   ON co_activations FIELDS brain_id, created_at;
 
 -- Action log (hippocampal buffer — habit learning)

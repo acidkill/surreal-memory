@@ -131,52 +131,138 @@ class SurrealDBActivityMixin:
         after_pair: tuple[str, str] | None = None,
         page_size: int = 500,
     ) -> AsyncIterator[tuple[str, str, int, float]]:
-        """Yield stable, keyset-paged pair aggregates bounded to one DB page."""
+        """Yield pair aggregates from bounded raw-event keyset pages.
+
+        Aggregating in Python is deliberate: SurrealDB 3.2 applies LIMIT after
+        GROUP BY, so a grouped page query retains every matching pair before
+        returning the requested page. Raw rows are fetched in stable pair/id
+        order and reduced incrementally, retaining only one event page and the
+        current pair's counters.
+        """
         if page_size < 1:
             raise ValueError("page_size must be positive")
         brain_id = self._get_brain_id()
-        cursor = after_pair
+        pair_cursor = after_pair
+        event_cursor: tuple[str, str, str] | None = None
+        current_pair: tuple[str, str] | None = None
+        pair_count = 0
+        pair_strength_total = 0.0
+        event_page_size = min(int(page_size), 2000)
         while True:
-            conditions = [
-                "brain_id = $brain_id",
-                "created_at > $since",
-                "created_at <= $until",
-            ]
-            params: dict[str, Any] = {
-                "brain_id": brain_id,
-                "since": since,
-                "until": until,
-                "limit": min(int(page_size), 2000),
-            }
-            if cursor is not None:
-                conditions.append(
-                    "(neuron_a > $after_a OR (neuron_a = $after_a AND neuron_b > $after_b))"
+
+            async def fetch_events(
+                cursor_condition: str = "", cursor_params: dict[str, Any] | None = None
+            ) -> list[dict[str, Any]]:
+                conditions = [
+                    "brain_id = $brain_id",
+                    "created_at > $since",
+                    "created_at <= $until",
+                ]
+                if cursor_condition:
+                    conditions.append(cursor_condition)
+                params: dict[str, Any] = {
+                    "brain_id": brain_id,
+                    "since": since,
+                    "until": until,
+                    "limit": event_page_size,
+                }
+                if cursor_params:
+                    params.update(cursor_params)
+                return await self._query(
+                    "SELECT id, neuron_a, neuron_b, binding_strength "
+                    "FROM co_activations WHERE "
+                    + " AND ".join(conditions)
+                    + " ORDER BY neuron_a, neuron_b, id LIMIT $limit",
+                    **params,
                 )
-                params["after_a"], params["after_b"] = cursor
-            rows = await self._query(
-                "SELECT neuron_a, neuron_b, count() AS pair_count, "
-                "math::mean(binding_strength) AS average_strength "
-                "FROM co_activations WHERE "
-                + " AND ".join(conditions)
-                + " GROUP BY neuron_a, neuron_b ORDER BY neuron_a, neuron_b LIMIT $limit",
-                **params,
-            )
+
+            event_rows: list[dict[str, Any]] = []
+            if event_cursor is None and pair_cursor is None:
+                event_rows = await fetch_events()
+            else:
+                after_a, after_b = event_cursor[:2] if event_cursor else pair_cursor or ("", "")
+                if event_cursor is not None:
+                    event_rows.extend(
+                        await fetch_events(
+                            "neuron_a = $after_a AND neuron_b = $after_b "
+                            "AND id > type::record('co_activations', $after_id)",
+                            {
+                                "after_a": after_a,
+                                "after_b": after_b,
+                                "after_id": _to_surreal_id(event_cursor[2]),
+                            },
+                        )
+                    )
+                # SurrealDB 3.2's composite-index range scan can include its
+                # lower-bound key when a residual created_at filter is present.
+                # Keep explicit not-equal filters so the split keyset ranges
+                # are strictly disjoint at their pair boundary.
+                event_rows.extend(
+                    await fetch_events(
+                        "neuron_a = $after_a AND neuron_b > $after_b AND neuron_b != $after_b",
+                        {"after_a": after_a, "after_b": after_b},
+                    )
+                )
+                event_rows.extend(
+                    await fetch_events(
+                        "neuron_a > $after_a AND neuron_a != $after_a",
+                        {"after_a": after_a},
+                    )
+                )
+                event_rows.sort(
+                    key=lambda row: (
+                        str(row.get("neuron_a", "")),
+                        str(row.get("neuron_b", "")),
+                        str(row.get("id", "")).split(":", 1)[-1],
+                    )
+                )
+                event_rows = event_rows[:event_page_size]
+
+            rows = event_rows
             if not rows:
+                if current_pair is not None and pair_count >= min_count:
+                    yield (
+                        current_pair[0],
+                        current_pair[1],
+                        pair_count,
+                        pair_strength_total / pair_count,
+                    )
                 return
-            previous = cursor
             for row in rows:
                 neuron_a = str(row.get("neuron_a", ""))
                 neuron_b = str(row.get("neuron_b", ""))
+                raw_id = str(row.get("id", ""))
+                event_id = raw_id.split(":", 1)[-1]
                 pair = (neuron_a, neuron_b)
-                if not neuron_a or not neuron_b or (previous is not None and pair <= previous):
-                    raise RuntimeError("co-activation aggregate page did not advance")
-                previous = pair
-                count = int(row.get("pair_count", 0))
-                strength = float(row.get("average_strength", 0.0))
-                if count >= min_count:
-                    yield neuron_a, neuron_b, count, strength
-            cursor = previous
-            if len(rows) < min(page_size, 2000):
+                event_key = (neuron_a, neuron_b, event_id)
+                if not neuron_a or not neuron_b or not event_id:
+                    raise RuntimeError("co-activation event is missing its stable key")
+                if event_cursor is not None and event_key <= event_cursor:
+                    raise RuntimeError("co-activation event page did not advance")
+                if current_pair is not None and pair != current_pair:
+                    if pair <= current_pair:
+                        raise RuntimeError("co-activation pair order regressed")
+                    if pair_count >= min_count:
+                        yield (
+                            current_pair[0],
+                            current_pair[1],
+                            pair_count,
+                            pair_strength_total / pair_count,
+                        )
+                    pair_count = 0
+                    pair_strength_total = 0.0
+                current_pair = pair
+                pair_count += 1
+                pair_strength_total += float(row.get("binding_strength", 0.0))
+                event_cursor = event_key
+            if len(rows) < event_page_size:
+                if current_pair is not None and pair_count >= min_count:
+                    yield (
+                        current_pair[0],
+                        current_pair[1],
+                        pair_count,
+                        pair_strength_total / pair_count,
+                    )
                 return
 
     async def prune_co_activations(self, older_than: datetime) -> int:
