@@ -526,7 +526,14 @@ async def test_stale_recovery_repeats_from_failed_checkpoint_and_preserves_audit
     assert after["counters"]["prune"] == {"synapses_pruned": 3}
     recovered = after["strategy_states"]["semantic_link"]
     assert recovered["phase"] == "semantic_link_restart_pending"
-    assert recovered["recovery_history"][:2] == [legacy_marker, prior_stale_marker]
+    assert [marker["kind"] for marker in recovered["recovery_history"][:2]] == [
+        legacy_marker["kind"],
+        prior_stale_marker["kind"],
+    ]
+    assert all(
+        marker["run_id"] == run_id and marker["options_fingerprint"] == fingerprint
+        for marker in recovered["recovery_history"][:2]
+    )
     assert recovered["recovery_history"][-1] == recovered["recovery"]
     assert recovered["recovery"]["source_changed_verified"] is True
 
