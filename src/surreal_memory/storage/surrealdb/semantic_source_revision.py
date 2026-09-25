@@ -92,11 +92,18 @@ class SurrealDBSemanticSourceRevisionMixin:
             )
         return False
 
-    async def _find_marker_versionstamp(self, marker_id: str) -> int:
-        """Find a barrier event using bounded inclusive raw-stamp pagination.
+    async def _find_marker_versionstamp(
+        self, marker_id: str, captured_at: datetime, *, recent_first: bool = True
+    ) -> int:
+        """Find a recent barrier event using bounded inclusive raw-stamp pagination.
 
-        SurrealDB's SINCE cursor is inclusive. Each subsequent page therefore
-        skips the already-seen cursor event and must advance to a larger raw
+        Start at the server timestamp observed before creating the marker. A
+        raw ``SINCE 0`` scan can stop at a gap in retained changefeed history
+        even when recent marker events are available. Some backends instead
+        omit recent events for a datetime cursor; retry those with ``SINCE 0``.
+        Subsequent pages use the raw versionstamp because SurrealDB's SINCE
+        cursor is inclusive. Each page skips the already-seen cursor event
+        and must advance to a larger raw
         versionstamp. A hard total-row ceiling converts unexpectedly large or
         malformed feeds into a fail-closed error rather than a missed marker.
         """
@@ -104,6 +111,11 @@ class SurrealDBSemanticSourceRevisionMixin:
             raise SemanticSourceFenceUnavailableError("invalid barrier feed pagination limits")
 
         cursor = 0
+        first_since = (
+            f'd"{(captured_at - timedelta(seconds=1)).isoformat(timespec="microseconds")}Z"'
+            if recent_first
+            else "0"
+        )
         scanned = 0
         while scanned < _BARRIER_CHANGEFEED_MAX_ROWS:
             limit = min(
@@ -111,8 +123,9 @@ class SurrealDBSemanticSourceRevisionMixin:
                 _BARRIER_CHANGEFEED_MAX_ROWS - scanned,
             )
             try:
+                since = first_since if scanned == 0 else str(cursor)
                 events = await self._query(
-                    f"SHOW CHANGES FOR TABLE semantic_source_barrier SINCE {cursor} LIMIT {limit}"
+                    f"SHOW CHANGES FOR TABLE semantic_source_barrier SINCE {since} LIMIT {limit}"
                 )
             except Exception as exc:
                 message = str(exc).lower()
@@ -125,6 +138,10 @@ class SurrealDBSemanticSourceRevisionMixin:
                 ) from exc
 
             if not events:
+                if recent_first:
+                    return await self._find_marker_versionstamp(
+                        marker_id, captured_at, recent_first=False
+                    )
                 raise SemanticSourceFenceUnavailableError(
                     "semantic source barrier was not present in its changefeed"
                 )
@@ -159,6 +176,8 @@ class SurrealDBSemanticSourceRevisionMixin:
             if len(events) < limit:
                 break
 
+        if recent_first:
+            return await self._find_marker_versionstamp(marker_id, captured_at, recent_first=False)
         raise SemanticSourceFenceUnavailableError(
             "semantic source barrier was not found within the bounded changefeed scan "
             f"({scanned} rows)"
@@ -190,7 +209,7 @@ class SurrealDBSemanticSourceRevisionMixin:
                 content={"brain_id": brain_id, "created_at": captured_at},
             )
             created = True
-            marker_versionstamp = await self._find_marker_versionstamp(marker_id)
+            marker_versionstamp = await self._find_marker_versionstamp(marker_id, captured_at)
             return json.dumps(
                 {
                     "version": _TOKEN_VERSION,

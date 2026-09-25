@@ -282,12 +282,17 @@ async def test_barrier_discovery_pages_past_retained_events(store, monkeypatch) 
         return await original_query(sql, **params)
 
     monkeypatch.setattr(store, "_query", recording_query)
+
+    async def before_prior_markers():
+        return created_at
+
+    monkeypatch.setattr(store, "_server_now", before_prior_markers)
     token = await store.capture_semantic_source_token()
     await store.assert_semantic_source_unchanged(token)
 
     assert len(page_queries) >= 4
-    cursors = [int(sql.split(" SINCE ", 1)[1].split(" LIMIT ", 1)[0]) for sql in page_queries]
-    assert cursors[0] == 0
+    assert ' SINCE d"' in page_queries[0]
+    cursors = [int(sql.split(" SINCE ", 1)[1].split(" LIMIT ", 1)[0]) for sql in page_queries[1:]]
     assert cursors == sorted(set(cursors))
 
 

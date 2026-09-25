@@ -28,6 +28,7 @@ class _RevisionStorage(SurrealDBSemanticSourceRevisionMixin):
         self.marker_id: str | None = None
         self.marker_versionstamp = (100 << 16) + 9
         self.created_at_readonly = True
+        self.date_cursor_empty = False
 
     def _get_brain_id(self) -> str:
         return self.current_brain_id
@@ -48,6 +49,8 @@ class _RevisionStorage(SurrealDBSemanticSourceRevisionMixin):
             return []
         if sql.startswith("SHOW CHANGES FOR TABLE semantic_source_barrier"):
             assert self.marker_id is not None
+            if self.date_cursor_empty and ' SINCE d"' in sql:
+                return []
             return [
                 {
                     "versionstamp": self.marker_versionstamp,
@@ -89,6 +92,14 @@ async def test_captures_server_time_and_queries_both_source_feeds() -> None:
     assert datetime.fromisoformat(payload["captured_at"].replace("Z", "")) == storage.now
     assert any("CREATE type::record('semantic_source_barrier'" in sql for sql, _ in storage.queries)
     assert any("DELETE type::record('semantic_source_barrier'" in sql for sql, _ in storage.queries)
+    barrier_queries = [
+        sql
+        for sql, _ in storage.queries
+        if sql.startswith("SHOW CHANGES FOR TABLE semantic_source_barrier")
+    ]
+    assert barrier_queries[0].startswith(
+        'SHOW CHANGES FOR TABLE semantic_source_barrier SINCE d"2026-09-24T11:59:59'
+    )
 
     await storage.assert_semantic_source_unchanged(token)
     source_queries = [
@@ -112,6 +123,23 @@ async def test_capture_does_not_claim_readonly_capability_without_both_schema_fi
     token = await storage.capture_semantic_source_token()
 
     assert json.loads(token)["created_at_readonly"] is False
+
+
+@pytest.mark.asyncio
+async def test_capture_retries_raw_cursor_when_date_cursor_has_no_events() -> None:
+    storage = _RevisionStorage()
+    storage.date_cursor_empty = True
+
+    token = await storage.capture_semantic_source_token()
+
+    assert json.loads(token)["versionstamp"] == storage.marker_versionstamp
+    barrier_queries = [
+        sql
+        for sql, _ in storage.queries
+        if sql.startswith("SHOW CHANGES FOR TABLE semantic_source_barrier")
+    ]
+    assert ' SINCE d"' in barrier_queries[0]
+    assert " SINCE 0 " in barrier_queries[1]
 
 
 @pytest.mark.asyncio
