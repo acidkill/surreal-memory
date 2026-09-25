@@ -206,6 +206,90 @@ async def test_frozen_source_fence_ignores_full_rows_created_after_reference_tim
     )
 
 
+def _table_reassertion(table: str) -> dict[str, Any]:
+    return {
+        "id": 25,
+        "name": table,
+        "changefeed": {"expiry": "1w", "original": False},
+        "drop": False,
+        "kind": (
+            {"kind": "ANY"}
+            if table == "neuron"
+            else {"kind": "RELATION", "in": ["neuron"], "out": ["neuron"], "enforced": False}
+        ),
+        "permissions": {"create": False, "delete": False, "select": False, "update": False},
+        "schemafull": table == "synapse",
+    }
+
+
+@pytest.mark.asyncio
+async def test_frozen_fence_ignores_only_unchanged_source_table_reassertions() -> None:
+    storage = _RevisionStorage()
+    token = _token(captured_at=storage.now - timedelta(seconds=1), created_at_readonly=True)
+    for table in ("neuron", "synapse"):
+        storage.change_rows[table] = [
+            {"versionstamp": 101, "changes": [{"define_table": _table_reassertion(table)}]}
+        ]
+
+    await storage.assert_semantic_source_unchanged(token, created_before=storage.now)
+
+
+@pytest.mark.asyncio
+async def test_frozen_fence_accepts_python_sdk_table_and_duration_values() -> None:
+    from surrealdb.data.types.duration import Duration
+    from surrealdb.data.types.table import Table
+
+    storage = _RevisionStorage()
+    definition = _table_reassertion("synapse")
+    definition["changefeed"]["expiry"] = Duration.parse("7d")
+    definition["kind"]["in"] = [Table("neuron")]
+    definition["kind"]["out"] = [Table("neuron")]
+    storage.change_rows["synapse"] = [
+        {"versionstamp": 101, "changes": [{"define_table": definition}]}
+    ]
+
+    await storage.assert_semantic_source_unchanged(
+        _token(captured_at=storage.now - timedelta(seconds=1), created_at_readonly=True),
+        created_before=storage.now,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changed_field", ["schemafull", "permissions", "kind", "changefeed"])
+async def test_frozen_fence_rejects_modified_source_table_definition(changed_field: str) -> None:
+    storage = _RevisionStorage()
+    definition = _table_reassertion("neuron")
+    definition[changed_field] = {"unexpected": True}
+    storage.change_rows["neuron"] = [
+        {"versionstamp": 101, "changes": [{"define_table": definition}]}
+    ]
+
+    with pytest.raises(SemanticSourceFenceUnavailableError, match="unexpected table definition"):
+        await storage.assert_semantic_source_unchanged(
+            _token(captured_at=storage.now - timedelta(seconds=1), created_at_readonly=True),
+            created_before=storage.now,
+        )
+
+
+@pytest.mark.asyncio
+async def test_frozen_fence_checks_record_mutations_after_table_reassertion() -> None:
+    storage = _RevisionStorage()
+    storage.change_rows["neuron"] = [
+        {
+            "versionstamp": 101,
+            "changes": [
+                {"define_table": _table_reassertion("neuron")},
+                {"update": {"id": "neuron:old", "brain_id": "brain-a", "created_at": storage.now}},
+            ],
+        }
+    ]
+    with pytest.raises(SemanticSourceChangedError, match="neuron changed"):
+        await storage.assert_semantic_source_unchanged(
+            _token(captured_at=storage.now - timedelta(seconds=1), created_at_readonly=True),
+            created_before=storage.now,
+        )
+
+
 @pytest.mark.asyncio
 async def test_frozen_source_fence_rejects_pre_reference_update_and_unknown_delete() -> None:
     storage = _RevisionStorage()

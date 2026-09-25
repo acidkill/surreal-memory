@@ -196,6 +196,45 @@ async def test_frozen_reference_ignores_late_inserts_in_scans_and_source_fence(s
 
 
 @pytest.mark.asyncio
+async def test_frozen_fence_ignores_unchanged_source_table_ddl_but_rejects_old_update(
+    store,
+) -> None:
+    old_created_at = store._parse_datetime(
+        await store._query_response("RETURN time::now()")
+    ) - timedelta(days=1)
+    old_neuron = replace(
+        Neuron.create(type=NeuronType.CONCEPT, content="pre-reference-ddl-fence"),
+        created_at=old_created_at,
+    )
+    await store.add_neuron(old_neuron)
+
+    reference_time = store._parse_datetime(await store._query_response("RETURN time::now()"))
+    token = await store.capture_semantic_source_token()
+    barrier_stamp, _, _ = store._decode_token(token, store.current_brain_id)
+
+    await store._query("ALTER TABLE neuron CHANGEFEED 7d")
+    await store._query("ALTER TABLE synapse CHANGEFEED 7d")
+
+    for table in ("neuron", "synapse"):
+        events = await store._query(
+            f"SHOW CHANGES FOR TABLE {table} SINCE {barrier_stamp} LIMIT 100"
+        )
+        assert any(
+            isinstance(change, dict)
+            and isinstance(change.get("define_table"), dict)
+            and change["define_table"].get("name") == table
+            for event in events
+            for change in event.get("changes", [])
+        )
+
+    await store.assert_semantic_source_unchanged(token, created_before=reference_time)
+
+    await store.update_neuron(replace(old_neuron, content="pre-reference-updated"))
+    with pytest.raises(SemanticSourceChangedError):
+        await store.assert_semantic_source_unchanged(token, created_before=reference_time)
+
+
+@pytest.mark.asyncio
 async def test_created_at_readonly_converges_existing_rows_and_preserves_ordinary_updates(
     store,
 ) -> None:

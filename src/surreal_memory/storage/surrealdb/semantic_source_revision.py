@@ -43,6 +43,69 @@ class SemanticSourceFenceUnavailableError(SemanticSourceFenceError):
 class SurrealDBSemanticSourceRevisionMixin:
     """Capture and verify high-water tokens for neuron/synapse changefeeds."""
 
+    @staticmethod
+    def _is_expected_table_reassertion(table: str, record: Mapping[str, Any]) -> bool:
+        """Recognize only the unchanged table DDL emitted by schema initialization.
+
+        SurrealDB 3.2 records an idempotent ``ALTER TABLE ... CHANGEFEED 7d``
+        as a ``define_table`` mutation. Reject any changed table semantics rather
+        than treating all metadata events as harmless source writes.
+        """
+        metadata_id = record.get("id")
+        if not isinstance(metadata_id, int) or isinstance(metadata_id, bool):
+            return False
+        if set(record) != {"id", "name", "changefeed", "drop", "kind", "permissions", "schemafull"}:
+            return False
+        feed = record["changefeed"]
+        if not isinstance(feed, Mapping) or set(feed) != {"expiry", "original"}:
+            return False
+        expiry = feed["expiry"]
+        if isinstance(expiry, str):
+            valid_expiry = expiry == "1w"
+        else:
+            # The Python SDK decodes the same SurrealDB value as a Duration.
+            # Keep its import lazy so this module also works without the extra.
+            from surrealdb.data.types.duration import Duration
+
+            valid_expiry = type(expiry) is Duration and expiry.nanoseconds == 604_800_000_000_000
+
+        kind = record["kind"]
+        if table == "neuron":
+            valid_kind = kind == {"kind": "ANY"}
+        elif table == "synapse" and isinstance(kind, Mapping):
+            endpoints = (kind.get("in"), kind.get("out"))
+            valid_kind = (
+                set(kind) == {"kind", "in", "out", "enforced"}
+                and all(
+                    isinstance(values, list)
+                    and len(values) == 1
+                    and SurrealDBSemanticSourceRevisionMixin._is_neuron_table(values[0])
+                    for values in endpoints
+                )
+                and kind.get("kind") == "RELATION"
+                and kind.get("enforced") is False
+            )
+        else:
+            valid_kind = False
+        return (
+            record["name"] == table
+            and valid_expiry
+            and feed["original"] is False
+            and record["drop"] is False
+            and valid_kind
+            and record["permissions"]
+            == {"create": False, "delete": False, "select": False, "update": False}
+            and record["schemafull"] is (table == "synapse")
+        )
+
+    @staticmethod
+    def _is_neuron_table(value: Any) -> bool:
+        if isinstance(value, str):
+            return value == "neuron"
+        from surrealdb.data.types.table import Table
+
+        return type(value) is Table and value.table_name == "neuron"
+
     def _get_brain_id(self) -> str:
         raise NotImplementedError
 
@@ -415,6 +478,12 @@ class SurrealDBSemanticSourceRevisionMixin:
                         if not isinstance(record, Mapping):
                             raise SemanticSourceFenceUnavailableError(
                                 f"{table} changefeed returned an invalid record"
+                            )
+                        if action == "define_table":
+                            if self._is_expected_table_reassertion(table, record):
+                                continue
+                            raise SemanticSourceFenceUnavailableError(
+                                f"{table} changefeed returned an unexpected table definition"
                             )
                         record_id = record.get("id")
                         record_id_text = str(record_id) if record_id is not None else ""
