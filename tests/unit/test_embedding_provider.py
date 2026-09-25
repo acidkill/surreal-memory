@@ -1039,8 +1039,13 @@ class TestOpenRouterEmbedding:
 
         from surreal_memory.engine.embedding.openrouter_embedding import OpenRouterEmbedding
 
-        env = {k: v for k, v in os.environ.items() if k != "OPENROUTER_API_KEY"}
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if k not in ("OPENROUTER_API_KEY", "SURREAL_MEMORY_EMBEDDING_API_KEY")
+        }
         env["OPENROUTER_API_KEY"] = "env-openrouter-key"
+        env["SURREAL_MEMORY_EMBEDDING_API_KEY"] = "embedding-key"
         with unittest.mock.patch.dict(os.environ, env, clear=True):
             provider = OpenRouterEmbedding()
             assert provider._api_key == "env-openrouter-key"
@@ -1168,6 +1173,47 @@ class TestOpenAIBaseUrlIsolation:
         assert "evil.example" not in base
         assert base == "https://api.openai.com/v1"
 
+    def test_dedicated_embedding_key_wins_and_endpoint_is_used(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Embedding credentials and endpoint stay separate from ambient OpenAI settings."""
+        captured: dict[str, object] = {}
+
+        class _StubAsyncOpenAI:
+            def __init__(self, **kwargs: object) -> None:
+                captured.update(kwargs)
+
+        stub = types.ModuleType("openai")
+        stub.AsyncOpenAI = _StubAsyncOpenAI  # type: ignore[attr-defined]
+        monkeypatch.setenv("SURREAL_MEMORY_EMBEDDING_API_KEY", "embedding-key")
+        monkeypatch.setenv("OPENAI_API_KEY", "unrelated-key")
+        monkeypatch.setenv("SURREAL_MEMORY_EMBEDDING_ENDPOINT", "https://litellm.example/v1")
+        with unittest.mock.patch.dict(sys.modules, {"openai": stub}):
+            OpenAIEmbedding()._ensure_client()
+
+        assert captured["api_key"] == "embedding-key"
+        assert str(captured["base_url"]).rstrip("/") == "https://litellm.example/v1"
+
+    def test_explicit_key_wins_over_dedicated_embedding_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SURREAL_MEMORY_EMBEDDING_API_KEY", "embedding-key")
+        monkeypatch.setenv("OPENAI_API_KEY", "fallback-key")
+
+        provider = OpenAIEmbedding(api_key="explicit-key")
+
+        assert provider._api_key == "explicit-key"
+
+    def test_openai_key_is_fallback_when_dedicated_key_is_unset(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("SURREAL_MEMORY_EMBEDDING_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "fallback-key")
+
+        provider = OpenAIEmbedding()
+
+        assert provider._api_key == "fallback-key"
+
     def test_configured_endpoint_still_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """An explicitly configured endpoint is the whole point — keep honouring it."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
@@ -1202,6 +1248,7 @@ class TestOpenAIBaseUrlIsolation:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+        monkeypatch.setenv("SURREAL_MEMORY_EMBEDDING_API_KEY", "embedding-key")
         monkeypatch.setenv("OPENAI_BASE_URL", "https://evil.example/v1")
 
         base = self._captured_base_url(_cls=OpenRouterEmbedding, model="text-embedding-3-small")

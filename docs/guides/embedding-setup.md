@@ -32,6 +32,13 @@ Auto-detection checks (in order):
 4. **OPENAI_API_KEY** set → uses OpenAI's embedding API
 5. **OPENROUTER_API_KEY** set → uses OpenRouter's OpenAI-compatible embedding API
 
+For an OpenAI-compatible embedding endpoint configured with `[embedding] endpoint`
+or `SURREAL_MEMORY_EMBEDDING_ENDPOINT`, set `SURREAL_MEMORY_EMBEDDING_API_KEY`
+to its credential. It takes precedence over `OPENAI_API_KEY` for embeddings, so
+other tools can keep using their own ambient OpenAI-compatible credentials. If it
+is unset, `OPENAI_API_KEY` remains the fallback. OpenRouter continues to use
+`OPENROUTER_API_KEY`.
+
 If none are available, embedding stays disabled and recall falls back to graph-only (which works great for single-language use).
 
 ## Providers

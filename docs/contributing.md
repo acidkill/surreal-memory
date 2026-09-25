@@ -102,6 +102,7 @@ make verify
 | `SURREAL_MEMORY_EMBEDDING_ENABLED` | No | `false` | Enable vector embeddings |
 | `SURREAL_MEMORY_EMBEDDING_PROVIDER` | Embeddings only | `sentence_transformer` | `sentence_transformer`, `openai`, `openrouter`, `gemini`, `ollama`, `bge_m3`, `auto` |
 | `SURREAL_MEMORY_EMBEDDING_ENDPOINT` | No | — | Base URL of a local OpenAI-compatible embedding server (e.g. llamastash bge-m3 at `http://127.0.0.1:11435/v1`). Config key `[embedding] endpoint` wins over this. |
+| `SURREAL_MEMORY_EMBEDDING_API_KEY` | No | — | API key for OpenAI-compatible embedding endpoints; takes precedence over `OPENAI_API_KEY` for OpenAI embeddings. Explicit provider arguments and OpenRouter's own key remain separate. |
 | `SURREAL_MEMORY_EMBEDDING_MODEL` | No | — | Model name for embeddings |
 | `GEMINI_API_KEY` | Gemini only | — | Google Gemini API key |
 | `OPENAI_API_KEY` | OpenAI only | — | OpenAI API key |

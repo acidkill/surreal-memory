@@ -390,7 +390,7 @@ places, the environment wins.
 | `SURREAL_MEMORY_DASHBOARD_CACHE_TTL` | `src/surreal_memory/server/dashboard_cache.py` |
 | `SURREAL_MEMORY_DIR` | `src/surreal_memory/cli/config.py`, `src/surreal_memory/cli/update_check.py`, `src/surreal_memory/engine/reasoning_injection.py`, +4 more |
 | `SURREAL_MEMORY_DISABLE_SUPERSEDED_FILTER` | `src/surreal_memory/mcp/recall_handler.py` |
-| `SURREAL_MEMORY_EMBEDDING_API_KEY` | `src/surreal_memory/engine/embedding/bge_m3_embedding.py` |
+| `SURREAL_MEMORY_EMBEDDING_API_KEY` | `src/surreal_memory/engine/embedding/bge_m3_embedding.py`, `src/surreal_memory/engine/embedding/openai_embedding.py` |
 | `SURREAL_MEMORY_EMBEDDING_DIMENSION` | `src/surreal_memory/engine/embedding/bge_m3_embedding.py`, `src/surreal_memory/unified_config.py` |
 | `SURREAL_MEMORY_EMBEDDING_ENABLED` | `src/surreal_memory/unified_config.py` |
 | `SURREAL_MEMORY_EMBEDDING_ENDPOINT` | `src/surreal_memory/engine/embedding/bge_m3_embedding.py`, `src/surreal_memory/engine/embedding/openai_embedding.py`, `src/surreal_memory/engine/reasoning_distiller.py`, +2 more |

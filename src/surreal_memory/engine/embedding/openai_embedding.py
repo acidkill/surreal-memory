@@ -56,7 +56,17 @@ class OpenAIEmbedding(EmbeddingProvider):
         self._base_url = resolved_base.rstrip("/") if resolved_base else None
         self._api_key_env = api_key_env
         self._provider_label = provider_label
-        self._api_key = api_key or os.getenv(api_key_env)
+        # A dedicated embedding credential must not be shadowed by an
+        # unrelated ambient OPENAI_API_KEY (for example, one used by another
+        # tool through OPENAI_BASE_URL). Keep explicit keys first, and apply
+        # this override only to the OpenAI-compatible provider that uses the
+        # default key variable; subclasses such as OpenRouter retain theirs.
+        embedding_api_key = (
+            os.getenv("SURREAL_MEMORY_EMBEDDING_API_KEY")
+            if api_key_env == "OPENAI_API_KEY"
+            else None
+        )
+        self._api_key = api_key or embedding_api_key or os.getenv(api_key_env)
         # A locally-configured endpoint (SURREAL_MEMORY_EMBEDDING_ENDPOINT, e.g.
         # llamastash / llama.cpp bge-m3) needs no real key, but the OpenAI SDK still
         # requires a non-empty string — fall back to a placeholder instead of failing
