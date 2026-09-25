@@ -1103,7 +1103,7 @@ smem reasoning status [OPTIONS]
 
 ### `smem recover-semantic-discovery`
 
-Preview or explicitly restart an unapplied legacy semantic discovery checkpoint.
+Preview or explicitly restart an unapplied semantic discovery checkpoint.
 
 ```
 smem recover-semantic-discovery [OPTIONS]
@@ -1115,6 +1115,7 @@ smem recover-semantic-discovery [OPTIONS]
 | `--confirm-run-id` | text | No | — | Type the run ID to authorize repair |
 | `--brain / -b` | text | No | — | Brain to repair |
 | `--execute` | boolean | No | `False` | Apply the recovery after preflight (default: preview) |
+| `--stale-source` | boolean | No | `False` | Restart unapplied discovery after its frozen source changed |
 
 ### `smem reindex`
 
