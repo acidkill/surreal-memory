@@ -6,16 +6,20 @@ import ipaddress
 import json
 import os
 import uuid
+from datetime import timedelta
 from urllib.parse import urlparse
 
 import pytest
 import pytest_asyncio
 
 from surreal_memory.core.brain import Brain
+from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.engine.consolidation import ConsolidationStrategy
 from surreal_memory.engine.consolidation_progress import (
     ConsolidationProgressSession,
+    ConsolidationResumeMismatchError,
     recover_legacy_semantic_link_discovery,
+    recover_stale_semantic_link_discovery,
 )
 from surreal_memory.storage.surrealdb.store import SurrealDBStorage
 from surreal_memory.utils.timeutils import utcnow
@@ -207,3 +211,198 @@ async def test_legacy_discovery_recovery_preserves_completed_run_and_reopens(
         assert not resumed.strategy_state("semantic_link").get("pending")
     finally:
         await resumed.close()
+
+
+@pytest.mark.asyncio
+async def test_stale_discovery_recovery_requires_verified_pre_reference_source_change(
+    store,
+) -> None:
+    brain_id = store._get_brain_id()
+    run_id = "run-stale-source-test"
+    strategies = {
+        item.value for item in ConsolidationStrategy if item is not ConsolidationStrategy.ALL
+    }
+    completed = sorted(strategies - {"semantic_link"})
+    token = await store.capture_semantic_source_token()
+    assert json.loads(token)["created_at_readonly"] is True
+
+    # Keep created_at before the run reference time while writing after token
+    # capture, matching the stale-token case this operator path is for.
+    neuron = Neuron.create(NeuronType.CONCEPT, "stale-source-recovery-fixture")
+    neuron = Neuron(
+        id=neuron.id,
+        type=neuron.type,
+        content=neuron.content,
+        metadata=neuron.metadata,
+        content_hash=neuron.content_hash,
+        created_at=utcnow() - timedelta(seconds=1),
+    )
+    await store.add_neuron(neuron)
+    reference_time = utcnow()
+
+    legacy_recovery = {
+        "kind": "legacy_semantic_discovery_restart",
+        "version": 1,
+        "run_id": run_id,
+        "options_fingerprint": "options-stale-test",
+        "expected_status": "paused",
+        "previous_phase": "semantic_link_discovery_neurons",
+    }
+    manifest = {
+        "kind": "semantic_link_discovery",
+        "version": 3,
+        "stage": "neurons",
+        "source_state_ref": {
+            "state_id": "stage-stale-test",
+            "revision": 1,
+            "state_revision": 1,
+            "source_token": token,
+            "brain_id": brain_id,
+            "run_id": run_id,
+        },
+    }
+    nested = {
+        "phase": "semantic_link_discovery_neurons",
+        "cursor": "neuron:123",
+        "pending": [json.dumps([json.dumps(manifest)])],
+        "counters": {},
+        "recovery": legacy_recovery,
+    }
+    before = await store.start_consolidation_progress(
+        {
+            "brain_id": brain_id,
+            "run_id": run_id,
+            "schema_version": 12,
+            "engine_version": "3.11.0:checkpoint-v1",
+            "format_version": 1,
+            "requested_strategies": sorted(strategies),
+            "completed_strategies": completed,
+            "options_fingerprint": "options-stale-test",
+            "reference_time": reference_time,
+            "owner_token": "previous-owner",
+            "status": "running",
+            "current_strategy": "semantic_link",
+            "phase": "semantic_link_discovery_neurons",
+            "cursor": "neuron:123",
+            "strategy_states": {"prune": {"phase": "completed"}, "semantic_link": nested},
+            "counters": {"prune": {"synapses_pruned": 4}, "semantic_link": {}},
+            "started_at": reference_time,
+            "updated_at": utcnow(),
+            "last_error": None,
+        }
+    )
+    args = {
+        "run_id": run_id,
+        "expected_options_fingerprint": "options-stale-test",
+        "expected_status": "running",
+        "confirmation_run_id": run_id,
+    }
+    preview = await recover_stale_semantic_link_discovery(store, **args)
+    assert preview["dry_run"] is True
+    assert (await store.get_consolidation_progress(brain_id))["updated_at"] == before["updated_at"]
+
+    applied = await recover_stale_semantic_link_discovery(store, **args, dry_run=False)
+    assert applied["already_recovered"] is False
+    after = await store.get_consolidation_progress(brain_id)
+    assert after is not None
+    assert after["reference_time"] == before["reference_time"]
+    assert after["completed_strategies"] == completed
+    assert after["strategy_states"]["prune"] == {"phase": "completed"}
+    assert after["counters"]["prune"] == {"synapses_pruned": 4}
+    semantic_after = after["strategy_states"]["semantic_link"]
+    assert semantic_after["phase"] == "semantic_link_restart_pending"
+    assert "pending" not in semantic_after
+    assert semantic_after["recovery_history"] == [legacy_recovery, semantic_after["recovery"]]
+    assert semantic_after["recovery"]["source_changed_verified"] is True
+
+    retried = await recover_stale_semantic_link_discovery(store, **args, dry_run=False)
+    assert retried["already_recovered"] is True
+
+
+@pytest.mark.asyncio
+async def test_stale_discovery_recovery_refuses_when_change_is_not_proven(
+    store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    brain_id = store._get_brain_id()
+    run_id = "run-stale-source-unchanged-test"
+    strategies = {
+        item.value for item in ConsolidationStrategy if item is not ConsolidationStrategy.ALL
+    }
+    completed = sorted(strategies - {"semantic_link"})
+    token = await store.capture_semantic_source_token()
+    reference_time = utcnow()
+    legacy_recovery = {
+        "kind": "legacy_semantic_discovery_restart",
+        "version": 1,
+        "run_id": run_id,
+        "options_fingerprint": "options-stale-unchanged-test",
+        "expected_status": "failed",
+        "previous_phase": "semantic_link_discovery_neurons",
+    }
+    manifest = {
+        "kind": "semantic_link_discovery",
+        "version": 3,
+        "stage": "neurons",
+        "source_state_ref": {
+            "state_id": "stage-stale-unchanged-test",
+            "revision": 1,
+            "source_token": token,
+            "brain_id": brain_id,
+            "run_id": run_id,
+        },
+    }
+    nested = {
+        "phase": "semantic_link_discovery_neurons",
+        "cursor": "neuron:123",
+        "pending": [json.dumps([json.dumps(manifest)])],
+        "counters": {},
+        "recovery": legacy_recovery,
+    }
+    await store.start_consolidation_progress(
+        {
+            "brain_id": brain_id,
+            "run_id": run_id,
+            "schema_version": 12,
+            "engine_version": "3.11.0:checkpoint-v1",
+            "format_version": 1,
+            "requested_strategies": sorted(strategies),
+            "completed_strategies": completed,
+            "options_fingerprint": "options-stale-unchanged-test",
+            "reference_time": reference_time,
+            "owner_token": "previous-owner",
+            "status": "running",
+            "current_strategy": "semantic_link",
+            "phase": "semantic_link_discovery_neurons",
+            "cursor": "neuron:123",
+            "strategy_states": {"semantic_link": nested},
+            "counters": {"semantic_link": {}},
+            "started_at": reference_time,
+            "updated_at": utcnow(),
+            "last_error": None,
+        }
+    )
+    with pytest.raises(ConsolidationResumeMismatchError, match=r"change .* not proven"):
+        await recover_stale_semantic_link_discovery(
+            store,
+            run_id=run_id,
+            expected_options_fingerprint="options-stale-unchanged-test",
+            expected_status="running",
+            confirmation_run_id=run_id,
+        )
+
+    from surreal_memory.storage.surrealdb.semantic_source_revision import (
+        SemanticSourceFenceExpiredError,
+    )
+
+    async def expired_source_fence(*args, **kwargs) -> None:
+        raise SemanticSourceFenceExpiredError("changefeed expired")
+
+    monkeypatch.setattr(store, "assert_semantic_source_unchanged", expired_source_fence)
+    with pytest.raises(ConsolidationResumeMismatchError, match="could not be verified"):
+        await recover_stale_semantic_link_discovery(
+            store,
+            run_id=run_id,
+            expected_options_fingerprint="options-stale-unchanged-test",
+            expected_status="running",
+            confirmation_run_id=run_id,
+        )

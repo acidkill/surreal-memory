@@ -1209,8 +1209,15 @@ def recover_semantic_discovery(
         bool,
         typer.Option("--execute", help="Apply the recovery after preflight (default: preview)"),
     ] = False,
+    stale_source: Annotated[
+        bool,
+        typer.Option(
+            "--stale-source",
+            help="Restart unapplied discovery after its frozen source changed",
+        ),
+    ] = False,
 ) -> None:
-    """Preview or explicitly restart an unapplied legacy semantic discovery checkpoint.
+    """Preview or explicitly restart an unapplied semantic discovery checkpoint.
 
     This is an exceptional operator action. It preserves the current run and
     the completed strategies; ordinary `smem consolidate` never resets it.
@@ -1218,6 +1225,7 @@ def recover_semantic_discovery(
     from surreal_memory.engine.consolidation_progress import (
         ConsolidationProgressError,
         recover_legacy_semantic_link_discovery,
+        recover_stale_semantic_link_discovery,
     )
 
     async def _recover() -> None:
@@ -1232,7 +1240,12 @@ def recover_semantic_discovery(
             typer.secho("Recovery refused: --confirm-run-id must match --run-id.", fg="red")
             raise typer.Exit(1)
         try:
-            result = await recover_legacy_semantic_link_discovery(
+            recover = (
+                recover_stale_semantic_link_discovery
+                if stale_source
+                else recover_legacy_semantic_link_discovery
+            )
+            result = await recover(
                 storage,
                 run_id=run_id,
                 expected_options_fingerprint=str(state.get("options_fingerprint") or ""),

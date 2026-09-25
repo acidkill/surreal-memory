@@ -451,6 +451,371 @@ async def recover_legacy_semantic_link_discovery(
             logger.warning("Could not release semantic recovery lease for brain %r", brain_id)
 
 
+async def recover_stale_semantic_link_discovery(
+    storage: Any,
+    *,
+    run_id: str,
+    expected_options_fingerprint: str,
+    expected_status: str,
+    confirmation_run_id: str,
+    dry_run: bool = True,
+) -> dict[str, Any]:
+    """Explicitly restart discovery only after proving its source token stale."""
+    if not isinstance(dry_run, bool):
+        raise ConsolidationResumeMismatchError("dry_run must be an explicit boolean")
+    if not run_id or confirmation_run_id != run_id:
+        raise ConsolidationResumeMismatchError("typed run-id confirmation does not match")
+    if not expected_options_fingerprint:
+        raise ConsolidationResumeMismatchError("expected options fingerprint is required")
+    if expected_status != "running":
+        raise ConsolidationResumeMismatchError("stale-source recovery requires a running run")
+
+    brain_id = str(getattr(storage, "current_brain_id", "") or "")
+    required_methods = (
+        "get_consolidation_progress",
+        "acquire_consolidation_lease",
+        "renew_consolidation_lease",
+        "release_consolidation_lease",
+        "compare_and_swap_semantic_link_recovery",
+        "assert_semantic_source_unchanged",
+    )
+    if not brain_id or not supports_storage_methods(storage, required_methods):
+        raise ConsolidationResumeMismatchError(
+            "storage does not support fenced stale-source semantic recovery"
+        )
+
+    owner_token = str(uuid4())
+    if not await storage.acquire_consolidation_lease(
+        brain_id, owner_token, lease_seconds=LEASE_SECONDS
+    ):
+        raise ConsolidationLeaseBusyError(
+            f"brain {brain_id!r} already has an active consolidation worker"
+        )
+
+    try:
+        state = await storage.get_consolidation_progress(brain_id)
+        if not isinstance(state, Mapping) or state.get("brain_id") != brain_id:
+            raise ConsolidationResumeMismatchError("durable run evidence is missing")
+        if (
+            state.get("run_id") != run_id
+            or state.get("options_fingerprint") != expected_options_fingerprint
+            or state.get("status") != expected_status
+            or state.get("current_strategy") != "semantic_link"
+            or not isinstance(state.get("owner_token"), str)
+            or not state.get("owner_token")
+            or state.get("updated_at") is None
+        ):
+            raise ConsolidationResumeMismatchError(
+                "run, status, owner, or options changed; recovery refused"
+            )
+
+        from surreal_memory.engine.consolidation import ConsolidationStrategy
+
+        all_strategies = {
+            strategy.value
+            for strategy in ConsolidationStrategy
+            if strategy is not ConsolidationStrategy.ALL
+        }
+        requested = state.get("requested_strategies")
+        completed = state.get("completed_strategies")
+        if (
+            not isinstance(requested, (list, tuple))
+            or any(not isinstance(item, str) for item in requested)
+            or len(requested) != len(all_strategies)
+            or set(requested) != all_strategies
+            or not isinstance(completed, (list, tuple))
+            or any(not isinstance(item, str) for item in completed)
+            or len(completed) != len(all_strategies) - 1
+            or set(completed) != all_strategies - {"semantic_link"}
+        ):
+            raise ConsolidationResumeMismatchError(
+                "run is not the expected all-strategies run with exactly 19 completed"
+            )
+
+        reference_time = _parse_reference_time(state.get("reference_time"))
+        phase = state.get("phase")
+        states = state.get("strategy_states")
+        if not isinstance(states, Mapping):
+            raise ConsolidationResumeMismatchError("strategy progress evidence is missing")
+        semantic_state = states.get("semantic_link")
+        if not isinstance(semantic_state, Mapping):
+            raise ConsolidationResumeMismatchError("semantic_link progress evidence is missing")
+        nested_phase = semantic_state.get("phase")
+        if (
+            (phase not in _LEGACY_DISCOVERY_PHASES and phase != "semantic_link_restart_pending")
+            or nested_phase != phase
+            or state.get("cursor") != semantic_state.get("cursor")
+        ):
+            raise ConsolidationResumeMismatchError(
+                "run is not at an unapplied semantic_link discovery phase"
+            )
+
+        top_counters = state.get("counters")
+        nested_counters = semantic_state.get("counters")
+        aggregate_semantic_counters = (
+            top_counters.get("semantic_link") if isinstance(top_counters, Mapping) else None
+        )
+        if (
+            not isinstance(top_counters, Mapping)
+            or not isinstance(nested_counters, Mapping)
+            or not isinstance(aggregate_semantic_counters, Mapping)
+            or dict(nested_counters) != dict(aggregate_semantic_counters)
+            or any(
+                type(value) not in {int, float} or value != 0 for value in nested_counters.values()
+            )
+        ):
+            raise ConsolidationResumeMismatchError(
+                "durable semantic_link graph-effect counters are missing or nonzero"
+            )
+
+        recovery_history_raw = semantic_state.get("recovery_history", [])
+        if not isinstance(recovery_history_raw, (list, tuple)) or any(
+            not isinstance(item, Mapping) for item in recovery_history_raw
+        ):
+            raise ConsolidationResumeMismatchError("semantic recovery history is malformed")
+
+        # Re-running an already committed recovery is safe only when its exact
+        # marker and cleared discovery state are still the live checkpoint.
+        if phase == "semantic_link_restart_pending":
+            latest_recovery = semantic_state.get("recovery")
+            history = list(recovery_history_raw)
+            prior = history[-2] if len(history) >= 2 else None
+            if (
+                isinstance(latest_recovery, Mapping)
+                and latest_recovery.get("kind") == "stale_semantic_source_restart"
+                and latest_recovery.get("run_id") == run_id
+                and latest_recovery.get("options_fingerprint") == expected_options_fingerprint
+                and latest_recovery.get("expected_status") == expected_status
+                and latest_recovery.get("previous_phase") in _LEGACY_DISCOVERY_PHASES
+                and latest_recovery.get("source_changed_verified") is True
+                and latest_recovery.get("owner_token") == state.get("owner_token")
+                and latest_recovery.get("recovered_at") == state.get("updated_at")
+                and latest_recovery.get("recovered_at") == semantic_state.get("updated_at")
+                and isinstance(prior, Mapping)
+                and prior.get("kind") == "legacy_semantic_discovery_restart"
+                and prior.get("run_id") == run_id
+                and prior.get("options_fingerprint") == expected_options_fingerprint
+                and state.get("cursor") is None
+                and semantic_state.get("cursor") is None
+                and semantic_state.get("pending") in (None, [])
+                and all(value == 0 for value in nested_counters.values())
+                and dict(history[-1]) == dict(latest_recovery)
+            ):
+                return {
+                    "run_id": run_id,
+                    "reference_time": reference_time,
+                    "already_recovered": True,
+                    "dry_run": dry_run,
+                    "previous_phase": latest_recovery.get("previous_phase"),
+                }
+            raise ConsolidationResumeMismatchError(
+                "restart phase lacks the exact stale-source recovery audit; refusing retry"
+            )
+
+        if phase not in _LEGACY_DISCOVERY_PHASES:
+            raise ConsolidationResumeMismatchError(
+                "run is not at an unapplied semantic_link discovery phase"
+            )
+
+        previous_recovery = semantic_state.get("recovery")
+        if (
+            not isinstance(previous_recovery, Mapping)
+            or previous_recovery.get("kind") != "legacy_semantic_discovery_restart"
+            or previous_recovery.get("run_id") != run_id
+            or previous_recovery.get("options_fingerprint") != expected_options_fingerprint
+            or previous_recovery.get("expected_status") not in {"paused", "failed"}
+        ):
+            raise ConsolidationResumeMismatchError(
+                "the prior legacy recovery audit marker is missing or unrecognized"
+            )
+        manifest, canonical_manifest = _decode_legacy_discovery_pending(
+            semantic_state.get("pending")
+        )
+        if manifest.get("kind") != "semantic_link_discovery" or manifest.get("version") != 3:
+            raise ConsolidationResumeMismatchError(
+                "stale-source recovery requires a version 3 discovery manifest"
+            )
+        stage = manifest.get("stage")
+        if stage not in {"neurons", "synapses", "similarity"} or stage != str(phase).removeprefix(
+            "semantic_link_discovery_"
+        ):
+            raise ConsolidationResumeMismatchError(
+                "discovery manifest stage does not match its durable phase"
+            )
+
+        # Validate every stored source reference and require one unambiguous,
+        # readonly-attested v1 token before asking storage to inspect its feed.
+        token_candidates: list[Any] = []
+        source_ref = manifest.get("source_state_ref")
+        if source_ref is not None:
+            if not isinstance(source_ref, Mapping):
+                raise ConsolidationResumeMismatchError("semantic source reference is malformed")
+            revision = source_ref.get("revision", source_ref.get("state_revision"))
+            if (
+                not isinstance(source_ref.get("state_id"), str)
+                or not source_ref.get("state_id")
+                or type(revision) is not int
+                or revision < 1
+                or source_ref.get("state_revision", revision) != revision
+                or source_ref.get("brain_id", brain_id) != brain_id
+                or source_ref.get("run_id", run_id) != run_id
+            ):
+                raise ConsolidationResumeMismatchError("semantic source reference is incomplete")
+            token_candidates.append(source_ref.get("source_token"))
+        source_rebuild = manifest.get("source_rebuild")
+        if source_rebuild is not None:
+            if not isinstance(source_rebuild, Mapping):
+                raise ConsolidationResumeMismatchError("semantic source rebuild is malformed")
+            revision = source_rebuild.get("state_revision")
+            if (
+                not isinstance(source_rebuild.get("state_id"), str)
+                or not source_rebuild.get("state_id")
+                or type(revision) is not int
+                or revision < 1
+                or source_rebuild.get("brain_id", brain_id) != brain_id
+                or source_rebuild.get("run_id", run_id) != run_id
+            ):
+                raise ConsolidationResumeMismatchError("semantic source rebuild is incomplete")
+            token_candidates.append(source_rebuild.get("source_token"))
+        top_token = manifest.get("source_token")
+        if top_token is not None:
+            token_candidates.append(top_token)
+        if (
+            not token_candidates
+            or any(not isinstance(token, str) or not token for token in token_candidates)
+            or any(token != token_candidates[0] for token in token_candidates)
+            or len(token_candidates[0].encode("utf-8")) > 4096
+        ):
+            raise ConsolidationResumeMismatchError(
+                "semantic source token evidence is missing or inconsistent"
+            )
+        source_token_candidate = token_candidates[0]
+        if not isinstance(source_token_candidate, str):
+            raise ConsolidationResumeMismatchError("semantic source token is malformed")
+        source_token = source_token_candidate
+        try:
+            decoded_token = json.loads(source_token)
+            if not isinstance(decoded_token, Mapping):
+                raise ConsolidationResumeMismatchError("semantic source token is malformed")
+            captured_at = decoded_token.get("captured_at")
+            datetime.fromisoformat(str(captured_at).replace("Z", "+00:00"))
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ConsolidationResumeMismatchError("semantic source token is malformed") from exc
+        versionstamp = decoded_token.get("versionstamp")
+        if (
+            not isinstance(decoded_token, Mapping)
+            or type(decoded_token.get("version")) is not int
+            or decoded_token.get("version") != 1
+            or decoded_token.get("brain_id") != brain_id
+            or type(versionstamp) is not int
+            or versionstamp < 0
+            or not isinstance(captured_at, str)
+            or decoded_token.get("created_at_readonly") is not True
+        ):
+            raise ConsolidationResumeMismatchError(
+                "source token is not a valid readonly-attested v1 token"
+            )
+
+        from surreal_memory.storage.surrealdb.semantic_source_revision import (
+            SemanticSourceChangedError,
+            SemanticSourceFenceError,
+        )
+
+        try:
+            await storage.assert_semantic_source_unchanged(
+                source_token, created_before=reference_time
+            )
+        except SemanticSourceChangedError:
+            pass
+        except SemanticSourceFenceError as exc:
+            raise ConsolidationResumeMismatchError(
+                "semantic source change could not be verified; recovery refused"
+            ) from exc
+        else:
+            raise ConsolidationResumeMismatchError(
+                "semantic source change before reference_time was not proven"
+            )
+
+        if dry_run:
+            return {
+                "run_id": run_id,
+                "reference_time": reference_time,
+                "already_recovered": False,
+                "dry_run": True,
+                "previous_phase": str(phase),
+            }
+
+        updated_at = utcnow()
+        prior_marker = dict(previous_recovery)
+        history = [dict(item) for item in recovery_history_raw]
+        if not history or history[-1] != prior_marker:
+            history.append(prior_marker)
+        recovery_marker = {
+            "kind": "stale_semantic_source_restart",
+            "version": 1,
+            "run_id": run_id,
+            "options_fingerprint": expected_options_fingerprint,
+            "expected_status": expected_status,
+            "previous_phase": str(phase),
+            "manifest_sha256": sha256(canonical_manifest.encode("utf-8")).hexdigest(),
+            "source_token_sha256": sha256(source_token.encode("utf-8")).hexdigest(),
+            "prior_recovery_sha256": sha256(
+                json.dumps(prior_marker, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest(),
+            "source_changed_verified": True,
+            "owner_token": owner_token,
+            "recovered_at": updated_at,
+        }
+        history.append(recovery_marker)
+
+        old_owner_token = str(state["owner_token"])
+        next_states = dict(states)
+        next_semantic_state = dict(semantic_state)
+        next_semantic_state["phase"] = "semantic_link_restart_pending"
+        next_semantic_state["cursor"] = None
+        next_semantic_state.pop("pending", None)
+        next_semantic_state["recovery"] = recovery_marker
+        next_semantic_state["recovery_history"] = history
+        next_semantic_state["updated_at"] = updated_at
+        next_states["semantic_link"] = next_semantic_state
+
+        if not await storage.renew_consolidation_lease(
+            brain_id, owner_token, lease_seconds=LEASE_SECONDS
+        ):
+            raise ConsolidationLeaseBusyError("brain lease was lost before recovery commit")
+        saved = await storage.compare_and_swap_semantic_link_recovery(
+            brain_id=brain_id,
+            expected_run_id=run_id,
+            expected_owner_token=old_owner_token,
+            expected_options_fingerprint=expected_options_fingerprint,
+            expected_status=expected_status,
+            expected_phase=str(phase),
+            expected_updated_at=state["updated_at"],
+            expected_reference_time=state["reference_time"],
+            lease_owner_token=owner_token,
+            new_owner_token=owner_token,
+            strategy_states=next_states,
+            counters=dict(top_counters),
+            updated_at=updated_at,
+        )
+        if saved is None:
+            raise ConsolidationResumeMismatchError(
+                "durable run changed during recovery; conditional update was not applied"
+            )
+        return {
+            "run_id": run_id,
+            "reference_time": reference_time,
+            "already_recovered": False,
+            "dry_run": False,
+            "previous_phase": str(phase),
+        }
+    finally:
+        try:
+            await storage.release_consolidation_lease(brain_id, owner_token)
+        except Exception:
+            logger.warning("Could not release stale-source recovery lease for brain %r", brain_id)
+
+
 def supports_persistent_progress(storage: Any) -> bool:
     """Whether this backend implements the shared SurrealDB progress contract."""
     required = (

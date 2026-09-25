@@ -83,3 +83,34 @@ def test_recovery_cli_execute_uses_current_run_fingerprint(
     assert recovery.await_args.kwargs["dry_run"] is False
     assert recovery.await_args.kwargs["expected_status"] == "paused"
     assert "completed strategies were preserved" in capsys.readouterr().out
+
+
+def test_stale_source_recovery_requires_explicit_flag_and_typed_run_id(
+    recovery_storage: MagicMock, capsys: pytest.CaptureFixture[str]
+) -> None:
+    recovery_storage.get_consolidation_progress.return_value["status"] = "running"
+    with (
+        patch.object(tools, "get_config", return_value=MagicMock()),
+        patch.object(tools, "resolve_brain", return_value="default"),
+        patch.object(tools, "get_storage", new_callable=AsyncMock, return_value=recovery_storage),
+        patch.object(tools, "run_async", side_effect=lambda awaitable: asyncio.run(awaitable)),
+        patch(
+            "surreal_memory.engine.consolidation_progress.recover_stale_semantic_link_discovery",
+            new_callable=AsyncMock,
+            return_value={"run_id": "run-123", "reference_time": "2026-09-24T00:00:00Z"},
+        ) as stale_recovery,
+    ):
+        tools.recover_semantic_discovery(run_id="run-123", stale_source=True)
+        assert stale_recovery.await_args.kwargs["dry_run"] is True
+        with pytest.raises(typer.Exit):
+            tools.recover_semantic_discovery(run_id="run-123", stale_source=True, execute=True)
+        assert stale_recovery.await_count == 1
+        tools.recover_semantic_discovery(
+            run_id="run-123",
+            confirm_run_id="run-123",
+            stale_source=True,
+            execute=True,
+        )
+    assert stale_recovery.await_count == 2
+    assert stale_recovery.await_args.kwargs["expected_status"] == "running"
+    assert "completed strategies were preserved" in capsys.readouterr().out

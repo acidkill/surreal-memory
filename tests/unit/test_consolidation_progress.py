@@ -17,6 +17,7 @@ from surreal_memory.engine.consolidation import (
 from surreal_memory.engine.consolidation_progress import (
     ConsolidationLeaseBusyError,
     ConsolidationLeaseLostError,
+    ConsolidationProgressError,
     ConsolidationProgressSession,
     ConsolidationResumeMismatchError,
     options_fingerprint,
@@ -341,6 +342,33 @@ async def test_engine_failure_retries_last_committed_phase_without_rescanning(
     second = await engine.run([ConsolidationStrategy.PRUNE])
     assert second.extra["consolidation_status"] == "completed"
     assert seen_phases == ["starting", "retention_traces"]
+
+
+@pytest.mark.asyncio
+async def test_progress_validation_failure_is_persisted_not_misreported_as_lease_loss(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = FakeProgressStorage()
+    engine = ConsolidationEngine(storage)
+
+    async def run_strategy(
+        strategy: ConsolidationStrategy,
+        report: Any,
+        reference_time: datetime,
+        dry_run: bool,
+    ) -> None:
+        await engine._checkpoint_progress("semantic_link_discovery_neurons", cursor="neuron:1")
+        raise ConsolidationProgressError("neuron changed since token captured")
+
+    monkeypatch.setattr(engine, "_run_strategy", run_strategy)
+    report = await engine.run([ConsolidationStrategy.SEMANTIC_LINK])
+
+    assert report.extra["consolidation_status"] == "failed"
+    assert "neuron changed since token captured" in report.summary()
+    assert storage.progress is not None
+    assert storage.progress["status"] == "failed"
+    assert storage.progress["phase"] == "semantic_link_discovery_neurons"
+    assert storage.progress["cursor"] == "neuron:1"
 
 
 def test_report_summary_renders_saved_checkpoint_details() -> None:

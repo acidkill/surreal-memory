@@ -1090,8 +1090,16 @@ class ConsolidationEngine:
                                 )
                             paused = True
                             break
-                    except ConsolidationProgressError as exc:
+                    except ConsolidationLeaseLostError as exc:
                         lease_lost = True
+                        failed_strategies.append(
+                            f"{strategy.value} (progress coordination: {type(exc).__name__})"
+                        )
+                        progress_messages.append(
+                            f"Consolidation stopped safely in {strategy.value}: {exc}"
+                        )
+                        break
+                    except ConsolidationProgressError as exc:
                         failed_strategies.append(
                             f"{strategy.value} (progress coordination: {type(exc).__name__})"
                         )
