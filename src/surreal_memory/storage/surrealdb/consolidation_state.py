@@ -118,18 +118,24 @@ class SurrealDBConsolidationStateMixin:
         strategy_states: Mapping[str, Any],
         counters: Mapping[str, Any],
         updated_at: Any,
+        new_status: str | None = None,
     ) -> dict[str, Any] | None:
-        """Reset one unapplied legacy semantic checkpoint under lease and CAS fences.
+        """Reset one unapplied semantic checkpoint under lease and CAS fences.
 
-        The live lease is checked in the same atomic UPDATE as the progress
-        record's run, owner, fingerprint, status, phase, reference time, and
-        updated-at comparisons. A stale preflight can therefore never reset a
-        different checkpoint or proceed after its lease has expired or moved.
+        A failed run may become paused only in the same atomic update that
+        resets its unapplied discovery state. The live lease and exact prior
+        checkpoint fields remain part of the update predicate.
         """
+        if new_status is None:
+            new_status = expected_status
+        if new_status != expected_status and not (
+            expected_status == "failed" and new_status == "paused"
+        ):
+            raise ValueError("semantic recovery may only transition failed status to paused")
         record_id = self._consolidation_record_id(brain_id)
         rows = await self._query(
             "UPDATE type::record('consolidation_progress', $record_id) "
-            "SET strategy_states = $strategy_states, counters = $counters, "
+            "SET status = $new_status, strategy_states = $strategy_states, counters = $counters, "
             "phase = $new_phase, cursor = NONE, owner_token = $new_owner_token, "
             "updated_at = $updated_at "
             "WHERE brain_id = $brain_id AND run_id = $expected_run_id "
@@ -147,6 +153,7 @@ class SurrealDBConsolidationStateMixin:
             expected_owner_token=expected_owner_token,
             expected_options_fingerprint=expected_options_fingerprint,
             expected_status=expected_status,
+            new_status=new_status,
             expected_phase=expected_phase,
             expected_updated_at=expected_updated_at,
             expected_reference_time=expected_reference_time,

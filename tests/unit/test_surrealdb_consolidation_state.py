@@ -159,3 +159,63 @@ async def test_checkpoint_update_returns_none_after_lease_fence_changes() -> Non
 
     assert result is None
     assert "owner_token = $owner_token" in storage.calls[0][0]
+
+
+@pytest.mark.asyncio
+async def test_semantic_recovery_cas_transitions_failed_to_paused_atomically() -> None:
+    storage = ScriptedStateStorage([{"id": "progress", "status": "paused"}])
+    old_owner = "failed-owner-test"
+    recovery_owner = "recovery-owner-test"
+
+    saved = await storage.compare_and_swap_semantic_link_recovery(
+        brain_id="test-brain",
+        expected_run_id="run-001",
+        expected_owner_token=old_owner,
+        expected_options_fingerprint="fingerprint",
+        expected_status="failed",
+        expected_phase="semantic_link_discovery_neurons",
+        expected_updated_at="before-update",
+        expected_reference_time="original-reference",
+        lease_owner_token=recovery_owner,
+        new_owner_token=recovery_owner,
+        strategy_states={"semantic_link": {"phase": "semantic_link_restart_pending"}},
+        counters={"semantic_link": {}},
+        updated_at="after-update",
+        new_status="paused",
+    )
+
+    assert saved is not None
+    sql, params = storage.calls[0]
+    assert "SET status = $new_status" in sql
+    assert "status = $expected_status" in sql
+    assert "expires_at > time::now()" in sql
+    assert params["expected_status"] == "failed"
+    assert params["new_status"] == "paused"
+    assert params["expected_reference_time"] == "original-reference"
+
+
+@pytest.mark.asyncio
+async def test_semantic_recovery_cas_rejects_unapproved_status_transition() -> None:
+    storage = ScriptedStateStorage([])
+    old_owner = "owner-test"
+    recovery_owner = "recovery-owner-test"
+
+    with pytest.raises(ValueError, match="only transition failed status to paused"):
+        await storage.compare_and_swap_semantic_link_recovery(
+            brain_id="test-brain",
+            expected_run_id="run-001",
+            expected_owner_token=old_owner,
+            expected_options_fingerprint="fingerprint",
+            expected_status="running",
+            expected_phase="semantic_link_discovery_neurons",
+            expected_updated_at="before-update",
+            expected_reference_time="original-reference",
+            lease_owner_token=recovery_owner,
+            new_owner_token=recovery_owner,
+            strategy_states={"semantic_link": {"phase": "semantic_link_restart_pending"}},
+            counters={"semantic_link": {}},
+            updated_at="after-update",
+            new_status="paused",
+        )
+
+    assert storage.calls == []

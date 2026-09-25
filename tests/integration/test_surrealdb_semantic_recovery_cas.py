@@ -410,3 +410,125 @@ async def test_stale_discovery_recovery_refuses_when_change_is_not_proven(
             expected_status="running",
             confirmation_run_id=run_id,
         )
+
+
+@pytest.mark.asyncio
+async def test_stale_recovery_repeats_from_failed_checkpoint_and_preserves_audit(store) -> None:
+    brain_id = store._get_brain_id()
+    run_id = "run-stale-source-repeat-test"
+    fingerprint = "options-stale-repeat-test"
+    strategies = {
+        item.value for item in ConsolidationStrategy if item is not ConsolidationStrategy.ALL
+    }
+    completed = sorted(strategies - {"semantic_link"})
+    source_token = await store.capture_semantic_source_token()
+    neuron = Neuron.create(NeuronType.CONCEPT, "repeat-stale-source-recovery-fixture")
+    neuron = Neuron(
+        id=neuron.id,
+        type=neuron.type,
+        content=neuron.content,
+        metadata=neuron.metadata,
+        content_hash=neuron.content_hash,
+        created_at=utcnow() - timedelta(seconds=1),
+    )
+    await store.add_neuron(neuron)
+    reference_time = utcnow()
+
+    legacy_marker = {
+        "kind": "legacy_semantic_discovery_restart",
+        "version": 1,
+        "run_id": run_id,
+        "options_fingerprint": fingerprint,
+        "expected_status": "paused",
+        "previous_phase": "semantic_link_discovery_neurons",
+        "recovered_at": utcnow(),
+    }
+    prior_stale_marker = {
+        "kind": "stale_semantic_source_restart",
+        "version": 1,
+        "run_id": run_id,
+        "options_fingerprint": fingerprint,
+        "expected_status": "running",
+        "previous_phase": "semantic_link_discovery_neurons",
+        "manifest_sha256": "a" * 64,
+        "source_token_sha256": "b" * 64,
+        "prior_recovery_sha256": "c" * 64,
+        "source_changed_verified": True,
+        "owner_token": "first-recovery-owner",
+        "recovered_at": utcnow() - timedelta(minutes=1),
+    }
+    manifest = {
+        "kind": "semantic_link_discovery",
+        "version": 3,
+        "stage": "neurons",
+        "source_state_ref": {
+            "state_id": "stage-repeat-test",
+            "revision": 1,
+            "state_revision": 1,
+            "source_token": source_token,
+            "brain_id": brain_id,
+            "run_id": run_id,
+        },
+    }
+    semantic_state = {
+        "phase": "semantic_link_discovery_neurons",
+        "cursor": "neuron:123",
+        "pending": [json.dumps([json.dumps(manifest)])],
+        "counters": {"semantic_synapses_created": 0},
+        "recovery": prior_stale_marker,
+        "recovery_history": [legacy_marker, prior_stale_marker],
+        "updated_at": utcnow(),
+    }
+    before = await store.start_consolidation_progress(
+        {
+            "brain_id": brain_id,
+            "run_id": run_id,
+            "schema_version": 12,
+            "engine_version": "3.11.0:checkpoint-v1",
+            "format_version": 1,
+            "requested_strategies": sorted(strategies),
+            "completed_strategies": completed,
+            "options_fingerprint": fingerprint,
+            "reference_time": reference_time,
+            "owner_token": "failed-worker-owner",
+            "status": "failed",
+            "current_strategy": "semantic_link",
+            "phase": "semantic_link_discovery_neurons",
+            "cursor": "neuron:123",
+            "strategy_states": {"semantic_link": semantic_state},
+            "counters": {
+                "prune": {"synapses_pruned": 3},
+                "semantic_link": semantic_state["counters"],
+            },
+            "started_at": reference_time,
+            "updated_at": utcnow(),
+            "last_error": "semantic source changed",
+        }
+    )
+    args = {
+        "run_id": run_id,
+        "expected_options_fingerprint": fingerprint,
+        "expected_status": "failed",
+        "confirmation_run_id": run_id,
+    }
+
+    preview = await recover_stale_semantic_link_discovery(store, **args)
+    assert preview["dry_run"] is True
+    assert (await store.get_consolidation_progress(brain_id))["updated_at"] == before["updated_at"]
+
+    applied = await recover_stale_semantic_link_discovery(store, **args, dry_run=False)
+    assert applied["already_recovered"] is False
+    after = await store.get_consolidation_progress(brain_id)
+    assert after is not None
+    assert after["status"] == "paused"
+    assert after["reference_time"] == before["reference_time"]
+    assert after["completed_strategies"] == completed
+    assert after["counters"]["prune"] == {"synapses_pruned": 3}
+    recovered = after["strategy_states"]["semantic_link"]
+    assert recovered["phase"] == "semantic_link_restart_pending"
+    assert recovered["recovery_history"][:2] == [legacy_marker, prior_stale_marker]
+    assert recovered["recovery_history"][-1] == recovered["recovery"]
+    assert recovered["recovery"]["source_changed_verified"] is True
+
+    retried = await recover_stale_semantic_link_discovery(store, **args, dry_run=False)
+    assert retried["already_recovered"] is True
