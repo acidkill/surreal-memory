@@ -236,8 +236,11 @@ async def test_frozen_fence_ignores_only_unchanged_source_table_reassertions() -
 
 @pytest.mark.asyncio
 async def test_frozen_fence_accepts_python_sdk_table_and_duration_values() -> None:
-    from surrealdb.data.types.duration import Duration
-    from surrealdb.data.types.table import Table
+    try:
+        from surrealdb.data.types.duration import Duration
+        from surrealdb.data.types.table import Table
+    except ImportError:
+        pytest.skip("requires the optional SurrealDB Python SDK")
 
     storage = _RevisionStorage()
     definition = _table_reassertion("synapse")
