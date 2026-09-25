@@ -247,6 +247,7 @@ async def test_stale_discovery_recovery_requires_verified_pre_reference_source_c
         "options_fingerprint": "options-stale-test",
         "expected_status": "paused",
         "previous_phase": "semantic_link_discovery_neurons",
+        "recovered_at": utcnow(),
     }
     manifest = {
         "kind": "semantic_link_discovery",
@@ -312,7 +313,10 @@ async def test_stale_discovery_recovery_requires_verified_pre_reference_source_c
     semantic_after = after["strategy_states"]["semantic_link"]
     assert semantic_after["phase"] == "semantic_link_restart_pending"
     assert "pending" not in semantic_after
-    assert semantic_after["recovery_history"] == [legacy_recovery, semantic_after["recovery"]]
+    assert semantic_after["recovery_history"] == [
+        before["strategy_states"]["semantic_link"]["recovery"],
+        semantic_after["recovery"],
+    ]
     assert semantic_after["recovery"]["source_changed_verified"] is True
 
     retried = await recover_stale_semantic_link_discovery(store, **args, dry_run=False)

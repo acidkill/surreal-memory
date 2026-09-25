@@ -745,6 +745,11 @@ async def recover_stale_semantic_link_discovery(
                 "previous_phase": str(phase),
             }
 
+        def audit_json_default(value: Any) -> str:
+            if isinstance(value, datetime):
+                return value.isoformat()
+            raise TypeError(f"unsupported semantic recovery audit value: {type(value).__name__}")
+
         updated_at = utcnow()
         prior_marker = dict(previous_recovery)
         history = [dict(item) for item in recovery_history_raw]
@@ -760,7 +765,12 @@ async def recover_stale_semantic_link_discovery(
             "manifest_sha256": sha256(canonical_manifest.encode("utf-8")).hexdigest(),
             "source_token_sha256": sha256(source_token.encode("utf-8")).hexdigest(),
             "prior_recovery_sha256": sha256(
-                json.dumps(prior_marker, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                json.dumps(
+                    prior_marker,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    default=audit_json_default,
+                ).encode("utf-8")
             ).hexdigest(),
             "source_changed_verified": True,
             "owner_token": owner_token,
