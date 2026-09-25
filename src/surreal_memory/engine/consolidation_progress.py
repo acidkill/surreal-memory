@@ -467,9 +467,9 @@ async def recover_stale_semantic_link_discovery(
         raise ConsolidationResumeMismatchError("typed run-id confirmation does not match")
     if not expected_options_fingerprint:
         raise ConsolidationResumeMismatchError("expected options fingerprint is required")
-    if expected_status not in {"running", "failed"}:
+    if expected_status not in {"running", "failed", "paused"}:
         raise ConsolidationResumeMismatchError(
-            "stale-source recovery requires a running or failed run"
+            "stale-source recovery requires a running or failed run, or an exact paused retry"
         )
 
     brain_id = str(getattr(storage, "current_brain_id", "") or "")
@@ -558,6 +558,10 @@ async def recover_stale_semantic_link_discovery(
             raise ConsolidationResumeMismatchError(
                 "run is not at an unapplied semantic_link discovery phase"
             )
+        if expected_status == "paused" and phase != "semantic_link_restart_pending":
+            raise ConsolidationResumeMismatchError(
+                "paused stale-source recovery only verifies an already committed failed-run restart"
+            )
 
         top_counters = state.get("counters")
         nested_counters = semantic_state.get("counters")
@@ -594,7 +598,8 @@ async def recover_stale_semantic_link_discovery(
                 and latest_recovery.get("kind") == "stale_semantic_source_restart"
                 and latest_recovery.get("run_id") == run_id
                 and latest_recovery.get("options_fingerprint") == expected_options_fingerprint
-                and latest_recovery.get("expected_status") == expected_status
+                and latest_recovery.get("expected_status")
+                == ("failed" if expected_status == "paused" else expected_status)
                 and latest_recovery.get("previous_phase") in _LEGACY_DISCOVERY_PHASES
                 and latest_recovery.get("source_changed_verified") is True
                 and latest_recovery.get("owner_token") == state.get("owner_token")

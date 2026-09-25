@@ -539,3 +539,7 @@ async def test_stale_recovery_repeats_from_failed_checkpoint_and_preserves_audit
 
     retried = await recover_stale_semantic_link_discovery(store, **args, dry_run=False)
     assert retried["already_recovered"] is True
+    cli_retried = await recover_stale_semantic_link_discovery(
+        store, **{**args, "expected_status": "paused"}, dry_run=False
+    )
+    assert cli_retried["already_recovered"] is True

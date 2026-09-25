@@ -194,7 +194,26 @@ async def test_failed_repeat_recovery_preflights_then_pauses_and_is_idempotent()
 
     retry = await recover_stale_semantic_link_discovery(storage, **_arguments(), dry_run=False)
     assert retry["already_recovered"] is True
+    cli_retry_args = {**_arguments(), "expected_status": "paused"}
+    cli_retry = await recover_stale_semantic_link_discovery(
+        storage, **cli_retry_args, dry_run=False
+    )
+    assert cli_retry["already_recovered"] is True
     assert len(storage.cas_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_paused_discovery_cannot_start_a_new_stale_source_recovery() -> None:
+    storage = StaleRecoveryStorage()
+    storage.progress["status"] = "paused"
+
+    with pytest.raises(ConsolidationResumeMismatchError, match="only verifies"):
+        await recover_stale_semantic_link_discovery(
+            storage, **{**_arguments(), "expected_status": "paused"}, dry_run=False
+        )
+
+    assert storage.source_checks == []
+    assert storage.cas_calls == []
 
 
 @pytest.mark.asyncio
