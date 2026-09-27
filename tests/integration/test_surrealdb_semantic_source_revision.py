@@ -312,15 +312,15 @@ async def test_barrier_discovery_pages_past_retained_events(store, monkeypatch) 
             content={"brain_id": store.current_brain_id, "created_at": created_at},
         )
 
-    original_query = store._query
+    original_show = store._show_table_changes
     page_queries: list[str] = []
 
-    async def recording_query(sql: str, **params):
-        if sql.startswith("SHOW CHANGES FOR TABLE semantic_source_barrier"):
-            page_queries.append(sql)
-        return await original_query(sql, **params)
+    async def recording_show(table: str, since, limit: int):
+        if table == "semantic_source_barrier":
+            page_queries.append(f"SHOW CHANGES FOR TABLE {table} SINCE {since} LIMIT {limit}")
+        return await original_show(table, since, limit)
 
-    monkeypatch.setattr(store, "_query", recording_query)
+    monkeypatch.setattr(store, "_show_table_changes", recording_show)
 
     async def before_prior_markers():
         return created_at
@@ -468,3 +468,49 @@ async def test_snapshot_load_follows_serialized_pending_manifest_after_lease_rot
     )
 
     assert await store.load_semantic_discovery_state(state_id, 1) == payload
+
+
+async def _write_noise(store, count: int) -> None:
+    """Separate transactions in another changefeed table - one feed entry each."""
+    await store._query("DEFINE TABLE IF NOT EXISTS fence_noise SCHEMALESS CHANGEFEED 1d")
+    for i in range(count):
+        await store._query("CREATE fence_noise SET i = $i", i=i)
+
+
+async def test_table_feed_is_not_hidden_behind_other_tables_writes(store) -> None:
+    # SurrealDB applies LIMIT to the database-wide feed before keeping one
+    # table's entries; a neuron change behind more than LIMIT other writes
+    # must still be returned.
+    await _write_noise(store, 30)
+    neuron = Neuron.create(type=NeuronType.CONCEPT, content="behind-the-noise")
+    await store.add_neuron(neuron)
+
+    rows = await store._show_table_changes("neuron", 0, 5)
+
+    assert any("behind-the-noise" in json.dumps(row, default=str) for row in rows)
+
+
+async def test_source_change_behind_other_tables_writes_invalidates_token(store) -> None:
+    token = await store.capture_semantic_source_token()
+    await _write_noise(store, 30)
+    await store.add_neuron(Neuron.create(type=NeuronType.CONCEPT, content="late-change"))
+
+    with pytest.raises(SemanticSourceChangedError):
+        await store.assert_semantic_source_unchanged(token)
+
+
+async def test_barrier_is_found_behind_other_tables_writes(store, monkeypatch) -> None:
+    import surreal_memory.storage.surrealdb.semantic_source_revision as revision_module
+
+    monkeypatch.setattr(revision_module, "_BARRIER_CHANGEFEED_PAGE_SIZE", 2)
+    captured_at = store._parse_datetime(await store._query_response("RETURN time::now()"))
+    await _write_noise(store, 10)
+
+    async def server_now_before_noise():
+        return captured_at
+
+    monkeypatch.setattr(store, "_server_now", server_now_before_noise)
+
+    token = await store.capture_semantic_source_token()
+
+    assert json.loads(token)["versionstamp"] > 0

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Semantic-link source fences read table changefeeds by paging the database feed.
+  SurrealDB applies `LIMIT` to the database-wide feed before it keeps one table's
+  entries, so on a busy database the barrier search stopped early ("semantic source
+  barrier was not found within the bounded changefeed scan") and the source checks
+  could miss neuron/synapse changes queued behind other tables' writes.
+
 ## [3.12.0] — 2026-09-25 — consolidation can resume its committed work
 
 Large maintenance runs now make bounded progress and can continue from durable

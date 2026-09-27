@@ -40,6 +40,13 @@ class _RevisionStorage(SurrealDBSemanticSourceRevisionMixin):
         assert sql == "RETURN time::now()"
         return self.now
 
+    async def _show_table_changes(
+        self, table: str, since: int | str, limit: int
+    ) -> list[dict[str, Any]]:
+        # This fake models each table's feed directly; the database-feed paging
+        # itself is covered against a live SurrealDB in the integration tests.
+        return await self._query(f"SHOW CHANGES FOR TABLE {table} SINCE {since} LIMIT {limit}")
+
     async def _query(self, sql: str, **params: Any) -> list[dict[str, Any]]:
         self.queries.append((sql, params))
         if sql.startswith("DELETE semantic_source_barrier WHERE"):
