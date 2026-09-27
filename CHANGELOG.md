@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The dashboard command palette (Ctrl/Cmd+K) now narrows pages and Pro hints to the
+  query; with cmdk's own filtering switched off they used to stay listed whatever was
+  typed.
+
 ## [3.12.0] — 2026-09-25 — consolidation can resume its committed work
 
 Large maintenance runs now make bounded progress and can continue from durable
