@@ -21,6 +21,7 @@ from surreal_memory.engine.consolidation_progress import (
     ConsolidationProgressSession,
     ConsolidationResumeMismatchError,
     options_fingerprint,
+    stored_form,
 )
 
 REFERENCE_TIME = datetime(2026, 9, 20, 12, 30)
@@ -82,6 +83,27 @@ class FakeProgressStorage:
             return None
         self.progress = deepcopy(state)
         return deepcopy(self.progress)
+
+
+def test_stored_form_omits_none_valued_keys_at_every_depth_and_keeps_array_items() -> None:
+    value = {
+        "gone": None,
+        "nested": {"gone": None, "kept": 1},
+        "items": [{"gone": None, "kept": 2}, None, 3],
+        "zero": 0,
+        "empty": "",
+        "false": False,
+    }
+
+    assert stored_form(value) == {
+        "nested": {"kept": 1},
+        "items": [{"kept": 2}, None, 3],
+        "zero": 0,
+        "empty": "",
+        "false": False,
+    }
+    assert value["gone"] is None
+    assert value["nested"] == {"gone": None, "kept": 1}
 
 
 @pytest.mark.asyncio

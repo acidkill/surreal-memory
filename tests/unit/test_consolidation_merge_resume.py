@@ -13,9 +13,11 @@ from surreal_memory.engine.consolidation import (
     ConsolidationEngine,
     ConsolidationReport,
     ConsolidationStrategy,
+    _merged_metadata,
 )
 from surreal_memory.engine.consolidation_progress import ConsolidationPausedError
 from surreal_memory.engine.memory_stages import MaturationRecord, MemoryStage
+from tests.unit.test_consolidation_fiber_census_resume import _without_null_keys
 from tests.unit.test_consolidation_group_plan import _PlanStorage
 
 REFERENCE_TIME = datetime(2026, 9, 20, 12, 30)
@@ -521,7 +523,10 @@ async def test_merge_durable_group_plan_resumes_after_each_plan_phase(pause_phas
 
 
 @pytest.mark.asyncio
-async def test_merge_durable_plan_refuses_source_mutation_after_pending_checkpoint() -> None:
+@pytest.mark.parametrize("change", [{"summary": "changed"}, {"metadata": {"source": "changed"}}])
+async def test_merge_durable_plan_refuses_source_mutation_after_pending_checkpoint(
+    change: dict[str, Any],
+) -> None:
     storage = _DurableFiberStorage(typed=False, matured=False)
     plan_store = _PlanStorage()
     storage._query = plan_store._query  # type: ignore[attr-defined,method-assign]
@@ -530,7 +535,7 @@ async def test_merge_durable_plan_refuses_source_mutation_after_pending_checkpoi
 
     with pytest.raises(ConsolidationPausedError):
         await engine._merge(ConsolidationReport(), dry_run=False)
-    storage.fibers["src-0"] = replace(storage.fibers["src-0"], summary="changed")
+    storage.fibers["src-0"] = replace(storage.fibers["src-0"], **change)
 
     with pytest.raises(RuntimeError, match="changed after its checkpoint"):
         await engine._merge(ConsolidationReport(), dry_run=False)
@@ -683,3 +688,49 @@ async def test_merge_durable_pair_scan_resumes_inside_a_posting() -> None:
     assert report.fibers_merged == 60
     assert report.fibers_created == 1
     assert len(storage.fibers) == 1
+
+
+@pytest.mark.asyncio
+async def test_merge_durable_plan_merges_sources_whose_stored_metadata_holds_null() -> None:
+    storage = _DurableFiberStorage()
+    nulls = {"note": None, "nested": {"gone": None, "kept": 1}}
+    storage.fibers = {
+        # src-1 is the more salient source; its null must not replace the value of src-0.
+        "src-0": replace(storage.fibers["src-0"], metadata={"shared": "value", **nulls}),
+        "src-1": replace(storage.fibers["src-1"], metadata={"shared": None, **nulls}),
+    }
+    plan_store = _PlanStorage()
+
+    async def query(sql: str, **params: Any) -> list[dict[str, Any]]:
+        # The census copy cannot carry the nulls: SurrealDB keeps no null-valued key.
+        if sql.startswith("CREATE type::record('consolidation_fiber_census'"):
+            params = {**params, "row": _without_null_keys(params["row"])}
+        return await plan_store._query(sql, **params)
+
+    add_fiber = storage.add_fiber
+
+    async def add_fiber_as_stored(fiber: Fiber) -> str:
+        return await add_fiber(replace(fiber, metadata=_without_null_keys(fiber.metadata)))
+
+    storage._query = query  # type: ignore[attr-defined,method-assign]
+    storage.add_fiber = add_fiber_as_stored  # type: ignore[method-assign]
+    engine = _engine(storage, _Progress())
+
+    await _resume_and_assert_complete(engine, storage)
+
+    successor = next(iter(storage.fibers.values()))
+    assert successor.metadata["shared"] == "value"
+    assert successor.metadata["nested"] == {"kept": 1}
+    assert "note" not in successor.metadata
+
+
+def test_merged_metadata_never_lets_a_null_win_a_key_collision() -> None:
+    low, high = _sources()
+    assert low.salience < high.salience
+    low = replace(low, metadata={"shared": "value", "only_null": None})
+    high = replace(high, metadata={"shared": None})
+
+    assert _merged_metadata([low, high]) == {
+        "shared": "value",
+        "merged_from": [low.id, high.id],
+    }

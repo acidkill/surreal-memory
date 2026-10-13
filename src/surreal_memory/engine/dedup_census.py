@@ -10,7 +10,7 @@ from typing import Any
 
 from surreal_memory.core.constants import GRAPH_ONLY_PLACEHOLDER
 from surreal_memory.core.neuron import Neuron, NeuronType
-from surreal_memory.engine.consolidation_progress import ConsolidationProgressError
+from surreal_memory.engine.consolidation_progress import ConsolidationProgressError, stored_form
 from surreal_memory.storage.errors import is_duplicate_key_error
 
 _PAGE_SIZE = 500
@@ -166,7 +166,7 @@ class DedupAnchorCensus:
                 ) from exc
             existing = dict(existing_rows[0])
             existing.pop("id", None)
-            if self._json(existing) != self._json(row):
+            if self._json(stored_form(existing)) != self._json(stored_form(row)):
                 raise ConsolidationProgressError(
                     "immutable dedup census page conflicts with the source; refusing stale overwrite"
                 ) from exc
