@@ -9,7 +9,8 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Collection, Mapping, Sequence
+    from datetime import timedelta
 
     from surreal_memory.core.alert import Alert
     from surreal_memory.core.brain import Brain, BrainSnapshot
@@ -2699,6 +2700,12 @@ class NeuralStorage(ABC):
         """Load the exact semantic-discovery snapshot referenced by active progress."""
         raise NotImplementedError
 
+    async def prune_semantic_discovery_state(
+        self, *, older_than: timedelta, keep_run_ids: Collection[str]
+    ) -> int:
+        """Delete expired semantic-discovery snapshots of runs not in ``keep_run_ids``."""
+        raise NotImplementedError
+
     async def find_existing_synapse_pairs(
         self, pairs: Sequence[tuple[str, str]]
     ) -> set[tuple[str, str]]:
@@ -2724,6 +2731,11 @@ class NeuralStorage(ABC):
     async def get_consolidation_progress(
         self, brain_id: str | None = None
     ) -> dict[str, Any] | None:
+        raise NotImplementedError
+
+    async def get_consolidation_run_ids(
+        self, *, statuses: Collection[str], brain_id: str | None = None
+    ) -> list[str]:
         raise NotImplementedError
 
     async def create_consolidation_progress(self, state: dict[str, Any]) -> dict[str, Any]:

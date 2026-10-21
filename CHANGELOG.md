@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Consolidation deletes semantic-discovery snapshots that no unfinished run
+  can resume from. Each `semantic_link` run stages its discovery work as
+  snapshots of up to 1 MB, and nothing removed them after the run finished, so
+  the `semantic_discovery_state` table grew with every run. Once
+  `semantic_link` completes, snapshots older than
+  `[maintenance] semantic_discovery_state_retention_days` (default `7`, `0`
+  disables the prune) are deleted in batches of at most 500 rows, except those
+  of the current run and of every queued, running, paused or failed run. The
+  report counts them as "Semantic discovery snapshots pruned" and shows a
+  failed prune there instead of failing the run.
 - Semantic-link source fences read table changefeeds by paging the database feed.
   SurrealDB applies `LIMIT` to the database-wide feed before it keeps one table's
   entries, so on a busy database the barrier search stopped early ("semantic source

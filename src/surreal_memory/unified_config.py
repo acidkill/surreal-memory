@@ -650,6 +650,7 @@ class MaintenanceConfig:
     scheduled_consolidation_enabled: bool = True
     scheduled_consolidation_interval_hours: int = 24
     scheduled_consolidation_strategies: tuple[str, ...] = ("prune", "merge", "mature", "enrich")
+    semantic_discovery_state_retention_days: int = 7  # 0 = keep snapshots of finished runs
     version_check_enabled: bool = True
     version_check_interval_hours: int = 24
     # Auto-decay in serve daemon
@@ -702,6 +703,7 @@ class MaintenanceConfig:
             "scheduled_consolidation_enabled": self.scheduled_consolidation_enabled,
             "scheduled_consolidation_interval_hours": self.scheduled_consolidation_interval_hours,
             "scheduled_consolidation_strategies": list(self.scheduled_consolidation_strategies),
+            "semantic_discovery_state_retention_days": self.semantic_discovery_state_retention_days,
             "version_check_enabled": self.version_check_enabled,
             "version_check_interval_hours": self.version_check_interval_hours,
             "decay_enabled": self.decay_enabled,
@@ -750,6 +752,9 @@ class MaintenanceConfig:
                 "scheduled_consolidation_interval_hours", 24
             ),
             scheduled_consolidation_strategies=sched_strategies,
+            semantic_discovery_state_retention_days=int(
+                data.get("semantic_discovery_state_retention_days", 7)
+            ),
             version_check_enabled=data.get("version_check_enabled", True),
             version_check_interval_hours=data.get("version_check_interval_hours", 24),
             decay_enabled=data.get("decay_enabled", True),
@@ -2205,6 +2210,7 @@ class UnifiedConfig:
             f"scheduled_consolidation_enabled = {'true' if self.maintenance.scheduled_consolidation_enabled else 'false'}",
             f"scheduled_consolidation_interval_hours = {self.maintenance.scheduled_consolidation_interval_hours}",
             f"scheduled_consolidation_strategies = {json.dumps(list(self.maintenance.scheduled_consolidation_strategies))}",
+            f"semantic_discovery_state_retention_days = {self.maintenance.semantic_discovery_state_retention_days}",
             "",
             "# Safety settings",
             "[safety]",
