@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Compression explicitly clears completed replay markers with storage that
+  merges nested metadata. A matching completion receipt prevents replaying
+  finished work over later neuron edits; incomplete or malformed intents still
+  retain their validation safeguards.
+- Summarization accepts checkpoints with no pending work unit when the progress
+  writer omits the optional `pending` field. Present malformed pending values
+  still stop consolidation without replacing the saved work.
 - Consolidation deletes semantic-discovery snapshots that no unfinished run
   can resume from. Each `semantic_link` run stages its discovery work as
   snapshots of up to 1 MB, and nothing removed them after the run finished, so
