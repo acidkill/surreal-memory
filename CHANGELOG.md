@@ -5,10 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.12.2] — 2026-10-21 — safer consolidation, quieter memory
+
+A maintenance release covering all changes since 3.12.1: durable consolidation
+recovery, protection for original and pinned content, bounded database work,
+connection failure handling, and prevention of passive read/capture feedback.
+Schema v12 and the `3.11.0:checkpoint-v1` compatibility epoch remain unchanged.
 
 ### Fixed
 
+- Synapse pruning reads and deletes selected native record IDs in bounded,
+  brain-scoped batches rather than scanning the table for each target set.
+- Compression protects pinned neurons even when an unpinned fiber shares them;
+  the same protection applies to pending compression replay.
+- Entity reference promotion/deletion and neuron lookups preserve native record
+  identifiers, including numeric IDs, rather than converting them to ambiguous
+  strings.
+- Change-log collapse deletes only still-eligible superseded updates in the
+  current brain and reports the number actually deleted.
+- Summarization resumes its durable census phases. A progress-coordination
+  failure stops subsequent strategies instead of continuing with invalid state.
+- A stopped SurrealDB WebSocket receiver fails the current query without
+  replaying a request that may already have executed. A later independent
+  operation can reconnect; closing a failed connection is bounded to two seconds.
+- Concurrent schema initialization accepts a conflicting stamp write only when
+  a fresh read confirms the exact expected schema version.
+- Resuming saved work clears the previous attempt's error while retaining the
+  committed work and original reference time.
 - Compression preserves original backups across tier advancement. Exact content
   lineage protects later edits and shared neurons during compression and recovery;
   unverifiable legacy compression states are preserved for explicit recovery.
@@ -50,12 +73,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- MCP `recall`, `context`, `recap` and `explain` no longer pass search queries or
+  returned memories into passive automatic capture. Explicit `smem_remember`
+  and `smem_auto(action="process")` remain available. Recall still performs its
+  normal reinforcement and configured reconsolidation writes.
+- MCP analytics honor `[tool_memory] enabled` and blacklist prefixes, and skip
+  successful calls to those four read tools. Allowed failures retain their
+  diagnostic events. The PostToolUse hook recognizes native and namespaced MCP
+  tool names and applies blacklist prefixes to both forms. Existing historical
+  memories and tool events are not purged by this change.
+- Neuron batch reads address native records in chunks of 100, reducing query
+  fan-out while preserving brain scoping and missing-record behavior.
+- Resumable semantic SHA-256 hashing can use an output-verified OpenSSL path;
+  the portable implementation remains the fallback without a new mandatory
+  dependency.
 - Fiber-census pages are staged with a fingerprint of their stored form. Pages
   staged by 3.12.0 and 3.12.1 are still accepted, apart from pages holding such
   a metadata null, which never validated. A page staged by this release can in
   general not be read by 3.12.1.
 - A null value in a source fiber's `metadata` no longer wins a key collision
   when fibers are merged. It counts as a missing key.
+
+### Upgrade notes
+
+- Back up the full selected database, including checkpoint/staging tables, and
+  verify restoration before maintenance. Keep the same extras and connection
+  settings, and restart MCP/server processes after updating.
+- Resume an unfinished run with `smem consolidate --resume --brain default`;
+  use ordinary `smem consolidate --brain default` for a new run. Strategy budgets
+  remain in effect: a large brain can still pause and need another resume.
+- Do not downgrade across newly staged census pages or overwrite checkpoints to
+  bypass validation. Unverifiable legacy compression lineage stops automatic
+  recovery instead of overwriting content. See the
+  [consolidation guide](https://github.com/acidkill/surreal-memory/blob/main/docs/guides/consolidation.md).
 
 ## [3.12.1] — 2026-10-12 — consolidation resume validates saved work
 

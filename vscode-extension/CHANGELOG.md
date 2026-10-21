@@ -6,6 +6,14 @@
 
 - **Vietnamese/bilingual relation & extraction patterns** — extraction is now English-only. The bilingual (English + Vietnamese) relation patterns added in 0.4.0 and the cross-language retrieval layer have been removed. Embedding-level semantic recall (any language supported by the configured embedding model) is unaffected.
 
+## [3.12.2] - 2026-10-21
+
+### Changed
+
+- Align the extension package with the core 3.12.2 maintenance release; no
+  extension runtime change. See the [core changelog](https://github.com/acidkill/surreal-memory/blob/main/CHANGELOG.md)
+  for the full release and the consolidation upgrade guidance.
+
 ## [0.5.0] - 2026-03-10
 
 ### Fixed

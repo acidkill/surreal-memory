@@ -734,9 +734,18 @@ context. This is intended behaviour (see `reconsolidation.py`), gated globally
 by the per-brain `reconsolidation_enabled` switch (`BrainConfig`, default
 `true`).
 
-Speculative callers (agent harnesses probing several times per turn) that
-must not leave traces pass `reconsolidate: false` on the call — a read-only
-probe that skips the reconsolidation step for that invocation only.
+Callers that do not want the query context incorporated into matched memories
+can pass `reconsolidate: false` for that invocation. This skips reconsolidation,
+not all recall writes: activation, reinforcement and retrieval traces can still
+change state.
+
+Since 3.12.2, recall/context/recap/explain queries and returned text are no longer
+fed into passive automatic memory capture. To deliberately save information from
+these reads, use `smem_remember` or `smem_auto(action="process")`. MCP tool
+analytics honor `[tool_memory] enabled` and blacklist prefixes, skip successful
+calls to those four read tools, and retain permitted failure diagnostics. The
+PostToolUse hook recognizes namespaced aliases too. Existing historical records
+are not purged. See [Consolidation and Upgrading](consolidation.md).
 
 ---
 

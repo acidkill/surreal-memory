@@ -495,7 +495,7 @@ Consolidation maintains brain health. The strategies you will reach for most:
 |----------|-------------|-------------|
 | `mature` | Promotes memories that have ALREADY met the spaced-recall bar | Weekly — it advances what is eligible, it does not create eligibility |
 | `merge` | Combines overlapping fibers, prunes weak synapses | When brain grows large (1000+ fibers) |
-| `all` | Every strategy in one pass | Monthly deep cleanup |
+| `all` | Every strategy, with durable pauses when a budget is reached | Monthly deep cleanup |
 
 `--strategy full` does not exist; `all` is the name for "run everything". Run
 `smem consolidate --help` for the current list.
@@ -505,17 +505,39 @@ Consolidation maintains brain health. The strategies you will reach for most:
 smem consolidate --strategy mature     # Weekly
 smem consolidate --strategy all        # Monthly
 
-# Check what would be affected first
+# Check hygiene before maintenance
 smem brain health
 ```
 
-**Important**: Consolidation never deletes memories outright. It:
+**Important**: Consolidation can prune eligible synapses, neurons and fibers,
+merge traces, summarize clusters and compress content. Back up the full database,
+including checkpoints/staging, before maintenance and verify important recall
+afterward. Pinned/shared-neuron and compression-lineage checks protect their
+defined cases; they do not replace a tested backup or an integrity audit.
 
-- **Prunes weak synapses** (connections with very low weight) — the neurons remain
-- **Merges overlapping fibers** — combines near-duplicate memory traces
-- **Summarizes topic clusters** — creates summary neurons linking related memories
+### Q: Should I use `consolidate` or `consolidate --resume`?
 
-If you're unsure, run `smem brain health` first to see diagnostics and recommendations.
+Use `smem consolidate --resume --brain default` for the saved incomplete run.
+It keeps the original reference time and strategy set and skips completed
+strategies. Do not combine it with `--strategy` or `--dry-run`. Use ordinary
+`smem consolidate --brain default` for a new run after the old one completes.
+
+Strategy budgets still apply in 3.12.2. A `paused` run exits 1 and may need another
+resume; a stable run ID and cumulative counters are expected. Completion requires
+the completed report and CLI exit 0, not just positive counters or a health delta.
+New errors need investigation rather than an unbounded retry loop. See the
+[consolidation and upgrade guide](guides/consolidation.md), including the census
+downgrade restriction.
+
+### Q: Does reading a memory create another copy of it?
+
+Starting with 3.12.2, recall/context/recap/explain queries and responses no longer
+feed passive automatic capture. Use explicit `smem_remember` or
+`smem_auto(action="process")` to save new information. Existing duplicate memories
+are not deleted by the update. Recall can still update reinforcement, traces and
+configured reconsolidation; disabling reconsolidation is not a fully read-only
+mode. Successful read-tool analytics are skipped, while allowed failures retain
+diagnostic events and external tool activity can still be learned.
 
 ### Q: How does multi-device sync handle conflicts?
 

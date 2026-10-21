@@ -4,6 +4,11 @@ Brain-inspired persistent memory for AI agents. Stores experiences as interconne
 
 This is the **OpenClaw plugin** for [Surreal-Memory](https://github.com/acidkill/surreal-memory).
 
+Version 3.12.2 aligns with the core maintenance release; the plugin API is
+unchanged. Review the [core changelog](https://github.com/acidkill/surreal-memory/blob/main/CHANGELOG.md)
+and [upgrade guide](https://github.com/acidkill/surreal-memory/blob/main/docs/guides/consolidation.md)
+before maintaining a brain. Restart the Python/MCP processes after updating core.
+
 ## Prerequisites
 
 ```bash

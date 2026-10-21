@@ -1,6 +1,11 @@
 # Surreal-Memory for VS Code
 
-A visual brain explorer, inline recall, and memory management extension for [Surreal-Memory](https://github.com/nhadaututtheky/surreal-memory) — the reflex-based memory system for AI agents.
+A visual brain explorer, inline recall, and memory management extension for [Surreal-Memory](https://github.com/acidkill/surreal-memory) — the reflex-based memory system for AI agents.
+
+Version 3.12.2 follows the core maintenance release. See the
+[release changelog](https://github.com/acidkill/surreal-memory/blob/main/CHANGELOG.md)
+for consolidation, data-protection and capture-policy changes; this version adds
+no separate editor feature.
 
 ## Features
 

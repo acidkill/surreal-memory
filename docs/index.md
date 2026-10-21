@@ -14,6 +14,22 @@
 
 ---
 
+## What's new in 3.12.2
+
+- Safer saved consolidation work, with compression-original, pinned/shared-neuron
+  and replay-lineage protection.
+- Bounded native-record pruning and neuron reads, more reliable database
+  changefeeds and connection failures, and semantic snapshot retention.
+- Recall/context/recap/explain no longer feed queries or returned memories into
+  passive capture; explicit writes and normal recall reinforcement remain.
+- Dashboard command-palette pages and Pro hints filter by the search query.
+
+Read the [full changelog](changelog.md) and
+[consolidation and upgrade guide](guides/consolidation.md). Strategy budgets
+still apply; use `smem consolidate --resume` for saved unfinished work, retain
+a tested full database backup, and check the downgrade restrictions before
+updating.
+
 ## What is Surreal-Memory?
 
 Surreal-Memory stores experiences as interconnected neurons and recalls them through **spreading activation** -- mimicking how the human brain works. Instead of searching a database, memories are retrieved through associative recall.
