@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The dashboard command palette (Ctrl/Cmd+K) now narrows pages and Pro hints to the
+  query; with cmdk's own filtering switched off they used to stay listed whatever was
+  typed.
+
 - Census rows are fingerprinted and compared in the form SurrealDB stores them,
   without any key whose value is null, and merge treats fiber `metadata` the
   same way. Fibers whose stored `metadata` holds a null are merged instead of
