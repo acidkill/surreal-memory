@@ -173,8 +173,8 @@ class TestSingleRecordBrainScope:
         st, conn = _store_with_mock_conn()
         await st.get_neuron("abc-123")
         sql, params = conn.query.call_args.args
-        assert sql == "SELECT * FROM neuron:abc_123 WHERE brain_id = $brain_id"
-        assert params == {"brain_id": "b1"}
+        assert sql == "SELECT * FROM type::record('neuron', $record_id) WHERE brain_id = $brain_id"
+        assert params == {"record_id": "abc_123", "brain_id": "b1"}
 
     async def test_get_neuron_state_scopes_to_brain(self):
         st, conn = _store_with_mock_conn()

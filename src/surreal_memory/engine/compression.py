@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import IntEnum, StrEnum
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 from surreal_memory.core.constants import GRAPH_ONLY_PLACEHOLDER
 from surreal_memory.utils.content_refresh import content_refreshed, contents_refreshed
@@ -665,6 +666,8 @@ class CompressionEngine:
 
         # Fetch neurons in this fiber.
         neurons = await self._storage.get_neurons_batch(list(fiber.neuron_ids))
+        if set(neurons) != fiber.neuron_ids:
+            return self._preservation_skip(fiber)
         neuron_contents = [n.content for n in neurons.values()]
 
         # Fetch synapses for entity-level relation labels — only ENTITY_ONLY and
@@ -686,6 +689,31 @@ class CompressionEngine:
         # tiers that operate on text (1-2).
         original_content = "\n".join(nc for nc in neuron_contents if nc)
         original_token_count = _token_count(original_content)
+
+        source_hashes = {
+            neuron_id: self._content_digest(neuron.content) for neuron_id, neuron in neurons.items()
+        }
+        existing_backup: dict[str, Any] | None = None
+        trusted_lineage = False
+        if not dry_run:
+            existing_backup = await self._storage.get_compression_backup(fiber.id)
+            trusted_lineage = self._lineage_matches_live_state(
+                fiber, fiber.metadata.get("_compression_receipt"), source_hashes, existing_backup
+            )
+            if existing_backup is not None and not trusted_lineage:
+                # A first backup can survive a crash between backup and intent
+                # writes. If the live aggregate is still exactly that source,
+                # retrying from FULL is safe; otherwise preserve it and stop.
+                same_uncompressed_source = (
+                    current_tier == CompressionTier.FULL
+                    and existing_backup.get("original_content") == original_content
+                )
+                if not same_uncompressed_source:
+                    return self._preservation_skip(fiber)
+            elif current_tier > CompressionTier.FULL and not trusted_lineage:
+                # A legacy receipt cannot prove whether this state is the last
+                # compression output or a later shared-anchor/user edit.
+                return self._preservation_skip(fiber)
 
         backup_created = False
         entities_preserved = 0
@@ -771,6 +799,8 @@ class CompressionEngine:
                 skip_reason="summary_not_smaller",
             )
 
+        compression_run_id = run_id or str(uuid4())
+
         if dry_run:
             return CompressionResult(
                 fiber_id=fiber.id,
@@ -782,9 +812,36 @@ class CompressionEngine:
                 backup_created=False,
             )
 
-        # Persist backup for reversible tiers (1-2).
+        # Plan snapshots before any durable write. Existing originals are
+        # immutable: only a matching lineage receipt may prove they belong to
+        # this fiber's prior compression chain.
+        snapshot_rows: dict[str, dict[str, Any] | None] = {}
+        snapshot_hashes: dict[str, str] = {}
+        destructive = target_tier in (CompressionTier.TEMPLATE, CompressionTier.GRAPH_ONLY)
+        if destructive and not dry_run:
+            prior_snapshot_hashes = (
+                fiber.metadata.get("_compression_receipt", {}).get("snapshot_hashes", {})
+                if isinstance(fiber.metadata.get("_compression_receipt"), dict)
+                else {}
+            )
+            for neuron_id in neurons:
+                snapshot = await self._storage.get_neuron_snapshot(neuron_id)
+                snapshot_rows[neuron_id] = snapshot
+                current_hash = source_hashes[neuron_id]
+                if snapshot is None:
+                    snapshot_hashes[neuron_id] = current_hash
+                    continue
+                saved_hash = self._content_digest(str(snapshot.get("original_content", "")))
+                if saved_hash != current_hash and not (
+                    trusted_lineage and prior_snapshot_hashes.get(neuron_id) == saved_hash
+                ):
+                    return self._preservation_skip(fiber)
+                snapshot_hashes[neuron_id] = saved_hash
+
+        # Persist backup for reversible tiers (1-2), but never replace the
+        # first recoverable aggregate for this fiber.
         reversible = target_tier in (CompressionTier.EXTRACTIVE, CompressionTier.ENTITY_ONLY)
-        if reversible:
+        if reversible and not dry_run and existing_backup is None:
             try:
                 await self._storage.save_compression_backup(
                     fiber_id=fiber.id,
@@ -799,14 +856,15 @@ class CompressionEngine:
                     "Failed to save compression backup for fiber %s", fiber.id, exc_info=True
                 )
                 raise
+        elif reversible and existing_backup is not None:
+            backup_created = True
 
         # Save neuron-level snapshots before destructive tiers (3-4).
-        destructive = target_tier in (CompressionTier.TEMPLATE, CompressionTier.GRAPH_ONLY)
-        if destructive:
+        if destructive and not dry_run:
             brain_id = self._storage.current_brain_id or ""
             now_iso = utcnow().isoformat()
             for neuron in neurons.values():
-                if neuron.content and neuron.content != GRAPH_ONLY_PLACEHOLDER:
+                if snapshot_rows[neuron.id] is None:
                     try:
                         await self._storage.save_neuron_snapshot(
                             neuron_id=neuron.id,
@@ -828,7 +886,7 @@ class CompressionEngine:
 
         intent: dict[str, Any] = {
             "version": 1,
-            "run_id": run_id,
+            "run_id": compression_run_id,
             "target_tier": int(target_tier),
             "original_tier": fiber.compression_tier,
             "anchor_id": fiber.anchor_neuron_id,
@@ -838,12 +896,16 @@ class CompressionEngine:
             "entities_preserved": entities_preserved,
             "backup_created": backup_created,
             "source_hashes": [
-                {
-                    "id": neuron_id,
-                    "hash": hashlib.sha256(neuron.content.encode("utf-8")).hexdigest(),
-                }
-                for neuron_id, neuron in neurons.items()
+                {"id": neuron_id, "hash": digest} for neuron_id, digest in source_hashes.items()
             ],
+            "backup_sha256": self._backup_digest(
+                existing_backup
+                if existing_backup is not None
+                else {"original_content": original_content}
+                if reversible
+                else None
+            ),
+            "snapshot_hashes": snapshot_hashes,
         }
         fiber = dc_replace(fiber, metadata={**fiber.metadata, "_compression_pending": intent})
         await self._storage.update_fiber(fiber)
@@ -923,12 +985,15 @@ class CompressionEngine:
         # Store an explicit tombstone: SurrealDB MERGE may preserve an omitted
         # nested metadata key from the prepared intent.
         completed_metadata["_compression_pending"] = None
-        if run_id:
-            completed_metadata["_compression_receipt"] = {
-                "run_id": run_id,
-                "target_tier": int(target_tier),
-                "tokens_saved": max(0, original_token_count - compressed_token_count),
-            }
+        completed_metadata["_compression_receipt"] = self._completion_lineage_receipt(
+            fiber=fiber,
+            run_id=compression_run_id,
+            target_tier=target_tier,
+            intent=intent,
+            backup_sha256=intent["backup_sha256"],
+            snapshot_hashes=snapshot_hashes
+            or self._receipt_snapshot_hashes(fiber.metadata.get("_compression_receipt")),
+        )
         updated_fiber = dc_replace(
             fiber,
             compression_tier=int(target_tier),
@@ -949,6 +1014,166 @@ class CompressionEngine:
             entities_preserved=entities_preserved,
             backup_created=backup_created,
         )
+
+    @staticmethod
+    def _content_digest(content: str) -> str:
+        return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+    @classmethod
+    def _backup_digest(cls, backup: dict[str, Any] | None) -> str | None:
+        if backup is None:
+            return None
+        content = backup.get("original_content")
+        return cls._content_digest(content) if isinstance(content, str) else None
+
+    @staticmethod
+    def _preservation_skip(fiber: Fiber) -> CompressionResult:
+        logger.warning(
+            "Preserving existing compression originals; fiber %s has no trusted matching lineage",
+            fiber.id,
+        )
+        return CompressionResult(
+            fiber_id=fiber.id,
+            original_tier=fiber.compression_tier,
+            new_tier=fiber.compression_tier,
+            original_token_count=0,
+            compressed_token_count=0,
+            entities_preserved=0,
+            backup_created=False,
+            skipped=True,
+            skip_reason="preservation_conflict",
+        )
+
+    @classmethod
+    def _lineage_matches_live_state(
+        cls,
+        fiber: Fiber,
+        receipt: Any,
+        live_hashes: dict[str, str],
+        backup: dict[str, Any] | None,
+        *,
+        allow_restored_neurons: bool = False,
+        allow_backup_restored_anchor: bool = False,
+    ) -> bool:
+        """Require a fiber-bound receipt, backup binding, and exact live outputs."""
+        if (
+            not isinstance(receipt, dict)
+            or type(receipt.get("lineage_version")) is not int
+            or receipt["lineage_version"] != 1
+        ):
+            return False
+        if (
+            receipt.get("fiber_id") != fiber.id
+            or receipt.get("anchor_id") != fiber.anchor_neuron_id
+        ):
+            return False
+        if (
+            type(receipt.get("target_tier")) is not int
+            or receipt["target_tier"] != fiber.compression_tier
+        ):
+            return False
+        if not isinstance(receipt.get("run_id"), str) or not receipt["run_id"]:
+            return False
+        if backup is not None and not isinstance(backup.get("original_content"), str):
+            return False
+        if receipt.get("backup_sha256") != cls._backup_digest(backup):
+            return False
+        results = receipt.get("result_hashes")
+        if not isinstance(results, dict) or set(results) != fiber.neuron_ids:
+            return False
+        if any(
+            not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+            for digest in results.values()
+        ):
+            return False
+        sources = receipt.get("source_hashes")
+        if not isinstance(sources, dict) or set(sources) != fiber.neuron_ids:
+            return False
+        if any(
+            not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+            for digest in sources.values()
+        ):
+            return False
+        snapshots = receipt.get("snapshot_hashes", {})
+        if not isinstance(snapshots, dict):
+            return False
+        if any(
+            neuron_id not in fiber.neuron_ids
+            or not isinstance(digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+            for neuron_id, digest in snapshots.items()
+        ):
+            return False
+        if results != live_hashes:
+            if allow_restored_neurons and set(snapshots) == fiber.neuron_ids:
+                if any(
+                    live_hashes.get(neuron_id) not in (results[neuron_id], snapshots[neuron_id])
+                    for neuron_id in fiber.neuron_ids
+                ):
+                    return False
+            elif allow_backup_restored_anchor:
+                backup_content = backup.get("original_content") if backup is not None else None
+                if not isinstance(backup_content, str):
+                    return False
+                restored_anchor_hash = cls._content_digest(backup_content)
+                if any(
+                    live_hashes.get(neuron_id)
+                    not in (
+                        results[neuron_id],
+                        restored_anchor_hash
+                        if neuron_id == fiber.anchor_neuron_id
+                        else results[neuron_id],
+                    )
+                    for neuron_id in fiber.neuron_ids
+                ):
+                    return False
+            else:
+                return False
+        return True
+
+    @classmethod
+    def _completion_lineage_receipt(
+        cls,
+        *,
+        fiber: Fiber,
+        run_id: str,
+        target_tier: CompressionTier,
+        intent: dict[str, Any],
+        backup_sha256: str | None,
+        snapshot_hashes: dict[str, str],
+    ) -> dict[str, Any]:
+        source_hashes = {str(item["id"]): str(item["hash"]) for item in intent["source_hashes"]}
+        result_hashes = dict(source_hashes)
+        if target_tier == CompressionTier.GRAPH_ONLY:
+            result_hashes = {
+                neuron_id: cls._content_digest(GRAPH_ONLY_PLACEHOLDER)
+                for neuron_id in fiber.neuron_ids
+            }
+        else:
+            result_hashes[fiber.anchor_neuron_id] = cls._content_digest(
+                str(intent["compressed_content"])
+            )
+        return {
+            "run_id": run_id,
+            "fiber_id": fiber.id,
+            "anchor_id": fiber.anchor_neuron_id,
+            "target_tier": int(target_tier),
+            "tokens_saved": max(
+                0, int(intent["original_token_count"]) - int(intent["compressed_token_count"])
+            ),
+            "lineage_version": 1,
+            "backup_sha256": backup_sha256,
+            "source_hashes": source_hashes,
+            "result_hashes": result_hashes,
+            "snapshot_hashes": dict(snapshot_hashes),
+        }
+
+    @staticmethod
+    def _receipt_snapshot_hashes(receipt: Any) -> dict[str, str]:
+        if not isinstance(receipt, dict):
+            return {}
+        hashes = receipt.get("snapshot_hashes")
+        return dict(hashes) if isinstance(hashes, dict) else {}
 
     @staticmethod
     def _intent_has_matching_receipt(fiber: Fiber, intent: dict[str, Any], receipt: Any) -> bool:
@@ -1042,11 +1267,66 @@ class CompressionEngine:
             sources = intent["source_hashes"]
             if not isinstance(sources, list):
                 raise ValueError("missing neuron sources")
-            hashes = {str(item["id"]): str(item["hash"]) for item in sources}
-            if len(hashes) != len(sources) or set(hashes) != fiber.neuron_ids:
+            hashes: dict[str, str] = {}
+            for source in sources:
+                if not isinstance(source, dict):
+                    raise ValueError("invalid neuron source")
+                neuron_id = source.get("id")
+                digest = source.get("hash")
+                if (
+                    not isinstance(neuron_id, str)
+                    or not neuron_id
+                    or not isinstance(digest, str)
+                    or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                    or neuron_id in hashes
+                ):
+                    raise ValueError("invalid source hash")
+                hashes[neuron_id] = digest
+            if set(hashes) != fiber.neuron_ids:
                 raise ValueError("neuron set changed")
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError(f"Invalid compression intent for fiber {fiber.id}") from exc
+
+        backup = await self._storage.get_compression_backup(fiber.id)
+        if target_tier in (CompressionTier.EXTRACTIVE, CompressionTier.ENTITY_ONLY):
+            if backup is None:
+                raise RuntimeError(f"Compression backup missing during replay for fiber {fiber.id}")
+        expected_backup_hash = intent.get("backup_sha256")
+        if "backup_sha256" in intent and expected_backup_hash != self._backup_digest(backup):
+            raise RuntimeError(f"Compression backup changed during replay for fiber {fiber.id}")
+
+        snapshot_hashes: dict[str, str] = {}
+        if target_tier in (CompressionTier.TEMPLATE, CompressionTier.GRAPH_ONLY):
+            if "snapshot_hashes" in intent:
+                expected_snapshot_hashes = intent["snapshot_hashes"]
+                if not isinstance(expected_snapshot_hashes, dict) or set(
+                    expected_snapshot_hashes
+                ) != set(hashes):
+                    raise RuntimeError(
+                        f"Compression snapshots missing from replay intent for fiber {fiber.id}"
+                    )
+            else:
+                # Schema-1 intents written before lineage hashes were added are
+                # safe only when each existing snapshot is an exact copy of the
+                # intent's pre-write source. Never infer lineage from an
+                # arbitrary or incomplete snapshot row.
+                expected_snapshot_hashes = hashes
+            for neuron_id in hashes:
+                snapshot = await self._storage.get_neuron_snapshot(neuron_id)
+                if snapshot is None:
+                    raise RuntimeError(
+                        f"Neuron snapshot missing during replay for neuron {neuron_id}"
+                    )
+                snapshot_hash = self._content_digest(str(snapshot.get("original_content", "")))
+                if expected_snapshot_hashes.get(neuron_id) != snapshot_hash:
+                    raise RuntimeError(
+                        f"Neuron snapshot changed during replay for neuron {neuron_id}"
+                    )
+                snapshot_hashes[neuron_id] = snapshot_hash
+        else:
+            snapshot_hashes = self._receipt_snapshot_hashes(
+                fiber.metadata.get("_compression_receipt")
+            )
 
         neurons = await self._storage.get_neurons_batch(list(hashes))
         if set(neurons) != set(hashes):
@@ -1111,14 +1391,18 @@ class CompressionEngine:
         completed_metadata["_compression_pending"] = None
         run_id = intent.get("run_id")
         if isinstance(run_id, str) and run_id:
-            completed_metadata["_compression_receipt"] = {
-                "run_id": run_id,
-                "target_tier": int(target_tier),
-                "tokens_saved": max(
-                    0,
-                    int(intent["original_token_count"]) - int(intent["compressed_token_count"]),
+            completed_metadata["_compression_receipt"] = self._completion_lineage_receipt(
+                fiber=fiber,
+                run_id=run_id,
+                target_tier=target_tier,
+                intent=intent,
+                backup_sha256=(
+                    expected_backup_hash
+                    if "backup_sha256" in intent
+                    else self._backup_digest(backup)
                 ),
-            }
+                snapshot_hashes=snapshot_hashes,
+            )
         await self._storage.update_fiber(
             dc_replace(fiber, compression_tier=int(target_tier), metadata=completed_metadata)
         )
@@ -1166,6 +1450,26 @@ class CompressionEngine:
             logger.error("Anchor neuron %s missing for fiber %s", anchor_id, fiber_id)
             return False
 
+        receipt = fiber.metadata.get("_compression_receipt")
+        if isinstance(receipt, dict) and receipt.get("lineage_version") == 1:
+            neurons = await self._storage.get_neurons_batch(list(fiber.neuron_ids))
+            live_hashes = {
+                neuron_id: self._content_digest(neuron.content)
+                for neuron_id, neuron in neurons.items()
+            }
+            if set(neurons) != fiber.neuron_ids or not self._lineage_matches_live_state(
+                fiber,
+                receipt,
+                live_hashes,
+                backup,
+                allow_backup_restored_anchor=True,
+            ):
+                logger.warning(
+                    "Refusing to decompress fiber %s because content differs from its receipt",
+                    fiber_id,
+                )
+                return False
+
         restored_neuron = await content_refreshed(self._storage, anchor_neuron, original_content)
         try:
             await self._storage.update_neuron(restored_neuron)
@@ -1176,7 +1480,16 @@ class CompressionEngine:
         # Reset fiber compression tier to 0 (FULL).
         from dataclasses import replace as dc_replace
 
-        updated_fiber = dc_replace(fiber, compression_tier=int(CompressionTier.FULL))
+        cleared_metadata = {
+            **fiber.metadata,
+            "_compression_receipt": None,
+            "_compression_pending": None,
+        }
+        updated_fiber = dc_replace(
+            fiber,
+            compression_tier=int(CompressionTier.FULL),
+            metadata=cleared_metadata,
+        )
         try:
             await self._storage.update_fiber(updated_fiber)
         except Exception:
@@ -1216,6 +1529,104 @@ class CompressionEngine:
         # For Tier 3-4, try neuron snapshots first.
         if current_tier in (CompressionTier.TEMPLATE, CompressionTier.GRAPH_ONLY):
             neurons = await self._storage.get_neurons_batch(list(fiber.neuron_ids))
+            receipt = fiber.metadata.get("_compression_receipt")
+            if isinstance(receipt, dict) and receipt.get("lineage_version") == 1:
+                backup = await self._storage.get_compression_backup(fiber_id)
+                live_hashes = {
+                    neuron_id: self._content_digest(neuron.content)
+                    for neuron_id, neuron in neurons.items()
+                }
+                if set(neurons) != fiber.neuron_ids or not self._lineage_matches_live_state(
+                    fiber, receipt, live_hashes, backup, allow_restored_neurons=True
+                ):
+                    logger.warning(
+                        "Refusing to recover fiber %s because content differs from its receipt",
+                        fiber_id,
+                    )
+                    return False
+
+                snapshot_hashes = receipt.get("snapshot_hashes")
+                if (
+                    not isinstance(snapshot_hashes, dict)
+                    or set(snapshot_hashes) != fiber.neuron_ids
+                ):
+                    logger.warning(
+                        "Refusing to recover fiber %s because receipt snapshots are incomplete",
+                        fiber_id,
+                    )
+                    return False
+                snapshots: dict[str, dict[str, Any]] = {}
+                restore: list[tuple[Neuron, str]] = []
+                for neuron_id, neuron in neurons.items():
+                    lineage_snapshot = await self._storage.get_neuron_snapshot(neuron_id)
+                    if lineage_snapshot is None or self._content_digest(
+                        str(lineage_snapshot.get("original_content", ""))
+                    ) != snapshot_hashes.get(neuron_id):
+                        logger.warning(
+                            "Refusing to recover fiber %s because snapshot %s is missing or changed",
+                            fiber_id,
+                            neuron_id,
+                        )
+                        return False
+                    snapshots[neuron_id] = lineage_snapshot
+                    snapshot_content = str(lineage_snapshot.get("original_content", ""))
+                    if self._content_digest(neuron.content) not in (
+                        receipt["result_hashes"][neuron_id],
+                        snapshot_hashes[neuron_id],
+                    ):
+                        logger.warning(
+                            "Refusing to recover fiber %s because neuron %s changed",
+                            fiber_id,
+                            neuron_id,
+                        )
+                        return False
+                    if neuron.content != snapshot_content:
+                        restore.append((neuron, snapshot_content))
+
+                try:
+                    for restored_neuron in await contents_refreshed(self._storage, restore):
+                        await self._storage.update_neuron(restored_neuron)
+                except Exception:
+                    logger.error(
+                        "Failed to restore fiber %s from verified snapshots",
+                        fiber_id,
+                        exc_info=True,
+                    )
+                    return False
+
+                from dataclasses import replace as dc_replace
+
+                cleared_metadata = {
+                    **fiber.metadata,
+                    "_compression_receipt": None,
+                    "_compression_pending": None,
+                }
+                try:
+                    await self._storage.update_fiber(
+                        dc_replace(
+                            fiber,
+                            compression_tier=int(CompressionTier.FULL),
+                            metadata=cleared_metadata,
+                        )
+                    )
+                except Exception:
+                    logger.error(
+                        "Failed to reset compression tier after recovery for fiber %s",
+                        fiber_id,
+                        exc_info=True,
+                    )
+                    return False
+                for neuron_id in snapshots:
+                    try:
+                        await self._storage.delete_neuron_snapshot(neuron_id)
+                    except Exception:
+                        logger.warning(
+                            "Failed to delete recovered snapshot for neuron %s",
+                            neuron_id,
+                            exc_info=True,
+                        )
+                return True
+
             restored_count = 0
             # Collect first, then refresh as one batch: re-deriving each neuron's
             # embedding separately would cost a provider round-trip per neuron.
