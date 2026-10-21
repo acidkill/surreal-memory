@@ -350,6 +350,229 @@ async def test_graph_only_replay_keeps_all_original_snapshots(
     )
 
 
+async def _seed_legacy_destructive_intent(
+    target_tier: CompressionTier,
+) -> tuple[InMemoryStorage, Fiber, list[Neuron], dict[str, str], str]:
+    store, fiber, anchor = await _store()
+    second = Neuron.create(type=NeuronType.CONCEPT, content="A second source neuron.")
+    await store.add_neuron(second)
+    source_contents = {anchor.id: anchor.content, second.id: second.content}
+    fiber = replace(
+        fiber,
+        neuron_ids=set(source_contents),
+        compression_tier=int(CompressionTier.ENTITY_ONLY),
+    )
+    compressed_content = (
+        "[graph-only]" if target_tier == CompressionTier.GRAPH_ONLY else "Prepared template."
+    )
+    intent = {
+        "version": 1,
+        "run_id": f"legacy-tier-{int(target_tier)}",
+        "target_tier": int(target_tier),
+        "original_tier": int(CompressionTier.ENTITY_ONLY),
+        "anchor_id": anchor.id,
+        "compressed_content": compressed_content,
+        "original_token_count": 30,
+        "compressed_token_count": 4,
+        "entities_preserved": 2,
+        "backup_created": False,
+        "source_hashes": [
+            {"id": neuron_id, "hash": hashlib.sha256(content.encode()).hexdigest()}
+            for neuron_id, content in source_contents.items()
+        ],
+    }
+    fiber = replace(fiber, metadata={"_compression_pending": intent})
+    await store.update_fiber(fiber)
+    for neuron_id, content in source_contents.items():
+        await store.save_neuron_snapshot(
+            neuron_id=neuron_id,
+            brain_id=store.current_brain_id or "",
+            original_content=content,
+            compressed_at=utcnow().isoformat(),
+            tier=int(target_tier),
+        )
+    neurons = [await store.get_neuron(neuron_id) for neuron_id in source_contents]
+    return (
+        store,
+        fiber,
+        [neuron for neuron in neurons if neuron is not None],
+        source_contents,
+        compressed_content,
+    )
+
+
+@pytest.mark.parametrize(
+    ("target_tier", "partially_applied"),
+    [
+        (CompressionTier.TEMPLATE, False),
+        (CompressionTier.TEMPLATE, True),
+        (CompressionTier.GRAPH_ONLY, False),
+        (CompressionTier.GRAPH_ONLY, True),
+    ],
+)
+@pytest.mark.asyncio
+async def test_legacy_destructive_intent_resumes_from_exact_source_snapshots(
+    monkeypatch: pytest.MonkeyPatch,
+    target_tier: CompressionTier,
+    partially_applied: bool,
+) -> None:
+    from surreal_memory.engine import compression
+
+    (
+        store,
+        fiber,
+        neurons,
+        source_contents,
+        compressed_content,
+    ) = await _seed_legacy_destructive_intent(target_tier)
+    monkeypatch.setattr(compression, "content_refreshed", _refresh)
+
+    async def refresh_batch(
+        _store: InMemoryStorage, changes: list[tuple[Neuron, str]], *, brain: Brain | None = None
+    ) -> list[Neuron]:
+        return [replace(neuron, content=content) for neuron, content in changes]
+
+    monkeypatch.setattr(compression, "contents_refreshed", refresh_batch)
+    if partially_applied:
+        partially_written = neurons[0]
+        await store.update_neuron(replace(partially_written, content=compressed_content))
+
+    result = await CompressionEngine(store).compress_fiber(fiber, target_tier)
+
+    assert not result.skipped
+    saved_fiber = await store.get_fiber(fiber.id)
+    assert saved_fiber is not None and saved_fiber.compression_tier == int(target_tier)
+    assert saved_fiber.metadata["_compression_pending"] is None
+    receipt = saved_fiber.metadata["_compression_receipt"]
+    assert receipt["lineage_version"] == 1
+    assert set(receipt["snapshot_hashes"]) == set(source_contents)
+    for neuron in neurons:
+        saved_neuron = await store.get_neuron(neuron.id)
+        assert saved_neuron is not None
+        expected = (
+            "[graph-only]"
+            if target_tier == CompressionTier.GRAPH_ONLY
+            else compressed_content
+            if neuron.id == fiber.anchor_neuron_id
+            else source_contents[neuron.id]
+        )
+        assert saved_neuron.content == expected
+
+
+@pytest.mark.parametrize(
+    ("target_tier", "snapshot_fault"),
+    [
+        (CompressionTier.TEMPLATE, "missing"),
+        (CompressionTier.TEMPLATE, "changed"),
+        (CompressionTier.GRAPH_ONLY, "missing"),
+        (CompressionTier.GRAPH_ONLY, "changed"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_legacy_destructive_replay_rejects_missing_or_changed_source_snapshot(
+    target_tier: CompressionTier, snapshot_fault: str
+) -> None:
+    (
+        store,
+        fiber,
+        neurons,
+        _source_contents,
+        _compressed_content,
+    ) = await _seed_legacy_destructive_intent(target_tier)
+    faulted_neuron = neurons[-1]
+    if snapshot_fault == "missing":
+        await store.delete_neuron_snapshot(faulted_neuron.id)
+    else:
+        await store.save_neuron_snapshot(
+            neuron_id=faulted_neuron.id,
+            brain_id=store.current_brain_id or "",
+            original_content="unrelated changed snapshot",
+            compressed_at=utcnow().isoformat(),
+            tier=int(target_tier),
+        )
+    snapshots_before = {neuron.id: await store.get_neuron_snapshot(neuron.id) for neuron in neurons}
+
+    with pytest.raises(RuntimeError, match="snapshot"):
+        await CompressionEngine(store).compress_fiber(fiber, target_tier)
+
+    saved_fiber = await store.get_fiber(fiber.id)
+    assert saved_fiber == fiber
+    assert saved_fiber is not None and saved_fiber.metadata["_compression_pending"]
+    for neuron in neurons:
+        assert await store.get_neuron(neuron.id) == neuron
+        assert await store.get_neuron_snapshot(neuron.id) == snapshots_before[neuron.id]
+
+
+@pytest.mark.asyncio
+async def test_legacy_replay_rejects_malformed_source_hash_even_for_applied_output() -> None:
+    (
+        store,
+        fiber,
+        neurons,
+        _source_contents,
+        compressed_content,
+    ) = await _seed_legacy_destructive_intent(CompressionTier.TEMPLATE)
+    await store.update_neuron(replace(neurons[0], content=compressed_content))
+    pending = dict(fiber.metadata["_compression_pending"])
+    pending["source_hashes"] = [
+        {"id": neurons[0].id, "hash": "not-a-sha256"},
+        fiber.metadata["_compression_pending"]["source_hashes"][1],
+    ]
+    fiber = replace(fiber, metadata={"_compression_pending": pending})
+    await store.update_fiber(fiber)
+    neuron_contents = {neuron.id: (await store.get_neuron(neuron.id)).content for neuron in neurons}
+
+    with pytest.raises(ValueError, match="Invalid compression intent") as raised:
+        await CompressionEngine(store).compress_fiber(fiber, CompressionTier.TEMPLATE)
+    assert str(raised.value.__cause__) == "invalid source hash"
+
+    assert await store.get_fiber(fiber.id) == fiber
+    for neuron in neurons:
+        saved = await store.get_neuron(neuron.id)
+        assert saved is not None and saved.content == neuron_contents[neuron.id]
+
+
+@pytest.mark.asyncio
+async def test_present_legacy_snapshot_hash_map_remains_exact_and_complete() -> None:
+    (
+        store,
+        fiber,
+        neurons,
+        _source_contents,
+        _compressed_content,
+    ) = await _seed_legacy_destructive_intent(CompressionTier.TEMPLATE)
+    pending = dict(fiber.metadata["_compression_pending"])
+    pending["snapshot_hashes"] = {
+        neurons[0].id: hashlib.sha256(neurons[0].content.encode()).hexdigest()
+    }
+    fiber = replace(fiber, metadata={"_compression_pending": pending})
+    await store.update_fiber(fiber)
+
+    with pytest.raises(RuntimeError, match="snapshots missing"):
+        await CompressionEngine(store).compress_fiber(fiber, CompressionTier.TEMPLATE)
+
+    assert await store.get_fiber(fiber.id) == fiber
+    for neuron in neurons:
+        assert await store.get_neuron(neuron.id) == neuron
+
+
+def test_boolean_lineage_version_is_not_a_valid_receipt() -> None:
+    fiber = Fiber(
+        id="boolean-lineage-version",
+        neuron_ids={"neuron-a"},
+        synapse_ids=set(),
+        anchor_neuron_id="neuron-a",
+        compression_tier=int(CompressionTier.EXTRACTIVE),
+    )
+
+    assert not CompressionEngine._lineage_matches_live_state(
+        fiber,
+        {"lineage_version": True},
+        {"neuron-a": "0" * 64},
+        None,
+    )
+
+
 @pytest.mark.asyncio
 async def test_compress_keyset_reaches_beyond_ten_thousand_fibers(
     monkeypatch: pytest.MonkeyPatch,

@@ -1056,7 +1056,11 @@ class CompressionEngine:
         allow_backup_restored_anchor: bool = False,
     ) -> bool:
         """Require a fiber-bound receipt, backup binding, and exact live outputs."""
-        if not isinstance(receipt, dict) or receipt.get("lineage_version") != 1:
+        if (
+            not isinstance(receipt, dict)
+            or type(receipt.get("lineage_version")) is not int
+            or receipt["lineage_version"] != 1
+        ):
             return False
         if (
             receipt.get("fiber_id") != fiber.id
@@ -1263,8 +1267,22 @@ class CompressionEngine:
             sources = intent["source_hashes"]
             if not isinstance(sources, list):
                 raise ValueError("missing neuron sources")
-            hashes = {str(item["id"]): str(item["hash"]) for item in sources}
-            if len(hashes) != len(sources) or set(hashes) != fiber.neuron_ids:
+            hashes: dict[str, str] = {}
+            for source in sources:
+                if not isinstance(source, dict):
+                    raise ValueError("invalid neuron source")
+                neuron_id = source.get("id")
+                digest = source.get("hash")
+                if (
+                    not isinstance(neuron_id, str)
+                    or not neuron_id
+                    or not isinstance(digest, str)
+                    or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                    or neuron_id in hashes
+                ):
+                    raise ValueError("invalid source hash")
+                hashes[neuron_id] = digest
+            if set(hashes) != fiber.neuron_ids:
                 raise ValueError("neuron set changed")
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError(f"Invalid compression intent for fiber {fiber.id}") from exc
@@ -1279,11 +1297,20 @@ class CompressionEngine:
 
         snapshot_hashes: dict[str, str] = {}
         if target_tier in (CompressionTier.TEMPLATE, CompressionTier.GRAPH_ONLY):
-            expected_snapshot_hashes = intent.get("snapshot_hashes")
-            if not isinstance(expected_snapshot_hashes, dict):
-                raise RuntimeError(
-                    f"Compression snapshots missing from replay intent for fiber {fiber.id}"
-                )
+            if "snapshot_hashes" in intent:
+                expected_snapshot_hashes = intent["snapshot_hashes"]
+                if not isinstance(expected_snapshot_hashes, dict) or set(
+                    expected_snapshot_hashes
+                ) != set(hashes):
+                    raise RuntimeError(
+                        f"Compression snapshots missing from replay intent for fiber {fiber.id}"
+                    )
+            else:
+                # Schema-1 intents written before lineage hashes were added are
+                # safe only when each existing snapshot is an exact copy of the
+                # intent's pre-write source. Never infer lineage from an
+                # arbitrary or incomplete snapshot row.
+                expected_snapshot_hashes = hashes
             for neuron_id in hashes:
                 snapshot = await self._storage.get_neuron_snapshot(neuron_id)
                 if snapshot is None:
