@@ -575,6 +575,8 @@ class CompressionEngine:
         Returns:
             A CompressionResult describing what happened.
         """
+        from dataclasses import replace as dc_replace
+
         if not dry_run:
             # The caller may hold an earlier snapshot after a failed write.
             current_fiber = await self._storage.get_fiber(fiber.id)
@@ -585,14 +587,35 @@ class CompressionEngine:
             if pending is not None:
                 if not isinstance(pending, dict):
                     raise ValueError(f"Invalid compression intent for fiber {fiber.id}")
-                replay_pinned_neuron_ids = (
-                    _pinned_neuron_ids
-                    if _pinned_neuron_ids is not None
-                    else await self._storage.get_pinned_neuron_ids()
-                )
-                return await self._resume_prepared_fiber(
-                    fiber, pending, brain=brain, pinned_neuron_ids=replay_pinned_neuron_ids
-                )
+                receipt = fiber.metadata.get("_compression_receipt")
+                try:
+                    pending_tier = int(pending["target_tier"])
+                except (KeyError, TypeError, ValueError):
+                    pending_tier = None
+                if (
+                    isinstance(receipt, dict)
+                    and isinstance(pending.get("run_id"), str)
+                    and receipt.get("run_id") == pending["run_id"]
+                    and pending_tier is not None
+                    and receipt.get("target_tier") == pending_tier
+                    and fiber.compression_tier >= pending_tier
+                ):
+                    # SurrealDB MERGE can retain nested metadata keys omitted
+                    # from the replacement map. A matching receipt proves this
+                    # exact intent already committed; clear the stale marker
+                    # without replaying it over neurons changed afterward.
+                    cleared_metadata = {**fiber.metadata, "_compression_pending": None}
+                    fiber = dc_replace(fiber, metadata=cleared_metadata)
+                    await self._storage.update_fiber(fiber)
+                else:
+                    replay_pinned_neuron_ids = (
+                        _pinned_neuron_ids
+                        if _pinned_neuron_ids is not None
+                        else await self._storage.get_pinned_neuron_ids()
+                    )
+                    return await self._resume_prepared_fiber(
+                        fiber, pending, brain=brain, pinned_neuron_ids=replay_pinned_neuron_ids
+                    )
 
         if fiber.pinned or fiber.metadata.get("_verbatim"):
             return CompressionResult(
@@ -908,6 +931,9 @@ class CompressionEngine:
         completed_metadata = {
             k: v for k, v in fiber.metadata.items() if k != "_compression_pending"
         }
+        # Store an explicit tombstone: SurrealDB MERGE may preserve an omitted
+        # nested metadata key from the prepared intent.
+        completed_metadata["_compression_pending"] = None
         if run_id:
             completed_metadata["_compression_receipt"] = {
                 "run_id": run_id,
@@ -1018,6 +1044,9 @@ class CompressionEngine:
         completed_metadata = {
             k: v for k, v in fiber.metadata.items() if k != "_compression_pending"
         }
+        # Store an explicit tombstone: SurrealDB MERGE may preserve an omitted
+        # nested metadata key from the prepared intent.
+        completed_metadata["_compression_pending"] = None
         run_id = intent.get("run_id")
         if isinstance(run_id, str) and run_id:
             completed_metadata["_compression_receipt"] = {

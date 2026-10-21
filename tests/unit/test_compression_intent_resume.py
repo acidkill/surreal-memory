@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import replace
 from datetime import timedelta
 from typing import Any
@@ -29,8 +30,20 @@ ORIGINAL = (
 )
 
 
-async def _store() -> tuple[InMemoryStorage, Fiber, Neuron]:
-    store = InMemoryStorage()
+class _MergeMetadataStorage(InMemoryStorage):
+    """Model SurrealDB MERGE retaining metadata keys omitted by an update."""
+
+    async def update_fiber(self, fiber: Fiber) -> None:
+        existing = await self.get_fiber(fiber.id)
+        if existing is not None:
+            fiber = replace(fiber, metadata={**existing.metadata, **fiber.metadata})
+        await super().update_fiber(fiber)
+
+
+async def _store(
+    storage_type: type[InMemoryStorage] = InMemoryStorage,
+) -> tuple[InMemoryStorage, Fiber, Neuron]:
+    store = storage_type()
     brain = Brain.create(name="intent-test")
     await store.save_brain(brain)
     store.set_brain(brain.id)
@@ -116,7 +129,7 @@ async def test_replay_after_each_write_boundary(
     result = await engine.compress_fiber(fiber, CompressionTier.EXTRACTIVE, run_id="run-1")
     saved = await store.get_fiber(fiber.id)
     assert saved is not None and saved.compression_tier == 1
-    assert "_compression_pending" not in saved.metadata
+    assert saved.metadata.get("_compression_pending") is None
     assert (await store.get_neuron(neuron.id)).content != ORIGINAL
     backup = await store.get_compression_backup(fiber.id)
     assert backup is not None and backup["original_content"] == ORIGINAL
@@ -147,6 +160,85 @@ async def test_replay_rejects_concurrent_neuron_edit(monkeypatch: pytest.MonkeyP
     with pytest.raises(RuntimeError, match="changed during compression replay"):
         await engine.compress_fiber(fiber, CompressionTier.EXTRACTIVE)
     assert (await store.get_neuron(neuron.id)).content == "a user changed the neuron"
+
+
+@pytest.mark.asyncio
+async def test_completed_intent_is_not_replayed_after_later_neuron_edit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, fiber, anchor = await _store(_MergeMetadataStorage)
+    other = Neuron.create(type=NeuronType.CONCEPT, content="An original secondary neuron.")
+    await store.add_neuron(other)
+    fiber = replace(fiber, neuron_ids={anchor.id, other.id})
+    await store.update_fiber(fiber)
+
+    run_id = "completed-run"
+    compressed_content = "The completed prepared summary."
+    source_hashes = [
+        {
+            "id": source.id,
+            "hash": hashlib.sha256(source.content.encode("utf-8")).hexdigest(),
+        }
+        for source in (anchor, other)
+    ]
+    pending = {
+        "version": 1,
+        "run_id": run_id,
+        "target_tier": int(CompressionTier.EXTRACTIVE),
+        "original_tier": int(CompressionTier.FULL),
+        "anchor_id": anchor.id,
+        "compressed_content": compressed_content,
+        "original_token_count": 20,
+        "compressed_token_count": 5,
+        "entities_preserved": 2,
+        "backup_created": True,
+        "source_hashes": source_hashes,
+    }
+    fiber = replace(
+        fiber,
+        compression_tier=int(CompressionTier.EXTRACTIVE),
+        metadata={
+            "_compression_pending": pending,
+            "_compression_receipt": {
+                "run_id": run_id,
+                "target_tier": int(CompressionTier.EXTRACTIVE),
+                "tokens_saved": 15,
+            },
+        },
+    )
+    await store.update_fiber(fiber)
+    await store.update_neuron(replace(anchor, content=compressed_content))
+    await store.update_neuron(replace(other, content="A later independent edit."))
+
+    result = await CompressionEngine(store).compress_fiber(
+        fiber, CompressionTier.EXTRACTIVE, run_id="new-run"
+    )
+
+    saved = await store.get_fiber(fiber.id)
+    assert result.skipped
+    assert saved is not None and saved.metadata["_compression_pending"] is None
+    assert saved.metadata["_compression_receipt"]["run_id"] == run_id
+    assert (await store.get_neuron(other.id)).content == "A later independent edit."
+
+
+@pytest.mark.asyncio
+async def test_successful_compression_tombstones_pending_for_merge_storage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from surreal_memory.engine import compression
+
+    store, fiber, _neuron = await _store(_MergeMetadataStorage)
+    monkeypatch.setattr(compression, "content_refreshed", _refresh)
+    monkeypatch.setattr("surreal_memory.plugins.get_compression_fn", lambda: None)
+
+    result = await CompressionEngine(
+        store, CompressionConfig(tier1_max_sentences=1)
+    ).compress_fiber(fiber, CompressionTier.EXTRACTIVE, run_id="merge-run")
+
+    saved = await store.get_fiber(fiber.id)
+    assert not result.skipped
+    assert saved is not None and saved.metadata["_compression_pending"] is None
+    assert saved.metadata["_compression_receipt"]["run_id"] == "merge-run"
 
 
 class _Progress:
