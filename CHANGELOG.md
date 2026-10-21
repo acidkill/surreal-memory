@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Compression explicitly clears completed replay markers with storage that
+  merges nested metadata. A matching completion receipt prevents replaying
+  finished work over later neuron edits; incomplete or malformed intents still
+  retain their validation safeguards.
+- Summarization accepts checkpoints with no pending work unit when the progress
+  writer omits the optional `pending` field. Present malformed pending values
+  still stop consolidation without replacing the saved work.
+
 ## [3.12.1] — 2026-10-12 — consolidation resume validates saved work
 
 Explicit resume now checks that a saved checkpoint still belongs to the same
