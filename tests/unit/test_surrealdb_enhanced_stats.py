@@ -28,14 +28,13 @@ def _make_store_with_scripted_query() -> SurrealDBStorage:
     store = SurrealDBStorage.__new__(SurrealDBStorage)
     store._current_brain_id = "test-brain"
 
-    # Keyed by the underscore form: get_neurons_batch runs each id through
-    # _to_surreal_id (dash -> underscore) before it reaches "FROM neuron:{sid}".
+    # Keyed by the canonical underscore form bound into the native record target.
     neurons_by_id = {
         "hot_1": {"id": "hot_1", "type": "entity", "content": "most accessed"},
         "hot_2": {"id": "hot_2", "type": "concept", "content": "second most accessed"},
     }
 
-    async def fake_query(sql: str, **_params: Any) -> list[dict[str, Any]]:
+    async def fake_query(sql: str, **params: Any) -> list[dict[str, Any]]:
         s = sql.lower()
         if "from fiber" in s and "created_at >=" in s and "group all" in s:
             return [{"c": 7}]
@@ -58,11 +57,13 @@ def _make_store_with_scripted_query() -> SurrealDBStorage:
                 {"neuron_id": "hot-1", "activation_level": 0.9, "access_frequency": 42},
                 {"neuron_id": "hot-2", "activation_level": 0.4, "access_frequency": 17},
             ]
-        if "from neuron:" in s:
-            m = re.search(r"from neuron:(\S+)", s)
-            nid = m.group(1) if m else ""
-            row = neurons_by_id.get(nid)
-            return [row] if row else []
+        if "from [type::record('neuron'," in s:
+            record_indexes = re.findall(r"record_id_(\d+)", s)
+            return [
+                neurons_by_id[record_id]
+                for index in record_indexes
+                if (record_id := params.get(f"record_id_{index}")) in neurons_by_id
+            ]
         if "from fiber" in s and "order by created_at asc" in s:
             return [{"created_at": "2026-07-01T00:00:00+00:00"}]
         if "from fiber" in s and "order by created_at desc" in s:
