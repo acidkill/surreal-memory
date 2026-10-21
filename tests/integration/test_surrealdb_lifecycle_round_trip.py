@@ -117,6 +117,60 @@ async def test_lifecycle_write_survives_adapter_reads_and_repeat_scan_is_noop(
     assert report.extra.get("lifecycle_states_updated", 0) == 0
 
 
+async def test_generic_update_does_not_persist_stale_lifecycle_mirror(
+    store: SurrealDBStorage,
+) -> None:
+    neuron = Neuron.create(
+        type=NeuronType.CONCEPT,
+        content="synthetic stale lifecycle snapshot",
+        metadata={"priority": 17, "lifecycle_state": "warm", "source": "integration"},
+    )
+    await store.add_neuron(neuron)
+    await store.update_neuron_lifecycle(neuron.id, "warm")
+
+    stale_snapshot = await store.get_neuron(neuron.id)
+    assert stale_snapshot is not None
+    assert stale_snapshot.metadata["lifecycle_state"] == "warm"
+
+    await store.update_neuron_lifecycle(neuron.id, "cool")
+    await store.update_neuron(replace(stale_snapshot, content="synthetic edited content"))
+
+    rows = await store._query(
+        "SELECT lifecycle_state, metadata, content FROM neuron "
+        "WHERE brain_id = $brain_id AND id = type::record('neuron', $neuron_id)",
+        brain_id=store.brain_id,
+        neuron_id=neuron.id.replace("-", "_"),
+    )
+    assert len(rows) == 1
+    assert rows[0]["lifecycle_state"] == "cool"
+    assert rows[0]["metadata"] == {"priority": 17, "source": "integration"}
+    assert rows[0]["content"] == "synthetic edited content"
+
+    reread = await store.get_neuron(neuron.id)
+    assert reread is not None
+    assert reread.metadata == {
+        "priority": 17,
+        "lifecycle_state": "cool",
+        "source": "integration",
+    }
+
+    changes = await store._query(
+        "SELECT sequence, operation, payload FROM change_log "
+        "WHERE brain_id = $brain_id AND entity_type = 'neuron' "
+        "AND entity_id = $entity_id ORDER BY sequence DESC LIMIT 1",
+        brain_id=store.brain_id,
+        entity_id=neuron.id,
+    )
+    assert len(changes) == 1
+    assert changes[0]["operation"] == "update"
+    assert changes[0]["payload"]["content"] == "synthetic edited content"
+    assert changes[0]["payload"]["metadata"] == {
+        "priority": 17,
+        "lifecycle_state": "cool",
+        "source": "integration",
+    }
+
+
 async def test_missing_or_wrong_brain_row_is_not_reported_as_updated(
     store: SurrealDBStorage,
 ) -> None:
