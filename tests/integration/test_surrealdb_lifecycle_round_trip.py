@@ -192,3 +192,56 @@ async def test_database_failure_is_not_reported_as_updated(store: SurrealDBStora
     await store.close()
     with pytest.raises(RuntimeError, match="SurrealDB not initialized"):
         await store.update_neuron_lifecycle(neuron.id, "archived")
+
+
+async def test_generic_update_targets_all_digit_string_id_and_is_brain_scoped(
+    store: SurrealDBStorage,
+) -> None:
+    neuron = Neuron.create(
+        type=NeuronType.CONCEPT,
+        content="synthetic numeric string record",
+        metadata={"priority": 23, "source": "integration"},
+        neuron_id="1234567890",
+    )
+    await store.add_neuron(neuron)
+    await store.update_neuron_lifecycle(neuron.id, "warm")
+    stale_snapshot = await store.get_neuron(neuron.id)
+    assert stale_snapshot is not None
+    assert stale_snapshot.id == "1234567890"
+    assert stale_snapshot.metadata["lifecycle_state"] == "warm"
+
+    await store.update_neuron_lifecycle(neuron.id, "cool")
+    await store.update_neuron(replace(stale_snapshot, content="synthetic numeric-id edit"))
+    rows = await store._query(
+        "SELECT id, lifecycle_state, metadata, content FROM neuron "
+        "WHERE brain_id = $brain_id AND id = type::record('neuron', $record_id)",
+        brain_id=store.brain_id,
+        record_id="1234567890",
+    )
+    assert len(rows) == 1
+    assert getattr(rows[0]["id"], "id", None) == "1234567890"
+    assert rows[0]["lifecycle_state"] == "cool"
+    assert rows[0]["metadata"] == {"priority": 23, "source": "integration"}
+    assert rows[0]["content"] == "synthetic numeric-id edit"
+
+    original_brain_id = store.brain_id
+    other = Brain.create(name="other-numeric-id-it")
+    await store.save_brain(other)
+    store.set_brain(other.id)
+    assert await store.get_neuron(neuron.id) is None
+    with pytest.raises(LookupError, match="not found in brain"):
+        await store.update_neuron_lifecycle(neuron.id, "archived")
+    with pytest.raises(LookupError, match="not found in brain"):
+        await store.update_neuron(replace(stale_snapshot, content="must not cross brains"))
+
+    store.set_brain(original_brain_id)
+    verify = await store._query(
+        "SELECT lifecycle_state, metadata, content FROM neuron "
+        "WHERE brain_id = $brain_id AND id = type::record('neuron', $record_id)",
+        brain_id=original_brain_id,
+        record_id="1234567890",
+    )
+    assert len(verify) == 1
+    assert verify[0]["lifecycle_state"] == "cool"
+    assert verify[0]["metadata"] == {"priority": 23, "source": "integration"}
+    assert verify[0]["content"] == "synthetic numeric-id edit"

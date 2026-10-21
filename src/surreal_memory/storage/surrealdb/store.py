@@ -1393,7 +1393,8 @@ class SurrealDBStorage(
         sid = _to_surreal_id(neuron_id)
         try:
             rows = await self._query(
-                f"SELECT * FROM neuron:{sid} WHERE brain_id = $brain_id",
+                "SELECT * FROM type::record('neuron', $record_id) WHERE brain_id = $brain_id",
+                record_id=sid,
                 brain_id=brain_id,
             )
             if rows:
@@ -1719,7 +1720,7 @@ class SurrealDBStorage(
         # generic edit, so a concurrent lifecycle update cannot leave a stale
         # copy behind or be overwritten by this snapshot.
         sql = (
-            f"UPDATE neuron:{sid} SET "
+            "UPDATE type::record('neuron', $record_id) SET "
             "type = $type, content = $content, content_hash = $content_hash, "
             "metadata = $metadata, "
             "metadata.lifecycle_state = IF lifecycle_state IS NONE "
@@ -1733,6 +1734,7 @@ class SurrealDBStorage(
             "metadata": meta,
             "ephemeral": neuron.ephemeral,
             "updated_at": utcnow(),
+            "record_id": sid,
             "brain_id": self._get_brain_id(),
         }
         if embedding_vec is not None:
@@ -4473,8 +4475,9 @@ class SurrealDBStorage(
         sid = _to_surreal_id(neuron_id)
         brain_id = self._get_brain_id()
         rows = await self._query(
-            f"UPDATE neuron:{sid} SET lifecycle_state = $lifecycle_state "
+            "UPDATE type::record('neuron', $record_id) SET lifecycle_state = $lifecycle_state "
             "WHERE brain_id = $brain_id RETURN AFTER",
+            record_id=sid,
             lifecycle_state=lifecycle_state,
             brain_id=brain_id,
         )
