@@ -417,10 +417,6 @@ class RecallHandler:
             reconsolidate=reconsolidate,
         )
 
-        # Passive auto-capture on long queries
-        if self.config.auto.enabled and len(query) >= 50:
-            await self._passive_capture(query)
-
         self._fire_eternal_trigger(query)
 
         # Budget-aware context re-formatting (opt-in via recall_token_budget param)

@@ -55,6 +55,9 @@ class TestNoiseTools:
         assert "TodoRead" in _NOISE_TOOLS
         assert "TodoWrite" in _NOISE_TOOLS
         assert "WebSearch" in _NOISE_TOOLS
+        assert "smem_context" in _NOISE_TOOLS
+        assert "smem_recap" in _NOISE_TOOLS
+        assert "smem_explain" in _NOISE_TOOLS
 
     def test_does_not_contain_read(self) -> None:
         assert "Read" not in _NOISE_TOOLS
@@ -332,6 +335,71 @@ class TestMain:
             main()
         assert stdout.getvalue().strip() == "{}"
         assert not (tmp_path / "tool_events.jsonl").exists()
+
+    def test_namespaced_smem_read_tools_skipped(self, tmp_path: Path) -> None:
+        for tool_name in (
+            "smem_recall",
+            "smem_context",
+            "smem_recap",
+            "smem_explain",
+            "mcp__server__smem_recall",
+            "mcp__server__smem_context",
+            "mcp__server__smem_recap",
+            "mcp__server__smem_explain",
+        ):
+            stdout = StringIO()
+            with (
+                patch.dict(os.environ, {"SURREAL_MEMORY_DIR": str(tmp_path)}),
+                patch.object(
+                    sys,
+                    "stdin",
+                    StringIO(json.dumps({"tool_name": tool_name})),
+                ),
+                patch.object(sys, "stdout", stdout),
+            ):
+                main()
+            assert stdout.getvalue().strip() == "{}"
+            assert not (tmp_path / "tool_events.jsonl").exists()
+
+    def test_namespaced_blacklist_matches_canonical_name(self, tmp_path: Path) -> None:
+        (tmp_path / "config.toml").write_text(
+            '[tool_memory]\nenabled = true\nblacklist = ["smem_"]\n'
+        )
+        stdout = StringIO()
+        with (
+            patch.dict(os.environ, {"SURREAL_MEMORY_DIR": str(tmp_path)}),
+            patch.object(
+                sys,
+                "stdin",
+                StringIO('{"tool_name": "mcp__server__smem_custom"}'),
+            ),
+            patch.object(sys, "stdout", stdout),
+        ):
+            main()
+        assert stdout.getvalue().strip() == "{}"
+        assert not (tmp_path / "tool_events.jsonl").exists()
+
+    def test_preview_full_name_and_legitimate_tools_unchanged(self, tmp_path: Path) -> None:
+        (tmp_path / "config.toml").write_text("[tool_memory]\nenabled = true\n")
+        for tool_name in ("mcp__Claude_Preview__preview_logs", "Bash", "Read"):
+            stdout = StringIO()
+            with (
+                patch.dict(os.environ, {"SURREAL_MEMORY_DIR": str(tmp_path)}),
+                patch.object(
+                    sys,
+                    "stdin",
+                    StringIO(json.dumps({"tool_name": tool_name})),
+                ),
+                patch.object(sys, "stdout", stdout),
+            ):
+                main()
+            assert stdout.getvalue().strip() == "{}"
+            buffer_path = tmp_path / "tool_events.jsonl"
+            if tool_name == "mcp__Claude_Preview__preview_logs":
+                assert not buffer_path.exists()
+            else:
+                event = json.loads(buffer_path.read_text().splitlines()[-1])
+                assert event["tool_name"] == tool_name
 
     def test_blacklisted_tool(self, tmp_path: Path) -> None:
         config = tmp_path / "config.toml"

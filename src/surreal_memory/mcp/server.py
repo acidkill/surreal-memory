@@ -306,6 +306,7 @@ class MCPServer(
 
 # Tools that should NOT be recorded (meta/analytics tools → avoid recursion)
 _SKIP_EVENT_TOOLS = frozenset({"smem_tool_stats", "smem_version", "smem_stats"})
+_READ_EVENT_TOOLS = frozenset({"smem_recall", "smem_context", "smem_recap", "smem_explain"})
 
 
 async def _record_tool_event(
@@ -328,7 +329,10 @@ async def _record_tool_event(
     already vetted that string as safe to persist — see the call sites in
     this module for which branches use ``str(exc)`` versus ``type(exc).__name__``.
     """
-    if tool_name in _SKIP_EVENT_TOOLS:
+    config = server.config.tool_memory
+    if not config.enabled or any(tool_name.startswith(prefix) for prefix in config.blacklist):
+        return
+    if tool_name in _SKIP_EVENT_TOOLS or (success and tool_name in _READ_EVENT_TOOLS):
         return
 
     from surreal_memory.utils.timeutils import utcnow
@@ -483,12 +487,6 @@ async def handle_message(server: MCPServer, message: dict[str, Any]) -> dict[str
                     success = False
 
             result_text = json.dumps(result)
-
-            # Post-tool passive capture (fire-and-forget, never blocks response)
-            try:
-                await server._post_tool_capture(tool_name, tool_args, result_text)
-            except Exception:
-                logger.debug("Post-tool passive capture failed", exc_info=True)
 
             # Record tool event for analytics (fire-and-forget). The tool's own
             # error string (already client-facing via result["error"]) is safe
