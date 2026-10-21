@@ -16,7 +16,7 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from dataclasses import replace as dc_replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
@@ -30,6 +30,7 @@ from surreal_memory.engine.consolidation_group_plan import (
     SurrealDBConsolidationGroupPlan,
 )
 from surreal_memory.engine.consolidation_progress import (
+    INCOMPLETE_STATUSES,
     ConsolidationLeaseLostError,
     ConsolidationPausedError,
     ConsolidationProgressError,
@@ -348,6 +349,13 @@ class ConsolidationReport:
     what makes that growth visible at all -- the dashboard card that would have
     shown it was itself too slow to load while the table was large.
     """
+    semantic_discovery_states_pruned: int = 0
+    """Semantic-discovery snapshots of finished runs deleted this run.
+
+    Each semantic_link run stages its discovery work as snapshots of up to
+    1 MB, and only resuming that same run reads them back. Nothing removed
+    them once the run had finished, so the table grew with every run.
+    """
     duplicates_found: int = 0
     new_alias_links: int = 0
     """ALIAS edges actually created this run.
@@ -557,6 +565,18 @@ class ConsolidationReport:
             line += f" [pass capped; {remaining} pending rows remain, next run continues]"
         return line
 
+    def _semantic_discovery_prune_line(self) -> str:
+        """Render the snapshot prune count, and say so when the prune failed.
+
+        The prune never fails the run, so without this a failed prune and a
+        prune that found nothing to delete would both read as ``0``.
+        """
+        line = str(self.semantic_discovery_states_pruned)
+        error = self.extra.get("semantic_discovery_state_prune_error")
+        if error:
+            line += f" [prune FAILED: {error}]"
+        return line
+
     def _dedup_window_note(self) -> str:
         """Describe the census WINDOW, not just the cap.
 
@@ -598,6 +618,7 @@ class ConsolidationReport:
             f"  Action events pruned: {self.action_events_pruned}",
             f"  Decay telemetry pruned: {self.decay_passes_pruned}",
             f"  Change log collapsed: {self._change_log_collapse_line()}",
+            f"  Semantic discovery snapshots pruned: {self._semantic_discovery_prune_line()}",
             f"  Duplicate anchors: {self._alias_link_line()}",
             f"  Semantic synapses: {self._semantic_synapse_line()}",
             f"  Memories promoted (type): {self.memories_promoted}",
@@ -1063,6 +1084,8 @@ class ConsolidationEngine:
                         )
                         if progress_session is not None:
                             await progress_session.complete_strategy(strategy.value)
+                            if strategy == ConsolidationStrategy.SEMANTIC_LINK:
+                                await self._prune_semantic_discovery_state(report)
                     except ConsolidationPausedError as exc:
                         paused_strategies.append(strategy.value)
                         if progress_session is not None:
@@ -10848,6 +10871,39 @@ class ConsolidationEngine:
             report.extra["semantic_link_failures"] = (
                 int(report.extra.get("semantic_link_failures", 0)) + failures
             )
+
+    async def _prune_semantic_discovery_state(self, report: ConsolidationReport) -> None:
+        """Delete discovery snapshots that no unfinished run can resume from.
+
+        Called once semantic_link is marked completed. Snapshots of this run and
+        of every unfinished run are kept however old they are, because resuming
+        a run reads its own snapshots and nothing else. A failure is reported
+        rather than raised: the strategy's work is already committed, and
+        failing the run would only send it back to resume finished work.
+        """
+        progress_session = self._progress_session
+        if progress_session is None or not supports_storage_methods(
+            self._storage, ("get_consolidation_run_ids", "prune_semantic_discovery_state")
+        ):
+            return
+        try:
+            from surreal_memory.unified_config import get_config
+
+            retention_days = int(get_config().maintenance.semantic_discovery_state_retention_days)
+            if retention_days <= 0:
+                return
+            keep = set(await self._storage.get_consolidation_run_ids(statuses=INCOMPLETE_STATUSES))
+            keep.add(str(progress_session.state["run_id"]))
+            pruned = await self._storage.prune_semantic_discovery_state(
+                older_than=timedelta(days=retention_days), keep_run_ids=keep
+            )
+        except Exception as exc:
+            logger.warning("Semantic discovery snapshot prune failed", exc_info=True)
+            report.extra["semantic_discovery_state_prune_error"] = f"{type(exc).__name__}: {exc}"
+            return
+        report.semantic_discovery_states_pruned += pruned
+        if pruned:
+            logger.info("Pruned %d semantic discovery snapshots of finished runs", pruned)
 
     async def _detect_drift(
         self,

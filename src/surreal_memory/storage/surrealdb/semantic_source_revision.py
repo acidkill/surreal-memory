@@ -22,6 +22,11 @@ _BARRIER_CHANGEFEED_MAX_ROWS = 100_000
 _SOURCE_CHANGEFEED_PAGE_SIZE = 128
 _SOURCE_CHANGEFEED_MAX_ROWS = 100_000
 _SOURCE_TABLES = ("neuron", "synapse")
+# SurrealDB applies LIMIT to the database-wide feed before it keeps one table's
+# entries, so table feeds are read by paging the database feed (see
+# _show_table_changes). These bound that inner scan.
+_DATABASE_FEED_PAGE_SIZE = 1_000
+_DATABASE_FEED_MAX_ROWS = 2_000_000
 
 
 class SemanticSourceFenceError(RuntimeError):
@@ -155,6 +160,75 @@ class SurrealDBSemanticSourceRevisionMixin:
             )
         return False
 
+    @staticmethod
+    def _change_table(change: Any) -> str | None:
+        """Table a single feed change belongs to, or None when it cannot be told."""
+        if not isinstance(change, Mapping) or len(change) != 1:
+            return None
+        action, record = next(iter(change.items()))
+        if not isinstance(record, Mapping):
+            return None
+        if action == "define_table":
+            name = record.get("name")
+            return str(name) if name is not None else None
+        record_id = record.get("id")
+        return str(record_id).split(":", 1)[0] if record_id is not None else None
+
+    async def _show_table_changes(
+        self, table: str, since: int | str, limit: int
+    ) -> list[dict[str, Any]]:
+        """``SHOW CHANGES FOR TABLE`` with the LIMIT meaning the callers rely on.
+
+        SurrealDB (3.2) applies LIMIT to the database-wide feed first and only
+        then keeps the table's entries, so on a busy database a short or empty
+        page does not mean the table's history is exhausted - the next table
+        entry can sit behind LIMIT entries of other tables. Page the database
+        feed instead and keep the table's changes here: a result shorter than
+        ``limit`` now really means the end of the feed. Changes that cannot be
+        attributed to a table are kept, so the callers' validation still sees
+        (and rejects) them.
+        """
+        kept: list[dict[str, Any]] = []
+        cursor: int | str = since
+        last_stamp: int | None = None
+        scanned = 0
+        while len(kept) < limit:
+            events = await self._query(
+                f"SHOW CHANGES FOR DATABASE SINCE {cursor} LIMIT {_DATABASE_FEED_PAGE_SIZE}"
+            )
+            if not events:
+                break
+            for event in events:
+                stamp = event.get("versionstamp")
+                if last_stamp is not None and isinstance(stamp, int) and stamp <= last_stamp:
+                    continue  # SINCE is inclusive: the previous page's last entry repeats
+                changes = event.get("changes")
+                if not isinstance(changes, (list, tuple)):
+                    kept.append(event)
+                    continue
+                own = [c for c in changes if self._change_table(c) in (table, None)]
+                if own:
+                    kept.append({**event, "changes": own})
+            scanned += len(events)
+            if len(events) < _DATABASE_FEED_PAGE_SIZE:
+                break
+            newest = events[-1].get("versionstamp")
+            if (
+                not isinstance(newest, int)
+                or isinstance(newest, bool)
+                or (last_stamp is not None and newest <= last_stamp)
+            ):
+                raise SemanticSourceFenceUnavailableError(
+                    "database changefeed pagination did not advance"
+                )
+            if scanned >= _DATABASE_FEED_MAX_ROWS:
+                raise SemanticSourceFenceUnavailableError(
+                    "database changefeed exceeded the bounded scan limit"
+                )
+            last_stamp = newest
+            cursor = newest
+        return kept[:limit]
+
     async def _find_marker_versionstamp(
         self, marker_id: str, captured_at: datetime, *, recent_first: bool = True
     ) -> int:
@@ -187,9 +261,7 @@ class SurrealDBSemanticSourceRevisionMixin:
             )
             try:
                 since = first_since if scanned == 0 else str(cursor)
-                events = await self._query(
-                    f"SHOW CHANGES FOR TABLE semantic_source_barrier SINCE {since} LIMIT {limit}"
-                )
+                events = await self._show_table_changes("semantic_source_barrier", since, limit)
             except Exception as exc:
                 message = str(exc).lower()
                 if any(word in message for word in ("expired", "retention", "changefeed")):
@@ -388,9 +460,7 @@ class SurrealDBSemanticSourceRevisionMixin:
 
         for table in _SOURCE_TABLES:
             try:
-                rows = await self._query(
-                    f"SHOW CHANGES FOR TABLE {table} SINCE {versionstamp} LIMIT 10"
-                )
+                rows = await self._show_table_changes(table, versionstamp, 10)
             except Exception as exc:
                 message = str(exc).lower()
                 if any(word in message for word in ("expired", "retention", "changefeed")):
@@ -430,9 +500,7 @@ class SurrealDBSemanticSourceRevisionMixin:
                     _SOURCE_CHANGEFEED_MAX_ROWS - scanned,
                 )
                 try:
-                    events = await self._query(
-                        f"SHOW CHANGES FOR TABLE {table} SINCE {cursor} LIMIT {limit}"
-                    )
+                    events = await self._show_table_changes(table, cursor, limit)
                 except Exception as exc:
                     message = str(exc).lower()
                     if any(word in message for word in ("expired", "retention", "changefeed")):

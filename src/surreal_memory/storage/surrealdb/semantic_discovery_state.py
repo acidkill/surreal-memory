@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
+from datetime import timedelta
 from hashlib import sha256
 from typing import Any
 
+from surreal_memory.utils.timeutils import utcnow
+
 _MAX_SNAPSHOT_BYTES = 1_000_000
+# Snapshots are up to 1 MB each. A backlog of expired rows is removed by a
+# sequence of bounded statements rather than by one unbounded transaction.
+_PRUNE_BATCH_ROWS = 500
 
 
 class SemanticDiscoveryStateError(RuntimeError):
@@ -245,3 +251,40 @@ class SurrealDBSemanticDiscoveryStateMixin:
         if payload.get("source_token") != row.get("source_token"):
             return None
         return dict(payload)
+
+    async def prune_semantic_discovery_state(
+        self, *, older_than: timedelta, keep_run_ids: Collection[str]
+    ) -> int:
+        """Delete snapshots older than ``older_than`` unless their run is in ``keep_run_ids``.
+
+        The only reader is ``load_semantic_discovery_state`` while the run that
+        wrote a snapshot is resumed, so a snapshot of a finished or replaced run
+        is never read again. Callers pass the run ids of every unfinished run;
+        age alone is not enough, because a paused run can be resumed after the
+        cutoff. Deletes in batches of at most ``_PRUNE_BATCH_ROWS`` rows and
+        returns the number of rows deleted.
+        """
+        if not isinstance(older_than, timedelta) or older_than <= timedelta(0):
+            raise ValueError("older_than must be a positive timedelta")
+        if isinstance(keep_run_ids, str):
+            raise TypeError("keep_run_ids must be a collection of run ids, not a string")
+        keep = sorted({str(run_id) for run_id in keep_run_ids})
+        brain_id = self._get_brain_id()
+        cutoff = utcnow() - older_than
+        deleted = 0
+        while True:
+            # Select and delete in one statement, so the predicate holds for
+            # every row removed. RETURN keeps the response to the ids alone.
+            rows = await self._query(
+                "DELETE (SELECT VALUE id FROM semantic_discovery_state "
+                "WITH INDEX idx_sds_created_at WHERE created_at < $cutoff "
+                "AND brain_id = $brain_id AND run_id NOT IN $keep LIMIT $limit) "
+                "RETURN VALUE $before.id",
+                cutoff=cutoff,
+                brain_id=brain_id,
+                keep=keep,
+                limit=_PRUNE_BATCH_ROWS,
+            )
+            deleted += len(rows)
+            if len(rows) < _PRUNE_BATCH_ROWS:
+                return deleted
