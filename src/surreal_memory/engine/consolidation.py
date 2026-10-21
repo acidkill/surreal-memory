@@ -5230,7 +5230,10 @@ class ConsolidationEngine:
             await apply_snapshot(snapshot)
             return cast("dict[str, Any]", snapshot)
 
-        pending = state.get("pending")
+        # Progress checkpoints omit ``pending`` when a strategy has no work
+        # unit in flight. Treat that persisted representation as empty while
+        # continuing to reject malformed values when the field is present.
+        pending = state.get("pending", [])
         if not isinstance(pending, (list, tuple)) or len(pending) not in (0, 1):
             raise ConsolidationProgressError("summarize pending checkpoint is malformed")
         after_group = str(cursor.get("after_group", ""))

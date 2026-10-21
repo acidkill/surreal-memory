@@ -326,13 +326,17 @@ class _SummaryProgress:
         pending: list[str] | None = None,
         counters: dict[str, int | float] | None = None,
     ) -> None:
-        self.strategy_state(strategy).update(
+        state = self.strategy_state(strategy)
+        state.update(
             phase=phase,
             cursor=cursor,
-            pending=list(pending or []),
             counters=dict(counters or {}),
             updated_at=datetime.now(UTC),
         )
+        if pending is not None:
+            state["pending"] = list(pending)
+        else:
+            state.pop("pending", None)
         if phase == self.pause_at and pending:
             self.pause_at = None
             raise ConsolidationPausedError("simulated interruption before summary apply")
@@ -653,13 +657,17 @@ async def test_durable_summarize_handles_component_larger_than_group_page() -> N
             pending: list[str] | None = None,
             counters: dict[str, int | float] | None = None,
         ) -> None:
-            self.strategy_state(strategy).update(
+            state = self.strategy_state(strategy)
+            state.update(
                 phase=phase,
                 cursor=cursor,
-                pending=list(pending or []),
                 counters=dict(counters or {}),
                 updated_at=datetime.now(UTC),
             )
+            if pending is not None:
+                state["pending"] = list(pending)
+            else:
+                state.pop("pending", None)
             if phase == "summarize_plan_units" and pending and self.pause_before_apply:
                 self.pause_before_apply = False
                 raise ConsolidationPausedError("simulated interruption before summary apply")
@@ -792,6 +800,24 @@ async def test_summarize_starting_phase_uses_durable_group_plan() -> None:
         )
         == 1
     )
+
+
+@pytest.mark.parametrize("pending", [None, "not-a-list", ["first", "second"]])
+@pytest.mark.asyncio
+async def test_durable_summarize_rejects_malformed_present_pending(
+    pending: Any,
+) -> None:
+    storage = _SummaryStorage(_summary_phase_fibers())
+    progress = _SummaryProgress("starting")
+    engine = _summary_phase_engine(storage, progress)
+    await engine._summarize(ConsolidationReport(), dry_run=False)
+
+    state = progress.strategy_state("summarize")
+    state["phase"] = "summarize_plan_units"
+    state["pending"] = pending
+
+    with pytest.raises(ConsolidationProgressError, match="pending checkpoint is malformed"):
+        await engine._summarize(ConsolidationReport(), dry_run=False)
 
 
 @pytest.mark.asyncio
