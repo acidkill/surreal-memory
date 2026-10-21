@@ -1204,6 +1204,7 @@ class TestCompressionRefreshesDerivedFields:
         # The partial-recovery shape: fiber back at FULL, neuron still a
         # tombstone. (recover_fiber resets the tier whenever it restores any
         # neuron; this one had no snapshot, so its placeholder survived.)
+        await store.delete_neuron_snapshot(neuron.id)
         recovered_fiber = dc_replace(fiber, compression_tier=int(CompressionTier.FULL))
         await store.update_fiber(recovered_fiber)
 

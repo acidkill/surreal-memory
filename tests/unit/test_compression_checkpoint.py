@@ -131,6 +131,13 @@ async def test_mismatched_receipt_does_not_clear_intent_after_neuron_edit() -> N
         metadata={},
         created_at=utcnow(),
     )
+    await store.save_compression_backup(
+        fiber_id=fiber.id,
+        original_content=neuron.content,
+        compression_tier=int(CompressionTier.EXTRACTIVE),
+        original_token_count=5,
+        compressed_token_count=2,
+    )
     intent = {
         "version": 1,
         "run_id": "run-mismatched-receipt",
