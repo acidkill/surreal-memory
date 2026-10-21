@@ -2621,7 +2621,8 @@ class SurrealDBStorage(
             params["min_salience"] = min_salience
 
         rows = await self._query(
-            f"SELECT neuron_ids FROM fiber WHERE {' AND '.join(conditions)}",
+            f"SELECT neuron_ids FROM fiber WITH INDEX idx_fiber_neurons "
+            f"WHERE {' AND '.join(conditions)}",
             **params,
         )
         return {

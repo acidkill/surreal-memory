@@ -416,19 +416,55 @@ class TestBatchedPruneQueries:
         assert st._query_values.await_args_list[0].kwargs["incoming_id_1"] == "node_2"
 
     @pytest.mark.asyncio
-    async def test_fiber_membership_is_unbounded_by_a_global_limit(self):
+    async def test_fiber_membership_uses_neurons_index_and_intersects_candidates(self):
         st, _ = _store_with_mock_conn()
         st._query = AsyncMock(  # type: ignore[method-assign]
-            return_value=[{"neuron_ids": ["node-1", "unrequested"]}]
+            return_value=[
+                {"neuron_ids": ["node-1", "unknown", "node-2"]},
+                {"neuron_ids": ["node-1", "other"]},
+            ]
         )
 
-        protected = await st.get_fiber_neuron_ids_for(["node-1"], min_salience=0.8)
+        protected = await st.get_fiber_neuron_ids_for(
+            ["node-1", "node-1", "node-2"], min_salience=0.8
+        )
 
-        assert protected == {"node-1"}
+        assert protected == {"node-1", "node-2"}
         sql = st._query.await_args.args[0]
+        params = st._query.await_args.kwargs
+        assert "FROM fiber WITH INDEX idx_fiber_neurons WHERE" in sql
+        assert "brain_id = $brain_id" in sql
         assert "neuron_ids CONTAINSANY $neuron_ids" in sql
         assert "salience > $min_salience" in sql
         assert "LIMIT" not in sql
+        assert params["brain_id"] == "b1"
+        assert set(params["neuron_ids"]) == {"node-1", "node-2"}
+        assert params["min_salience"] == 0.8
+
+    @pytest.mark.asyncio
+    async def test_fiber_membership_without_salience_has_no_threshold(self):
+        st, _ = _store_with_mock_conn()
+        st._query = AsyncMock(return_value=[{"neuron_ids": ["node-1", "unrequested"]}])  # type: ignore[method-assign]
+
+        protected = await st.get_fiber_neuron_ids_for(["node-1", "missing"])
+
+        assert protected == {"node-1"}
+        sql = st._query.await_args.args[0]
+        assert "FROM fiber WITH INDEX idx_fiber_neurons WHERE" in sql
+        assert "salience" not in sql
+        assert "LIMIT" not in sql
+        params = st._query.await_args.kwargs
+        assert params["brain_id"] == "b1"
+        assert set(params["neuron_ids"]) == {"node-1", "missing"}
+        assert "min_salience" not in params
+
+    @pytest.mark.asyncio
+    async def test_fiber_membership_empty_candidates_do_not_query(self):
+        st, conn = _store_with_mock_conn()
+
+        assert await st.get_fiber_neuron_ids_for([]) == set()
+
+        conn.query.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_remove_synapse_refs_from_fibers_uses_set_difference_in_chunks(self):
