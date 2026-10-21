@@ -21,6 +21,29 @@ Reinicia tu herramienta de IA. Tu agente ahora recuerda.
 
 ---
 
+## Novedades de 3.12.2
+
+- **Consolidación más segura:** reanudación del censo de resúmenes, eliminación
+  limitada al cerebro actual y protección del contenido original, las ediciones
+  posteriores y las neuronas fijadas o compartidas durante la compresión.
+- **Menos consultas a la base de datos:** identificadores nativos, lectura de
+  neuronas en lotes de 100 y aceleración opcional verificada para SHA-256.
+- **Menos ruido:** `recall`, `context`, `recap` y `explain` dejan de convertir sus
+  consultas y respuestas en recuerdos nuevos mediante captura pasiva. El guardado
+  explícito y el refuerzo normal de los recuerdos siguen disponibles.
+- Manejo seguro de fallos de WebSocket, paginación de changefeeds con actividad
+  concurrente y retención configurable de instantáneas semánticas terminadas.
+- La paleta del panel filtra las páginas y sugerencias Pro según la búsqueda.
+
+Para una ejecución pendiente, usa `smem consolidate --resume --brain default`.
+Para iniciar otra, usa `smem consolidate --brain default`. Los límites de tiempo
+siguen vigentes: un cerebro grande puede necesitar varias reanudaciones.
+Consulta la [guía de actualización y consolidación](docs/guides/consolidation.md)
+(en inglés), incluidas las copias de seguridad y las restricciones al volver a
+una versión anterior. El [CHANGELOG](CHANGELOG.md) contiene todos los cambios.
+
+---
+
 ## ¿Por qué Surreal-Memory?
 
 La mayoría de las herramientas de memoria para IA son bases de datos vectoriales con una API de búsqueda añadida. Surreal-Memory es un **grafo que piensa**: los recuerdos se almacenan como neuronas interconectadas y se recuperan mediante activación propagada, respaldado por el motor multimodelo de SurrealDB (documento + grafo + vector en una sola base de datos).

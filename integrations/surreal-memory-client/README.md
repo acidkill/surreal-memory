@@ -2,6 +2,10 @@
 
 TypeScript client for the [Surreal-Memory](https://github.com/acidkill/surreal-memory) REST API.
 
+Version 3.12.2 aligns with the core maintenance release and keeps the client API
+unchanged. Core consolidation and capture-policy changes are documented in the
+[release changelog](https://github.com/acidkill/surreal-memory/blob/main/CHANGELOG.md).
+
 ```bash
 npm install @acidkill/surreal-memory-client
 ```
