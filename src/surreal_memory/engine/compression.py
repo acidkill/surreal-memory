@@ -588,18 +588,7 @@ class CompressionEngine:
                 if not isinstance(pending, dict):
                     raise ValueError(f"Invalid compression intent for fiber {fiber.id}")
                 receipt = fiber.metadata.get("_compression_receipt")
-                try:
-                    pending_tier = int(pending["target_tier"])
-                except (KeyError, TypeError, ValueError):
-                    pending_tier = None
-                if (
-                    isinstance(receipt, dict)
-                    and isinstance(pending.get("run_id"), str)
-                    and receipt.get("run_id") == pending["run_id"]
-                    and pending_tier is not None
-                    and receipt.get("target_tier") == pending_tier
-                    and fiber.compression_tier >= pending_tier
-                ):
+                if self._intent_has_matching_receipt(fiber, pending, receipt):
                     # SurrealDB MERGE can retain nested metadata keys omitted
                     # from the replacement map. A matching receipt proves this
                     # exact intent already committed; clear the stale marker
@@ -960,6 +949,79 @@ class CompressionEngine:
             entities_preserved=entities_preserved,
             backup_created=backup_created,
         )
+
+    @staticmethod
+    def _intent_has_matching_receipt(fiber: Fiber, intent: dict[str, Any], receipt: Any) -> bool:
+        """Return True only for a structurally valid intent committed by its receipt."""
+        if type(intent.get("version")) is not int or intent.get("version") != 1:
+            return False
+        run_id = intent.get("run_id")
+        if not isinstance(run_id, str) or not run_id:
+            return False
+        if type(intent.get("target_tier")) is not int:
+            return False
+        target_value = intent["target_tier"]
+        try:
+            target_tier = CompressionTier(target_value)
+        except ValueError:
+            return False
+        if target_tier <= CompressionTier.FULL or fiber.compression_tier < target_tier:
+            return False
+        if type(intent.get("original_tier")) is not int:
+            return False
+        try:
+            original_tier = CompressionTier(intent["original_tier"])
+        except ValueError:
+            return False
+        if original_tier >= target_tier:
+            return False
+        if intent.get("anchor_id") != fiber.anchor_neuron_id:
+            return False
+        if not isinstance(intent.get("compressed_content"), str):
+            return False
+        if type(intent.get("backup_created")) is not bool:
+            return False
+        for field_name in (
+            "original_token_count",
+            "compressed_token_count",
+            "entities_preserved",
+        ):
+            value = intent.get(field_name)
+            if type(value) is not int or value < 0:
+                return False
+
+        sources = intent.get("source_hashes")
+        if not isinstance(sources, list):
+            return False
+        hashes: dict[str, str] = {}
+        for source in sources:
+            if not isinstance(source, dict):
+                return False
+            neuron_id = source.get("id")
+            digest = source.get("hash")
+            if (
+                not isinstance(neuron_id, str)
+                or not neuron_id
+                or not isinstance(digest, str)
+                or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                or neuron_id in hashes
+            ):
+                return False
+            hashes[neuron_id] = digest
+        if set(hashes) != fiber.neuron_ids:
+            return False
+
+        if not isinstance(receipt, dict):
+            return False
+        if receipt.get("run_id") != run_id:
+            return False
+        if type(receipt.get("target_tier")) is not int or receipt["target_tier"] != target_value:
+            return False
+        tokens_saved = receipt.get("tokens_saved")
+        expected_tokens_saved = max(
+            0, intent["original_token_count"] - intent["compressed_token_count"]
+        )
+        return type(tokens_saved) is int and tokens_saved == expected_tokens_saved
 
     async def _resume_prepared_fiber(
         self,
