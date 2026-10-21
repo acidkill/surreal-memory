@@ -1,5 +1,6 @@
 """The SurrealDB lifecycle column and the engine's metadata view stay aligned."""
 
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -79,3 +80,90 @@ async def test_lifecycle_update_missing_row_or_query_failure_is_not_success(
     monkeypatch.setattr(store, "_query", failed)
     with pytest.raises(RuntimeError, match="database unavailable"):
         await store.update_neuron_lifecycle("example", "cool")
+
+
+@pytest.mark.asyncio
+async def test_generic_update_keeps_concurrent_canonical_lifecycle_and_cleans_mirror(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = SurrealDBStorage.__new__(SurrealDBStorage)
+    store._current_brain_id = "test-brain"
+    row = _row(metadata={"priority": 2, "lifecycle_state": "active", "source": "test"})
+    queries: list[tuple[str, dict[str, Any]]] = []
+    logged: list[tuple[Any, ...]] = []
+
+    async def query(sql: str, **params: Any) -> list[dict[str, Any]]:
+        queries.append((sql, params))
+        if "SET lifecycle_state = $lifecycle_state" in sql:
+            row["lifecycle_state"] = params["lifecycle_state"]
+            return [dict(row)]
+
+        assert "metadata.lifecycle_state = IF lifecycle_state IS NONE" in sql
+        # Model the UPDATE expression against the row state at statement time.
+        metadata = dict(params["metadata"])
+        if row.get("lifecycle_state") is not None:
+            metadata.pop("lifecycle_state", None)
+        row.update(
+            {
+                "type": params["type"],
+                "content": params["content"],
+                "content_hash": params["content_hash"],
+                "metadata": metadata,
+                "ephemeral": params["ephemeral"],
+                "updated_at": params["updated_at"],
+            }
+        )
+        return [dict(row)]
+
+    async def record_change(*args: Any, **kwargs: Any) -> None:
+        logged.append(args)
+
+    monkeypatch.setattr(store, "_query", query)
+    monkeypatch.setattr(store, "_record_change_internal", record_change)
+
+    snapshot = _row_to_neuron(row)
+    assert snapshot.metadata["lifecycle_state"] == "warm"
+    await store.update_neuron_lifecycle(snapshot.id, "cool")
+    await store.update_neuron(replace(snapshot, content="edited content"))
+
+    assert row["lifecycle_state"] == "cool"
+    assert row["metadata"] == {"priority": 2, "source": "test"}
+    assert row["content"] == "edited content"
+    assert len(queries) == 2
+    assert "WHERE brain_id = $brain_id RETURN AFTER" in queries[1][0]
+    assert queries[1][1]["brain_id"] == "test-brain"
+    assert logged[0][3].metadata == {"priority": 2, "lifecycle_state": "cool", "source": "test"}
+
+
+@pytest.mark.asyncio
+async def test_generic_update_preserves_legacy_lifecycle_without_canonical_column(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = SurrealDBStorage.__new__(SurrealDBStorage)
+    store._current_brain_id = "test-brain"
+    row = _row(
+        metadata={"priority": 2, "lifecycle_state": "archived", "source": "legacy"},
+        lifecycle_state=None,
+    )
+
+    async def query(sql: str, **params: Any) -> list[dict[str, Any]]:
+        assert "metadata.lifecycle_state = IF lifecycle_state IS NONE" in sql
+        row["metadata"] = dict(params["metadata"])
+        row["content"] = params["content"]
+        return [dict(row)]
+
+    async def record_change(*args: Any, **kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(store, "_query", query)
+    monkeypatch.setattr(store, "_record_change_internal", record_change)
+
+    neuron = _row_to_neuron(row)
+    await store.update_neuron(replace(neuron, content="legacy row edited"))
+
+    assert row["lifecycle_state"] is None
+    assert row["metadata"] == {
+        "priority": 2,
+        "lifecycle_state": "archived",
+        "source": "legacy",
+    }

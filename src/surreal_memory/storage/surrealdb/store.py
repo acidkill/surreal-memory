@@ -1709,24 +1709,45 @@ class SurrealDBStorage(
         return results
 
     async def update_neuron(self, neuron: Neuron) -> None:
-        conn = self._ensure_conn()
         sid = _to_surreal_id(neuron.id)
         meta = dict(neuron.metadata)
         embedding_vec = meta.pop("_embedding", None)
 
-        update_data: dict[str, Any] = {
+        # ``_row_to_neuron`` exposes the canonical lifecycle column through
+        # ``metadata`` for existing callers. Decide whether that key is legacy
+        # metadata or a derived mirror inside the same UPDATE that persists the
+        # generic edit, so a concurrent lifecycle update cannot leave a stale
+        # copy behind or be overwritten by this snapshot.
+        sql = (
+            f"UPDATE neuron:{sid} SET "
+            "type = $type, content = $content, content_hash = $content_hash, "
+            "metadata = $metadata, "
+            "metadata.lifecycle_state = IF lifecycle_state IS NONE "
+            "THEN $metadata.lifecycle_state ELSE NONE END, "
+            "ephemeral = $ephemeral, updated_at = $updated_at"
+        )
+        params: dict[str, Any] = {
             "type": neuron.type.value,
             "content": neuron.content,
             "content_hash": neuron.content_hash,
             "metadata": meta,
             "ephemeral": neuron.ephemeral,
             "updated_at": utcnow(),
+            "brain_id": self._get_brain_id(),
         }
         if embedding_vec is not None:
-            update_data["embedding_vec"] = list(embedding_vec)
+            sql += ", embedding_vec = $embedding_vec"
+            params["embedding_vec"] = list(embedding_vec)
 
-        await conn.merge(f"neuron:{sid}", update_data)
-        await self._record_change_internal("neuron", neuron.id, "update", neuron)
+        rows = await self._query(
+            sql + " WHERE brain_id = $brain_id RETURN AFTER",
+            **params,
+        )
+        if not rows:
+            raise LookupError(f"Neuron {neuron.id} not found in brain {params['brain_id']}")
+        # Log the row returned by the atomic write so peers see its canonical
+        # lifecycle value, not the possibly stale value in the caller snapshot.
+        await self._record_change_internal("neuron", neuron.id, "update", _row_to_neuron(rows[0]))
 
     async def update_neuron_embeddings(self, pairs: list[tuple[str, list[float]]]) -> None:
         """Write embedding vectors for many neurons in a single round-trip.
