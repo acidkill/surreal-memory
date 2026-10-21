@@ -64,21 +64,50 @@ class TestBrainScopedBatchFetch:
         assert params == {"brain_id": "b1"}
 
     async def test_get_neurons_batch_scopes_to_current_brain(self):
-        # v2.10.5 made this concurrent (semaphore + gather): one self._query per
-        # id, so assert brain-scope over EVERY recorded query, not just the last.
         st, conn = _store_with_mock_conn()
-        await st.get_neurons_batch(["abc-123", "def-456"])
+        conn.query.return_value = [
+            {"id": "neuron:abc_123", "type": "concept", "content": "first"},
+            {"id": "neuron:123", "type": "concept", "content": "numeric string"},
+        ]
+        found = await st.get_neurons_batch(["abc-123", "123", "abc_123", "missing-neuron", "123"])
         calls = conn.query.call_args_list
-        assert len(calls) == 2
-        seen_ids = set()
-        for call in calls:
-            sql, params = call.args
-            assert sql.startswith("SELECT * FROM neuron:")
+        assert len(calls) == 1
+        sql, params = calls[0].args
+        assert sql == (
+            "SELECT * FROM [type::record('neuron', $record_id_0), "
+            "type::record('neuron', $record_id_1), "
+            "type::record('neuron', $record_id_2)] WHERE brain_id = $brain_id"
+        )
+        assert params == {
+            "brain_id": "b1",
+            "record_id_0": "abc_123",
+            "record_id_1": "123",
+            "record_id_2": "missing_neuron",
+        }
+        assert set(found) == {"abc-123", "abc_123", "123"}
+        assert found["abc-123"].content == "first"
+        assert found["abc_123"].content == "first"
+        assert found["123"].content == "numeric string"
+
+    async def test_get_neurons_batch_chunks_and_propagates_query_errors(self, monkeypatch):
+        import pytest
+
+        import surreal_memory.storage.surrealdb.store as store_module
+
+        monkeypatch.setattr(store_module, "_BATCH_RECORD_FETCH_SIZE", 2)
+        st, conn = _store_with_mock_conn()
+        await st.get_neurons_batch(["one", "two", "three", "four", "five"])
+        assert conn.query.await_count == 3
+        for sql, params in (call.args for call in conn.query.call_args_list):
+            assert "type::record('neuron'," in sql
             assert sql.endswith("WHERE brain_id = $brain_id")
-            assert params == {"brain_id": "b1"}
-            seen_ids.add(sql)
-        assert "SELECT * FROM neuron:abc_123 WHERE brain_id = $brain_id" in seen_ids
-        assert "SELECT * FROM neuron:def_456 WHERE brain_id = $brain_id" in seen_ids
+            assert params["brain_id"] == "b1"
+            assert 1 <= len(params) - 1 <= 2
+
+        failing_store, failing_conn = _store_with_mock_conn()
+        failing_conn.query.side_effect = RuntimeError("query failed")
+        with pytest.raises(RuntimeError, match="query failed"):
+            await failing_store.get_neurons_batch(["one"])
 
     async def test_get_neurons_batch_uses_safe_brain_id(self):
         # An unsafe brain context must fail closed (via _safe_brain_id) rather

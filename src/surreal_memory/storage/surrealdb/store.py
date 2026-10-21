@@ -183,12 +183,13 @@ def _is_auth_error(exc: Exception) -> bool:
 
 _BRAIN_ID_SAFE = re.compile(r"^[a-zA-Z0-9_.\-]+$")
 
-# Bounded concurrency for per-id batch fetches (get_neurons_batch/get_synapses_batch).
+# Bounded concurrency for per-id synapse batch fetches.
 # Pipelines direct record selects over the one shared AsyncSurreal connection;
 # measured ~1.7x over sequential on a 67k-neuron brain, with diminishing
 # returns above this value (single-connection multiplexing, not true parallel
 # sockets).
 _BATCH_FETCH_CONCURRENCY = 16
+_BATCH_RECORD_FETCH_SIZE = 100
 
 # Small neuron-state lookups sit directly on recall's graph traversal hot path.
 # SurrealDB 3.2.x takes seconds to satisfy ``neuron_id IN $ids`` even when the
@@ -1404,45 +1405,40 @@ class SurrealDBStorage(
         return None
 
     async def get_neurons_batch(self, neuron_ids: list[str]) -> dict[str, Neuron]:
-        """Fetch multiple neurons by id, concurrently over the shared connection.
-
-        A single ``id IN [...]`` query was measured *slower* than per-id direct
-        selects on this SurrealDB version (3.2.0) — IN-membership against a
-        RecordID primary key doesn't use the primary index the way a direct
-        ``neuron:{id}`` fetch does, so it falls back to a scan-like path (same
-        family of index-selection gap as the brain_id-literal-vs-param gotcha
-        elsewhere in this store). Bounded concurrency instead pipelines the
-        direct selects over the one shared connection (~1.7x measured on a
-        67k-neuron brain) without the IN-query regression.
-        """
+        """Fetch neurons by native record targets in bounded chunks."""
         if not neuron_ids:
             return {}
-        # Scope every fetch to the current brain: these are direct record-id
-        # selects, so without a brain_id filter a caller could read a neuron
-        # owned by another brain just by knowing (or guessing) its id. The FROM
-        # is still a pinned record (neuron:{sid}), so this stays a direct fetch,
-        # not a table scan — the brain_id check only rejects a cross-brain hit.
-        # Resolve the brain id ONCE, before any concurrent fetch starts, so a
-        # hostile/unset brain context fails closed (_safe_brain_id raises) rather
-        # than firing 16 unscoped selects.
+        # Resolve before any query so an unsafe brain context fails closed. Bind
+        # sanitized string IDs through type::record to preserve numeric-looking
+        # IDs and avoid interpolating caller input into SurrealQL.
         brain_id = self._get_brain_id()
-        semaphore = asyncio.Semaphore(_BATCH_FETCH_CONCURRENCY)
+        requested_by_record_id: dict[str, list[str]] = {}
+        for neuron_id in neuron_ids:
+            record_id = _to_surreal_id(neuron_id)
+            requested_by_record_id.setdefault(record_id, []).append(neuron_id)
 
-        async def _fetch_one(nid: str) -> tuple[str, Neuron | None]:
-            sid = _to_surreal_id(nid)
-            async with semaphore:
-                rows = await self._query(
-                    f"SELECT * FROM neuron:{sid} WHERE brain_id = $brain_id",
-                    brain_id=brain_id,
-                )
-            if rows:
-                return nid, _row_to_neuron(rows[0])
-            return nid, None
+        record_ids = list(requested_by_record_id)
+        neurons_by_requested_id: dict[str, Neuron] = {}
+        for offset in range(0, len(record_ids), _BATCH_RECORD_FETCH_SIZE):
+            chunk = record_ids[offset : offset + _BATCH_RECORD_FETCH_SIZE]
+            record_sources: list[str] = []
+            params: dict[str, Any] = {"brain_id": brain_id}
+            for index, record_id in enumerate(chunk):
+                param_name = f"record_id_{index}"
+                record_sources.append(f"type::record('neuron', ${param_name})")
+                params[param_name] = record_id
 
-        async with asyncio.TaskGroup() as group:
-            tasks = [group.create_task(_fetch_one(nid)) for nid in neuron_ids]
-        pairs = [task.result() for task in tasks]
-        return {nid: neuron for nid, neuron in pairs if neuron is not None}
+            rows = await self._query(
+                f"SELECT * FROM [{', '.join(record_sources)}] WHERE brain_id = $brain_id",
+                **params,
+            )
+            for row in rows:
+                neuron = _row_to_neuron(row)
+                record_id = _to_surreal_id(neuron.id)
+                for requested_id in requested_by_record_id.get(record_id, []):
+                    neurons_by_requested_id[requested_id] = neuron
+
+        return neurons_by_requested_id
 
     async def find_neurons(
         self,

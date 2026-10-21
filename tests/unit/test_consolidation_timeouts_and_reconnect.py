@@ -486,27 +486,20 @@ class TestBatchNeuronFetchErrors:
 
         store = SurrealDBStorage.__new__(SurrealDBStorage)
         store._current_brain_id = "default"
-        sibling_started = asyncio.Event()
-        sibling_cancelled = asyncio.Event()
+        request_started = asyncio.Event()
 
         async def query(sql: str, **_params: Any) -> list[Any]:
-            if "neuron:fail" in sql:
-                await sibling_started.wait()
-                raise ConnectionResetError(104, "synthetic transport failure")
-            sibling_started.set()
-            try:
-                await asyncio.Event().wait()
-            except asyncio.CancelledError:
-                sibling_cancelled.set()
-                raise
+            assert "type::record('neuron'," in sql
+            assert sql.endswith("WHERE brain_id = $brain_id")
+            request_started.set()
+            raise ConnectionResetError(104, "synthetic transport failure")
 
         store._query = query  # type: ignore[method-assign]
 
-        with pytest.raises(ExceptionGroup) as exc_info:
+        with pytest.raises(ConnectionResetError, match="synthetic transport failure"):
             await store.get_neurons_batch(["fail", "sibling"])
 
-        assert any(isinstance(error, ConnectionResetError) for error in exc_info.value.exceptions)
-        assert sibling_cancelled.is_set(), "the sibling database request was left running"
+        assert request_started.is_set(), "the batch did not attempt its database request"
 
     @pytest.mark.asyncio
     async def test_external_cancellation_drains_batch_requests(self) -> None:
@@ -514,29 +507,25 @@ class TestBatchNeuronFetchErrors:
 
         store = SurrealDBStorage.__new__(SurrealDBStorage)
         store._current_brain_id = "default"
-        started = 0
-        all_started = asyncio.Event()
-        cancelled = 0
+        request_started = asyncio.Event()
+        request_cancelled = asyncio.Event()
 
         async def query(_sql: str, **_params: Any) -> list[Any]:
-            nonlocal started, cancelled
-            started += 1
-            if started == 2:
-                all_started.set()
+            request_started.set()
             try:
                 await asyncio.Event().wait()
             except asyncio.CancelledError:
-                cancelled += 1
+                request_cancelled.set()
                 raise
 
         store._query = query  # type: ignore[method-assign]
         batch = asyncio.create_task(store.get_neurons_batch(["first", "second"]))
-        await all_started.wait()
+        await request_started.wait()
         batch.cancel()
 
         with pytest.raises(asyncio.CancelledError):
             await batch
-        assert cancelled == 2
+        assert request_cancelled.is_set(), "the in-flight database request was not drained"
 
     @pytest.mark.asyncio
     async def test_empty_select_still_means_missing_neuron(self) -> None:
