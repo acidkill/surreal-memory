@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from datetime import datetime
 from typing import Any
@@ -107,20 +108,7 @@ class _PagedStorage:
             stage_id = str(params["stage_id"])
             row = dict(params["row"])
             if self.drop_null_fields:
-                for field in ("first_fiber_id", "last_fiber_id"):
-                    if row.get(field) is None:
-                        row.pop(field, None)
-                for fiber in row.get("fibers", []):
-                    for field in (
-                        "last_conducted",
-                        "time_start",
-                        "time_end",
-                        "summary",
-                        "essence",
-                        "last_ghost_shown_at",
-                    ):
-                        if fiber.get(field) is None:
-                            fiber.pop(field, None)
+                row = _without_null_keys(row)
             key = (str(row["run_id"]), str(row["strategy"]), int(row["page_index"]))
             if stage_id in self.stage_ids:
                 raise _AlreadyExistsError(f"record {stage_id} already exists")
@@ -148,6 +136,31 @@ class _PagedStorage:
 
     async def get_fibers(self, *, limit: int = 10000) -> list[Fiber]:
         return self.fibers[:limit]
+
+
+def _without_null_keys(value: Any) -> Any:
+    """What SurrealDB keeps: no object key whose value is null, at any depth."""
+    if isinstance(value, dict):
+        return {key: _without_null_keys(item) for key, item in value.items() if item is not None}
+    if isinstance(value, list):
+        return [_without_null_keys(item) for item in value]
+    return value
+
+
+def _fingerprint_of_earlier_releases(fibers: list[dict[str, Any]]) -> str:
+    """The page fingerprint as 3.12.0 and 3.12.1 computed it, nullable fields hashed as null."""
+    nullable = (
+        "last_conducted",
+        "time_start",
+        "time_end",
+        "summary",
+        "essence",
+        "last_ghost_shown_at",
+    )
+    hashed = [{**dict.fromkeys(nullable), **fiber} for fiber in fibers]
+    return hashlib.sha256(
+        json.dumps(hashed, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
 
 
 def _fibers(count: int) -> list[Fiber]:
@@ -414,6 +427,101 @@ async def test_fiber_census_stale_writer_cannot_replace_page_after_crash() -> No
         await current._all_fibers_paged()
 
     assert storage.staged[("run-census-test", "merge", 0)] == stored_page
+
+
+def _census_engine(storage: _PagedStorage, progress: _Progress) -> ConsolidationEngine:
+    engine = ConsolidationEngine(storage, ConsolidationConfig())
+    engine._progress_session = progress  # type: ignore[assignment]
+    engine._active_strategy = ConsolidationStrategy.MERGE
+    engine._check_progress_budget = _completed_budget_check  # type: ignore[method-assign]
+    return engine
+
+
+@pytest.mark.asyncio
+async def test_fiber_census_survives_null_values_inside_fiber_metadata() -> None:
+    fiber = Fiber(
+        id="fiber-0000",
+        neuron_ids={"neuron-0000"},
+        synapse_ids=set(),
+        anchor_neuron_id="neuron-0000",
+        metadata={
+            "note": None,
+            "nested": {"gone": None, "kept": 1},
+            "items": [{"gone": None, "kept": 2}, None],
+            "pair": ({"gone": None, "kept": 3},),
+        },
+        created_at=REFERENCE_TIME,
+    )
+    stored_metadata = {
+        "nested": {"kept": 1},
+        "items": [{"kept": 2}, None],
+        "pair": [{"kept": 3}],
+    }
+    storage = _PagedStorage([fiber], drop_null_fields=True)
+    progress = _Progress()
+
+    observed = await _census_engine(storage, progress)._all_fibers_paged()
+
+    assert [item.id for item in observed] == ["fiber-0000"]
+    assert observed[0].metadata == stored_metadata
+    page = storage.staged[("run-census-test", "merge", 0)]
+    assert page["fibers"][0]["metadata"] == stored_metadata
+    assert await _census_engine(storage, progress)._all_fibers_paged() == observed
+
+
+@pytest.mark.asyncio
+async def test_fiber_census_reads_page_staged_by_earlier_releases() -> None:
+    storage = _PagedStorage(_fibers(3), drop_null_fields=True)
+    progress = _Progress()
+    observed = await _census_engine(storage, progress)._all_fibers_paged()
+    page = storage.staged[("run-census-test", "merge", 0)]
+    earlier = _fingerprint_of_earlier_releases(page["fibers"])
+    assert earlier != page["page_fingerprint"]
+
+    page["page_fingerprint"] = earlier
+
+    assert await _census_engine(storage, progress)._all_fibers_paged() == observed
+
+
+@pytest.mark.asyncio
+async def test_fiber_census_retry_accepts_same_page_staged_by_earlier_releases() -> None:
+    storage = _PagedStorage(_fibers(501), drop_null_fields=True)
+    first = _census_engine(storage, _Progress(fail_first_checkpoint=True))
+    with pytest.raises(_SimulatedCrashError, match="after stage write"):
+        await first._all_fibers_paged()
+    page = storage.staged[("run-census-test", "merge", 0)]
+    page["page_fingerprint"] = _fingerprint_of_earlier_releases(page["fibers"])
+
+    resumed = await _census_engine(storage, _Progress("run-census-test"))._all_fibers_paged()
+
+    assert len(resumed) == 501
+
+
+@pytest.mark.asyncio
+async def test_fiber_census_rejects_page_whose_fingerprint_matches_neither_form() -> None:
+    storage = _PagedStorage(_fibers(3), drop_null_fields=True)
+    progress = _Progress()
+    await _census_engine(storage, progress)._all_fibers_paged()
+    page = storage.staged[("run-census-test", "merge", 0)]
+
+    page["page_fingerprint"] = hashlib.sha256(b"another page").hexdigest()
+
+    with pytest.raises(ConsolidationProgressError, match="staged page is invalid"):
+        await _census_engine(storage, progress)._all_fibers_paged()
+
+
+@pytest.mark.asyncio
+async def test_fiber_census_retry_refuses_page_whose_fingerprint_matches_neither_form() -> None:
+    storage = _PagedStorage(_fibers(501), drop_null_fields=True)
+    first = _census_engine(storage, _Progress(fail_first_checkpoint=True))
+    with pytest.raises(_SimulatedCrashError, match="after stage write"):
+        await first._all_fibers_paged()
+    page = storage.staged[("run-census-test", "merge", 0)]
+
+    page["page_fingerprint"] = hashlib.sha256(b"another page").hexdigest()
+
+    with pytest.raises(ConsolidationProgressError, match="stale-owner overwrite"):
+        await _census_engine(storage, _Progress("run-census-test"))._all_fibers_paged()
 
 
 async def _completed_budget_check() -> None:

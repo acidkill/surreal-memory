@@ -22,6 +22,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Summarization accepts checkpoints with no pending work unit when the progress
   writer omits the optional `pending` field. Present malformed pending values
   still stop consolidation without replacing the saved work.
+- Census rows are fingerprinted and compared in the form SurrealDB stores them,
+  without any key whose value is null, and merge treats fiber `metadata` the
+  same way. Fibers whose stored `metadata` holds a null are merged instead of
+  stopping merge with "fiber census staged page is invalid".
+- The dedup census accepts its own completion marker when a late owner writes it
+  a second time, instead of refusing it as a stale overwrite.
+
+### Changed
+
+- Fiber-census pages are staged with a fingerprint of their stored form. Pages
+  staged by 3.12.0 and 3.12.1 are still accepted, apart from pages holding such
+  a metadata null, which never validated. A page staged by this release can in
+  general not be read by 3.12.1.
+- A null value in a source fiber's `metadata` no longer wins a key collision
+  when fibers are merged. It counts as a missing key.
 
 ## [3.12.1] — 2026-10-12 — consolidation resume validates saved work
 

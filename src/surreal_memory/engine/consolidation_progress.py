@@ -52,6 +52,20 @@ def options_fingerprint(options: Mapping[str, Any]) -> str:
     return sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def stored_form(value: Any) -> Any:
+    """Return ``value`` as SurrealDB stores it.
+
+    The Python SDK sends ``None`` as NONE, and SurrealDB keeps no object key whose
+    value is NONE, at any depth; array elements are kept. Census rows are
+    fingerprinted and compared in this form, so the row read back is the row written.
+    """
+    if isinstance(value, dict):
+        return {key: stored_form(item) for key, item in value.items() if item is not None}
+    if isinstance(value, list):
+        return [stored_form(item) for item in value]
+    return value
+
+
 def _parse_reference_time(value: Any) -> datetime:
     if isinstance(value, datetime):
         return ensure_naive_utc(value)
