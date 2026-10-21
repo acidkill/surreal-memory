@@ -18,6 +18,8 @@ from surreal_memory.engine.consolidation import (
     ConsolidationStrategy,
 )
 from surreal_memory.engine.consolidation_progress import ConsolidationPausedError
+from surreal_memory.engine.dedup_census import DedupAnchorCensus
+from tests.unit.test_consolidation_fiber_census_resume import _without_null_keys
 
 _REFERENCE_TIME = datetime(2026, 9, 24, 12, 0)
 
@@ -273,6 +275,47 @@ async def test_dry_run_with_progress_context_does_not_stage_or_checkpoint() -> N
     assert storage.staged == {}
     assert storage.synapses == []
     assert progress.strategy_state("dedup")["phase"] == "starting"
+
+
+class _NullDroppingStorage(_DurableStorage):
+    """Keeps no null-valued key, as SurrealDB does, and can hide the completion marker."""
+
+    marker_visible = True
+
+    async def _query(self, sql: str, **params: Any) -> list[dict[str, Any]]:
+        if sql.startswith("CREATE type::record('consolidation_dedup_census'"):
+            params = {**params, "row": _without_null_keys(params["row"])}
+        rows = await super()._query(sql, **params)
+        if not self.marker_visible and "complete = true" in sql:
+            return []
+        return rows
+
+
+@pytest.mark.asyncio
+async def test_dedup_census_accepts_its_completion_marker_written_again() -> None:
+    storage = _NullDroppingStorage([_anchor(index) for index in range(3)])
+    checkpoints: list[dict[str, Any]] = []
+
+    async def checkpoint(phase: str, **state: Any) -> None:
+        checkpoints.append({"phase": phase, **state})
+
+    def census(state: dict[str, Any]) -> DedupAnchorCensus:
+        return DedupAnchorCensus(
+            storage,
+            run_id="run-dedup-census",
+            brain_id=storage.current_brain_id,
+            strategy=ConsolidationStrategy.DEDUP.value,
+            reference_time=None,
+            checkpoint_state=state,
+            checkpoint=checkpoint,
+            check_budget=_done,
+        )
+
+    assert await census({}).build() == 3
+
+    storage.marker_visible = False  # a late owner whose marker lookup returned nothing
+
+    assert await census(dict(checkpoints[-1])).build() == 3
 
 
 async def _done() -> None:
