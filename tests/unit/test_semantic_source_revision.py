@@ -40,6 +40,13 @@ class _RevisionStorage(SurrealDBSemanticSourceRevisionMixin):
         assert sql == "RETURN time::now()"
         return self.now
 
+    async def _show_table_changes(
+        self, table: str, since: int | str, limit: int
+    ) -> list[dict[str, Any]]:
+        # This fake models each table's feed directly; the database-feed paging
+        # itself is covered against a live SurrealDB in the integration tests.
+        return await self._query(f"SHOW CHANGES FOR TABLE {table} SINCE {since} LIMIT {limit}")
+
     async def _query(self, sql: str, **params: Any) -> list[dict[str, Any]]:
         self.queries.append((sql, params))
         if sql.startswith("DELETE semantic_source_barrier WHERE"):
@@ -361,3 +368,42 @@ async def test_frozen_source_fence_allows_delete_only_after_proving_post_referen
     ]
 
     await storage.assert_semantic_source_unchanged(token, created_before=cutoff)
+
+
+@pytest.mark.asyncio
+async def test_database_feed_pages_past_other_tables_and_skips_inclusive_cursor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import surreal_memory.storage.surrealdb.semantic_source_revision as revision_module
+
+    monkeypatch.setattr(revision_module, "_DATABASE_FEED_PAGE_SIZE", 2)
+    storage = _RevisionStorage()
+    pages = [
+        [
+            {"versionstamp": 1, "changes": [{"create": {"id": "noise:1"}}]},
+            {"versionstamp": 2, "changes": [{"create": {"id": "noise:2"}}]},
+        ],
+        [
+            {"versionstamp": 2, "changes": [{"create": {"id": "noise:2"}}]},
+            {"versionstamp": 3, "changes": [{"create": {"id": "neuron:1"}}]},
+        ],
+        [
+            {"versionstamp": 3, "changes": [{"create": {"id": "neuron:1"}}]},
+            {"versionstamp": 4, "changes": [{"create": {"id": "neuron:2"}}]},
+        ],
+    ]
+
+    async def query(sql: str, **params: Any) -> list[dict[str, Any]]:
+        storage.queries.append((sql, params))
+        return pages.pop(0)
+
+    monkeypatch.setattr(storage, "_query", query)
+
+    events = await SurrealDBSemanticSourceRevisionMixin._show_table_changes(storage, "neuron", 0, 2)
+
+    assert [event["versionstamp"] for event in events] == [3, 4]
+    assert [sql for sql, _ in storage.queries] == [
+        "SHOW CHANGES FOR DATABASE SINCE 0 LIMIT 2",
+        "SHOW CHANGES FOR DATABASE SINCE 2 LIMIT 2",
+        "SHOW CHANGES FOR DATABASE SINCE 3 LIMIT 2",
+    ]

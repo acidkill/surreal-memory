@@ -23,6 +23,7 @@ import {
   Command as CommandIcon,
 } from "@phosphor-icons/react"
 import { openUpgradeModal } from "@/components/common/UpgradeModal"
+import { matchesQuery } from "@/components/common/commandPaletteFilter"
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -136,11 +137,14 @@ export function CommandPalette() {
   }
 
   const fibers = fiberList?.fibers ?? []
-  const filteredFibers = query.length > 0
-    ? fibers.filter((f) =>
-        f.summary.toLowerCase().includes(query.toLowerCase()),
-      )
+  const filteredFibers = query.trim().length > 0
+    ? fibers.filter((f) => matchesQuery(f.summary, query))
     : fibers.slice(0, 5)
+  const filteredPages = pages.filter(({ labelKey }) => matchesQuery(t(labelKey), query))
+  const proItems = [
+    { value: "pro-semantic-search", label: t("commandPalette.semanticSearch") },
+    { value: "pro-cross-brain-search", label: t("commandPalette.crossBrainSearch") },
+  ].filter(({ label }) => matchesQuery(label, query))
 
   return (
     <>
@@ -187,6 +191,7 @@ export function CommandPalette() {
               </Command.Empty>
 
               {/* Pages */}
+              {filteredPages.length > 0 && (
               <Command.Group
                 heading={
                   <span className="px-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -194,7 +199,7 @@ export function CommandPalette() {
                   </span>
                 }
               >
-                {pages.map(({ path, icon: Icon, labelKey }) => (
+                {filteredPages.map(({ path, icon: Icon, labelKey }) => (
                   <Command.Item
                     key={path}
                     value={`page-${t(labelKey)}`}
@@ -206,6 +211,7 @@ export function CommandPalette() {
                   </Command.Item>
                 ))}
               </Command.Group>
+              )}
 
               {/* Fibers */}
               {filteredFibers.length > 0 && (
@@ -272,36 +278,30 @@ export function CommandPalette() {
               )}
 
               {/* Pro upsell hints — click opens upgrade modal */}
-              <Command.Group
-                heading={
-                  <span className="px-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                    Pro
-                  </span>
-                }
-              >
-                <Command.Item
-                  value="pro-semantic-search"
-                  onSelect={() => { setOpen(false); openUpgradeModal() }}
-                  className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm opacity-60 cursor-pointer aria-selected:bg-accent aria-selected:opacity-100"
+              {proItems.length > 0 && (
+                <Command.Group
+                  heading={
+                    <span className="px-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                      Pro
+                    </span>
+                  }
                 >
-                  <Lock className="size-4 text-muted-foreground" aria-hidden="true" />
-                  <span className="flex-1">{t("commandPalette.semanticSearch")}</span>
-                  <span className="rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary">
-                    PRO
-                  </span>
-                </Command.Item>
-                <Command.Item
-                  value="pro-cross-brain-search"
-                  onSelect={() => { setOpen(false); openUpgradeModal() }}
-                  className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm opacity-60 cursor-pointer aria-selected:bg-accent aria-selected:opacity-100"
-                >
-                  <Lock className="size-4 text-muted-foreground" aria-hidden="true" />
-                  <span className="flex-1">{t("commandPalette.crossBrainSearch")}</span>
-                  <span className="rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary">
-                    PRO
-                  </span>
-                </Command.Item>
-              </Command.Group>
+                  {proItems.map(({ value, label }) => (
+                    <Command.Item
+                      key={value}
+                      value={value}
+                      onSelect={() => { setOpen(false); openUpgradeModal() }}
+                      className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm opacity-60 cursor-pointer aria-selected:bg-accent aria-selected:opacity-100"
+                    >
+                      <Lock className="size-4 text-muted-foreground" aria-hidden="true" />
+                      <span className="flex-1">{label}</span>
+                      <span className="rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary">
+                        PRO
+                      </span>
+                    </Command.Item>
+                  ))}
+                </Command.Group>
+              )}
             </Command.List>
 
             {/* Footer hint */}

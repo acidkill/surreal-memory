@@ -103,6 +103,7 @@ Proactive brain maintenance configuration.
 | `scheduled_consolidation_enabled` | `bool` | `true` |  |
 | `scheduled_consolidation_interval_hours` | `int` | `24` |  |
 | `scheduled_consolidation_strategies` | `tuple[str, ...]` | `['prune', 'merge', 'mature', 'enrich']` |  |
+| `semantic_discovery_state_retention_days` | `int` | `7` | 0 = keep snapshots of finished runs |
 | `version_check_enabled` | `bool` | `true` |  |
 | `version_check_interval_hours` | `int` | `24` |  |
 | `decay_enabled` | `bool` | `true` |  |

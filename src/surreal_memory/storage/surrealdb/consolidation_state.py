@@ -6,7 +6,7 @@ consolidation workers coordinate across hosts and process restarts.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from datetime import timedelta
 from hashlib import sha256
 from typing import Any
@@ -37,6 +37,20 @@ class SurrealDBConsolidationStateMixin:
             brain_id=resolved_brain_id,
         )
         return dict(rows[0]) if rows else None
+
+    async def get_consolidation_run_ids(
+        self, *, statuses: Collection[str], brain_id: str | None = None
+    ) -> list[str]:
+        """Return the run ids of this brain's run records in any of ``statuses``."""
+        if isinstance(statuses, str):
+            raise TypeError("statuses must be a collection of status names, not a string")
+        rows = await self._query(
+            "SELECT VALUE run_id FROM consolidation_progress "
+            "WHERE brain_id = $brain_id AND status IN $statuses",
+            brain_id=brain_id or self._get_brain_id(),
+            statuses=sorted(statuses),
+        )
+        return [str(run_id) for run_id in rows if run_id]
 
     async def create_consolidation_progress(self, state: Mapping[str, Any]) -> dict[str, Any]:
         """Create a new run record; record-ID uniqueness arbitrates duplicate starts."""
