@@ -164,9 +164,13 @@ jobs:
         run: ruff check src/ --select S --ignore S101,S110,S112,S311,S324
 
   integration:
-    name: Integration (SurrealDB)
+    name: Integration (SurrealDB ${{ matrix.surrealdb }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        surrealdb: ["3.2.0", "3.2.4"]
     env:
       SURREALDB_URL: http://127.0.0.1:8001
       SMEM_TEST_SURREALDB_URL: http://127.0.0.1:8001
@@ -191,8 +195,8 @@ jobs:
       # thrown away afterward and needs no root-owned named volume.
       - name: Start SurrealDB
         run: |
-          docker run -d --name surrealdb-ci -p 8001:8001 \
-            surrealdb/surrealdb:v3.2.0 \
+          docker run -d --name surrealdb-ci -p 8001:8001 --cpus=2 --memory=1g --memory-swap=1g \
+            surrealdb/surrealdb:v${{ matrix.surrealdb }} \
             start memory --user root --pass root --bind 0.0.0.0:8001 \
             --allow-experimental gql --allow-eval-query
 
