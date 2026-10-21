@@ -1297,6 +1297,45 @@ class TestMCPProtocol:
         return storage
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("enabled", "blacklist", "tool_name", "success", "recorded"),
+        [
+            (False, (), "smem_remember", True, False),
+            (False, (), "smem_remember", False, False),
+            (True, ("smem_remember",), "smem_remember_batch", True, False),
+            (True, ("smem_remember",), "smem_remember_batch", False, False),
+            (True, (), "smem_recall", True, False),
+            (True, (), "smem_context", True, False),
+            (True, (), "smem_recap", True, False),
+            (True, (), "smem_explain", True, False),
+            (True, (), "smem_recall", False, True),
+            (True, (), "smem_remember", True, True),
+        ],
+    )
+    async def test_tool_events_respect_config_and_skip_successful_reads(
+        self,
+        server: MCPServer,
+        enabled: bool,
+        blacklist: tuple[str, ...],
+        tool_name: str,
+        success: bool,
+        recorded: bool,
+    ) -> None:
+        from surreal_memory.mcp.server import _record_tool_event
+        from surreal_memory.unified_config import ToolMemoryConfig
+        from surreal_memory.utils.timeutils import utcnow
+
+        server.config.tool_memory = ToolMemoryConfig(enabled=enabled, blacklist=blacklist)
+        storage = self._storage_capturing_tool_events()
+        with patch.object(server, "get_storage", return_value=storage) as get_storage:
+            await _record_tool_event(
+                server, tool_name, {}, utcnow(), success=success, reason="synthetic failure"
+            )
+
+        assert storage.insert_tool_events.await_count == int(recorded)
+        assert get_storage.await_count == int(recorded)
+
+    @pytest.mark.asyncio
     async def test_timeout_records_a_diagnosable_reason(self, server: MCPServer) -> None:
         """The dominant failure mode for smem_remember_batch: a call that times
         out has duration_ms land within milliseconds of the 30s timeout, not a
@@ -1668,7 +1707,7 @@ class TestAutoCapture:
 
 
 class TestPassiveCapture:
-    """Tests for passive auto-capture on recall."""
+    """Memory reads must not feed their query or results back into capture."""
 
     def _make_server(self, *, auto_enabled: bool = True) -> MCPServer:
         """Create a server with controlled auto config."""
@@ -1716,8 +1755,8 @@ class TestPassiveCapture:
         return mock_storage, mock_pipeline
 
     @pytest.mark.asyncio
-    async def test_passive_capture_on_long_recall(self) -> None:
-        """Test that recall with long query triggers passive capture."""
+    async def test_long_recall_does_not_capture_query(self) -> None:
+        """A search phrased as a decision is still a search, not a new memory."""
         server = self._make_server(auto_enabled=True)
         mock_storage, mock_pipeline = self._mock_recall_deps(server)
 
@@ -1731,7 +1770,45 @@ class TestPassiveCapture:
             )
             await server.call_tool("smem_recall", {"query": long_query})
 
-        mock_capture.assert_called_once_with(long_query)
+        mock_capture.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "tool_name", ["smem_recall", "smem_context", "smem_recap", "smem_explain"]
+    )
+    @pytest.mark.parametrize("auto_enabled", [False, True])
+    async def test_read_results_do_not_reenter_capture(
+        self, tool_name: str, auto_enabled: bool
+    ) -> None:
+        from surreal_memory.unified_config import ResponseConfig
+
+        server = self._make_server(auto_enabled=auto_enabled)
+        server.config.response = ResponseConfig()
+        stored_decision = "We decided to use PostgreSQL because its JSONB support fits our project."
+        with (
+            patch.object(server, "get_storage", return_value=AsyncMock()),
+            patch.object(server, "call_tool", return_value={"answer": stored_decision}),
+            patch.object(
+                server,
+                "_run_detection",
+                return_value=[{"content": stored_decision, "type": "decision", "confidence": 0.95}],
+            ) as detect,
+            patch.object(server, "_save_detected_memories", new_callable=AsyncMock) as save,
+        ):
+            for call_id in range(3):
+                response = await handle_message(
+                    server,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": call_id,
+                        "method": "tools/call",
+                        "params": {"name": tool_name, "arguments": {"query": stored_decision}},
+                    },
+                )
+                assert response is not None and "result" in response
+
+        detect.assert_not_called()
+        save.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_passive_capture_skipped_short_query(self) -> None:

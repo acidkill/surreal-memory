@@ -51,6 +51,9 @@ _NOISE_TOOLS: frozenset[str] = frozenset(
         "mcp__Claude_Preview__preview_console_logs",
         "mcp__Claude_Preview__preview_network",
         "smem_recall",
+        "smem_context",
+        "smem_recap",
+        "smem_explain",
         "smem_session",
         "smem_stats",
         "smem_index",
@@ -222,9 +225,12 @@ def main() -> None:
     if not tool_name:
         sys.stdout.write("{}\n")
         return
+    canonical_tool_name = (
+        tool_name.rsplit("__", 1)[-1] if tool_name.startswith("mcp__") else tool_name
+    )
 
     # Fast-path: skip high-frequency noise tools before any config I/O
-    if tool_name in _NOISE_TOOLS:
+    if tool_name in _NOISE_TOOLS or canonical_tool_name in _NOISE_TOOLS:
         sys.stdout.write("{}\n")
         return
 
@@ -237,7 +243,7 @@ def main() -> None:
 
     blacklist = _get_blacklist(tm_cfg)
     for prefix in blacklist:
-        if tool_name.startswith(prefix):
+        if tool_name.startswith(prefix) or canonical_tool_name.startswith(prefix):
             sys.stdout.write("{}\n")
             return
 
