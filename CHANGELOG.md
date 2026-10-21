@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Semantic-link source fences read table changefeeds by paging the database feed.
+  SurrealDB applies `LIMIT` to the database-wide feed before it keeps one table's
+  entries, so on a busy database the barrier search stopped early ("semantic source
+  barrier was not found within the bounded changefeed scan") and the source checks
+  could miss neuron/synapse changes queued behind other tables' writes.
 - The dashboard command palette (Ctrl/Cmd+K) now narrows pages and Pro hints to the
   query; with cmdk's own filtering switched off they used to stay listed whatever was
   typed.
