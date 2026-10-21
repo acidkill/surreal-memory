@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Compression preserves original backups across tier advancement. Exact content
+  lineage protects later edits and shared neurons during compression and recovery;
+  unverifiable legacy compression states are preserved for explicit recovery.
+- Generic neuron updates retain the canonical lifecycle state during concurrent
+  maintenance and remove its derived JSON mirror atomically, preventing stale
+  lifecycle metadata and change-log entries.
 - Compression explicitly clears completed replay markers with storage that
   merges nested metadata. A matching completion receipt prevents replaying
   finished work over later neuron edits; incomplete or malformed intents still
