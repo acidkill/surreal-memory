@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import bisect
+import hashlib
 import json
 import sys
 import weakref
@@ -734,6 +735,239 @@ async def test_semantic_link_replays_saved_synapse_after_interruption_without_du
     assert storage.added_synapses == ["semantic-edge-a-b"]
     assert report.semantic_synapses_created == 1
     assert progress.strategy_state("semantic_link")["pending"] == []
+
+
+@pytest.mark.asyncio
+async def test_semantic_link_resume_preserves_legacy_fingerprint_order_for_mixed_ids() -> None:
+    config = SimpleNamespace(embedding_enabled=True, semantic_discovery_similarity_threshold=0.7)
+    neuron_ids = ["a0b", "a-b", "b0", "b-z", "z-neuron"]
+    neurons = [
+        Neuron.create(
+            NeuronType.CONCEPT if index % 2 == 0 else NeuronType.ENTITY,
+            f"fingerprinted content {neuron_id}",
+            metadata={"_embedding": [float(index), 0.5]},
+            neuron_id=neuron_id,
+        )
+        for index, neuron_id in enumerate(neuron_ids)
+    ]
+    ignored = Neuron.create(NeuronType.ACTION, "excluded neuron", neuron_id="ignored")
+    persisted = Synapse.create(
+        "a-b", "b-z", SynapseType.SIMILAR_TO, weight=0.54, synapse_id="persisted-edge"
+    )
+    edge_ids = ["a0-edge", "a-edge", "b0-edge", "b-edge"]
+    edges = [
+        Synapse.create(
+            "a-b",
+            "b-z",
+            SynapseType.CAUSED_BY if index % 2 else SynapseType.RELATED_TO,
+            weight=0.3 + index / 10,
+            synapse_id=edge_id,
+        )
+        for index, edge_id in enumerate(edge_ids)
+    ]
+    storage = _Storage(neurons=[*neurons, ignored], synapses=[*edges, persisted])
+    storage.brain.config = config
+
+    async def native_neurons_after_id(
+        cursor_id: str | None,
+        *,
+        limit: int,
+        ephemeral: bool | None = None,
+        include_embedding: bool = False,
+        created_before: datetime | None = None,
+    ) -> list[Neuron]:
+        del ephemeral, include_embedding
+        found = sorted(storage.neurons.values(), key=lambda item: item.id.replace("-", "_"))
+        if created_before is not None:
+            found = [item for item in found if item.created_at <= created_before]
+        if cursor_id is not None:
+            native_cursor = cursor_id.replace("-", "_")
+            found = [item for item in found if item.id.replace("-", "_") > native_cursor]
+        return found[:limit]
+
+    async def native_synapses_after_id(
+        cursor_id: str | None,
+        *,
+        limit: int,
+        created_before: datetime | None = None,
+    ) -> list[Synapse]:
+        found = sorted(storage.synapses.values(), key=lambda item: item.id.replace("-", "_"))
+        if created_before is not None:
+            found = [item for item in found if item.created_at <= created_before]
+        if cursor_id is not None:
+            native_cursor = cursor_id.replace("-", "_")
+            found = [item for item in found if item.id.replace("-", "_") > native_cursor]
+        return found[:limit]
+
+    storage.find_neurons_after_id = native_neurons_after_id  # type: ignore[method-assign]
+    storage.get_synapses_after_id = native_synapses_after_id  # type: ignore[method-assign]
+
+    async def get_normalized_synapse(synapse_id: str) -> Synapse | None:
+        return storage.synapses.get(synapse_id) or storage.synapses.get(
+            synapse_id.replace("_", "-")
+        )
+
+    storage.get_synapse = get_normalized_synapse  # type: ignore[method-assign]
+
+    planned = dc_replace(persisted, id="persisted_edge")
+    excluded = {("persisted-edge", planned.source_id, planned.target_id, planned.type.value)}
+    legacy_synapses: list[dict[str, str]] = []
+    legacy_payload = {
+        "brain_id": storage.current_brain_id,
+        "config": repr(config),
+        "neurons": [
+            {
+                "id": neuron.id,
+                "type": neuron.type.value,
+                "content": neuron.content,
+                "embedding": neuron.metadata.get("_embedding"),
+            }
+            for neuron in sorted(neurons, key=lambda item: item.id)
+        ],
+        "synapses": legacy_synapses,
+    }
+    for edge in sorted([*edges, persisted], key=lambda item: item.id):
+        edge_key = (edge.id.replace("_", "-"), edge.source_id, edge.target_id, edge.type.value)
+        if edge_key not in excluded:
+            legacy_synapses.append(
+                {
+                    "id": edge.id,
+                    "source_id": edge.source_id,
+                    "target_id": edge.target_id,
+                    "type": edge.type.value,
+                }
+            )
+    legacy_encoded = json.dumps(legacy_payload, sort_keys=True, separators=(",", ":"), default=str)
+    expected_fingerprint = hashlib.sha256(legacy_encoded.encode("utf-8")).hexdigest()
+    manifest = {
+        "kind": "semantic_link_synapses",
+        "version": 2,
+        "source_fingerprint": expected_fingerprint,
+        "reference_time": None,
+        "metrics": {"skipped_existing": 0},
+        "synapses": [
+            {
+                "id": planned.id,
+                "source_id": planned.source_id,
+                "target_id": planned.target_id,
+                "type": planned.type.value,
+                "weight": planned.weight,
+                "direction": planned.direction.value,
+                "metadata": planned.metadata,
+                "reinforced_count": planned.reinforced_count,
+                "last_activated": None,
+                "created_at": planned.created_at.isoformat(),
+            }
+        ],
+    }
+    progress = _Progress("semantic_link")
+    state = progress.strategy_state("semantic_link")
+    state.update(
+        phase="semantic_link_pending",
+        pending=[json.dumps(manifest, sort_keys=True, separators=(",", ":"))],
+        cursor=None,
+        counters={"semantic_synapses_created": 0, "semantic_synapses_skipped": 0},
+    )
+
+    report = ConsolidationReport()
+    await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+        report, dry_run=False
+    )
+
+    assert report.semantic_synapses_created == 1
+    assert storage.added_synapses == []
+    assert state["pending"] == []
+
+
+@pytest.mark.asyncio
+async def test_semantic_link_fingerprint_retains_only_a_page_of_neurons() -> None:
+    config = SimpleNamespace(embedding_enabled=True, semantic_discovery_similarity_threshold=0.7)
+    embedding_values = [1.0, 0.0] * 128
+    neuron_ids = [f"neuron-{index:05d}" for index in range(1501)]
+    expected = semantic_discovery_module._SemanticFingerprintBuilder("brain-1", config)
+    for neuron_id in sorted(neuron_ids):
+        expected.add_neuron(
+            Neuron.create(
+                NeuronType.CONCEPT,
+                neuron_id,
+                metadata={"_embedding": embedding_values},
+                neuron_id=neuron_id,
+            )
+        )
+    expected.begin_edges()
+
+    class _TrackedEmbedding(list[float]):
+        __slots__ = ("__weakref__",)
+
+    class _GeneratedStorage(_Storage):
+        def __init__(self) -> None:
+            super().__init__()
+            self.live_embeddings = 0
+            self.max_live_embeddings = 0
+
+        def _neuron(self, neuron_id: str) -> Neuron:
+            embedding = _TrackedEmbedding(embedding_values)
+            self.live_embeddings += 1
+            weakref.finalize(embedding, self._release_embedding)
+            neuron = Neuron.create(
+                NeuronType.CONCEPT,
+                neuron_id,
+                metadata={"_embedding": embedding},
+                neuron_id=neuron_id,
+            )
+            self.max_live_embeddings = max(self.max_live_embeddings, self.live_embeddings)
+            return neuron
+
+        def _release_embedding(self) -> None:
+            self.live_embeddings -= 1
+
+        async def find_neurons_after_id(
+            self,
+            cursor_id: str | None,
+            *,
+            limit: int,
+            ephemeral: bool | None = None,
+            include_embedding: bool = False,
+        ) -> list[Neuron]:
+            del ephemeral, include_embedding
+            start = bisect.bisect_right(neuron_ids, cursor_id) if cursor_id else 0
+            return [self._neuron(item) for item in neuron_ids[start : start + limit]]
+
+        async def get_synapses_after_id(
+            self,
+            cursor_id: str | None,
+            *,
+            limit: int,
+            created_before: datetime | None = None,
+        ) -> list[Synapse]:
+            del cursor_id, limit, created_before
+            return []
+
+    storage = _GeneratedStorage()
+    storage.brain.config = config
+    manifest = {
+        "kind": "semantic_link_synapses",
+        "version": 2,
+        "source_fingerprint": expected.finish(),
+        "reference_time": None,
+        "metrics": {},
+        "synapses": [],
+    }
+    progress = _Progress("semantic_link")
+    progress.strategy_state("semantic_link").update(
+        phase="semantic_link_pending",
+        pending=[json.dumps(manifest, sort_keys=True, separators=(",", ":"))],
+        cursor=None,
+        counters={"semantic_synapses_created": 0, "semantic_synapses_skipped": 0},
+    )
+
+    await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+        ConsolidationReport(), dry_run=False
+    )
+
+    assert len(neuron_ids) > 1000
+    assert len(embedding_values) > 2
+    assert storage.max_live_embeddings <= 1000
 
 
 @pytest.mark.asyncio
