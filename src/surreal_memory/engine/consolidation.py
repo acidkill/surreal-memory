@@ -10416,14 +10416,18 @@ class ConsolidationEngine:
         Optional — silently skips if embeddings are not available.
         Created synapses decay 2x faster during pruning unless reinforced.
         """
-        import hashlib
         import json
         import logging
+        import sqlite3
+        import tempfile
 
         from surreal_memory.core.neuron import NeuronType
         from surreal_memory.core.synapse import Direction, Synapse, SynapseType
         from surreal_memory.engine.consolidation_progress import ConsolidationProgressError
-        from surreal_memory.engine.semantic_discovery import discover_semantic_synapses
+        from surreal_memory.engine.semantic_discovery import (
+            _SemanticFingerprintBuilder,
+            discover_semantic_synapses,
+        )
 
         logger = logging.getLogger(__name__)
 
@@ -10483,70 +10487,128 @@ class ConsolidationEngine:
                 for synapse in excluded_synapses
             }
             reference_time = getattr(self._progress_session, "reference_time", None)
-            eligible: list[dict[str, Any]] = []
-            cursor: str | None = None
-            while True:
-                options: dict[str, Any] = {
-                    "limit": 1000,
-                    "ephemeral": None,
-                    "include_embedding": True,
-                }
-                if reference_time is not None:
-                    options["created_before"] = reference_time
-                batch = await self._storage.find_neurons_after_id(cursor, **options)
-                if not batch:
-                    break
-                eligible.extend(
-                    {
-                        "id": neuron.id,
-                        "type": neuron.type.value,
-                        "content": neuron.content,
-                        "embedding": neuron.metadata.get("_embedding"),
-                    }
-                    for neuron in batch
-                    if neuron.type in {NeuronType.CONCEPT, NeuronType.ENTITY}
-                )
-                cursor = batch[-1].id
-                if len(batch) < 1000:
-                    break
-
-            edges: list[dict[str, Any]] = []
-            cursor = None
-            while True:
-                options = {"limit": 1000}
-                if reference_time is not None:
-                    options["created_before"] = reference_time
-                edge_batch = await self._storage.get_synapses_after_id(cursor, **options)
-                if not edge_batch:
-                    break
-                edges.extend(
-                    {
-                        "id": edge.id,
-                        "source_id": edge.source_id,
-                        "target_id": edge.target_id,
-                        "type": edge.type.value,
-                    }
-                    for edge in edge_batch
-                    if (
-                        canonical_synapse_id(edge.id),
-                        edge.source_id,
-                        edge.target_id,
-                        edge.type.value,
+            with tempfile.TemporaryDirectory(prefix="smem-semantic-fingerprint-") as scratch:
+                connection = sqlite3.connect(f"{scratch}/fingerprint.sqlite")
+                try:
+                    connection.execute("PRAGMA cache_size = -2048")
+                    connection.execute("PRAGMA temp_store = FILE")
+                    connection.execute("PRAGMA journal_mode = OFF")
+                    connection.execute("PRAGMA synchronous = OFF")
+                    connection.execute(
+                        "CREATE TABLE source_rows "
+                        "(kind INTEGER NOT NULL, id TEXT NOT NULL, "
+                        "sequence INTEGER PRIMARY KEY, payload TEXT NOT NULL)"
                     )
-                    not in excluded_edges
-                )
-                cursor = edge_batch[-1].id
-                if len(edge_batch) < 1000:
-                    break
+                    cursor: str | None = None
+                    while True:
+                        options: dict[str, Any] = {
+                            "limit": 1000,
+                            "ephemeral": None,
+                            "include_embedding": True,
+                        }
+                        if reference_time is not None:
+                            options["created_before"] = reference_time
+                        batch = await self._storage.find_neurons_after_id(cursor, **options)
+                        if not batch:
+                            break
+                        connection.executemany(
+                            "INSERT INTO source_rows (kind, id, payload) VALUES (0, ?, ?)",
+                            (
+                                (
+                                    neuron.id,
+                                    json.dumps(
+                                        {
+                                            "id": neuron.id,
+                                            "type": neuron.type.value,
+                                            "content": neuron.content,
+                                            "embedding": neuron.metadata.get("_embedding"),
+                                        },
+                                        sort_keys=True,
+                                        separators=(",", ":"),
+                                        default=str,
+                                    ),
+                                )
+                                for neuron in batch
+                                if neuron.type in {NeuronType.CONCEPT, NeuronType.ENTITY}
+                            ),
+                        )
+                        cursor = batch[-1].id
+                        if len(batch) < 1000:
+                            break
+                        del batch
 
-            payload = {
-                "brain_id": brain_id,
-                "config": repr(brain.config),
-                "neurons": sorted(eligible, key=lambda item: item["id"]),
-                "synapses": sorted(edges, key=lambda item: item["id"]),
-            }
-            encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
-            return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+                    cursor = None
+                    while True:
+                        options = {"limit": 1000}
+                        if reference_time is not None:
+                            options["created_before"] = reference_time
+                        edge_batch = await self._storage.get_synapses_after_id(cursor, **options)
+                        if not edge_batch:
+                            break
+                        connection.executemany(
+                            "INSERT INTO source_rows (kind, id, payload) VALUES (1, ?, ?)",
+                            (
+                                (
+                                    edge.id,
+                                    json.dumps(
+                                        {
+                                            "id": edge.id,
+                                            "source_id": edge.source_id,
+                                            "target_id": edge.target_id,
+                                            "type": edge.type.value,
+                                        },
+                                        sort_keys=True,
+                                        separators=(",", ":"),
+                                        default=str,
+                                    ),
+                                )
+                                for edge in edge_batch
+                                if (
+                                    canonical_synapse_id(edge.id),
+                                    edge.source_id,
+                                    edge.target_id,
+                                    edge.type.value,
+                                )
+                                not in excluded_edges
+                            ),
+                        )
+                        cursor = edge_batch[-1].id
+                        if len(edge_batch) < 1000:
+                            break
+                        del edge_batch
+
+                    connection.commit()
+                    fingerprint = _SemanticFingerprintBuilder(brain_id, brain.config)
+                    for (payload,) in connection.execute(
+                        "SELECT payload FROM source_rows WHERE kind = 0 "
+                        "ORDER BY id COLLATE BINARY, sequence"
+                    ):
+                        neuron = json.loads(payload)
+                        fingerprint.add_neuron(
+                            Neuron(
+                                id=neuron["id"],
+                                type=NeuronType(neuron["type"]),
+                                content=neuron["content"],
+                                metadata={"_embedding": neuron["embedding"]},
+                            )
+                        )
+                    fingerprint.begin_edges()
+                    for (payload,) in connection.execute(
+                        "SELECT payload FROM source_rows WHERE kind = 1 "
+                        "ORDER BY id COLLATE BINARY, sequence"
+                    ):
+                        edge = json.loads(payload)
+                        fingerprint.add_synapse(
+                            Synapse(
+                                id=edge["id"],
+                                source_id=edge["source_id"],
+                                target_id=edge["target_id"],
+                                type=SynapseType(edge["type"]),
+                            )
+                        )
+                    return fingerprint.finish()
+                finally:
+                    connection.close()
 
         state = self._strategy_progress_state()
         reference_time = getattr(self._progress_session, "reference_time", None)
