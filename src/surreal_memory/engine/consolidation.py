@@ -11074,7 +11074,7 @@ class ConsolidationEngine:
         reference_time: datetime,
         dry_run: bool,
     ) -> None:
-        """Compress fibers in stable, individually checkpointed work units."""
+        """Checkpoint compression effects immediately and skipped spans per page."""
         import logging as _logging
         import time as _time
 
@@ -11161,7 +11161,7 @@ class ConsolidationEngine:
                 )
                 continue
             if (fiber.pinned or fiber.metadata.get("_verbatim")) and pending is None:
-                if not dry_run:
+                if not dry_run and remaining_on_page == 1:
                     await self._checkpoint_progress(
                         "compress_fibers",
                         cursor=fiber_cursor,
@@ -11184,7 +11184,7 @@ class ConsolidationEngine:
                 )
             )
             if pending is None and int(target_tier) <= fiber.compression_tier:
-                if not dry_run:
+                if not dry_run and remaining_on_page == 1:
                     await self._checkpoint_progress(
                         "compress_fibers",
                         cursor=fiber_cursor,
@@ -11222,7 +11222,11 @@ class ConsolidationEngine:
             if not result.skipped:
                 total_compressed += 1
                 total_tokens_saved += result.tokens_saved
-            if not dry_run:
+            # Skips have no new compression effect; replay at most one page.
+            # Keep effects and recovered intents durable before the next unit.
+            if not dry_run and (
+                not result.skipped or pending is not None or remaining_on_page == 1
+            ):
                 await self._checkpoint_progress(
                     "compress_fibers",
                     cursor=fiber_cursor,
