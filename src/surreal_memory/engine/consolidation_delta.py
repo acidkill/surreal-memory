@@ -78,7 +78,10 @@ class ConsolidationDelta:
 
     def summary(self) -> str:
         """Human-readable delta summary."""
-        if self.report.extra.get("consolidation_status") == "blocked":
+        status = self.report.extra.get("consolidation_status")
+        if status == "blocked" or (
+            status in {"failed", "lease_lost", "timed_out"} and self.before == self.after
+        ):
             return self.report.summary()
         lines = [self.report.summary(), "", "Health Delta:"]
 

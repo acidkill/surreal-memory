@@ -158,6 +158,59 @@ def test_explicit_resume_forwards_saved_strategies_for_engine_checkpoint_skip(
     capsys.readouterr()
 
 
+def test_failed_resume_reports_saved_checkpoint_counters(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from surreal_memory.engine.consolidation import ConsolidationReport, ConsolidationStrategy
+
+    completed = [
+        item.value
+        for item in ConsolidationStrategy
+        if item not in {ConsolidationStrategy.ALL, ConsolidationStrategy.SEMANTIC_LINK}
+    ]
+    state = {
+        "run_id": "resume-run-123",
+        "status": "paused",
+        "requested_strategies": [*completed, "semantic_link"],
+        "completed_strategies": completed,
+        "counters": {
+            "prune": {"synapses_pruned": 10641},
+            "semantic_link": {"semantic_synapses_created": 4},
+        },
+    }
+    delta = MagicMock()
+    delta.report = ConsolidationReport()
+    delta.after = SimpleNamespace(orphan_rate=0.25, neuron_count=100, consolidation_ratio=0.0)
+    delta.report.extra["consolidation_status"] = "failed"
+    delta.report.extra["failed_strategies"] = [
+        "semantic_link (progress coordination: ConsolidationProgressError)"
+    ]
+    delta.summary.return_value = delta.report.summary()
+
+    with (
+        patch.object(tools, "get_config", return_value=MagicMock()),
+        patch.object(tools, "resolve_brain", return_value="test-brain"),
+        patch.object(tools, "get_storage", new_callable=AsyncMock) as get_storage,
+        patch.object(tools, "run_async", side_effect=lambda awaitable: asyncio.run(awaitable)),
+        patch(
+            "surreal_memory.engine.consolidation_delta.run_with_delta",
+            new_callable=AsyncMock,
+            return_value=delta,
+        ),
+    ):
+        get_storage.return_value.get_consolidation_progress = AsyncMock(return_value=state)
+        with pytest.raises(typer.Exit) as exc_info:
+            tools.consolidate(resume=True)
+
+    assert exc_info.value.exit_code == 1
+    output = capsys.readouterr().out
+    assert "19 completed strategies" in output
+    assert "prune.synapses_pruned=10641" in output
+    assert "semantic_link.semantic_synapses_created=4" in output
+    assert "Hint:" not in output
+    assert "Stages failed: semantic_link" in output
+
+
 @pytest.mark.parametrize(
     "state",
     [

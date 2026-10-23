@@ -620,15 +620,24 @@ async def recover_stale_semantic_link_discovery(
                 and latest_recovery.get("owner_token") == state.get("owner_token")
                 and latest_recovery.get("recovered_at") == state.get("updated_at")
                 and latest_recovery.get("recovered_at") == semantic_state.get("updated_at")
-                and isinstance(prior, Mapping)
-                and prior.get("kind")
-                in {"legacy_semantic_discovery_restart", "stale_semantic_source_restart"}
                 and (
-                    prior.get("kind") != "stale_semantic_source_restart"
-                    or prior.get("source_changed_verified") is True
+                    (
+                        len(history) == 1
+                        and latest_recovery.get("prior_recovery_sha256")
+                        == sha256(b"null").hexdigest()
+                    )
+                    or (
+                        isinstance(prior, Mapping)
+                        and prior.get("kind")
+                        in {"legacy_semantic_discovery_restart", "stale_semantic_source_restart"}
+                        and (
+                            prior.get("kind") != "stale_semantic_source_restart"
+                            or prior.get("source_changed_verified") is True
+                        )
+                        and prior.get("run_id") == run_id
+                        and prior.get("options_fingerprint") == expected_options_fingerprint
+                    )
                 )
-                and prior.get("run_id") == run_id
-                and prior.get("options_fingerprint") == expected_options_fingerprint
                 and state.get("cursor") is None
                 and semantic_state.get("cursor") is None
                 and semantic_state.get("pending") in (None, [])
@@ -652,10 +661,13 @@ async def recover_stale_semantic_link_discovery(
             )
 
         previous_recovery = semantic_state.get("recovery")
+        first_recovery = "recovery" not in semantic_state and not recovery_history_raw
         if not isinstance(previous_recovery, Mapping):
-            raise ConsolidationResumeMismatchError(
-                "the prior semantic recovery audit marker is missing or unrecognized"
-            )
+            if not first_recovery:
+                raise ConsolidationResumeMismatchError(
+                    "the prior semantic recovery audit marker is missing or unrecognized"
+                )
+            previous_recovery = {}
         previous_kind = previous_recovery.get("kind")
         if previous_kind == "legacy_semantic_discovery_restart":
             if (
@@ -668,13 +680,20 @@ async def recover_stale_semantic_link_discovery(
                 )
         elif previous_kind == "stale_semantic_source_restart":
             history = list(recovery_history_raw)
-            legacy_marker = history[0] if history else None
+            first_marker = history[0] if history else None
             prior_marker = history[-1] if history else None
             if (
-                not isinstance(legacy_marker, Mapping)
-                or legacy_marker.get("kind") != "legacy_semantic_discovery_restart"
-                or legacy_marker.get("run_id") != run_id
-                or legacy_marker.get("options_fingerprint") != expected_options_fingerprint
+                not isinstance(first_marker, Mapping)
+                or not (
+                    first_marker.get("kind") == "legacy_semantic_discovery_restart"
+                    or (
+                        first_marker.get("kind") == "stale_semantic_source_restart"
+                        and first_marker.get("source_changed_verified") is True
+                        and first_marker.get("prior_recovery_sha256") == sha256(b"null").hexdigest()
+                    )
+                )
+                or first_marker.get("run_id") != run_id
+                or first_marker.get("options_fingerprint") != expected_options_fingerprint
                 or not isinstance(prior_marker, Mapping)
                 or dict(prior_marker) != dict(previous_recovery)
                 or previous_recovery.get("run_id") != run_id
@@ -692,7 +711,7 @@ async def recover_stale_semantic_link_discovery(
                 raise ConsolidationResumeMismatchError(
                     "the prior stale-source recovery audit marker is missing or unrecognized"
                 )
-        else:
+        elif not first_recovery:
             raise ConsolidationResumeMismatchError(
                 "the prior semantic recovery audit marker is missing or unrecognized"
             )
@@ -819,9 +838,9 @@ async def recover_stale_semantic_link_discovery(
             raise TypeError(f"unsupported semantic recovery audit value: {type(value).__name__}")
 
         updated_at = utcnow()
-        prior_marker = dict(previous_recovery)
+        prior_marker = None if first_recovery else dict(previous_recovery)
         history = [dict(item) for item in recovery_history_raw]
-        if not history or history[-1] != prior_marker:
+        if prior_marker is not None and (not history or history[-1] != prior_marker):
             history.append(prior_marker)
         recovery_marker = {
             "kind": "stale_semantic_source_restart",

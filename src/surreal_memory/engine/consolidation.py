@@ -707,7 +707,12 @@ class ConsolidationReport:
     def _eligibility_hints(self) -> list[str]:
         """Explain why consolidation produced no changes."""
         hints: list[str] = []
-        if self.extra.get("consolidation_status") == "blocked":
+        if self.extra.get("consolidation_status") in {
+            "blocked",
+            "failed",
+            "lease_lost",
+            "timed_out",
+        }:
             return hints
         total_changes = (
             self.synapses_pruned
@@ -10418,6 +10423,7 @@ class ConsolidationEngine:
         """
         import json
         import logging
+        import shlex
         import sqlite3
         import tempfile
 
@@ -10427,6 +10433,9 @@ class ConsolidationEngine:
         from surreal_memory.engine.semantic_discovery import (
             _SemanticFingerprintBuilder,
             discover_semantic_synapses,
+        )
+        from surreal_memory.storage.surrealdb.semantic_source_revision import (
+            SemanticSourceChangedError,
         )
 
         logger = logging.getLogger(__name__)
@@ -10784,6 +10793,22 @@ class ConsolidationEngine:
                 )
             except ConsolidationProgressError:
                 raise
+            except SemanticSourceChangedError as exc:
+                preview = shlex.join(
+                    [
+                        "smem",
+                        "recover-semantic-discovery",
+                        "--brain",
+                        brain_id,
+                        "--run-id",
+                        str(self._progress_session.state["run_id"]),
+                        "--stale-source",
+                    ]
+                )
+                raise ConsolidationProgressError(
+                    f"semantic_link source changed; discovery checkpoint preserved: {exc}. "
+                    f"Recovery preflight (no reset): {preview}"
+                ) from exc
             except RuntimeError as exc:
                 raise ConsolidationProgressError(
                     f"semantic_link discovery requires optimization or a safe restart: {exc}"
