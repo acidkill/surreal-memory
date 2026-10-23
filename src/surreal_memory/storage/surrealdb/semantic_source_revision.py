@@ -196,7 +196,9 @@ class SurrealDBSemanticSourceRevisionMixin:
                 return None
             operation = patch.get("op")
             expected = {"op", "path"} if operation == "remove" else {"op", "path", "value"}
-            if operation not in ("add", "remove", "replace") or set(patch) != expected:
+            if operation not in ("add", "remove", "replace", "change") or set(patch) != expected:
+                return None
+            if operation == "change" and not isinstance(patch["value"], str):
                 return None
             path = patch.get("path")
             if not isinstance(path, str) or not path.startswith("/"):

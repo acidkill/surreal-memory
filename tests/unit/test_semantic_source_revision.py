@@ -447,6 +447,17 @@ async def test_frozen_fence_rejects_semantic_identity_and_malformed_reverse_diff
         )
 
 
+def test_surreal_text_change_reverse_diffs_follow_the_projection() -> None:
+    classify = SurrealDBSemanticSourceRevisionMixin._projection_neutral_update
+    diff = "@@ -1,5 +1,6 @@\n tobi\n-e\n+as\n"
+    assert classify("neuron", {}, [{"op": "change", "path": "/content", "value": diff}]) is False
+    assert (
+        classify("neuron", {}, [{"op": "change", "path": "/metadata/context", "value": diff}])
+        is True
+    )
+    assert classify("neuron", {}, [{"op": "change", "path": "/content", "value": 1}]) is None
+
+
 @pytest.mark.asyncio
 async def test_frozen_fence_rejects_invalid_unknown_missing_and_cross_brain_reverse_diffs() -> None:
     storage = _RevisionStorage()
