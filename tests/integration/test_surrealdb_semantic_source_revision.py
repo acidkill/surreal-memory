@@ -26,7 +26,6 @@ from surreal_memory.engine.consolidation_progress import (
     CONSOLIDATION_ENGINE_VERSION,
     PROGRESS_FORMAT_VERSION,
 )
-from surreal_memory.storage.surrealdb._ids import _to_surreal_id
 from surreal_memory.storage.surrealdb.schema import SCHEMA_VERSION, ensure_schema
 from surreal_memory.storage.surrealdb.semantic_discovery_state import (
     SemanticDiscoveryStateConflictError,
@@ -291,11 +290,9 @@ async def test_frozen_fence_rejects_real_content_type_embedding_endpoint_and_del
         assert changed.metadata["_embedding"] == [0.1] * store._embedding_dim
 
     async def change_endpoint() -> None:
-        await store._query(
-            "UPDATE type::record('synapse', $id) SET out = type::record('neuron', $target_id)",
-            id=_to_surreal_id(edge.id),
-            target_id=_to_surreal_id(source.id),
-        )
+        # Native relation endpoints require replacing the edge.
+        assert await store.delete_synapse(edge.id)
+        await store.add_synapse(replace(edge, target_id=source.id))
         changed = await store.get_synapse(edge.id)
         assert changed is not None
         assert changed.target_id == source.id
