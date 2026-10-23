@@ -611,6 +611,7 @@ def consolidate(
         brain_id = brain_name
 
         resume_run_id: str | None = None
+        resume_checkpoint: dict[str, object] | None = None
         strategies_to_run = validated_strategies
         if resume:
             state = await storage.get_consolidation_progress(brain_name)
@@ -648,6 +649,7 @@ def consolidate(
                 )
                 raise typer.Exit(1)
             resume_run_id = run_id
+            resume_checkpoint = state
             strategies_to_run = [ConsolidationStrategy(item) for item in requested]
 
         cons_config = ConsolidationConfig(
@@ -680,9 +682,36 @@ def consolidate(
         typer.echo(delta.summary())
 
         status = delta.report.extra.get("consolidation_status")
+        if resume_checkpoint is not None and status in {
+            "failed",
+            "lease_lost",
+            "timed_out",
+        }:
+            completed = resume_checkpoint["completed_strategies"]
+            if isinstance(completed, (list, tuple)):
+                typer.echo(
+                    f"  Resume checkpoint before this attempt: {len(completed)} completed strategies"
+                )
+            counters = resume_checkpoint.get("counters")
+            if isinstance(counters, dict):
+                rendered = [
+                    f"{strategy}.{name}={value}"
+                    for strategy, strategy_counters in sorted(counters.items())
+                    if isinstance(strategy, str) and isinstance(strategy_counters, dict)
+                    for name, value in sorted(strategy_counters.items())
+                    if isinstance(name, str)
+                    and isinstance(value, (int, float))
+                    and not isinstance(value, bool)
+                ]
+                if rendered:
+                    typer.echo(f"  Checkpoint counters: {', '.join(rendered)}")
 
         # Post-consolidation health hint: warn about orphans if not pruning
-        if strategy_name != "prune" and not dry_run and status != "blocked":
+        if (
+            strategy_name != "prune"
+            and not dry_run
+            and status not in {"blocked", "failed", "lease_lost", "timed_out"}
+        ):
             try:
                 after = delta.after
                 if after.orphan_rate > 0.20:

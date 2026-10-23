@@ -213,11 +213,383 @@ async def test_frozen_source_fence_ignores_full_rows_created_after_reference_tim
     )
 
 
-def _table_reassertion(table: str) -> dict[str, Any]:
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("table", "current", "reverse_patch"),
+    [
+        (
+            "neuron",
+            {
+                "id": "neuron:recall",
+                "brain_id": "brain-a",
+                "created_at": datetime(2026, 9, 20),
+                "updated_at": datetime(2026, 9, 24, 12, 0),
+                "access_frequency": 4,
+                "type": "concept",
+                "content": "stable content",
+                "embedding_vec": [0.1, 0.2],
+                "metadata": {"_embedding": [0.1, 0.2], "topic": "stable"},
+            },
+            [
+                {"op": "replace", "path": "/updated_at", "value": "2026-09-24T11:59:00Z"},
+                {"op": "replace", "path": "/access_frequency", "value": 3},
+                {"op": "replace", "path": "/metadata/last_recalled", "value": None},
+            ],
+        ),
+        (
+            "neuron",
+            {
+                "id": "neuron:embedding",
+                "brain_id": "brain-a",
+                "created_at": datetime(2026, 9, 20),
+                "updated_at": datetime(2026, 9, 24, 12, 0),
+                "metadata": {"_embedding": [0.1, 0.2], "recall_count": 4},
+            },
+            [
+                {
+                    "op": "replace",
+                    "path": "/metadata",
+                    "value": {"_embedding": [0.1, 0.2], "recall_count": 3},
+                }
+            ],
+        ),
+        (
+            "neuron",
+            {
+                "id": "neuron:metadata-without-embedding",
+                "brain_id": "brain-a",
+                "created_at": datetime(2026, 9, 20),
+                "updated_at": datetime(2026, 9, 24, 12, 0),
+                "metadata": {"recall_count": 4},
+            },
+            [{"op": "remove", "path": "/metadata"}],
+        ),
+        (
+            "synapse",
+            {
+                "id": "synapse:recall-edge",
+                "brain_id": "brain-a",
+                "created_at": datetime(2026, 9, 20),
+                "in": "neuron:recall",
+                "out": "neuron:target",
+                "type": "related_to",
+                "weight": 0.75,
+                "last_activated": datetime(2026, 9, 24, 12, 0),
+                "reinforced_count": 4,
+                "metadata": {"seen": True},
+            },
+            [
+                {"op": "replace", "path": "/weight", "value": 0.5},
+                {"op": "replace", "path": "/last_activated", "value": None},
+                {"op": "replace", "path": "/reinforced_count", "value": 3},
+                {"op": "replace", "path": "/metadata/seen", "value": False},
+            ],
+        ),
+    ],
+)
+async def test_frozen_fence_accepts_actual_reverse_diff_for_projection_neutral_updates(
+    table: str, current: dict[str, Any], reverse_patch: list[dict[str, Any]]
+) -> None:
+    storage = _RevisionStorage()
+    cutoff = storage.now
+    storage.change_rows[table] = [
+        {
+            "versionstamp": 101,
+            "changes": [{"current": current, "update": reverse_patch}],
+        }
+    ]
+
+    await storage.assert_semantic_source_unchanged(
+        _token(captured_at=cutoff - timedelta(seconds=1), created_at_readonly=True),
+        created_before=cutoff,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("table", "current", "reverse_patch"),
+    [
+        (
+            "neuron",
+            {
+                "id": "neuron:n",
+                "brain_id": "brain-a",
+                "created_at": datetime(2026, 9, 20),
+                "content": "after",
+            },
+            [{"op": "replace", "path": "/content", "value": "before"}],
+        ),
+        (
+            "neuron",
+            {
+                "id": "neuron:n",
+                "brain_id": "brain-a",
+                "created_at": datetime(2026, 9, 20),
+                "type": "fact",
+            },
+            [{"op": "replace", "path": "/type", "value": "concept"}],
+        ),
+        (
+            "neuron",
+            {
+                "id": "neuron:n",
+                "brain_id": "brain-a",
+                "created_at": datetime(2026, 9, 20),
+                "embedding_vec": [0.3],
+            },
+            [{"op": "replace", "path": "/embedding_vec", "value": [0.1]}],
+        ),
+        (
+            "neuron",
+            {
+                "id": "neuron:n",
+                "brain_id": "brain-a",
+                "created_at": datetime(2026, 9, 20),
+                "metadata": {"_embedding": [0.3]},
+            },
+            [{"op": "replace", "path": "/metadata/_embedding", "value": [0.1]}],
+        ),
+        (
+            "neuron",
+            {
+                "id": "neuron:n",
+                "brain_id": "brain-a",
+                "created_at": datetime(2026, 9, 20),
+                "metadata": {"_embedding": [0.3], "recall_count": 4},
+            },
+            [
+                {
+                    "op": "replace",
+                    "path": "/metadata",
+                    "value": {"_embedding": [0.1], "recall_count": 3},
+                }
+            ],
+        ),
+        (
+            "neuron",
+            {
+                "id": "neuron:embedding-remove",
+                "brain_id": "brain-a",
+                "created_at": datetime(2026, 9, 20),
+                "metadata": {"_embedding": [0.3]},
+            },
+            [{"op": "remove", "path": "/metadata"}],
+        ),
+        (
+            "neuron",
+            {
+                "id": "neuron:new-id",
+                "brain_id": "brain-a",
+                "created_at": datetime(2026, 9, 20),
+            },
+            [{"op": "replace", "path": "/id", "value": "neuron:old-id"}],
+        ),
+        (
+            "neuron",
+            {
+                "id": "neuron:n",
+                "brain_id": "brain-a",
+                "created_at": datetime(2026, 9, 20),
+                "updated_at": datetime(2026, 9, 24),
+            },
+            [{"op": "replace", "path": "", "value": {"id": "neuron:n"}}],
+        ),
+        (
+            "neuron",
+            {
+                "id": "neuron:n",
+                "brain_id": "brain-a",
+                "created_at": datetime(2026, 9, 20),
+                "updated_at": datetime(2026, 9, 24),
+            },
+            [{"op": "move", "path": "/updated_at", "from": "/access_frequency"}],
+        ),
+        (
+            "neuron",
+            {
+                "id": "neuron:n",
+                "brain_id": "brain-a",
+                "created_at": datetime(2026, 9, 20),
+                "updated_at": datetime(2026, 9, 24),
+            },
+            [{"op": "replace", "path": "/mystery", "value": 1}],
+        ),
+        (
+            "synapse",
+            {
+                "id": "synapse:e",
+                "brain_id": "brain-a",
+                "created_at": datetime(2026, 9, 20),
+                "in": "neuron:a",
+                "out": "neuron:b",
+                "type": "related_to",
+            },
+            [{"op": "replace", "path": "/in", "value": "neuron:other"}],
+        ),
+    ],
+)
+async def test_frozen_fence_rejects_semantic_identity_and_malformed_reverse_diffs(
+    table: str, current: dict[str, Any], reverse_patch: list[dict[str, Any]]
+) -> None:
+    storage = _RevisionStorage()
+    cutoff = storage.now
+    storage.change_rows[table] = [
+        {
+            "versionstamp": 101,
+            "changes": [{"current": current, "update": reverse_patch}],
+        }
+    ]
+
+    with pytest.raises((SemanticSourceChangedError, SemanticSourceFenceUnavailableError)):
+        await storage.assert_semantic_source_unchanged(
+            _token(captured_at=cutoff - timedelta(seconds=1), created_at_readonly=True),
+            created_before=cutoff,
+        )
+
+
+def test_surreal_text_change_reverse_diffs_follow_the_projection() -> None:
+    classify = SurrealDBSemanticSourceRevisionMixin._projection_neutral_update
+    diff = "@@ -1,5 +1,6 @@\n tobi\n-e\n+as\n"
+    assert classify("neuron", {}, [{"op": "change", "path": "/content", "value": diff}]) is False
+    assert (
+        classify("neuron", {}, [{"op": "change", "path": "/metadata/context", "value": diff}])
+        is True
+    )
+    assert classify("neuron", {}, [{"op": "change", "path": "/content", "value": 1}]) is None
+
+
+@pytest.mark.asyncio
+async def test_frozen_fence_rejects_invalid_unknown_missing_and_cross_brain_reverse_diffs() -> None:
+    storage = _RevisionStorage()
+    cutoff = storage.now
+    base = {
+        "id": "neuron:n",
+        "brain_id": "brain-a",
+        "created_at": datetime(2026, 9, 20),
+        "updated_at": cutoff,
+    }
+    malformed = [
+        {"current": {**base, "id": "invalid-id"}, "update": []},
+        {
+            "current": {**base, "brain_id": "brain-b"},
+            "update": [
+                {"op": "replace", "path": "/updated_at", "value": cutoff - timedelta(seconds=1)}
+            ],
+        },
+        {"current": base, "update": [{"op": "replace", "path": "/updated_at"}]},
+        {"current": base},
+    ]
+    token = _token(captured_at=cutoff - timedelta(seconds=1), created_at_readonly=True)
+    for change in malformed:
+        storage.change_rows["neuron"] = [{"versionstamp": 101, "changes": [change]}]
+        with pytest.raises((SemanticSourceChangedError, SemanticSourceFenceUnavailableError)):
+            await storage.assert_semantic_source_unchanged(token, created_before=cutoff)
+
+
+@pytest.mark.asyncio
+async def test_empty_reverse_diff_proves_no_change_only_with_frozen_cutoff() -> None:
+    storage = _RevisionStorage()
+    token = _token(captured_at=storage.now - timedelta(seconds=1), created_at_readonly=True)
+    storage.change_rows["neuron"] = [
+        {
+            "versionstamp": 101,
+            "changes": [
+                {
+                    "current": {
+                        "id": "neuron:n",
+                        "brain_id": "brain-a",
+                        "created_at": storage.now - timedelta(days=1),
+                    },
+                    "update": [],
+                }
+            ],
+        }
+    ]
+    await storage.assert_semantic_source_unchanged(token, created_before=storage.now)
+    with pytest.raises(SemanticSourceChangedError):
+        await storage.assert_semantic_source_unchanged(token)
+
+
+@pytest.mark.asyncio
+async def test_reverse_diff_is_strict_without_frozen_cutoff_and_plain_updates_stay_strict() -> None:
+    storage = _RevisionStorage()
+    cutoff = storage.now
+    token = _token(captured_at=cutoff - timedelta(seconds=1), created_at_readonly=True)
+    storage.change_rows["neuron"] = [
+        {
+            "versionstamp": 101,
+            "changes": [
+                {
+                    "current": {
+                        "id": "neuron:n",
+                        "brain_id": "brain-a",
+                        "created_at": cutoff - timedelta(days=1),
+                        "updated_at": cutoff,
+                        "content": "same",
+                    },
+                    "update": [
+                        {
+                            "op": "replace",
+                            "path": "/updated_at",
+                            "value": cutoff - timedelta(seconds=1),
+                        }
+                    ],
+                }
+            ],
+        }
+    ]
+    with pytest.raises(SemanticSourceChangedError, match="neuron changed"):
+        await storage.assert_semantic_source_unchanged(token)
+
+    storage.change_rows["neuron"] = [
+        {
+            "versionstamp": 102,
+            "changes": [
+                {
+                    "update": {
+                        "id": "neuron:n",
+                        "brain_id": "brain-a",
+                        "created_at": cutoff + timedelta(seconds=1),
+                        "updated_at": cutoff + timedelta(seconds=1),
+                    }
+                }
+            ],
+        }
+    ]
+    with pytest.raises(SemanticSourceChangedError, match="neuron changed"):
+        await storage.assert_semantic_source_unchanged(
+            _token(captured_at=cutoff - timedelta(seconds=1), created_at_readonly=False),
+            created_before=cutoff,
+        )
+
+
+@pytest.mark.asyncio
+async def test_change_table_attributes_actual_reverse_diff_under_database_feed_noise() -> None:
+    storage = _RevisionStorage()
+    event = {
+        "versionstamp": 17,
+        "changes": [
+            {"current": {"id": "neuron:changed"}, "update": []},
+            {"create": {"id": "fence_noise:1"}},
+        ],
+    }
+
+    assert SurrealDBSemanticSourceRevisionMixin._change_table(event["changes"][0]) == "neuron"
+
+    async def query(sql: str, **params: Any) -> list[dict[str, Any]]:
+        return [event]
+
+    storage._query = query  # type: ignore[method-assign]
+    assert await SurrealDBSemanticSourceRevisionMixin._show_table_changes(
+        storage, "neuron", 0, 1
+    ) == [{**event, "changes": [event["changes"][0]]}]
+
+
+def _table_reassertion(table: str, *, original: bool = False) -> dict[str, Any]:
     return {
         "id": 25,
         "name": table,
-        "changefeed": {"expiry": "1w", "original": False},
+        "changefeed": {"expiry": "1w", "original": original},
         "drop": False,
         "kind": (
             {"kind": "ANY"}
@@ -230,12 +602,18 @@ def _table_reassertion(table: str) -> dict[str, Any]:
 
 
 @pytest.mark.asyncio
-async def test_frozen_fence_ignores_only_unchanged_source_table_reassertions() -> None:
+@pytest.mark.parametrize("original", [False, True])
+async def test_frozen_fence_ignores_only_unchanged_source_table_reassertions(
+    original: bool,
+) -> None:
     storage = _RevisionStorage()
     token = _token(captured_at=storage.now - timedelta(seconds=1), created_at_readonly=True)
     for table in ("neuron", "synapse"):
         storage.change_rows[table] = [
-            {"versionstamp": 101, "changes": [{"define_table": _table_reassertion(table)}]}
+            {
+                "versionstamp": 101,
+                "changes": [{"define_table": _table_reassertion(table, original=original)}],
+            }
         ]
 
     await storage.assert_semantic_source_unchanged(token, created_before=storage.now)

@@ -196,6 +196,121 @@ async def test_frozen_reference_ignores_late_inserts_in_scans_and_source_fence(s
 
 
 @pytest.mark.asyncio
+async def test_frozen_fence_accepts_real_reverse_diffs_for_recall_metadata_and_weight(
+    store,
+) -> None:
+    created_at = store._parse_datetime(
+        await store._query_response("RETURN time::now()")
+    ) - timedelta(seconds=5)
+    source = replace(
+        Neuron.create(type=NeuronType.CONCEPT, content="stable-source"), created_at=created_at
+    )
+    target = replace(
+        Neuron.create(type=NeuronType.ENTITY, content="stable-target"), created_at=created_at
+    )
+    await store.add_neuron(source)
+    await store.add_neuron(target)
+    edge = replace(
+        Synapse.create(source_id=source.id, target_id=target.id, type=SynapseType.RELATED_TO),
+        created_at=created_at,
+    )
+    await store.add_synapse(edge)
+
+    reference_time = store._parse_datetime(await store._query_response("RETURN time::now()"))
+    token = await store.capture_semantic_source_token()
+    versionstamp, _, _ = store._decode_token(token, store.current_brain_id)
+
+    await store.update_neuron(replace(source, metadata={"last_recalled_at": utcnow().isoformat()}))
+    await store.update_synapse(
+        replace(edge, weight=0.8, metadata={"last_recalled_at": utcnow().isoformat()})
+    )
+    unchanged_edge = await store.get_synapse(edge.id)
+    assert unchanged_edge is not None
+    await store.update_synapse(unchanged_edge)
+
+    for table in ("neuron", "synapse"):
+        events = await store._show_table_changes(table, versionstamp, 10)
+        changes = [change for event in events for change in event.get("changes", [])]
+        assert any(
+            set(change) == {"current", "update"} and isinstance(change["update"], list)
+            for change in changes
+        )
+
+    await store.assert_semantic_source_unchanged(token, created_before=reference_time)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mutation_name", ["content", "type", "embedding", "endpoint", "delete"])
+async def test_frozen_fence_rejects_real_content_type_embedding_endpoint_and_delete_changes(
+    store,
+    mutation_name: str,
+) -> None:
+    created_at = store._parse_datetime(
+        await store._query_response("RETURN time::now()")
+    ) - timedelta(seconds=5)
+    source = replace(
+        Neuron.create(type=NeuronType.CONCEPT, content="stable-source"), created_at=created_at
+    )
+    target = replace(
+        Neuron.create(type=NeuronType.ENTITY, content="stable-target"), created_at=created_at
+    )
+    await store.add_neuron(source)
+    await store.add_neuron(target)
+    edge = replace(
+        Synapse.create(source_id=source.id, target_id=target.id, type=SynapseType.RELATED_TO),
+        created_at=created_at,
+    )
+    await store.add_synapse(edge)
+    reference_time = store._parse_datetime(await store._query_response("RETURN time::now()"))
+
+    async def must_invalidate(mutation) -> None:
+        token = await store.capture_semantic_source_token()
+        await mutation()
+        with pytest.raises(SemanticSourceChangedError):
+            await store.assert_semantic_source_unchanged(token, created_before=reference_time)
+
+    async def change_content() -> None:
+        current = await store.get_neuron(source.id)
+        assert current is not None
+        await store.update_neuron(replace(current, content="changed-content"))
+
+    async def change_type() -> None:
+        current = await store.get_neuron(source.id)
+        assert current is not None
+        await store.update_neuron(replace(current, type=NeuronType.ACTION))
+
+    async def change_embedding() -> None:
+        current = await store.get_neuron(source.id)
+        assert current is not None
+        await store.update_neuron(
+            replace(current, metadata={"_embedding": [0.1] * store._embedding_dim})
+        )
+        changed = await store.get_neuron(source.id)
+        assert changed is not None
+        assert changed.metadata["_embedding"] == [0.1] * store._embedding_dim
+
+    async def change_endpoint() -> None:
+        # Native relation endpoints require replacing the edge.
+        assert await store.delete_synapse(edge.id)
+        await store.add_synapse(replace(edge, target_id=source.id))
+        changed = await store.get_synapse(edge.id)
+        assert changed is not None
+        assert changed.target_id == source.id
+
+    async def delete_edge() -> None:
+        assert await store.delete_synapse(edge.id)
+
+    mutations = {
+        "content": change_content,
+        "type": change_type,
+        "embedding": change_embedding,
+        "endpoint": change_endpoint,
+        "delete": delete_edge,
+    }
+    await must_invalidate(mutations[mutation_name])
+
+
+@pytest.mark.asyncio
 async def test_frozen_fence_ignores_unchanged_source_table_ddl_but_rejects_old_update(
     store,
 ) -> None:
@@ -212,7 +327,7 @@ async def test_frozen_fence_ignores_unchanged_source_table_ddl_but_rejects_old_u
     token = await store.capture_semantic_source_token()
     barrier_stamp, _, _ = store._decode_token(token, store.current_brain_id)
 
-    await store._query("ALTER TABLE neuron CHANGEFEED 7d")
+    await store._query("ALTER TABLE neuron CHANGEFEED 7d INCLUDE ORIGINAL")
     await store._query("ALTER TABLE synapse CHANGEFEED 7d")
 
     for table in ("neuron", "synapse"):

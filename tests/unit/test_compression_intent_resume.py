@@ -19,6 +19,7 @@ from surreal_memory.engine.consolidation import (
     ConsolidationReport,
     ConsolidationStrategy,
 )
+from surreal_memory.engine.consolidation_progress import ConsolidationPausedError
 from surreal_memory.storage.memory_store import InMemoryStorage
 from surreal_memory.utils.timeutils import utcnow
 
@@ -245,6 +246,7 @@ class _Progress:
     def __init__(self) -> None:
         self.state: dict[str, Any] = {"run_id": "run-1", "strategy_states": {}}
         self.fail = True
+        self.writes: list[tuple[str, str | None]] = []
 
     def strategy_state(self, strategy: str) -> dict[str, Any]:
         return self.state["strategy_states"].setdefault(strategy, {})
@@ -264,6 +266,147 @@ class _Progress:
         self.strategy_state(strategy).update(
             phase=phase, cursor=cursor, pending=pending, counters=dict(counters or {})
         )
+        self.writes.append((phase, cursor))
+
+
+async def _scan_store(count: int, *, varied_skips: bool = True) -> InMemoryStorage:
+    store = InMemoryStorage()
+    brain = Brain.create(name="compression-skip-scan")
+    await store.save_brain(brain)
+    store.set_brain(brain.id)
+    for index in range(count):
+        await store.add_fiber(
+            Fiber(
+                id=f"f-{index:05d}",
+                neuron_ids=set(),
+                synapse_ids=set(),
+                anchor_neuron_id="none",
+                compression_tier=int(CompressionTier.GRAPH_ONLY),
+                created_at=utcnow() - timedelta(days=15),
+                pinned=varied_skips and index % 3 == 0,
+                metadata={"_verbatim": varied_skips and index % 3 == 1},
+            )
+        )
+    return store
+
+
+def _compression_engine(store: InMemoryStorage, progress: _Progress) -> ConsolidationEngine:
+    engine = ConsolidationEngine(store, ConsolidationConfig())
+    engine._active_strategy = ConsolidationStrategy.COMPRESS
+    engine._progress_session = progress  # type: ignore[assignment]
+    return engine
+
+
+@pytest.mark.asyncio
+async def test_compression_skips_checkpoint_once_per_keyset_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = await _scan_store(501)
+    monkeypatch.setattr(
+        CompressionEngine,
+        "determine_target_tier",
+        lambda _self, _fiber, _now, *, heat_score: CompressionTier.GRAPH_ONLY,
+    )
+    progress = _Progress()
+    progress.fail = False
+
+    await _compression_engine(store, progress)._compress(ConsolidationReport(), utcnow(), False)
+
+    assert progress.writes == [
+        ("compress_fibers", "f-00249"),
+        ("compress_fibers", "f-00499"),
+        ("compress_fibers", "f-00500"),
+    ]
+    assert progress.strategy_state("compress")["counters"]["fibers_compressed"] == 0
+
+
+@pytest.mark.asyncio
+async def test_compression_budget_pause_replays_from_last_page_cursor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = await _scan_store(300, varied_skips=False)
+    visited: list[str] = []
+
+    def target(
+        _self: CompressionEngine, fiber: Fiber, _now: Any, *, heat_score: float
+    ) -> CompressionTier:
+        visited.append(fiber.id)
+        return CompressionTier.GRAPH_ONLY
+
+    monkeypatch.setattr(CompressionEngine, "determine_target_tier", target)
+    progress = _Progress()
+    progress.fail = False
+    engine = _compression_engine(store, progress)
+    check_count = 0
+    pause = True
+    original_check = engine._check_progress_budget
+
+    async def pause_midpage() -> None:
+        nonlocal check_count
+        check_count += 1
+        if pause and check_count == 275:
+            raise ConsolidationPausedError("simulated midpage budget interruption")
+        await original_check()
+
+    monkeypatch.setattr(engine, "_check_progress_budget", pause_midpage)
+    with pytest.raises(ConsolidationPausedError, match="midpage"):
+        await engine._compress(ConsolidationReport(), utcnow(), False)
+
+    assert progress.strategy_state("compress")["cursor"] == "f-00249"
+    assert visited[:250] == [f"f-{index:05d}" for index in range(250)]
+    pause = False
+    before_resume = len(visited)
+    await engine._compress(ConsolidationReport(), utcnow(), False)
+
+    assert visited[before_resume:] == [f"f-{index:05d}" for index in range(250, 300)]
+    assert progress.strategy_state("compress")["cursor"] == "f-00299"
+
+
+@pytest.mark.asyncio
+async def test_skipped_result_defers_checkpoint_but_pending_and_receipt_do_not(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    store = await _scan_store(250)
+    # Place three distinct outcomes after an initial span of ordinary no-ops.
+    for index, pending, receipt in (
+        (240, None, None),
+        (241, {"target_tier": int(CompressionTier.EXTRACTIVE)}, None),
+        (242, None, None),
+        (243, None, {"run_id": "run-1", "target_tier": 0, "tokens_saved": 7}),
+    ):
+        fiber = await store.get_fiber(f"f-{index:05d}")
+        assert fiber is not None
+        metadata = dict(fiber.metadata)
+        if pending is not None:
+            metadata["_compression_pending"] = pending
+        if receipt is not None:
+            metadata["_compression_receipt"] = receipt
+        await store.update_fiber(
+            replace(fiber, compression_tier=0, pinned=False, metadata=metadata)
+        )
+    monkeypatch.setattr(
+        CompressionEngine,
+        "determine_target_tier",
+        lambda _self, _fiber, _now, *, heat_score: CompressionTier.EXTRACTIVE,
+    )
+
+    async def compress(_self: Any, fiber: Fiber, _tier: Any, **_kwargs: Any) -> Any:
+        return SimpleNamespace(skipped=fiber.id in {"f-00241", "f-00242"}, tokens_saved=0)
+
+    # Pending cleanup and the concurrent no-intent skip both return skipped.
+    monkeypatch.setattr(CompressionEngine, "compress_fiber", compress)
+    progress = _Progress()
+    progress.fail = False
+    await _compression_engine(store, progress)._compress(ConsolidationReport(), utcnow(), False)
+
+    assert progress.writes == [
+        ("compress_fibers", "f-00240"),
+        ("compress_fibers", "f-00241"),
+        ("compress_fibers", "f-00243"),
+        ("compress_fibers", "f-00249"),
+    ]
 
 
 @pytest.mark.asyncio

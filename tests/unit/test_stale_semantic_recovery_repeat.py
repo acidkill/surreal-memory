@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from surreal_memory.engine.consolidation import ConsolidationStrategy
+from surreal_memory.engine.consolidation import ConsolidationReport, ConsolidationStrategy
 from surreal_memory.engine.consolidation_progress import (
     ConsolidationResumeMismatchError,
     recover_stale_semantic_link_discovery,
@@ -256,3 +256,116 @@ async def test_failed_repeat_cas_race_does_not_reset_checkpoint() -> None:
     assert storage.progress == original
     assert len(storage.cas_calls) == 1
     assert storage.lease_owner is None
+
+
+@pytest.mark.asyncio
+async def test_first_stale_recovery_preserves_other_strategies_and_can_repeat() -> None:
+    storage = StaleRecoveryStorage()
+    semantic = storage.progress["strategy_states"]["semantic_link"]
+    semantic.pop("recovery")
+    semantic.pop("recovery_history")
+    storage.progress["strategy_states"]["prune"] = {
+        "phase": "completed",
+        "counters": {"synapses_pruned": 12},
+    }
+    storage.progress["counters"]["prune"] = {"synapses_pruned": 12}
+    original = deepcopy(storage.progress)
+
+    await recover_stale_semantic_link_discovery(storage, **_arguments())
+    assert storage.progress == original
+    assert storage.cas_calls == []
+    await recover_stale_semantic_link_discovery(storage, **_arguments(), dry_run=False)
+    assert storage.progress["status"] == "paused"
+    assert storage.progress["run_id"] == original["run_id"]
+    assert storage.progress["reference_time"] == original["reference_time"]
+    assert storage.progress["completed_strategies"] == original["completed_strategies"]
+    assert storage.progress["counters"] == original["counters"]
+    assert storage.progress["strategy_states"]["prune"] == original["strategy_states"]["prune"]
+    assert len(storage.progress["strategy_states"]["semantic_link"]["recovery_history"]) == 1
+    retry = await recover_stale_semantic_link_discovery(
+        storage, **{**_arguments(), "expected_status": "paused"}, dry_run=False
+    )
+    assert retry["already_recovered"] is True
+    assert len(storage.cas_calls) == 1
+
+    # A later attempt can encounter a new mutation without a legacy repair ancestor.
+    repaired = storage.progress["strategy_states"]["semantic_link"]
+    repaired.update(phase=semantic["phase"], cursor=semantic["cursor"], pending=semantic["pending"])
+    storage.progress.update(status="failed", phase=semantic["phase"], cursor=semantic["cursor"])
+    await recover_stale_semantic_link_discovery(storage, **_arguments(), dry_run=False)
+    assert len(storage.progress["strategy_states"]["semantic_link"]["recovery_history"]) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure", ["graph_effect", "source_unchanged", "orphan_history", "lease_lost", "cas_race"]
+)
+async def test_first_stale_recovery_keeps_safety_guards(failure: str) -> None:
+    storage = StaleRecoveryStorage(
+        source_changed=failure != "source_unchanged", cas_race=failure == "cas_race"
+    )
+    semantic = storage.progress["strategy_states"]["semantic_link"]
+    semantic.pop("recovery")
+    semantic.pop("recovery_history")
+    if failure == "graph_effect":
+        semantic["counters"] = {"semantic_synapses_created": 1}
+        storage.progress["counters"]["semantic_link"] = dict(semantic["counters"])
+    elif failure == "orphan_history":
+        semantic["recovery_history"] = [{"kind": "unknown"}]
+    elif failure == "lease_lost":
+
+        async def lost(*args: Any, **kwargs: Any) -> bool:
+            return False
+
+        storage.renew_consolidation_lease = lost  # type: ignore[method-assign]
+    original = deepcopy(storage.progress)
+    from surreal_memory.engine.consolidation_progress import ConsolidationProgressError
+
+    with pytest.raises(ConsolidationProgressError):
+        await recover_stale_semantic_link_discovery(storage, **_arguments(), dry_run=False)
+    assert storage.progress == original
+    assert storage.lease_owner is None
+
+
+def test_failed_report_does_not_suggest_ineligible_data() -> None:
+    report = ConsolidationReport(started_at=REFERENCE_TIME)
+    report.extra["consolidation_status"] = "failed"
+    report.extra["failed_strategies"] = [
+        "semantic_link (progress coordination: ConsolidationProgressError)"
+    ]
+    assert "Why nothing changed" not in report.summary()
+    assert "Stages failed: semantic_link" in report.summary()
+
+
+@pytest.mark.asyncio
+async def test_stale_discovery_error_points_to_read_only_recovery_preview(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from surreal_memory.engine.consolidation_progress import ConsolidationProgressError
+    from tests.unit.test_consolidation_mid_strategies_resume import _engine, _Progress, _Storage
+
+    storage = _Storage()
+    progress = _Progress("semantic_link")
+    progress.strategy_state("semantic_link").update(
+        phase="semantic_link_discovery_neurons",
+        pending=[json.dumps({"kind": "semantic_link_discovery", "version": 3})],
+        counters={},
+    )
+
+    async def changed(*args: Any, **kwargs: Any) -> None:
+        raise SemanticSourceChangedError("neuron changed since capture")
+
+    monkeypatch.setattr(
+        "surreal_memory.engine.semantic_discovery.discover_semantic_synapses", changed
+    )
+    with pytest.raises(ConsolidationProgressError) as caught:
+        await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+            ConsolidationReport(), dry_run=False
+        )
+    message = str(caught.value)
+    assert "recover-semantic-discovery" in message
+    assert "--run-id test-run" in message
+    assert "--stale-source" in message
+    assert "--execute" not in message
+    assert storage.added_synapses == []
+    assert progress.writes == []

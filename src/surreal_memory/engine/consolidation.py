@@ -707,7 +707,12 @@ class ConsolidationReport:
     def _eligibility_hints(self) -> list[str]:
         """Explain why consolidation produced no changes."""
         hints: list[str] = []
-        if self.extra.get("consolidation_status") == "blocked":
+        if self.extra.get("consolidation_status") in {
+            "blocked",
+            "failed",
+            "lease_lost",
+            "timed_out",
+        }:
             return hints
         total_changes = (
             self.synapses_pruned
@@ -10418,6 +10423,7 @@ class ConsolidationEngine:
         """
         import json
         import logging
+        import shlex
         import sqlite3
         import tempfile
 
@@ -10427,6 +10433,9 @@ class ConsolidationEngine:
         from surreal_memory.engine.semantic_discovery import (
             _SemanticFingerprintBuilder,
             discover_semantic_synapses,
+        )
+        from surreal_memory.storage.surrealdb.semantic_source_revision import (
+            SemanticSourceChangedError,
         )
 
         logger = logging.getLogger(__name__)
@@ -10784,6 +10793,22 @@ class ConsolidationEngine:
                 )
             except ConsolidationProgressError:
                 raise
+            except SemanticSourceChangedError as exc:
+                preview = shlex.join(
+                    [
+                        "smem",
+                        "recover-semantic-discovery",
+                        "--brain",
+                        brain_id,
+                        "--run-id",
+                        str(self._progress_session.state["run_id"]),
+                        "--stale-source",
+                    ]
+                )
+                raise ConsolidationProgressError(
+                    f"semantic_link source changed; discovery checkpoint preserved: {exc}. "
+                    f"Recovery preflight (no reset): {preview}"
+                ) from exc
             except RuntimeError as exc:
                 raise ConsolidationProgressError(
                     f"semantic_link discovery requires optimization or a safe restart: {exc}"
@@ -11049,7 +11074,7 @@ class ConsolidationEngine:
         reference_time: datetime,
         dry_run: bool,
     ) -> None:
-        """Compress fibers in stable, individually checkpointed work units."""
+        """Checkpoint compression effects immediately and skipped spans per page."""
         import logging as _logging
         import time as _time
 
@@ -11136,7 +11161,7 @@ class ConsolidationEngine:
                 )
                 continue
             if (fiber.pinned or fiber.metadata.get("_verbatim")) and pending is None:
-                if not dry_run:
+                if not dry_run and remaining_on_page == 1:
                     await self._checkpoint_progress(
                         "compress_fibers",
                         cursor=fiber_cursor,
@@ -11159,7 +11184,7 @@ class ConsolidationEngine:
                 )
             )
             if pending is None and int(target_tier) <= fiber.compression_tier:
-                if not dry_run:
+                if not dry_run and remaining_on_page == 1:
                     await self._checkpoint_progress(
                         "compress_fibers",
                         cursor=fiber_cursor,
@@ -11197,7 +11222,11 @@ class ConsolidationEngine:
             if not result.skipped:
                 total_compressed += 1
                 total_tokens_saved += result.tokens_saved
-            if not dry_run:
+            # Skips have no new compression effect; replay at most one page.
+            # Keep effects and recovered intents durable before the next unit.
+            if not dry_run and (
+                not result.skipped or pending is not None or remaining_on_page == 1
+            ):
                 await self._checkpoint_progress(
                     "compress_fibers",
                     cursor=fiber_cursor,

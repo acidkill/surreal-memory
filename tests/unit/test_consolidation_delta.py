@@ -67,6 +67,28 @@ class TestConsolidationDelta:
         assert "Health Delta:" not in delta.summary()
         assert "Strategies were not executed; checkpoint preserved" in delta.summary()
 
+    def test_failed_summary_omits_unchanged_health_but_keeps_real_health_delta(self) -> None:
+        from surreal_memory.engine.consolidation import ConsolidationReport
+
+        report = ConsolidationReport()
+        report.extra["consolidation_status"] = "failed"
+        unchanged = _make_snapshot()
+        failed_without_effect = ConsolidationDelta(
+            before=unchanged,
+            after=unchanged,
+            report=report,
+            computed_at=datetime(2026, 1, 1),
+        )
+        assert "Health Delta:" not in failed_without_effect.summary()
+
+        failed_after_effect = ConsolidationDelta(
+            before=unchanged,
+            after=_make_snapshot(purity_score=55.0),
+            report=report,
+            computed_at=datetime(2026, 1, 1),
+        )
+        assert "Health Delta:" in failed_after_effect.summary()
+
     def test_purity_delta_positive(self) -> None:
         before = _make_snapshot(purity_score=50.0)
         after = _make_snapshot(purity_score=55.5)
