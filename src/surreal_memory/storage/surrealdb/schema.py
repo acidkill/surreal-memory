@@ -16,8 +16,8 @@ SOURCE_REVISION_DDL: tuple[str, ...] = (
     'WHEN $event = "UPDATE" AND $after.id = schema_meta:version '
     "AND $after.version < $before.version "
     'THEN THROW "Surreal-Memory schema version cannot decrease"',
-    "ALTER TABLE neuron CHANGEFEED 7d",
-    "ALTER TABLE synapse CHANGEFEED 7d",
+    "ALTER TABLE neuron CHANGEFEED 7d INCLUDE ORIGINAL",
+    "ALTER TABLE synapse CHANGEFEED 7d INCLUDE ORIGINAL",
     "DEFINE INDEX idx_synapse_pair_in_out ON synapse FIELDS brain_id, in, out",
     "DEFINE INDEX idx_synapse_pair_out_in ON synapse FIELDS brain_id, out, in",
     "DEFINE INDEX idx_coact_pair_cursor ON co_activations FIELDS brain_id, neuron_a, neuron_b, id",

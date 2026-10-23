@@ -1,9 +1,8 @@
 """Fail-closed mutation fence backed by SurrealDB changefeeds.
 
-The fence is deliberately database-wide: any neuron or synapse mutation
-invalidates tokens for every brain in the database. This is conservative when
-a database contains multiple brains, but avoids relying on changefeed payload
-shapes for deletes and cannot miss a relevant write.
+The fence is deliberately database-wide. With a frozen cutoff, authoritative
+reverse diffs can prove that recall changed only statistics, not the semantic
+source projection. Unknown changes and deletes remain conservatively fenced.
 """
 
 from __future__ import annotations
@@ -95,7 +94,7 @@ class SurrealDBSemanticSourceRevisionMixin:
         return (
             record["name"] == table
             and valid_expiry
-            and feed["original"] is False
+            and isinstance(feed["original"], bool)
             and record["drop"] is False
             and valid_kind
             and record["permissions"]
@@ -163,9 +162,14 @@ class SurrealDBSemanticSourceRevisionMixin:
     @staticmethod
     def _change_table(change: Any) -> str | None:
         """Table a single feed change belongs to, or None when it cannot be told."""
-        if not isinstance(change, Mapping) or len(change) != 1:
+        if not isinstance(change, Mapping):
             return None
-        action, record = next(iter(change.items()))
+        if set(change) == {"current", "update"}:
+            action, record = "update", change["current"]
+        elif len(change) == 1:
+            action, record = next(iter(change.items()))
+        else:
+            return None
         if not isinstance(record, Mapping):
             return None
         if action == "define_table":
@@ -173,6 +177,57 @@ class SurrealDBSemanticSourceRevisionMixin:
             return str(name) if name is not None else None
         record_id = record.get("id")
         return str(record_id).split(":", 1)[0] if record_id is not None else None
+
+    @staticmethod
+    def _projection_neutral_update(
+        table: str, current: Mapping[str, Any], patches: Any
+    ) -> bool | None:
+        """Classify authoritative reverse diffs; None means malformed evidence."""
+        if not isinstance(patches, list):
+            return None
+        neutral_fields = (
+            {"updated_at", "access_frequency"}
+            if table == "neuron"
+            else {"weight", "last_activated", "reinforced_count"}
+        )
+        neutral = True
+        for patch in patches:
+            if not isinstance(patch, Mapping):
+                return None
+            operation = patch.get("op")
+            expected = {"op", "path"} if operation == "remove" else {"op", "path", "value"}
+            if operation not in ("add", "remove", "replace") or set(patch) != expected:
+                return None
+            path = patch.get("path")
+            if not isinstance(path, str) or not path.startswith("/"):
+                return None
+            encoded = path[1:].split("/")
+            if any("~" in part.replace("~0", "").replace("~1", "") for part in encoded):
+                return None
+            parts = [part.replace("~1", "/").replace("~0", "~") for part in encoded]
+            if parts[0] in neutral_fields and len(parts) == 1:
+                continue
+            if parts[0] != "metadata":
+                neutral = False
+                continue
+            if table == "synapse":
+                continue
+            metadata = current.get("metadata", {})
+            if not isinstance(metadata, Mapping):
+                return None
+            if len(parts) > 1:
+                neutral = neutral and parts[1] != "_embedding"
+                continue
+            previous = {} if operation == "remove" else patch["value"]
+            if not isinstance(previous, Mapping):
+                return None
+            try:
+                before = json.dumps(previous.get("_embedding"), sort_keys=True, allow_nan=False)
+                after = json.dumps(metadata.get("_embedding"), sort_keys=True, allow_nan=False)
+            except (TypeError, ValueError):
+                return None
+            neutral = neutral and before == after
+        return neutral
 
     async def _show_table_changes(
         self, table: str, since: int | str, limit: int
@@ -428,13 +483,15 @@ class SurrealDBSemanticSourceRevisionMixin:
     async def assert_semantic_source_unchanged(
         self, since_token: str, *, created_before: datetime | None = None
     ) -> None:
-        """Raise for source changes except provably post-reference-time records.
+        """Raise except for proven neutral updates and post-reference records.
 
         Without a frozen cutoff, retain the legacy conservative check. With a
         cutoff, full-record events whose ``created_at`` is after the cutoff are
         irrelevant only when the token attests that both source fields were
         READONLY at capture. Legacy tokens require a visible post-reference
         create before later updates/deletes can be ignored.
+        Reverse diffs may also prove that old records changed only fields
+        outside the semantic fingerprint; plain old-record updates stay fenced.
         """
         brain_id = self._get_brain_id()
         versionstamp, captured_at, created_at_readonly = self._decode_token(since_token, brain_id)
@@ -538,11 +595,28 @@ class SurrealDBSemanticSourceRevisionMixin:
                             f"{table} changefeed returned an invalid event"
                         )
                     for change in changes:
-                        if not isinstance(change, Mapping) or len(change) != 1:
+                        if not isinstance(change, Mapping):
                             raise SemanticSourceFenceUnavailableError(
                                 f"{table} changefeed returned an unclassifiable change"
                             )
-                        action, record = next(iter(change.items()))
+                        neutral_update = False
+                        if set(change) == {"current", "update"}:
+                            action, record = "update", change["current"]
+                            if isinstance(record, Mapping):
+                                evidence = self._projection_neutral_update(
+                                    table, record, change["update"]
+                                )
+                                if evidence is None:
+                                    raise SemanticSourceFenceUnavailableError(
+                                        f"{table} changefeed returned an invalid reverse diff"
+                                    )
+                                neutral_update = evidence
+                        elif len(change) == 1:
+                            action, record = next(iter(change.items()))
+                        else:
+                            raise SemanticSourceFenceUnavailableError(
+                                f"{table} changefeed returned an unclassifiable change"
+                            )
                         if not isinstance(record, Mapping):
                             raise SemanticSourceFenceUnavailableError(
                                 f"{table} changefeed returned an invalid record"
@@ -596,6 +670,8 @@ class SurrealDBSemanticSourceRevisionMixin:
                                 f"{table} changefeed returned an invalid created_at"
                             ) from exc
                         if created_at <= created_before:
+                            if neutral_update:
+                                continue
                             raise SemanticSourceChangedError(
                                 f"{table} changed since the semantic source token was captured"
                             )
