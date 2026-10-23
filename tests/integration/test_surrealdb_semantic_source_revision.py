@@ -241,8 +241,10 @@ async def test_frozen_fence_accepts_real_reverse_diffs_for_recall_metadata_and_w
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mutation_name", ["content", "type", "embedding", "endpoint", "delete"])
 async def test_frozen_fence_rejects_real_content_type_embedding_endpoint_and_delete_changes(
     store,
+    mutation_name: str,
 ) -> None:
     created_at = store._parse_datetime(
         await store._query_response("RETURN time::now()")
@@ -284,6 +286,9 @@ async def test_frozen_fence_rejects_real_content_type_embedding_endpoint_and_del
         await store.update_neuron(
             replace(current, metadata={"_embedding": [0.1] * store._embedding_dim})
         )
+        changed = await store.get_neuron(source.id)
+        assert changed is not None
+        assert changed.metadata["_embedding"] == [0.1] * store._embedding_dim
 
     async def change_endpoint() -> None:
         await store._query(
@@ -291,12 +296,21 @@ async def test_frozen_fence_rejects_real_content_type_embedding_endpoint_and_del
             id=_to_surreal_id(edge.id),
             target_id=_to_surreal_id(source.id),
         )
+        changed = await store.get_synapse(edge.id)
+        assert changed is not None
+        assert changed.target_id == source.id
 
     async def delete_edge() -> None:
         assert await store.delete_synapse(edge.id)
 
-    for mutation in (change_content, change_type, change_embedding, change_endpoint, delete_edge):
-        await must_invalidate(mutation)
+    mutations = {
+        "content": change_content,
+        "type": change_type,
+        "embedding": change_embedding,
+        "endpoint": change_endpoint,
+        "delete": delete_edge,
+    }
+    await must_invalidate(mutations[mutation_name])
 
 
 @pytest.mark.asyncio
