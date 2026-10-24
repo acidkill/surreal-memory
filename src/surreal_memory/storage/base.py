@@ -2174,7 +2174,9 @@ class NeuralStorage(ABC):
         """
         raise NotImplementedError
 
-    async def collapse_pending_updates(self, max_rows: int = 200_000) -> int:
+    async def collapse_pending_updates(
+        self, max_rows: int = 200_000, cursor: str | None = None
+    ) -> tuple[int, str | None, bool]:
         """Drop pending ``update`` rows superseded by a newer pending update.
 
         Replication converges on the newest payload per entity, so only the
@@ -2187,11 +2189,19 @@ class NeuralStorage(ABC):
         ``insert``/``delete`` rows and any row already marked synced must be
         left untouched -- see the SurrealDB implementation for why.
 
+        The cursor records the sequence high-water mark observed on the first
+        page and advances through bounded candidate pages. A later page compares
+        each candidate with the newest eligible row globally, so a page boundary
+        cannot hide a newer update. Equal maximum sequences are kept because
+        their ordering is ambiguous. Concurrent writers may append rows within
+        that range; a later consolidation run handles any append outside it.
+
         Args:
-            max_rows: Upper bound on rows removed in a single pass.
+            max_rows: Maximum eligible candidates examined in this page.
+            cursor: Opaque continuation returned by the previous page.
 
         Returns:
-            Count of rows deleted.
+            Deleted count, next cursor, and whether the observed range is exhausted.
         """
         raise NotImplementedError
 

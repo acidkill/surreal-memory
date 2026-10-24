@@ -138,7 +138,14 @@ async def test_collapse_preserves_replay_state_brain_scope_and_protected_rows(
         return await original_query_response(sql, **params)
 
     storage._query_response = capture  # type: ignore[method-assign]
-    assert await storage.collapse_pending_updates() == 2
+    cursor = None
+    collapsed = 0
+    while True:
+        page_collapsed, cursor, exhausted = await storage.collapse_pending_updates(cursor=cursor)
+        collapsed += page_collapsed
+        if exhausted:
+            break
+    assert collapsed == 2
     storage._query_response = original_query_response  # type: ignore[method-assign]
 
     after = await storage._query(
@@ -173,3 +180,103 @@ async def test_collapse_preserves_replay_state_brain_scope_and_protected_rows(
     assert "synced = false" in delete_sql
     assert delete_params["brain_id"] == active_brain_id
     assert len(delete_params["record_ids"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_small_pages_reach_late_duplicates_and_keep_tied_maxima_and_protected_rows(
+    storage: SurrealDBStorage,
+) -> None:
+    active_brain_id = storage._get_brain_id()
+    foreign_brain = Brain.create(name="change-log-collapse-small-page-foreign")
+    await storage.save_brain(foreign_brain)
+
+    await storage.record_change("synapse", "unique-1", "update", payload={"v": 1})
+    await storage.record_change("synapse", "unique-2", "update", payload={"v": 1})
+    tail_sequences = [
+        await storage.record_change("synapse", "tail", "update", payload={"v": revision})
+        for revision in (1, 2, 3)
+    ]
+    await storage._query(
+        "UPDATE change_log SET sequence = $tie_sequence "
+        "WHERE brain_id = $brain_id AND sequence IN $sequences",
+        brain_id=active_brain_id,
+        tie_sequence=max(tail_sequences),
+        sequences=tail_sequences[1:],
+    )
+
+    synced_sequences = [await storage.record_change("fiber", "synced", "update") for _ in range(2)]
+    await storage._query(
+        "UPDATE change_log SET synced = true WHERE brain_id = $brain_id AND sequence IN $sequences",
+        brain_id=active_brain_id,
+        sequences=synced_sequences,
+    )
+    for operation in ("insert", "delete"):
+        for _ in range(2):
+            await storage.record_change("neuron", operation, operation)
+
+    storage.set_brain(foreign_brain.id)
+    await storage.record_change("synapse", "tail", "update", payload={"v": 99})
+    storage.set_brain(active_brain_id)
+
+    cursor = None
+    collapsed = 0
+    pages = 0
+    while True:
+        page_collapsed, cursor, exhausted = await storage.collapse_pending_updates(
+            max_rows=2, cursor=cursor
+        )
+        collapsed += page_collapsed
+        pages += 1
+        if exhausted:
+            break
+
+    assert pages >= 3, "unique-key prefix pages must not starve the duplicate tail"
+    assert collapsed == 1
+    active_rows = await storage._query(
+        "SELECT * FROM change_log WHERE brain_id = $brain_id ORDER BY sequence, id",
+        brain_id=active_brain_id,
+    )
+    tail_rows = [row for row in active_rows if row.get("entity_id") == "tail"]
+    assert sorted(row["payload"]["v"] for row in tail_rows) == [2, 3]
+    assert (
+        sum(
+            row.get("entity_id") == "synced" and bool(row.get("synced", False))
+            for row in active_rows
+        )
+        == 2
+    )
+    assert sum(row.get("operation") == "insert" for row in active_rows) == 2
+    assert sum(row.get("operation") == "delete" for row in active_rows) == 2
+
+    foreign_rows = await storage._query(
+        "SELECT * FROM change_log WHERE brain_id = $brain_id",
+        brain_id=foreign_brain.id,
+    )
+    assert len(foreign_rows) == 1
+    assert foreign_rows[0]["payload"] == {"v": 99}
+
+
+@pytest.mark.asyncio
+async def test_small_pages_report_empty_tail_and_reject_malformed_cursor(
+    storage: SurrealDBStorage,
+) -> None:
+    brain_id = storage._get_brain_id()
+    await storage.record_change("synapse", "one", "update")
+    await storage.record_change("synapse", "two", "update")
+
+    deleted, cursor, exhausted = await storage.collapse_pending_updates(max_rows=2)
+    assert (deleted, exhausted) == (0, False)
+    assert cursor is not None
+    assert await storage.collapse_pending_updates(max_rows=2, cursor=cursor) == (
+        0,
+        cursor,
+        True,
+    )
+
+    with pytest.raises(ValueError, match="invalid change-log collapse cursor"):
+        await storage.collapse_pending_updates(max_rows=2, cursor='{"watermark":2}')
+    rows = await storage._query(
+        "SELECT id FROM change_log WHERE brain_id = $brain_id AND operation = 'update'",
+        brain_id=brain_id,
+    )
+    assert len(rows) == 2
