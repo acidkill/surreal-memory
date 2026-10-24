@@ -25,6 +25,9 @@ class _CountingStorage(InMemoryStorage):
         super().__init__()
         self.backup_writes = 0
         self.snapshot_writes = 0
+        self.neuron_reads = 0
+        self.synapse_reads = 0
+        self.backup_reads = 0
 
     async def save_compression_backup(self, **kwargs: Any) -> None:
         self.backup_writes += 1
@@ -33,6 +36,18 @@ class _CountingStorage(InMemoryStorage):
     async def save_neuron_snapshot(self, **kwargs: Any) -> None:
         self.snapshot_writes += 1
         await super().save_neuron_snapshot(**kwargs)
+
+    async def get_neurons_batch(self, neuron_ids: list[str]) -> dict[str, Neuron]:
+        self.neuron_reads += 1
+        return await super().get_neurons_batch(neuron_ids)
+
+    async def get_synapses_batch(self, synapse_ids: list[str]) -> dict[str, Any]:
+        self.synapse_reads += 1
+        return await super().get_synapses_batch(synapse_ids)
+
+    async def get_compression_backup(self, fiber_id: str) -> dict[str, Any] | None:
+        self.backup_reads += 1
+        return await super().get_compression_backup(fiber_id)
 
 
 async def _setup() -> tuple[_CountingStorage, Fiber, Neuron]:
@@ -180,6 +195,25 @@ async def test_legacy_backup_without_lineage_skips_tier_advance(
     assert await store.get_compression_backup(fiber.id) == backup_before
     saved = await store.get_neuron(neuron.id)
     assert saved is not None and saved.content == "legacy tier one output"
+
+
+@pytest.mark.asyncio
+async def test_legacy_advanced_fiber_skips_before_reading_compression_sources() -> None:
+    store, fiber, _neuron = await _setup()
+    legacy_fiber = replace(fiber, compression_tier=int(CompressionTier.EXTRACTIVE))
+    await store.update_fiber(legacy_fiber)
+
+    result = await CompressionEngine(store).compress_fiber(
+        legacy_fiber, CompressionTier.ENTITY_ONLY
+    )
+
+    assert result.skipped and result.skip_reason == "preservation_conflict"
+    assert result.original_tier == result.new_tier == int(CompressionTier.EXTRACTIVE)
+    assert result.original_token_count == result.compressed_token_count == 0
+    assert not result.backup_created
+    assert store.neuron_reads == store.synapse_reads == store.backup_reads == 0
+    assert await store.get_fiber(fiber.id) == legacy_fiber
+    assert store.backup_writes == store.snapshot_writes == 0
 
 
 @pytest.mark.asyncio

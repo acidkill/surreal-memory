@@ -664,6 +664,13 @@ class CompressionEngine:
                     skip_reason="pinned_neuron_protected",
                 )
 
+        if (
+            not dry_run
+            and current_tier > CompressionTier.FULL
+            and not isinstance(fiber.metadata.get("_compression_receipt"), dict)
+        ):
+            return self._preservation_skip(fiber)
+
         # Fetch neurons in this fiber.
         neurons = await self._storage.get_neurons_batch(list(fiber.neuron_ids))
         if set(neurons) != fiber.neuron_ids:

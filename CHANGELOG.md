@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Compression skips advanced legacy fibers without lineage receipts before
+  loading their source records. Their original content and preservation-conflict
+  result remain unchanged while avoiding reads that cannot advance compression.
 - Saved semantic-link runs continue committed pair-cap batches instead of
   completing with omitted candidates. Frozen ID-order windows cover eligible
   candidates beyond the initial sample, preserve cumulative counters and source
