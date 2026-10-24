@@ -340,7 +340,7 @@ async def test_pre_reference_mutation_between_windows_fails_closed_without_more_
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("candidate_limit", "tamper_field"),
-    [(None, "next_batch"), (4, "next_window")],
+    [(None, "next_batch"), (None, "cursor"), (4, "next_window")],
 )
 async def test_tampered_batch_or_window_manifest_fails_closed(
     store: SurrealDBStorage,
@@ -403,7 +403,10 @@ async def test_tampered_batch_or_window_manifest_fails_closed(
     else:
         continuation = manifest["continuation"]
     assert tamper_field in continuation
-    continuation[tamper_field] += 1
+    if tamper_field == "cursor":
+        continuation[tamper_field] = "999999"
+    else:
+        continuation[tamper_field] += 1
     strategy_state["pending"] = [json.dumps(manifest, sort_keys=True, separators=(",", ":"))]
     claimed["strategy_states"]["semantic_link"] = strategy_state
     saved = await store.save_consolidation_progress(brain.id, tamper_owner, claimed)
