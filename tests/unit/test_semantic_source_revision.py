@@ -966,6 +966,7 @@ async def test_fence_session_cancellation_does_not_publish_partial_page(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import asyncio
+
     import surreal_memory.storage.surrealdb.semantic_source_revision as revision_module
 
     monkeypatch.setattr(revision_module, "_DATABASE_FEED_PAGE_SIZE", 2)
