@@ -11733,10 +11733,8 @@ class ConsolidationEngine:
         dry_run: bool,
     ) -> None:
         """Distill staged traces in model-batch units with a durable model cursor."""
-        import asyncio
         import json
         import logging as _logging
-        import time as _time
 
         from surreal_memory.engine.consolidation_progress import ConsolidationPausedError
         from surreal_memory.engine.reasoning_distiller import distill_reasoning_patterns
@@ -11791,16 +11789,18 @@ class ConsolidationEngine:
                     return
                 pending_patterns.append(pattern)
 
-        checkpoint_tasks: list[asyncio.Task[None]] = []
-        checkpoint_tail: asyncio.Task[None] | None = None
-        last_model: str | None = None
+        committed_counters: dict[str, int | float] = {
+            "models_done": int(previous_counters.get("models_done", 0))
+            if isinstance(previous_counters, dict)
+            else 0,
+            "models_total": int(previous_counters.get("models_total", 0))
+            if isinstance(previous_counters, dict)
+            else 0,
+            "traces_processed": previous_traces,
+            "patterns_learned": previous_patterns,
+        }
 
         async def _checkpoint_patterns(patterns: Sequence[dict[str, Any]]) -> None:
-            nonlocal checkpoint_tail
-            predecessor = checkpoint_tail
-            if predecessor is not None:
-                await predecessor
-                checkpoint_tail = None
             await self._checkpoint_progress(
                 "reasoning_pattern_pending",
                 cursor=self._strategy_resume_cursor(),
@@ -11808,80 +11808,31 @@ class ConsolidationEngine:
                     json.dumps(pattern, sort_keys=True, separators=(",", ":"))
                     for pattern in patterns
                 ],
-                counters={
-                    "models_done": int(previous_counters.get("models_done", 0))
-                    if isinstance(previous_counters, dict)
-                    else 0,
-                    "models_total": int(previous_counters.get("models_total", 0))
-                    if isinstance(previous_counters, dict)
-                    else 0,
-                    "traces_processed": previous_traces,
-                    "patterns_learned": previous_patterns,
-                },
+                counters=committed_counters,
             )
 
-        def _budget_is_low() -> bool:
-            if self._progress_session is None:
-                return False
-            deadlines = [
-                deadline
-                for deadline in (self._strategy_deadline, self._total_deadline)
-                if deadline is not None
-            ]
-            if not deadlines:
-                return False
-            remaining = min(deadlines) - _time.perf_counter()
-            headroom = min(10.0, max(0.05, self._config.strategy_timeout_seconds * 0.02))
-            return remaining <= headroom
-
-        def _on_progress(progress: MiningProgress) -> None:
-            nonlocal checkpoint_tail, last_model
+        async def _on_progress(progress: MiningProgress) -> None:
+            nonlocal committed_counters
             model = progress.current_model
             if self._progress_session is None or model is None:
                 return
-            # distill_reasoning_patterns emits after a model's batch has been
-            # materialized and its consumed traces have been marked processed.
-            if model == last_model:
-                return
-            predecessor = checkpoint_tail
-
-            async def _persist() -> None:
-                if predecessor is not None:
-                    await predecessor
-                await self._checkpoint_progress(
-                    "reasoning_distill",
-                    cursor=model,
-                    counters={
-                        "models_done": progress.models_done,
-                        "models_total": progress.models_total,
-                        "traces_processed": previous_traces + progress.traces_processed,
-                        "patterns_learned": previous_patterns + progress.patterns_learned,
-                    },
-                )
-
-            checkpoint_tail = asyncio.create_task(_persist())
-            checkpoint_tasks.append(checkpoint_tail)
-            last_model = model
-            if _budget_is_low():
-                raise ConsolidationPausedError(
-                    "reasoning-distillation budget is low; paused after a committed model batch"
-                )
-
-        async def _flush_checkpoints() -> None:
-            if not checkpoint_tasks:
-                return
-            outcomes = await asyncio.gather(*checkpoint_tasks, return_exceptions=True)
-            for outcome in outcomes:
-                if isinstance(outcome, ConsolidationPausedError):
-                    raise outcome
-                if isinstance(outcome, Exception):
-                    raise outcome
+            counters: dict[str, int | float] = {
+                "models_done": progress.models_done,
+                "models_total": progress.models_total,
+                "traces_processed": previous_traces + progress.traces_processed,
+                "patterns_learned": previous_patterns + progress.patterns_learned,
+            }
+            # Fence and persist each consumed batch before fetching another one.
+            await self._checkpoint_progress("reasoning_distill", cursor=model, counters=counters)
+            committed_counters = counters
+            await self._check_progress_budget()
 
         try:
             result = await distill_reasoning_patterns(
                 self._storage,
                 brain_id,
                 config,
+                drain=True,
                 progress=_on_progress if self._progress_session is not None else None,
                 pending_patterns=pending_patterns,
                 pattern_checkpoint=(
@@ -11891,10 +11842,10 @@ class ConsolidationEngine:
         except ConsolidationPausedError:
             raise
         except Exception:
+            if self._progress_session is not None:
+                raise
             _logger.debug("LEARN_REASONING: distillation failed (non-critical)", exc_info=True)
             return
-        finally:
-            await _flush_checkpoints()
 
         report.reasoning_patterns_learned += previous_patterns + result.patterns_learned
         if result.patterns_learned > 0:

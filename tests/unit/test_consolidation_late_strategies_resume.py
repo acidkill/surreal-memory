@@ -512,6 +512,7 @@ async def test_learn_reasoning_resumes_from_completed_model_batch(
         _brain_id: str,
         _config: Any,
         *,
+        drain: bool = False,
         progress: Any = None,
         pending_patterns: Any = (),
         pattern_checkpoint: Any = None,
@@ -525,7 +526,7 @@ async def test_learn_reasoning_resumes_from_completed_model_batch(
                 patterns_created += 1
                 traces_processed += 2
             if progress is not None:
-                progress(
+                await progress(
                     MiningProgress(
                         phase="distilling",
                         current_model=model,

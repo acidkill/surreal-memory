@@ -28,6 +28,7 @@ from collections import Counter
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass, replace
 from fnmatch import fnmatch
+from inspect import isawaitable
 from typing import TYPE_CHECKING, Any
 
 from surreal_memory.core.fiber import Fiber
@@ -40,7 +41,6 @@ from surreal_memory.engine.reasoning_progress import PHASE_DISTILLING, MiningPro
 if TYPE_CHECKING:
     from surreal_memory.engine.embedding.provider import EmbeddingProvider
     from surreal_memory.engine.reasoning_naming import PatternNamer
-    from surreal_memory.engine.reasoning_progress import ProgressCallback
     from surreal_memory.storage.base import NeuralStorage
     from surreal_memory.unified_config import ReasoningTrainingConfig, UnifiedConfig
 
@@ -697,7 +697,7 @@ async def distill_reasoning_patterns(
     *,
     embedder: EmbeddingProvider | None = None,
     drain: bool = False,
-    progress: ProgressCallback | None = None,
+    progress: Callable[[MiningProgress], Awaitable[None] | None] | None = None,
     pending_patterns: Sequence[dict[str, Any]] = (),
     pattern_checkpoint: Callable[[Sequence[dict[str, Any]]], Awaitable[None]] | None = None,
 ) -> DistillResult:
@@ -715,12 +715,12 @@ async def distill_reasoning_patterns(
     traces stay unprocessed until a target is raised, so a preliminary Mine with
     no targets set only DETECTS models without distilling anything.
 
-    ``drain=True`` (a manual ``POST /mine``) keeps fetching batches for a model
+    ``drain=True`` keeps fetching batches for a model
     until its budget is spent or its backlog is exhausted; ``drain=False``
-    (background consolidation) processes at most one batch per model per run.
+    processes at most one batch per model per run.
     Consumed traces are marked processed per batch so the next fetch returns
     fresh work. ``progress`` receives a distilling snapshot as each model
-    advances.
+    advances. Awaitable callbacks finish before the next batch starts.
     """
     rt = config.reasoning_training
     embedder = embedder or _get_embedder(config)
@@ -768,9 +768,9 @@ async def distill_reasoning_patterns(
         models = [m for m in models if any(fnmatch(m, pat) for pat in rt.mining_models)]
     models_total = len(models)
 
-    def _emit(current_model: str | None, models_done: int) -> None:
+    async def _emit(current_model: str | None, models_done: int) -> None:
         if progress is not None:
-            progress(
+            outcome = progress(
                 MiningProgress(
                     phase=PHASE_DISTILLING,
                     traces_processed=len(processed_ids),
@@ -780,13 +780,15 @@ async def distill_reasoning_patterns(
                     models_total=models_total,
                 )
             )
+            if isawaitable(outcome):
+                await outcome
 
     try:
         for idx, model in enumerate(models):
             budget = max(0, rt.pattern_targets.get(model, 0) - existing_by_model.get(model, 0))
             if budget <= 0:
                 # Target unset/0 or already met → leave this model's traces unprocessed.
-                _emit(model, idx + 1)
+                await _emit(model, idx + 1)
                 continue
             while budget > 0:
                 traces = await storage.get_unprocessed_reasoning_traces(
@@ -815,14 +817,14 @@ async def distill_reasoning_patterns(
                     # Mark consumed processed NOW so the next fetch returns fresh
                     # traces — otherwise a drain loop re-fetches the same batch forever.
                     await storage.mark_reasoning_traces_processed(brain_id, consumed)
-                _emit(model, idx)
+                await _emit(model, idx)
                 # Termination guard: a batch that consumes nothing makes no forward
                 # progress (budget hit 0 mid-category), so stop draining this model.
                 if not consumed:
                     break
                 if not drain:
-                    break  # background consolidation: one batch per model per run
-            _emit(model, idx + 1)
+                    break  # one batch per model when draining is not requested
+            await _emit(model, idx + 1)
     finally:
         # Unconditional: an aborted or failed run must not leave the chat model
         # parked in VRAM either.
