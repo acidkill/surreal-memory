@@ -8,6 +8,7 @@ SurrealDB is the supported backend (see ``docker-compose.surrealdb.yml``).
 
 from __future__ import annotations
 
+import heapq
 import math
 import random
 from collections import defaultdict
@@ -887,35 +888,37 @@ class InMemoryStorage(
         from surreal_memory.core.action_event import ActionEvent
 
         brain_id = self._get_brain_id()
-        results: list[ActionEvent] = []
 
-        for event in self._action_events[brain_id]:
-            if "action_type" not in event:
-                continue
-            if session_id is not None and event["session_id"] != session_id:
-                continue
-            created = ensure_naive_utc(event["created_at"])
-            if since is not None and created < ensure_naive_utc(since):
-                continue
-            if until is not None and created > ensure_naive_utc(until):
-                continue
-            if after is not None and (created, str(event["id"])) <= after:
-                continue
-            results.append(
-                ActionEvent(
-                    id=event["id"],
-                    brain_id=event["brain_id"],
-                    session_id=event["session_id"],
-                    action_type=event["action_type"],
-                    action_context=event["action_context"],
-                    tags=event["tags"],
-                    fiber_id=event["fiber_id"],
-                    created_at=event["created_at"],
-                )
+        def matching_events() -> Any:
+            for event in self._action_events[brain_id]:
+                if "action_type" not in event:
+                    continue
+                if session_id is not None and event["session_id"] != session_id:
+                    continue
+                created = ensure_naive_utc(event["created_at"])
+                if since is not None and created < ensure_naive_utc(since):
+                    continue
+                if until is not None and created > ensure_naive_utc(until):
+                    continue
+                key = (created, str(event["id"]))
+                if after is not None and key <= after:
+                    continue
+                yield key, event
+
+        selected = heapq.nsmallest(limit, matching_events(), key=lambda item: item[0])
+        return [
+            ActionEvent(
+                id=event["id"],
+                brain_id=event["brain_id"],
+                session_id=event["session_id"],
+                action_type=event["action_type"],
+                action_context=event["action_context"],
+                tags=event["tags"],
+                fiber_id=event["fiber_id"],
+                created_at=event["created_at"],
             )
-
-        results.sort(key=lambda e: (ensure_naive_utc(e.created_at), e.id))
-        return results[:limit]
+            for _, event in selected
+        ]
 
     async def prune_action_events(self, older_than: datetime) -> int:
         brain_id = self._get_brain_id()
@@ -1069,30 +1072,36 @@ class InMemoryStorage(
         In-memory ``insert_tool_events`` appends onto ``_action_events``; pick
         the entries that carry a ``tool_name`` (tool events) and order by time.
         """
-        out: list[dict[str, Any]] = []
-        for ev in self._action_events.get(brain_id, []):
-            if "tool_name" not in ev:
-                continue
-            created = ev.get("created_at")
-            if not isinstance(created, datetime):
-                continue
-            normalized_created = ensure_naive_utc(created)
-            if since is not None and normalized_created <= ensure_naive_utc(since):
-                continue
-            if until is not None and normalized_created > ensure_naive_utc(until):
-                continue
-            if after is not None and (normalized_created, str(ev.get("id", ""))) <= after:
-                continue
-            out.append(
-                {
-                    "id": ev.get("id", ""),
-                    "tool_name": ev.get("tool_name", ""),
-                    "session_id": ev.get("session_id", ""),
-                    "created_at": created,
-                }
-            )
-        out.sort(key=lambda e: (ensure_naive_utc(e["created_at"]), str(e["id"])))
-        return out[: min(int(limit), 20000)]
+
+        def matching_events() -> Any:
+            for ev in self._action_events.get(brain_id, []):
+                if "tool_name" not in ev:
+                    continue
+                created = ev.get("created_at")
+                if not isinstance(created, datetime):
+                    continue
+                normalized_created = ensure_naive_utc(created)
+                if since is not None and normalized_created <= ensure_naive_utc(since):
+                    continue
+                if until is not None and normalized_created > ensure_naive_utc(until):
+                    continue
+                key = (normalized_created, str(ev.get("id", "")))
+                if after is not None and key <= after:
+                    continue
+                yield key, ev
+
+        selected = heapq.nsmallest(
+            min(int(limit), 20000), matching_events(), key=lambda item: item[0]
+        )
+        return [
+            {
+                "id": ev.get("id", ""),
+                "tool_name": ev.get("tool_name", ""),
+                "session_id": ev.get("session_id", ""),
+                "created_at": ev["created_at"],
+            }
+            for _, ev in selected
+        ]
 
     async def mark_events_processed(self, brain_id: str, event_ids: list[int]) -> None:
         """Mark tool events as processed by their id."""

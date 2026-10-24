@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 
+import surreal_memory.core.action_event as action_event_module
 from surreal_memory.core.action_event import ActionEvent
 from surreal_memory.engine.habit_input import action_events, tool_events
 from surreal_memory.storage.memory_store import InMemoryStorage
@@ -232,3 +233,68 @@ async def test_in_memory_habit_readers_keep_brains_separate_and_freeze_time() ->
 
     assert [event.session_id for event in actions] == ["b"]
     assert [row["tool_name"] for row in tools_a] == ["Read"]
+
+
+@pytest.mark.asyncio
+async def test_in_memory_action_page_constructs_only_selected_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = InMemoryStorage()
+    storage.set_brain("brain-a")
+    at = datetime(2026, 10, 24)
+    storage._action_events["brain-a"] = [
+        {
+            "id": f"event-{index:04}",
+            "brain_id": "brain-a",
+            "session_id": "session-a",
+            "action_type": "recall",
+            "action_context": "",
+            "tags": (),
+            "fiber_id": None,
+            "created_at": at,
+        }
+        for index in range(100)
+    ]
+    original_action_event = action_event_module.ActionEvent
+    constructed: list[str] = []
+
+    def track_construction(**kwargs: Any) -> ActionEvent:
+        constructed.append(kwargs["id"])
+        return original_action_event(**kwargs)
+
+    monkeypatch.setattr(action_event_module, "ActionEvent", track_construction)
+
+    page = await storage.get_action_sequences(limit=3)
+
+    assert [event.id for event in page] == ["event-0000", "event-0001", "event-0002"]
+    assert constructed == ["event-0000", "event-0001", "event-0002"]
+
+
+@pytest.mark.asyncio
+async def test_in_memory_tool_page_builds_only_selected_rows() -> None:
+    class TrackedEvent(dict[str, Any]):
+        session_id_reads = 0
+
+        def get(self, key: str, default: Any = None) -> Any:
+            if key == "session_id":
+                self.session_id_reads += 1
+            return super().get(key, default)
+
+    storage = InMemoryStorage()
+    storage.set_brain("brain-a")
+    at = datetime(2026, 10, 24)
+    events = [
+        TrackedEvent(
+            id=f"event-{index:04}",
+            tool_name="Read",
+            session_id="session-a",
+            created_at=at,
+        )
+        for index in range(100)
+    ]
+    storage._action_events["brain-a"] = events
+
+    page = await storage.get_tool_events_for_mining("brain-a", limit=3)
+
+    assert [row["id"] for row in page] == ["event-0000", "event-0001", "event-0002"]
+    assert sum(event.session_id_reads for event in events) == 3

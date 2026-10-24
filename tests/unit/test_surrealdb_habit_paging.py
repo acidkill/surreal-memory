@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
 
-from surreal_memory.storage.surrealdb.activity import SurrealDBActivityMixin
+from surreal_memory.storage.surrealdb.activity import SurrealDBActivityMixin, _parse_datetime
 from surreal_memory.storage.surrealdb.tool_events import SurrealDBToolEventsMixin
 
 
@@ -55,6 +55,23 @@ class _ToolReader(SurrealDBToolEventsMixin):
 
     def _ensure_conn(self) -> Any:
         raise AssertionError("connection should not be needed")
+
+
+@pytest.mark.parametrize("value", [None, "not-a-timestamp"])
+def test_action_timestamp_parser_rejects_missing_and_invalid_values(value: Any) -> None:
+    with pytest.raises(ValueError, match="timestamp"):
+        _parse_datetime(value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "2026-10-24T14:00:00+02:00",
+        datetime(2026, 10, 24, 14, tzinfo=timezone(timedelta(hours=2))),
+    ],
+)
+def test_action_timestamp_parser_normalizes_offset_to_utc(value: Any) -> None:
+    assert _parse_datetime(value) == datetime(2026, 10, 24, 12)
 
 
 @pytest.mark.asyncio
