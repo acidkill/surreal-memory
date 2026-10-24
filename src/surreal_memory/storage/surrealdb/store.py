@@ -29,7 +29,12 @@ from surreal_memory.core.project import Project
 from surreal_memory.core.synapse import Direction, Synapse, SynapseType
 from surreal_memory.core.sync_records import ChangeEntry, DeviceRecord
 from surreal_memory.storage.base import NeuralStorage
-from surreal_memory.storage.surrealdb._ids import _safe_brain_id, _to_public_id, _to_surreal_id
+from surreal_memory.storage.surrealdb._ids import (
+    _record_id_part,
+    _safe_brain_id,
+    _to_public_id,
+    _to_surreal_id,
+)
 from surreal_memory.storage.surrealdb.activity import SurrealDBActivityMixin
 from surreal_memory.storage.surrealdb.alerts import SurrealDBAlertsMixin
 from surreal_memory.storage.surrealdb.cognitive import SurrealDBCognitiveMixin
@@ -263,6 +268,9 @@ _BATCH_WRITE_CHUNK = 500
 # The caller checkpoints the cursor between pages so a large backlog drains
 # without one unbounded consolidation step.
 _COLLAPSE_MAX_ROWS = 200_000
+
+# Maximum rows returned in one candidate or maxima query.
+_COLLAPSE_READ_PAGE_ROWS = 5_000
 
 # Delete batch for the collapse. Much larger than _BATCH_WRITE_CHUNK because
 # these statements carry only record ids — no payloads, no vectors — so the
@@ -4068,13 +4076,14 @@ class SurrealDBStorage(
         superseded rows come to dominate the table -- tens of them per edge --
         and nothing else removes them.
 
-        Each call reads one bounded sequence-indexed page, then finds global
-        maxima only for that page's distinct entity IDs. The returned cursor
-        records the high-water sequence observed on the first page, so each page
-        advances through a bounded sequence range without skipping a winner that
-        fell across a page. Independent writers can append rows with a reused
-        local sequence during the scan; those rows are eligible for the next run.
-        Equal maximum sequences are retained because their order is ambiguous.
+        Each call reads one bounded candidate page, then scans backward through
+        bounded sequence-indexed pages until it finds the global maxima for that
+        page's distinct entities. The returned cursor records the high-water
+        sequence observed on the first page, so each call advances without
+        skipping a winner that falls across a page. Independent writers can append
+        rows with a reused local sequence during the scan; those rows are eligible
+        for the next run. Equal maximum sequences are retained because their order
+        is ambiguous.
 
         Deliberately narrow, because the safety argument does not extend:
 
@@ -4112,11 +4121,12 @@ class SurrealDBStorage(
                     or type(state["watermark"]) is not int
                     or type(state["sequence"]) is not int
                     or not isinstance(state["id"], str)
+                    or ":" in state["id"]
                 ):
                     raise ValueError
                 watermark = state["watermark"]
                 last_sequence = state["sequence"]
-                last_id = state["id"]
+                last_id = _record_id_part(state["id"])
             except (json.JSONDecodeError, TypeError, ValueError, KeyError) as exc:
                 raise ValueError("invalid change-log collapse cursor") from exc
             if (
@@ -4128,51 +4138,97 @@ class SurrealDBStorage(
             ):
                 raise ValueError("invalid change-log collapse cursor")
 
-        conditions = [scope, "sequence <= $watermark"]
-        params: dict[str, Any] = {"watermark": watermark, "cap": max_rows}
-        if cursor is not None:
-            conditions.append(
-                "(sequence > $last_sequence OR "
-                "(sequence = $last_sequence AND id > type::record('change_log', $last_id)))"
+        candidates: list[dict[str, Any]] = []
+        page_sequence = last_sequence if cursor is not None else None
+        page_id = last_id if cursor is not None else None
+        exhausted = False
+        while len(candidates) < max_rows:
+            conditions = [scope, "sequence <= $watermark"]
+            page_cap = min(_COLLAPSE_READ_PAGE_ROWS, max_rows - len(candidates))
+            page_params: dict[str, Any] = {"watermark": watermark, "cap": page_cap}
+            if page_sequence is not None and page_id is not None:
+                conditions.extend(
+                    [
+                        "sequence >= $last_sequence",
+                        "(sequence > $last_sequence OR "
+                        "(sequence = $last_sequence AND id > type::record('change_log', $last_id)))",
+                    ]
+                )
+                page_params.update(last_sequence=page_sequence, last_id=page_id)
+            page = await self._query(
+                "SELECT id, entity_type, entity_id, sequence FROM change_log "
+                "WITH INDEX idx_changelog_seq WHERE "
+                + " AND ".join(conditions)
+                + " ORDER BY sequence ASC, id ASC LIMIT $cap",
+                **page_params,
             )
-            params.update(last_sequence=last_sequence, last_id=last_id)
-        candidates = await self._query(
-            "SELECT id, entity_type, entity_id, sequence FROM change_log WHERE "
-            + " AND ".join(conditions)
-            + " ORDER BY sequence ASC, id ASC LIMIT $cap",
-            **params,
-        )
+            if not page:
+                exhausted = True
+                break
+            if page_sequence is not None and page_id is not None:
+                previous = (page_sequence, page_id)
+                first = (
+                    int(page[0].get("sequence", 0) or 0),
+                    _record_id_part(str(page[0].get("id", ""))),
+                )
+                if first <= previous:
+                    raise RuntimeError("change-log candidate scan cursor did not advance")
+            last = page[-1]
+            page_sequence = int(last.get("sequence", 0) or 0)
+            page_id = _record_id_part(str(last.get("id", "")))
+            candidates.extend(page)
+            if len(page) < page_cap:
+                exhausted = True
+                break
         if not candidates:
             return 0, cursor, True
         last_record_id = str(candidates[-1].get("id", ""))
         if not last_record_id.startswith("change_log:") or ":" in last_record_id.split(":", 1)[1]:
             raise ValueError("unsafe change-log row id in collapse page")
 
+        needed = {
+            (str(row.get("entity_type", "")), str(row.get("entity_id", ""))) for row in candidates
+        }
         newest: dict[tuple[str, str], int] = {}
-        for entity_type in {str(row.get("entity_type", "")) for row in candidates}:
-            entity_ids = list(
-                {
-                    str(row.get("entity_id", ""))
-                    for row in candidates
-                    if row.get("entity_type") == entity_type
-                }
-            )
+        min_sequence = min(int(row.get("sequence", 0) or 0) for row in candidates)
+        upper_sequence = watermark
+        before_id: Any | None = None
+        previous_cursor: tuple[int, str] | None = None
+        while len(newest) < len(needed):
+            conditions = [scope, "sequence >= $min_sequence", "sequence <= $upper_sequence"]
+            maxima_params: dict[str, Any] = {
+                "min_sequence": min_sequence,
+                "upper_sequence": upper_sequence,
+                "cap": _COLLAPSE_READ_PAGE_ROWS,
+            }
+            if before_id is not None:
+                conditions.append(
+                    "(sequence < $before_sequence OR "
+                    "(sequence = $before_sequence AND id < $before_id))"
+                )
+                maxima_params.update(before_sequence=upper_sequence, before_id=before_id)
             rows = await self._query(
-                f"SELECT entity_id, math::max(sequence) AS latest_sequence FROM change_log "
-                f"WHERE {scope} AND sequence <= $watermark AND entity_type = $entity_type "
-                "AND entity_id IN $entity_ids GROUP BY entity_id",
-                watermark=watermark,
-                entity_type=entity_type,
-                entity_ids=entity_ids,
+                "SELECT id, entity_type, entity_id, sequence FROM change_log "
+                "WITH INDEX idx_changelog_seq WHERE "
+                + " AND ".join(conditions)
+                + " ORDER BY sequence DESC, id DESC LIMIT $cap",
+                **maxima_params,
             )
-            newest.update(
-                {
-                    (entity_type, str(row.get("entity_id", ""))): int(
-                        row.get("latest_sequence", 0) or 0
-                    )
-                    for row in rows
-                }
-            )
+            if not rows:
+                break
+            last = rows[-1]
+            last_sequence = int(last.get("sequence", 0) or 0)
+            last_id = str(last.get("id", ""))
+            last_cursor = (last_sequence, last_id)
+            if previous_cursor is not None and last_cursor >= previous_cursor:
+                raise RuntimeError("change-log maxima scan cursor did not advance")
+            for row in rows:
+                key = (str(row.get("entity_type", "")), str(row.get("entity_id", "")))
+                if key in needed and key not in newest:
+                    newest[key] = int(row.get("sequence", 0) or 0)
+            previous_cursor = last_cursor
+            upper_sequence = last_sequence
+            before_id = last["id"]
 
         # Keep the typed RecordIDs the driver handed back. The same IDs can be
         # bound as a record-list DELETE source; stringifying them loses their
@@ -4209,11 +4265,11 @@ class SurrealDBStorage(
                 "brain_id": self._get_brain_id(),
                 "watermark": watermark,
                 "sequence": int(last.get("sequence", 0) or 0),
-                "id": last_record_id.split(":", 1)[1],
+                "id": _record_id_part(last_record_id),
             },
             separators=(",", ":"),
         )
-        return deleted_count, next_cursor, len(candidates) < max_rows
+        return deleted_count, next_cursor, exhausted
 
     async def seed_change_log(self, device_id: str = "") -> dict[str, int]:
         brain_id = self._get_brain_id()

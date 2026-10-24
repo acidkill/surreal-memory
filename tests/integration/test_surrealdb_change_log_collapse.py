@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import uuid
 from collections import Counter
@@ -13,6 +14,7 @@ from urllib.parse import urlparse
 import pytest
 import pytest_asyncio
 
+import surreal_memory.storage.surrealdb.store as store_module
 from surreal_memory.core.brain import Brain
 from surreal_memory.storage.surrealdb.store import SurrealDBStorage
 from surreal_memory.utils.timeutils import ensure_naive_utc
@@ -191,7 +193,9 @@ async def test_collapse_preserves_replay_state_brain_scope_and_protected_rows(
 @pytest.mark.asyncio
 async def test_small_pages_reach_late_duplicates_and_keep_tied_maxima_and_protected_rows(
     storage: SurrealDBStorage,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(store_module, "_COLLAPSE_READ_PAGE_ROWS", 1)
     active_brain_id = storage._get_brain_id()
     foreign_brain = Brain.create(name="change-log-collapse-small-page-foreign")
     await storage.save_brain(foreign_brain)
@@ -202,6 +206,9 @@ async def test_small_pages_reach_late_duplicates_and_keep_tied_maxima_and_protec
         await storage.record_change("synapse", "tail", "update", payload={"v": revision})
         for revision in (1, 2, 3)
     ]
+    for entity_type in ("neuron", "fiber"):
+        for revision in (1, 2):
+            await storage.record_change(entity_type, "shared-id", "update", payload={"v": revision})
     await storage._query(
         "UPDATE change_log SET sequence = $tie_sequence "
         "WHERE brain_id = $brain_id AND sequence IN $sequences",
@@ -237,13 +244,19 @@ async def test_small_pages_reach_late_duplicates_and_keep_tied_maxima_and_protec
             break
 
     assert pages >= 3, "unique-key prefix pages must not starve the duplicate tail"
-    assert collapsed == 1
+    assert collapsed == 3
     active_rows = await storage._query(
         "SELECT * FROM change_log WHERE brain_id = $brain_id ORDER BY sequence, id",
         brain_id=active_brain_id,
     )
     tail_rows = [row for row in active_rows if row.get("entity_id") == "tail"]
     assert sorted(row["payload"]["v"] for row in tail_rows) == [2, 3]
+    shared_id_rows = [row for row in active_rows if row.get("entity_id") == "shared-id"]
+    assert len(shared_id_rows) == 2
+    assert {(row["entity_type"], row["payload"]["v"]) for row in shared_id_rows} == {
+        ("neuron", 2),
+        ("fiber", 2),
+    }
     assert (
         sum(
             row.get("entity_id") == "synced" and bool(row.get("synced", False))
@@ -286,6 +299,42 @@ async def test_small_pages_report_empty_tail_and_reject_malformed_cursor(
         brain_id=brain_id,
     )
     assert len(rows) == 2
+
+
+@pytest.mark.asyncio
+async def test_update_appended_after_watermark_is_left_for_the_next_pass(
+    storage: SurrealDBStorage,
+) -> None:
+    brain_id = storage._get_brain_id()
+    await storage.record_change("synapse", "watermark-tail", "update", payload={"v": 1})
+    await storage.record_change("synapse", "watermark-tail", "update", payload={"v": 2})
+
+    injected = False
+    original_query_response = storage._query_response
+
+    async def inject_after_watermark(sql: str, **params: Any) -> Any:
+        nonlocal injected
+        rows = await original_query_response(sql, **params)
+        if not injected and "ORDER BY sequence DESC LIMIT 1" in sql:
+            injected = True
+            await storage.record_change("synapse", "watermark-tail", "update", payload={"v": 3})
+        return rows
+
+    storage._query_response = inject_after_watermark  # type: ignore[method-assign]
+    deleted, cursor, exhausted = await storage.collapse_pending_updates(max_rows=10)
+    storage._query_response = original_query_response  # type: ignore[method-assign]
+
+    rows = await storage._query(
+        "SELECT * FROM change_log WHERE brain_id = $brain_id AND entity_id = $entity_id "
+        "AND operation = 'update' ORDER BY sequence",
+        brain_id=brain_id,
+        entity_id="watermark-tail",
+    )
+    assert injected
+    assert deleted == 1
+    assert exhausted
+    assert json.loads(cursor or "")["watermark"] == 2
+    assert [row["payload"]["v"] for row in rows] == [2, 3]
 
 
 @pytest.mark.asyncio
