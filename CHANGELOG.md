@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Saved semantic-link runs continue committed pair-cap batches instead of
+  completing with omitted candidates. Frozen ID-order windows cover eligible
+  candidates beyond the initial sample, preserve cumulative counters and source
+  validation, and explicitly report bounded-window coverage. Caps and budgets
+  remain unchanged; this does not promise global all-pairs similarity coverage.
+- Semantic continuation checkpoints reject downgrade to older engines while
+  work remains. Missing NumPy stops an oversized frozen fallback window rather
+  than silently omitting candidates.
+
 ## [3.12.2] — 2026-10-21 — safer consolidation, quieter memory
 
 A maintenance release covering all changes since 3.12.1: durable consolidation
