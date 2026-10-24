@@ -832,7 +832,7 @@ async def test_fence_session_advances_one_global_watermark_instead_of_replaying_
     ]
     storage = _DatabaseFeedSessionStorage(events)
     token = _token(captured_at=cutoff - timedelta(seconds=1), versionstamp=100)
-    session = storage.create_semantic_source_fence_session(token, created_before=cutoff)
+    session = storage._create_semantic_source_fence_session(token, created_before=cutoff)
 
     await session.assert_unchanged()
     calls_after_full_validation = len(storage.queries)
@@ -845,7 +845,7 @@ async def test_fence_session_advances_one_global_watermark_instead_of_replaying_
 
     # A new process/session must revalidate from its own token; no cursor is
     # persisted or borrowed from the previous invocation.
-    fresh_session = storage.create_semantic_source_fence_session(token, created_before=cutoff)
+    fresh_session = storage._create_semantic_source_fence_session(token, created_before=cutoff)
     first_fresh_query = len(storage.queries)
     await fresh_session.assert_unchanged()
     assert storage.queries[first_fresh_query][0] == 100
@@ -874,7 +874,7 @@ async def test_fence_session_reduces_repeated_database_feed_reads(
     old_reads = len(old_storage.queries)
 
     session_storage = _DatabaseFeedSessionStorage(events)
-    session = session_storage.create_semantic_source_fence_session(token, created_before=cutoff)
+    session = session_storage._create_semantic_source_fence_session(token, created_before=cutoff)
     await session.assert_unchanged()
     await session.assert_unchanged()
 
@@ -912,7 +912,7 @@ async def test_fence_session_applies_all_changes_in_one_versionstamp() -> None:
             },
         ]
     )
-    session = storage.create_semantic_source_fence_session(
+    session = storage._create_semantic_source_fence_session(
         _token(captured_at=cutoff - timedelta(seconds=1), versionstamp=100),
         created_before=cutoff,
     )
@@ -932,7 +932,7 @@ async def test_fence_session_fails_closed_on_unknown_or_unattributable_changes()
     storage = _DatabaseFeedSessionStorage(
         [_feed_event(100, {"create": {"id": "semantic_source_barrier:token"}})]
     )
-    session = storage.create_semantic_source_fence_session(
+    session = storage._create_semantic_source_fence_session(
         _token(captured_at=cutoff - timedelta(seconds=1), versionstamp=100),
         created_before=cutoff,
     )
@@ -987,7 +987,7 @@ async def test_fence_session_cancellation_does_not_publish_partial_page(
             _feed_event(102, {"create": {"id": "semantic_source_barrier:noise-2"}}),
         ]
     )
-    session = storage.create_semantic_source_fence_session(
+    session = storage._create_semantic_source_fence_session(
         _token(captured_at=cutoff - timedelta(seconds=1), versionstamp=100),
         created_before=cutoff,
     )
@@ -1020,7 +1020,7 @@ async def test_fence_session_keeps_post_reference_ids_across_checks_and_failures
         [_feed_event(100, {"create": {"id": "semantic_source_barrier:token"}})]
     )
     token = _token(captured_at=cutoff - timedelta(seconds=1), versionstamp=100)
-    session = storage.create_semantic_source_fence_session(token, created_before=cutoff)
+    session = storage._create_semantic_source_fence_session(token, created_before=cutoff)
     created = {
         "id": "synapse:run-edge",
         "brain_id": "brain-a",
@@ -1101,7 +1101,7 @@ async def test_fence_session_preserves_legacy_readonly_and_feed_error_fences() -
             ),
         ]
     )
-    legacy_session = legacy_storage.create_semantic_source_fence_session(
+    legacy_session = legacy_storage._create_semantic_source_fence_session(
         legacy_token, created_before=cutoff
     )
     with pytest.raises(SemanticSourceChangedError, match="neuron changed"):
@@ -1110,7 +1110,7 @@ async def test_fence_session_preserves_legacy_readonly_and_feed_error_fences() -
     failing_storage = _DatabaseFeedSessionStorage(
         [_feed_event(100, {"create": {"id": "semantic_source_barrier:token"}})]
     )
-    session = failing_storage.create_semantic_source_fence_session(
+    session = failing_storage._create_semantic_source_fence_session(
         _token(captured_at=cutoff - timedelta(seconds=1), versionstamp=100),
         created_before=cutoff,
     )
@@ -1150,7 +1150,7 @@ async def test_fence_session_preserves_legacy_readonly_and_feed_error_fences() -
         [_feed_event(100, {"create": {"id": "semantic_source_barrier:token"}})]
     )
     expired_storage.now = cutoff + timedelta(days=7)
-    expired_session = expired_storage.create_semantic_source_fence_session(
+    expired_session = expired_storage._create_semantic_source_fence_session(
         _token(captured_at=cutoff - timedelta(seconds=1), versionstamp=100),
         created_before=cutoff,
     )
@@ -1185,7 +1185,7 @@ async def test_fence_session_does_not_reset_source_row_limit_between_checks(
             _feed_event(102, {"create": second}),
         ]
     )
-    session = storage.create_semantic_source_fence_session(
+    session = storage._create_semantic_source_fence_session(
         _token(captured_at=cutoff - timedelta(seconds=1), versionstamp=100),
         created_before=cutoff,
     )

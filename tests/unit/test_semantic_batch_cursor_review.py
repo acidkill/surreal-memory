@@ -133,7 +133,7 @@ class _SessionStorage(_FrozenStorage):
         super().__init__(neurons, synapses)
         self.sessions: list[_ObservedFenceSession] = []
 
-    def create_semantic_source_fence_session(
+    def _create_semantic_source_fence_session(
         self, token: str, *, created_before: datetime
     ) -> _ObservedFenceSession:
         cutoff = created_before.astimezone(UTC).replace(tzinfo=None)

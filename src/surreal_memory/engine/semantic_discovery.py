@@ -1111,7 +1111,7 @@ async def _discover_semantic_synapses_resumable(
     verify_fence = getattr(storage, "assert_semantic_source_unchanged", None)
     fence_available = callable(capture_fence) and callable(verify_fence)
     if token is not None:
-        create_fence_session = getattr(storage, "create_semantic_source_fence_session", None)
+        create_fence_session = getattr(storage, "_create_semantic_source_fence_session", None)
         source_fence_session = (
             create_fence_session(token, created_before=reference_time)
             if reference_time is not None and callable(create_fence_session)
@@ -1125,7 +1125,7 @@ async def _discover_semantic_synapses_resumable(
         )
     elif fence_available:
         token = await _capture_source_token(storage)
-        create_fence_session = getattr(storage, "create_semantic_source_fence_session", None)
+        create_fence_session = getattr(storage, "_create_semantic_source_fence_session", None)
         source_fence_session = (
             create_fence_session(token, created_before=reference_time)
             if reference_time is not None and callable(create_fence_session)

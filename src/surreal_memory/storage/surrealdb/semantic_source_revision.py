@@ -535,7 +535,7 @@ class SurrealDBSemanticSourceRevisionMixin:
                     f"{table} changed since the semantic source token was captured"
                 )
 
-    def create_semantic_source_fence_session(
+    def _create_semantic_source_fence_session(
         self, since_token: str, *, created_before: datetime
     ) -> _SemanticSourceFenceSession:
         """Create a process-local incremental fence for one frozen discovery run."""

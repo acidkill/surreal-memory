@@ -207,7 +207,7 @@ async def test_frozen_fence_session_tracks_late_rows_and_reads_only_the_feed_suf
     await store.add_neuron(target)
     reference_time = store._parse_datetime(await store._query_response("RETURN time::now()"))
     token = await store.capture_semantic_source_token()
-    session = store.create_semantic_source_fence_session(token, created_before=reference_time)
+    session = store._create_semantic_source_fence_session(token, created_before=reference_time)
 
     database_feed_reads = 0
     original_query = store._query
