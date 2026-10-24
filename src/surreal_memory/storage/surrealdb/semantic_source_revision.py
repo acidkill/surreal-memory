@@ -880,7 +880,9 @@ class _SemanticSourceFenceSession:
         self.watermark = token_versionstamp
         self.scanned_database_rows = 0
         self.scanned_source_rows = dict.fromkeys(_SOURCE_TABLES, 0)
-        self.post_reference_ids = {table: set() for table in _SOURCE_TABLES}
+        self.post_reference_ids: dict[str, set[str]] = {
+            table: set() for table in _SOURCE_TABLES
+        }
         self._lock = asyncio.Lock()
 
     async def assert_unchanged(self) -> None:
