@@ -10,23 +10,21 @@ from uuid import uuid4
 
 from surreal_memory.core.action_event import ActionEvent
 from surreal_memory.storage.surrealdb._ids import _record_id_part, _to_surreal_id
-from surreal_memory.utils.timeutils import utcnow
+from surreal_memory.utils.timeutils import ensure_naive_utc, utcnow
 
 logger = logging.getLogger(__name__)
 
 
 def _parse_datetime(val: Any) -> datetime:
-    if val is None:
-        return utcnow()
     if isinstance(val, datetime):
-        return val.replace(tzinfo=None) if val.tzinfo is not None else val
+        return ensure_naive_utc(val)
     if isinstance(val, str):
         try:
             parsed = datetime.fromisoformat(val.replace("Z", "+00:00"))
-            return parsed.replace(tzinfo=None) if parsed.tzinfo is not None else parsed
-        except (ValueError, AttributeError):
-            pass
-    return utcnow()
+        except ValueError as exc:
+            raise ValueError("action-log row has an invalid timestamp") from exc
+        return ensure_naive_utc(parsed)
+    raise ValueError("action-log row has a missing timestamp")
 
 
 def _row_to_action_event(row: dict[str, Any], brain_id: str) -> ActionEvent:
