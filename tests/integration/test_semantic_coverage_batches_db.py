@@ -72,6 +72,7 @@ async def store(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[SurrealDBStora
         password=TEST_AUTH[1],
         namespace=namespace,
         database="it_" + uuid.uuid4().hex[:12],
+        embedding_dim=EMBEDDING_DIMENSIONS,
     )
     await storage.initialize()
     try:
@@ -194,9 +195,15 @@ async def test_semantic_coverage_batches_resume_under_real_progress_leases(
             assert len(pending) == 1
             manifest = json.loads(pending[0])
             source_ref = manifest["source_state_ref"]
-            staged = await store.load_semantic_discovery_state(
-                source_ref["state_id"], source_ref["revision"]
-            )
+            inspection_owner = "semantic-coverage-inspect-" + uuid.uuid4().hex
+            assert await acquire(brain.id, inspection_owner)
+            try:
+                assert await store.claim_consolidation_progress(brain.id, inspection_owner)
+                staged = await store.load_semantic_discovery_state(
+                    source_ref["state_id"], source_ref["revision"]
+                )
+            finally:
+                assert await release(brain.id, inspection_owner)
             assert staged is not None
             assert staged["batch_index"] == 0
             assert staged.get("coverage_offset") is None
