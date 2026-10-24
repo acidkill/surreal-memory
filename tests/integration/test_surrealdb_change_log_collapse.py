@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ipaddress
 import os
 import uuid
 from collections import Counter
@@ -16,7 +15,9 @@ import pytest_asyncio
 from surreal_memory.core.brain import Brain
 from surreal_memory.storage.surrealdb.store import SurrealDBStorage
 
-SURREALDB_URL = os.getenv("SURREALDB_CHANGE_LOG_COLLAPSE_TEST_URL")
+SURREALDB_URL = os.getenv("SURREALDB_CHANGE_LOG_COLLAPSE_TEST_URL") or os.getenv(
+    "SMEM_TEST_SURREALDB_URL"
+)
 SURREALDB_USER = os.getenv("SURREALDB_CHANGE_LOG_COLLAPSE_TEST_USER", "root")
 SURREALDB_PASS = os.getenv("SURREALDB_CHANGE_LOG_COLLAPSE_TEST_PASS", "root")
 
@@ -28,9 +29,12 @@ def _is_authorized_disposable_url(url: str | None) -> bool:
         parsed = urlparse(url)
         return (
             parsed.scheme in {"http", "https", "ws", "wss"}
-            and parsed.port == 18765
-            and parsed.hostname is not None
-            and ipaddress.ip_address(parsed.hostname).is_loopback
+            and parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+            and parsed.username is None
+            and parsed.password is None
+            and parsed.port is not None
+            and not parsed.query
+            and not parsed.fragment
         )
     except ValueError:
         return False
@@ -40,7 +44,7 @@ pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(
         not _is_authorized_disposable_url(SURREALDB_URL),
-        reason="requires SURREALDB_CHANGE_LOG_COLLAPSE_TEST_URL on loopback port 18765",
+        reason="requires an explicit loopback change-log-collapse test URL",
     ),
 ]
 
