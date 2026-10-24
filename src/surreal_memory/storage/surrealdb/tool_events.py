@@ -15,7 +15,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Any
 
-from surreal_memory.storage.surrealdb._ids import _to_surreal_id
+from surreal_memory.storage.surrealdb._ids import _record_id_part, _to_surreal_id
 from surreal_memory.utils.timeutils import utcnow
 
 # Cap per brain to prevent unbounded growth (mirrors the SQLite mixin).
@@ -124,6 +124,8 @@ class SurrealDBToolEventsMixin:
         brain_id: str,
         since: datetime | None = None,
         limit: int = 5000,
+        after: tuple[datetime, str] | None = None,
+        until: datetime | None = None,
     ) -> list[dict[str, Any]]:
         """Return tool events (tool_name + created_at) oldest-first for habit mining.
 
@@ -132,15 +134,24 @@ class SurrealDBToolEventsMixin:
         (tool events carry no session_id, so mining treats them as one stream).
         """
         safe_limit = min(int(limit), 20000)
-        sql = "SELECT tool_name, session_id, created_at FROM tool_events WHERE brain_id = $bid"
+        sql = "SELECT id, event_id, tool_name, session_id, created_at FROM tool_events WHERE brain_id = $bid"
         params: dict[str, Any] = {"bid": brain_id}
         if since is not None:
             sql += " AND created_at > $since"
             params["since"] = since
-        sql += f" ORDER BY created_at ASC LIMIT {safe_limit}"
+        if until is not None:
+            sql += " AND created_at <= $until"
+            params["until"] = until
+        if after is not None:
+            sql += " AND (created_at > $cursor_time OR (created_at = $cursor_time"
+            sql += " AND id > type::record('tool_events', $cursor_id)))"
+            params["cursor_time"] = after[0]
+            params["cursor_id"] = _to_surreal_id(after[1])
+        sql += f" ORDER BY created_at ASC, id ASC LIMIT {safe_limit}"
         rows = await self._query(sql, **params)
         return [
             {
+                "id": _record_id_part(str(r.get("id", ""))),
                 "tool_name": r.get("tool_name", ""),
                 "session_id": r.get("session_id", ""),
                 "created_at": _iso(r.get("created_at")),

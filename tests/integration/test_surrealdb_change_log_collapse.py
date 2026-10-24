@@ -6,6 +6,7 @@ import os
 import uuid
 from collections import Counter
 from contextlib import suppress
+from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import urlparse
 
@@ -14,6 +15,7 @@ import pytest_asyncio
 
 from surreal_memory.core.brain import Brain
 from surreal_memory.storage.surrealdb.store import SurrealDBStorage
+from surreal_memory.utils.timeutils import ensure_naive_utc
 
 SURREALDB_URL = os.getenv("SURREALDB_CHANGE_LOG_COLLAPSE_TEST_URL") or os.getenv(
     "SMEM_TEST_SURREALDB_URL"
@@ -284,3 +286,78 @@ async def test_small_pages_report_empty_tail_and_reject_malformed_cursor(
         brain_id=brain_id,
     )
     assert len(rows) == 2
+
+
+@pytest.mark.asyncio
+async def test_habit_source_pages_resume_with_physical_ids_and_frozen_upper_bound(
+    storage: SurrealDBStorage,
+) -> None:
+    brain_id = storage._get_brain_id()
+    foreign_brain = Brain.create(name="habit-source-foreign-live")
+    await storage.save_brain(foreign_brain)
+    store_conn = storage._ensure_conn()
+    cutoff = datetime(2026, 10, 24, 12, 0, 0)
+    until = cutoff
+    since = cutoff - timedelta(days=1)
+
+    for record_id, owner_id, created_at in [
+        ("action_a", brain_id, cutoff),
+        ("action_b", brain_id, cutoff),
+        ("action_future", brain_id, cutoff + timedelta(microseconds=1)),
+        ("action_foreign", foreign_brain.id, cutoff),
+    ]:
+        await store_conn.create(
+            f"action_log:{record_id}",
+            {
+                "brain_id": owner_id,
+                "action_type": "recall",
+                "action_context": record_id,
+                "tags": [],
+                "session_id": "session-a",
+                "created_at": created_at,
+            },
+        )
+
+    for physical_id, logical_id, owner_id, created_at in [
+        ("tool_a", "logical_a", brain_id, cutoff),
+        ("tool_b", "logical_b", brain_id, cutoff),
+        ("tool_future", "logical_future", brain_id, cutoff + timedelta(microseconds=1)),
+        ("tool_foreign", "logical_foreign", foreign_brain.id, cutoff),
+    ]:
+        await store_conn.create(
+            f"tool_events:{physical_id}",
+            {
+                "event_id": logical_id,
+                "brain_id": owner_id,
+                "tool_name": physical_id,
+                "session_id": "session-a",
+                "created_at": created_at,
+            },
+        )
+
+    action_first = await storage.get_action_sequences(since=since, until=until, limit=1)
+    action_second = await storage.get_action_sequences(
+        since=since,
+        until=until,
+        limit=1,
+        after=(action_first[-1].created_at, action_first[-1].id),
+    )
+    tool_first = await storage.get_tool_events_for_mining(
+        brain_id, since=since, until=until, limit=1
+    )
+    tool_second = await storage.get_tool_events_for_mining(
+        brain_id,
+        since=since,
+        until=until,
+        limit=1,
+        after=(datetime.fromisoformat(tool_first[-1]["created_at"]), tool_first[-1]["id"]),
+    )
+
+    action_rows = action_first + action_second
+    tool_rows = tool_first + tool_second
+    assert [event.id for event in action_rows] == ["action_a", "action_b"]
+    assert [row["id"] for row in tool_rows] == ["tool_a", "tool_b"]
+    assert all(event.created_at == cutoff for event in action_rows)
+    assert all(
+        ensure_naive_utc(datetime.fromisoformat(row["created_at"])) == cutoff for row in tool_rows
+    )
