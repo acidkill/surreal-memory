@@ -14,6 +14,7 @@ import os
 import uuid
 from dataclasses import replace
 from datetime import timedelta
+from typing import Any
 from urllib.parse import urlparse
 
 import pytest
@@ -193,6 +194,67 @@ async def test_frozen_reference_ignores_late_inserts_in_scans_and_source_fence(s
     assert await store.delete_neuron(target.id)
     with pytest.raises(SemanticSourceChangedError):
         await store.assert_semantic_source_unchanged(token, created_before=reference_time)
+
+
+@pytest.mark.asyncio
+async def test_frozen_fence_session_tracks_late_rows_and_reads_only_the_feed_suffix(
+    store,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = Neuron.create(type=NeuronType.CONCEPT, content="session-source")
+    target = Neuron.create(type=NeuronType.ENTITY, content="session-target")
+    await store.add_neuron(source)
+    await store.add_neuron(target)
+    reference_time = store._parse_datetime(await store._query_response("RETURN time::now()"))
+    token = await store.capture_semantic_source_token()
+    session = store._create_semantic_source_fence_session(token, created_before=reference_time)
+
+    database_feed_reads = 0
+    original_query = store._query
+
+    async def count_database_feed_reads(sql: str, **params: Any) -> list[dict[str, Any]]:
+        nonlocal database_feed_reads
+        if sql.startswith("SHOW CHANGES FOR DATABASE SINCE "):
+            database_feed_reads += 1
+        return await original_query(sql, **params)
+
+    monkeypatch.setattr(store, "_query", count_database_feed_reads)
+    await session.assert_unchanged()
+
+    late = replace(
+        Neuron.create(type=NeuronType.CONCEPT, content="session-late-node"),
+        created_at=reference_time + timedelta(seconds=5),
+    )
+    await store.add_neuron(late)
+    await session.assert_unchanged()
+
+    edge = replace(
+        Synapse.create(
+            source_id=source.id,
+            target_id=late.id,
+            type=SynapseType.RELATED_TO,
+        ),
+        created_at=reference_time + timedelta(seconds=5),
+    )
+    await store.add_synapse(edge)
+    await session.assert_unchanged()
+    await store.update_synapse(replace(edge, weight=0.75))
+    await session.assert_unchanged()
+    assert await store.delete_synapse(edge.id)
+    await session.assert_unchanged()
+
+    session_read_start = database_feed_reads
+    await session.assert_unchanged()
+    await session.assert_unchanged()
+    session_reads = database_feed_reads - session_read_start
+
+    stateless_read_start = database_feed_reads
+    await store.assert_semantic_source_unchanged(token, created_before=reference_time)
+    await store.assert_semantic_source_unchanged(token, created_before=reference_time)
+    stateless_reads = database_feed_reads - stateless_read_start
+
+    assert session_reads == 2
+    assert stateless_reads == 4
 
 
 @pytest.mark.asyncio

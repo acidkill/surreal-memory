@@ -7,6 +7,7 @@ source projection. Unknown changes and deletes remain conservatively fenced.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
@@ -534,6 +535,238 @@ class SurrealDBSemanticSourceRevisionMixin:
                     f"{table} changed since the semantic source token was captured"
                 )
 
+    def _create_semantic_source_fence_session(
+        self, since_token: str, *, created_before: datetime
+    ) -> _SemanticSourceFenceSession:
+        """Create a process-local incremental fence for one frozen discovery run."""
+        brain_id = self._get_brain_id()
+        versionstamp, _, _ = self._decode_token(since_token, brain_id)
+        return _SemanticSourceFenceSession(
+            self,
+            since_token,
+            brain_id,
+            versionstamp,
+            self._parse_datetime(created_before),
+        )
+
+    async def _assert_source_session_unchanged(self, session: _SemanticSourceFenceSession) -> None:
+        brain_id = self._get_brain_id()
+        versionstamp, captured_at, created_at_readonly = self._decode_token(session.token, brain_id)
+        if (
+            brain_id != session.brain_id
+            or versionstamp != session.token_versionstamp
+            or self._parse_datetime(session.created_before) != session.created_before
+        ):
+            raise SemanticSourceFenceExpiredError(
+                "semantic source fence session no longer matches its captured scope"
+            )
+        server_now = await self._server_now()
+        age = server_now - captured_at
+        if age < timedelta(0):
+            raise SemanticSourceFenceExpiredError("semantic source token is from the future")
+        if age >= _TOKEN_MAX_AGE or age >= _CHANGEFEED_RETENTION:
+            raise SemanticSourceFenceExpiredError(
+                "semantic source token is older than the safe changefeed window"
+            )
+
+        # All mutable state is staged locally. Cancellation or any malformed,
+        # unknown, expired, or changed-source event leaves the published cursor
+        # and post-reference ID sets untouched.
+        cursor = session.watermark
+        scanned_database_rows = session.scanned_database_rows
+        scanned_source_rows = dict(session.scanned_source_rows)
+        post_reference_ids = {table: set(ids) for table, ids in session.post_reference_ids.items()}
+        last_stamp = cursor
+        while True:
+            try:
+                events = await self._query(
+                    f"SHOW CHANGES FOR DATABASE SINCE {cursor} LIMIT {_DATABASE_FEED_PAGE_SIZE}"
+                )
+            except Exception as exc:
+                message = str(exc).lower()
+                if any(word in message for word in ("expired", "retention", "changefeed")):
+                    raise SemanticSourceFenceExpiredError(
+                        "semantic source database changefeed history is unavailable"
+                    ) from exc
+                raise SemanticSourceFenceUnavailableError(
+                    "could not inspect semantic source database changefeed"
+                ) from exc
+            if not isinstance(events, list):
+                raise SemanticSourceFenceUnavailableError(
+                    "database changefeed returned an invalid page"
+                )
+            if not events:
+                break
+
+            page_start = cursor
+            advanced = False
+            for event in events:
+                if not isinstance(event, Mapping):
+                    raise SemanticSourceFenceUnavailableError(
+                        "database changefeed returned an invalid event"
+                    )
+                stamp = event.get("versionstamp")
+                if (
+                    not isinstance(stamp, int)
+                    or isinstance(stamp, bool)
+                    or stamp < 0
+                    or stamp < page_start
+                    or (last_stamp is not None and stamp < last_stamp)
+                ):
+                    raise SemanticSourceFenceUnavailableError(
+                        "database changefeed returned an invalid versionstamp"
+                    )
+                if stamp == page_start:
+                    continue
+                if stamp == last_stamp:
+                    raise SemanticSourceFenceUnavailableError(
+                        "database changefeed returned duplicate versionstamps"
+                    )
+                changes = event.get("changes")
+                if not isinstance(changes, (list, tuple)) or not changes:
+                    raise SemanticSourceFenceUnavailableError(
+                        "database changefeed returned an invalid event"
+                    )
+                source_tables_in_event: set[str] = set()
+                for change in changes:
+                    table = self._change_table(change)
+                    if table is None:
+                        raise SemanticSourceFenceUnavailableError(
+                            "database changefeed returned an unclassifiable change"
+                        )
+                    if table not in _SOURCE_TABLES:
+                        continue
+                    source_tables_in_event.add(table)
+                    self._classify_source_change(
+                        table,
+                        change,
+                        brain_id=brain_id,
+                        created_before=session.created_before,
+                        created_at_readonly=created_at_readonly,
+                        post_reference_ids=post_reference_ids[table],
+                    )
+                for table in source_tables_in_event:
+                    scanned_source_rows[table] += 1
+                    if scanned_source_rows[table] >= _SOURCE_CHANGEFEED_MAX_ROWS:
+                        raise SemanticSourceFenceUnavailableError(
+                            f"{table} changefeed exceeded the bounded scan limit"
+                        )
+                cursor = stamp
+                last_stamp = stamp
+                scanned_database_rows += 1
+                advanced = True
+                if scanned_database_rows > _DATABASE_FEED_MAX_ROWS:
+                    raise SemanticSourceFenceUnavailableError(
+                        "database changefeed exceeded the bounded scan limit"
+                    )
+
+            if len(events) < _DATABASE_FEED_PAGE_SIZE:
+                break
+            if scanned_database_rows >= _DATABASE_FEED_MAX_ROWS:
+                raise SemanticSourceFenceUnavailableError(
+                    "database changefeed exceeded the bounded scan limit"
+                )
+            if not advanced:
+                raise SemanticSourceFenceUnavailableError(
+                    "database changefeed pagination did not advance"
+                )
+
+        session.watermark = cursor
+        session.scanned_database_rows = scanned_database_rows
+        session.scanned_source_rows = scanned_source_rows
+        session.post_reference_ids = post_reference_ids
+
+    def _classify_source_change(
+        self,
+        table: str,
+        change: Any,
+        *,
+        brain_id: str,
+        created_before: datetime,
+        created_at_readonly: bool,
+        post_reference_ids: set[str],
+    ) -> None:
+        """Apply the shared fail-closed source-event classifier."""
+        if not isinstance(change, Mapping):
+            raise SemanticSourceFenceUnavailableError(
+                f"{table} changefeed returned an unclassifiable change"
+            )
+        neutral_update = False
+        if set(change) == {"current", "update"}:
+            action, record = "update", change["current"]
+            if isinstance(record, Mapping):
+                evidence = self._projection_neutral_update(table, record, change["update"])
+                if evidence is None:
+                    raise SemanticSourceFenceUnavailableError(
+                        f"{table} changefeed returned an invalid reverse diff"
+                    )
+                neutral_update = evidence
+        elif len(change) == 1:
+            action, record = next(iter(change.items()))
+        else:
+            raise SemanticSourceFenceUnavailableError(
+                f"{table} changefeed returned an unclassifiable change"
+            )
+        if not isinstance(record, Mapping):
+            raise SemanticSourceFenceUnavailableError(
+                f"{table} changefeed returned an invalid record"
+            )
+        if action == "define_table":
+            if self._is_expected_table_reassertion(table, record):
+                return
+            raise SemanticSourceFenceUnavailableError(
+                f"{table} changefeed returned an unexpected table definition"
+            )
+        record_id = record.get("id")
+        record_id_text = str(record_id) if record_id is not None else ""
+        if not record_id_text.startswith(f"{table}:"):
+            raise SemanticSourceFenceUnavailableError(
+                f"{table} changefeed returned an invalid record id"
+            )
+        if action == "delete":
+            if record_id_text in post_reference_ids:
+                post_reference_ids.remove(record_id_text)
+                return
+            raise SemanticSourceChangedError(
+                f"{table} changed since the semantic source token was captured"
+            )
+        if action not in {"create", "update"}:
+            raise SemanticSourceFenceUnavailableError(
+                f"{table} changefeed returned an unknown change type"
+            )
+        if action == "update" and record_id_text in post_reference_ids:
+            if record.get("brain_id") != brain_id:
+                raise SemanticSourceChangedError(
+                    f"{table} changed since the semantic source token was captured"
+                )
+            return
+        if action == "update" and not created_at_readonly:
+            raise SemanticSourceChangedError(
+                f"{table} changed since the semantic source token was captured"
+            )
+        if record.get("brain_id") != brain_id:
+            raise SemanticSourceChangedError(
+                f"{table} changed since the semantic source token was captured"
+            )
+        created_at = record.get("created_at")
+        if created_at is None:
+            raise SemanticSourceChangedError(
+                f"{table} changed since the semantic source token was captured"
+            )
+        try:
+            created_at = self._parse_datetime(created_at)
+        except (TypeError, ValueError) as exc:
+            raise SemanticSourceFenceUnavailableError(
+                f"{table} changefeed returned an invalid created_at"
+            ) from exc
+        if created_at <= created_before:
+            if neutral_update:
+                return
+            raise SemanticSourceChangedError(
+                f"{table} changed since the semantic source token was captured"
+            )
+        post_reference_ids.add(record_id_text)
+
     async def _assert_source_unchanged_before(
         self,
         brain_id: str,
@@ -601,83 +834,14 @@ class SurrealDBSemanticSourceRevisionMixin:
                             raise SemanticSourceFenceUnavailableError(
                                 f"{table} changefeed returned an unclassifiable change"
                             )
-                        neutral_update = False
-                        if set(change) == {"current", "update"}:
-                            action, record = "update", change["current"]
-                            if isinstance(record, Mapping):
-                                evidence = self._projection_neutral_update(
-                                    table, record, change["update"]
-                                )
-                                if evidence is None:
-                                    raise SemanticSourceFenceUnavailableError(
-                                        f"{table} changefeed returned an invalid reverse diff"
-                                    )
-                                neutral_update = evidence
-                        elif len(change) == 1:
-                            action, record = next(iter(change.items()))
-                        else:
-                            raise SemanticSourceFenceUnavailableError(
-                                f"{table} changefeed returned an unclassifiable change"
-                            )
-                        if not isinstance(record, Mapping):
-                            raise SemanticSourceFenceUnavailableError(
-                                f"{table} changefeed returned an invalid record"
-                            )
-                        if action == "define_table":
-                            if self._is_expected_table_reassertion(table, record):
-                                continue
-                            raise SemanticSourceFenceUnavailableError(
-                                f"{table} changefeed returned an unexpected table definition"
-                            )
-                        record_id = record.get("id")
-                        record_id_text = str(record_id) if record_id is not None else ""
-                        if not record_id_text.startswith(f"{table}:"):
-                            raise SemanticSourceFenceUnavailableError(
-                                f"{table} changefeed returned an invalid record id"
-                            )
-                        if action == "delete":
-                            if record_id_text in post_reference_ids:
-                                post_reference_ids.remove(record_id_text)
-                                continue
-                            raise SemanticSourceChangedError(
-                                f"{table} changed since the semantic source token was captured"
-                            )
-                        if action not in {"create", "update"}:
-                            raise SemanticSourceFenceUnavailableError(
-                                f"{table} changefeed returned an unknown change type"
-                            )
-                        if action == "update" and record_id_text in post_reference_ids:
-                            if record.get("brain_id") != brain_id:
-                                raise SemanticSourceChangedError(
-                                    f"{table} changed since the semantic source token was captured"
-                                )
-                            continue
-                        if action == "update" and not created_at_readonly:
-                            raise SemanticSourceChangedError(
-                                f"{table} changed since the semantic source token was captured"
-                            )
-                        if record.get("brain_id") != brain_id:
-                            raise SemanticSourceChangedError(
-                                f"{table} changed since the semantic source token was captured"
-                            )
-                        created_at = record.get("created_at")
-                        if created_at is None:
-                            raise SemanticSourceChangedError(
-                                f"{table} changed since the semantic source token was captured"
-                            )
-                        try:
-                            created_at = self._parse_datetime(created_at)
-                        except (TypeError, ValueError) as exc:
-                            raise SemanticSourceFenceUnavailableError(
-                                f"{table} changefeed returned an invalid created_at"
-                            ) from exc
-                        if created_at <= created_before:
-                            if neutral_update:
-                                continue
-                            raise SemanticSourceChangedError(
-                                f"{table} changed since the semantic source token was captured"
-                            )
-                        post_reference_ids.add(record_id_text)
+                        self._classify_source_change(
+                            table,
+                            change,
+                            brain_id=brain_id,
+                            created_before=created_before,
+                            created_at_readonly=created_at_readonly,
+                            post_reference_ids=post_reference_ids,
+                        )
 
                     cursor = raw_stamp
                     scanned += 1
@@ -695,3 +859,31 @@ class SurrealDBSemanticSourceRevisionMixin:
                     raise SemanticSourceFenceUnavailableError(
                         f"{table} changefeed pagination did not advance"
                     )
+
+
+class _SemanticSourceFenceSession:
+    """Invocation-scoped cursor and classifier state; never persisted."""
+
+    def __init__(
+        self,
+        storage: SurrealDBSemanticSourceRevisionMixin,
+        token: str,
+        brain_id: str,
+        token_versionstamp: int,
+        created_before: datetime,
+    ) -> None:
+        self.storage = storage
+        self.token = token
+        self.brain_id = brain_id
+        self.token_versionstamp = token_versionstamp
+        self.created_before = created_before
+        self.watermark = token_versionstamp
+        self.scanned_database_rows = 0
+        self.scanned_source_rows = dict.fromkeys(_SOURCE_TABLES, 0)
+        self.post_reference_ids: dict[str, set[str]] = {table: set() for table in _SOURCE_TABLES}
+        self._lock = asyncio.Lock()
+
+    async def assert_unchanged(self) -> None:
+        """Validate changes since the last completed scan, serially and atomically."""
+        async with self._lock:
+            await self.storage._assert_source_session_unchanged(self)

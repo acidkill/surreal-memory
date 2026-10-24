@@ -24,7 +24,7 @@ import struct
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from surreal_memory.core.constants import GRAPH_ONLY_PLACEHOLDER
@@ -930,14 +930,25 @@ async def _capture_source_token(storage: NeuralStorage) -> Any:
 
 
 async def _assert_source_unchanged(
-    storage: NeuralStorage, token: Any, *, created_before: datetime | None = None
+    storage: NeuralStorage,
+    token: Any,
+    *,
+    created_before: datetime | None = None,
+    session: Any = None,
 ) -> None:
     verify = getattr(storage, "assert_semantic_source_unchanged", None)
     if not callable(verify):
         raise RuntimeError("storage does not support semantic source mutation fencing")
     if not isinstance(token, str) or not token:
         raise RuntimeError("semantic source rebuild checkpoint has no valid mutation token")
-    if created_before is None:
+    if session is not None and created_before is not None:
+        scoped_cutoff = created_before
+        if scoped_cutoff.tzinfo is not None:
+            scoped_cutoff = scoped_cutoff.astimezone(UTC).replace(tzinfo=None)
+        if session.token != token or session.created_before != scoped_cutoff:
+            raise RuntimeError("semantic source fence session scope changed")
+        await session.assert_unchanged()
+    elif created_before is None:
         await verify(token)
     else:
         await verify(token, created_before=created_before)
@@ -1081,7 +1092,11 @@ async def _discover_semantic_synapses_resumable(
                 )
             # Prove that only post-reference records changed before replacing the
             # staged source. Pre-reference updates/deletes still invalidate it.
-            await _assert_source_unchanged(storage, token, created_before=reference_time)
+            await _assert_source_unchanged(
+                storage,
+                token,
+                created_before=reference_time,
+            )
             token = await _capture_source_token(storage)
             reference_time_rebuilt = True
             durable_neuron_state = None
@@ -1096,11 +1111,37 @@ async def _discover_semantic_synapses_resumable(
     verify_fence = getattr(storage, "assert_semantic_source_unchanged", None)
     fence_available = callable(capture_fence) and callable(verify_fence)
     if token is not None:
-        await _assert_source_unchanged(storage, token, created_before=reference_time)
+        create_fence_session = getattr(storage, "_create_semantic_source_fence_session", None)
+        source_fence_session = (
+            create_fence_session(token, created_before=reference_time)
+            if reference_time is not None and callable(create_fence_session)
+            else None
+        )
+        await _assert_source_unchanged(
+            storage,
+            token,
+            created_before=reference_time,
+            session=source_fence_session,
+        )
     elif fence_available:
         token = await _capture_source_token(storage)
+        create_fence_session = getattr(storage, "_create_semantic_source_fence_session", None)
+        source_fence_session = (
+            create_fence_session(token, created_before=reference_time)
+            if reference_time is not None and callable(create_fence_session)
+            else None
+        )
     else:
         raise RuntimeError("storage does not support semantic source mutation fencing")
+
+    async def assert_source_fence() -> None:
+        await _assert_source_unchanged(
+            storage,
+            token,
+            created_before=reference_time,
+            session=source_fence_session,
+        )
+
     batch_index = (
         durable_neuron_state.get("batch_index", 0) if durable_neuron_state is not None else 0
     )
@@ -1124,6 +1165,38 @@ async def _discover_semantic_synapses_resumable(
     batch_cursor_row: int | None = None
     batch_resume_backend: str | None = None
     batch_resume_fingerprint: str | None = None
+    batch_resume_top_k: int | None = None
+    if durable_neuron_state is not None and "batch_resume_fence" in durable_neuron_state:
+        raw_batch_resume_fence = durable_neuron_state["batch_resume_fence"]
+        if not isinstance(raw_batch_resume_fence, Mapping) or set(raw_batch_resume_fence) != {
+            "row",
+            "similarity_backend",
+            "source_fingerprint",
+            "similarity_top_k",
+        }:
+            raise RuntimeError("invalid semantic_link batch resume fence")
+        raw_batch_resume_row = raw_batch_resume_fence["row"]
+        raw_resume_backend = raw_batch_resume_fence["similarity_backend"]
+        raw_resume_fingerprint = raw_batch_resume_fence["source_fingerprint"]
+        raw_resume_top_k = raw_batch_resume_fence["similarity_top_k"]
+        if (
+            type(raw_batch_resume_row) is not int
+            or raw_batch_resume_row < 0
+            or not isinstance(raw_resume_backend, str)
+            or not raw_resume_backend
+            or not isinstance(raw_resume_fingerprint, str)
+            or len(raw_resume_fingerprint) != 64
+            or any(character not in "0123456789abcdef" for character in raw_resume_fingerprint)
+            or type(raw_resume_top_k) is not int
+        ):
+            raise RuntimeError("invalid semantic_link batch resume fence")
+        if raw_resume_top_k != SEMANTIC_TOP_K:
+            raise RuntimeError("semantic_link batch resume top-K changed")
+        batch_resume_row = raw_batch_resume_row
+        batch_cursor_row = raw_batch_resume_row
+        batch_resume_backend = raw_resume_backend
+        batch_resume_fingerprint = raw_resume_fingerprint
+        batch_resume_top_k = raw_resume_top_k
     if next_batch is not None:
         pair_cap = min(config.semantic_discovery_max_pairs, MAX_PAIRS_HARD_CAP)
         window_transition = next_window is not None
@@ -1171,6 +1244,8 @@ async def _discover_semantic_synapses_resumable(
                 raise RuntimeError("invalid semantic_link applied-batch similarity cursor") from exc
             if str(parsed_batch_resume_row) != batch_cursor:
                 raise RuntimeError("invalid semantic_link applied-batch similarity cursor")
+            if batch_cursor_row is not None and batch_cursor_row != parsed_batch_resume_row:
+                raise RuntimeError("semantic_link batch resume cursor changed")
             batch_cursor_row = parsed_batch_resume_row
             saved_top_k = saved.get("similarity_top_k")
             if saved_top_k is not None and (
@@ -1180,15 +1255,41 @@ async def _discover_semantic_synapses_resumable(
             # Older checkpoints lack the top-K fence. Keep their safe full replay;
             # the next checkpoint writes the field for subsequent batch resumes.
             if saved_top_k == SEMANTIC_TOP_K:
+                if (
+                    batch_resume_backend is not None
+                    and batch_resume_backend != saved["similarity_backend"]
+                ):
+                    raise RuntimeError(
+                        "semantic_link similarity backend changed after its applied batch"
+                    )
+                if (
+                    batch_resume_fingerprint is not None
+                    and batch_resume_fingerprint != saved["source_fingerprint"]
+                ):
+                    raise RuntimeError(
+                        "semantic_link source changed after its applied-batch checkpoint"
+                    )
+                if batch_resume_top_k is not None and batch_resume_top_k != saved_top_k:
+                    raise RuntimeError("semantic_link batch resume top-K changed")
                 batch_resume_row = parsed_batch_resume_row
                 batch_resume_backend = saved["similarity_backend"]
                 batch_resume_fingerprint = saved["source_fingerprint"]
+                batch_resume_top_k = saved_top_k
         # Revisit the capped row too: a cap may have split its top-K peers.
         # Indexed live pair checks exclude the previous batch's committed edges.
         batch_index = next_batch
         durable_neuron_state = dict(durable_neuron_state)
         durable_neuron_state["batch_index"] = batch_index
         durable_neuron_state["legacy_checkpoint"] = None
+        if batch_resume_row is not None:
+            durable_neuron_state["batch_resume_fence"] = {
+                "row": batch_resume_row,
+                "similarity_backend": batch_resume_backend,
+                "source_fingerprint": batch_resume_fingerprint,
+                "similarity_top_k": batch_resume_top_k,
+            }
+        else:
+            durable_neuron_state.pop("batch_resume_fence", None)
         if window_transition:
             # Rebuild one bounded ID-order window against the same frozen source.
             expected_source_fingerprint = durable_neuron_state["source_fingerprint"]
@@ -1590,7 +1691,7 @@ async def _discover_semantic_synapses_resumable(
                 eligible_neurons=eligible_total,
             )
         if token is not None:
-            await _assert_source_unchanged(storage, token, created_before=reference_time)
+            await assert_source_fence()
         if budget_check is not None and source_rebuild is not None:
             await budget_check()
         neuron_page_options: dict[str, Any] = {
@@ -1632,7 +1733,7 @@ async def _discover_semantic_synapses_resumable(
             raise RuntimeError("semantic_link neuron cursor disappeared during resume")
         if replay_neuron:
             if token is not None:
-                await _assert_source_unchanged(storage, token, created_before=reference_time)
+                await assert_source_fence()
                 await emit(
                     "neurons",
                     neuron_cursor,
@@ -1643,7 +1744,7 @@ async def _discover_semantic_synapses_resumable(
         if not replay_neuron_found:
             continue
         if token is not None:
-            await _assert_source_unchanged(storage, token, created_before=reference_time)
+            await assert_source_fence()
         await emit(
             "neurons",
             neuron_cursor,
@@ -1722,7 +1823,7 @@ async def _discover_semantic_synapses_resumable(
         raise RuntimeError("semantic_link neuron source changed before synapse scan")
     while not bool(source_rebuild.get("edge_complete")):
         if token is not None:
-            await _assert_source_unchanged(storage, token, created_before=reference_time)
+            await assert_source_fence()
         if budget_check is not None:
             await budget_check()
         synapse_page_options: dict[str, Any] = {"limit": min(_SYNAPSE_PAGE_SIZE, 2000)}
@@ -1752,7 +1853,7 @@ async def _discover_semantic_synapses_resumable(
             # Even an unvalidated legacy prefix advances only the staged source
             # cursor; the pending manifest continues to name its old cursor.
             if token is not None:
-                await _assert_source_unchanged(storage, token, created_before=reference_time)
+                await assert_source_fence()
             await emit(
                 "synapses",
                 edge_cursor,
@@ -1762,7 +1863,7 @@ async def _discover_semantic_synapses_resumable(
             )
             continue
         if token is not None:
-            await _assert_source_unchanged(storage, token, created_before=reference_time)
+            await assert_source_fence()
         await emit(
             "synapses",
             edge_cursor,
@@ -1775,8 +1876,10 @@ async def _discover_semantic_synapses_resumable(
             break
 
     if token is not None:
-        await _assert_source_unchanged(storage, token, created_before=reference_time)
+        await assert_source_fence()
     source_fingerprint = fingerprint.finish()
+    if batch_resume_fingerprint is not None and batch_resume_fingerprint != source_fingerprint:
+        raise RuntimeError("semantic_link source changed after its applied-batch checkpoint")
     if (
         expected_source_fingerprint is not None
         and source_fingerprint != expected_source_fingerprint
@@ -1794,12 +1897,10 @@ async def _discover_semantic_synapses_resumable(
         )
     if saved_stage == "similarity" and saved.get("source_fingerprint") != source_fingerprint:
         raise RuntimeError("semantic_link source changed after its similarity checkpoint")
-    if batch_resume_fingerprint is not None and batch_resume_fingerprint != source_fingerprint:
-        raise RuntimeError("semantic_link source changed after its applied-batch checkpoint")
 
     if len(eligible) < 2:
         if token is not None:
-            await _assert_source_unchanged(storage, token, created_before=reference_time)
+            await assert_source_fence()
         return SemanticDiscoveryResult(
             source_fingerprint=source_fingerprint,
             source_token=token,
@@ -1895,6 +1996,8 @@ async def _discover_semantic_synapses_resumable(
 
     row_count = len(eligible)
     if batch_cursor_row is not None and batch_cursor_row >= row_count:
+        raise RuntimeError("semantic_link applied-batch cursor exceeds candidate rows")
+    if batch_resume_row is not None and batch_resume_row >= row_count:
         raise RuntimeError("semantic_link applied-batch cursor exceeds candidate rows")
     resume_row: int | None = None
     resume_v2 = saved_stage == "similarity" and saved_version == 2
@@ -2091,16 +2194,17 @@ async def _discover_semantic_synapses_resumable(
             "pairs_evaluated": pairs_evaluated,
         }
         if token is not None:
-            await _assert_source_unchanged(storage, token, created_before=reference_time)
+            await assert_source_fence()
             details["source_token"] = token
         source_rebuild["similarity_rebuild"] = None
         source_rebuild["legacy_checkpoint"] = details
+        source_rebuild.pop("batch_resume_fence", None)
         await write_source_checkpoint("similarity", str(index))
         durable_row_cursor = index
 
     async def persist_v1_similarity_rebuild(next_row: int, *, cursor_verified: bool) -> None:
         if token is not None:
-            await _assert_source_unchanged(storage, token, created_before=reference_time)
+            await assert_source_fence()
         source_rebuild["similarity_rebuild"] = {
             "next_row": next_row,
             "cursor_verified": cursor_verified,
@@ -2272,7 +2376,7 @@ async def _discover_semantic_synapses_resumable(
     if resume_row is not None and not resumed_row_found:
         raise RuntimeError("semantic_link similarity cursor is beyond the candidate rows")
     if token is not None:
-        await _assert_source_unchanged(storage, token, created_before=reference_time)
+        await assert_source_fence()
     next_window = None
     if len(new_synapses) < max_pairs and eligible_before_resample:
         proposed_window = (

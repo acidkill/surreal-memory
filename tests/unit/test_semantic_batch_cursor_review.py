@@ -31,6 +31,7 @@ class _FrozenStorage:
         self.post_reference_generations: set[int] = set()
         self.pair_lookup_calls = 0
         self.pairs_requested = 0
+        self.stateless_fence_calls = 0
 
     async def capture_semantic_source_token(self) -> str:
         return str(self.generation)
@@ -38,6 +39,7 @@ class _FrozenStorage:
     async def assert_semantic_source_unchanged(
         self, token: str, *, created_before: datetime | None = None
     ) -> None:
+        self.stateless_fence_calls += 1
         if token == str(self.generation):
             return
         if created_before is not None and all(
@@ -114,6 +116,30 @@ class _FrozenStorage:
             )
             self.generation += 1
             self.post_reference_generations.add(self.generation)
+
+
+class _ObservedFenceSession:
+    def __init__(self, token: str, created_before: datetime) -> None:
+        self.token = token
+        self.created_before = created_before
+        self.calls = 0
+
+    async def assert_unchanged(self) -> None:
+        self.calls += 1
+
+
+class _SessionStorage(_FrozenStorage):
+    def __init__(self, neurons: list[Neuron], synapses: list[Synapse]) -> None:
+        super().__init__(neurons, synapses)
+        self.sessions: list[_ObservedFenceSession] = []
+
+    def _create_semantic_source_fence_session(
+        self, token: str, *, created_before: datetime
+    ) -> _ObservedFenceSession:
+        cutoff = created_before.astimezone(UTC).replace(tzinfo=None)
+        session = _ObservedFenceSession(token, cutoff)
+        self.sessions.append(session)
+        return session
 
 
 def _fixture(existing_edge: bool = True) -> tuple[list[Neuron], list[Synapse]]:
@@ -248,6 +274,56 @@ async def test_frozen_capped_batches_match_full_discovery_and_replay_saved_prefi
     assert full_pairs_requested == len(neurons) * 5
     assert sum(batch_pair_lookup_calls) > full_pair_lookup_calls
     assert sum(batch_pairs_requested) > full_pairs_requested
+
+
+@pytest.mark.asyncio
+async def test_discovery_reuses_one_session_for_page_fences_and_keeps_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(sys.modules, "numpy", None)
+    monkeypatch.setattr(discovery, "_effective_embedding", lambda _config: (True, "", ""))
+    monkeypatch.setattr(discovery, "_EMBEDDING_PAGE_SIZE", 3)
+    neurons, initial_edges = _fixture()
+    storage = _SessionStorage(neurons, initial_edges)
+
+    await discover_semantic_synapses(
+        storage,
+        _config(100),
+        checkpoint=_unused_checkpoint,
+        reference_time=_REFERENCE_TIME,
+    )
+
+    assert len(storage.sessions) == 1
+    assert storage.sessions[0].calls > 3
+    assert storage.stateless_fence_calls == 0
+
+    fallback = _FrozenStorage(neurons, initial_edges)
+    await discover_semantic_synapses(
+        fallback,
+        _config(100),
+        checkpoint=_unused_checkpoint,
+        reference_time=_REFERENCE_TIME,
+    )
+    assert fallback.stateless_fence_calls > 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mismatch", ["token", "cutoff"])
+async def test_session_scope_mismatch_cannot_reuse_cached_watermark(mismatch: str) -> None:
+    cutoff = _REFERENCE_TIME.astimezone(UTC).replace(tzinfo=None)
+    session = _ObservedFenceSession("token-a", cutoff)
+    supplied_token = "token-b" if mismatch == "token" else "token-a"
+    supplied_cutoff = cutoff + timedelta(seconds=1) if mismatch == "cutoff" else cutoff
+
+    with pytest.raises(RuntimeError, match="session scope changed"):
+        await discovery._assert_source_unchanged(
+            _FrozenStorage([], []),
+            supplied_token,
+            created_before=supplied_cutoff,
+            session=session,
+        )
+
+    assert session.calls == 0
 
 
 async def _unused_checkpoint(_stage: str, _cursor: str | None, _details: dict[str, Any]) -> None:
