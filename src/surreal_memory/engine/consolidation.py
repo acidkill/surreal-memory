@@ -1325,6 +1325,7 @@ class ConsolidationEngine:
 
         progress_state = self._strategy_progress_state()
         phase = str(progress_state.get("phase") or "")
+        loaded_phase = phase
         saved_cursor = progress_state.get("cursor")
         cursor = str(saved_cursor) if saved_cursor is not None else None
         pending = [str(value) for value in (progress_state.get("pending") or [])]
@@ -1689,25 +1690,35 @@ class ConsolidationEngine:
         if phase == "retention_decay":
             await _advance_retention("retention_change_log")
 
+        retention_cursor = (
+            str(saved_cursor) if loaded_phase == "retention_change_log" and saved_cursor else None
+        )
         while phase == "retention_change_log":
             await self._check_progress_budget()
             if dry_run or not hasattr(self._storage, "collapse_pending_updates"):
                 await _advance_retention("retention_done")
                 break
-            collapsed = await self._storage.collapse_pending_updates(
-                max_rows=_CHANGE_LOG_COLLAPSE_CAP
+            (
+                collapsed,
+                retention_next_cursor,
+                exhausted,
+            ) = await self._storage.collapse_pending_updates(
+                max_rows=_CHANGE_LOG_COLLAPSE_CAP, cursor=retention_cursor
             )
-            counters["change_log_collapsed"] = report.change_log_collapsed + collapsed
+            counters["change_log_collapsed"] = report.change_log_collapsed + int(collapsed)
             report.change_log_collapsed = int(counters["change_log_collapsed"])
             if collapsed:
                 logger.info("Collapsed %d superseded change-log updates", collapsed)
-            if collapsed < _CHANGE_LOG_COLLAPSE_CAP:
+            retention_cursor = retention_next_cursor
+            await _save_checkpoint(
+                "retention_change_log",
+                cursor=retention_cursor,
+                pending=[],
+                counters=counters,
+            )
+            if exhausted:
                 await _advance_retention("retention_done")
                 break
-            # A capped pass is partial work, not completion. Persist it before
-            # checking the budget and continue from the next bounded batch.
-            report.extra["change_log_collapse_truncated"] = True
-            await _advance_retention("retention_change_log")
 
     async def _prune_legacy(
         self,
@@ -2033,19 +2044,16 @@ class ConsolidationEngine:
         # outcome for any peer, at any sync position.
         if not dry_run and hasattr(self._storage, "collapse_pending_updates"):
             try:
-                collapsed = await self._storage.collapse_pending_updates(
-                    max_rows=_CHANGE_LOG_COLLAPSE_CAP
-                )
-                report.change_log_collapsed = collapsed
-                if collapsed:
-                    logger.info("Collapsed %d superseded change-log updates", collapsed)
-                if collapsed >= _CHANGE_LOG_COLLAPSE_CAP:
-                    report.extra["change_log_collapse_truncated"] = True
-                    try:
-                        stats = await self._storage.get_change_log_stats()
-                        report.extra["change_log_pending_after"] = int(stats.get("pending", 0) or 0)
-                    except Exception:
-                        logger.debug("Change-log stats unavailable after collapse", exc_info=True)
+                cursor = None
+                while True:
+                    collapsed, cursor, exhausted = await self._storage.collapse_pending_updates(
+                        max_rows=_CHANGE_LOG_COLLAPSE_CAP, cursor=cursor
+                    )
+                    report.change_log_collapsed += int(collapsed)
+                    if collapsed:
+                        logger.info("Collapsed %d superseded change-log updates", collapsed)
+                    if exhausted:
+                        break
             except Exception:
                 logger.debug("Change-log collapse skipped", exc_info=True)
 

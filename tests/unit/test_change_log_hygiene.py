@@ -136,12 +136,69 @@ class TestPruneSyncedChangesReportsWhatItDid:
 class TestCollapsePendingUpdates:
     """Superseded pending updates are redundant; everything else is not."""
 
+    async def test_bounded_cursor_reaches_later_duplicates_and_is_brain_scoped(
+        self, storage: InMemoryStorage
+    ) -> None:
+        main_brain = storage.current_brain_id
+        assert main_brain is not None
+        await storage.record_change("fiber", "synced", "update")
+        await storage.mark_synced(await _last_sequence(storage))
+        for entity_id in ("unique-1", "unique-2", "unique-3"):
+            await storage.record_change("synapse", entity_id, "update")
+        first = await storage.record_change("synapse", "tail", "update", payload={"v": 1})
+        await storage.record_change("synapse", "tail", "update", payload={"v": 2})
+        await storage.record_change("neuron", "protected", "insert")
+        await storage.record_change("neuron", "protected", "insert")
+        await storage.record_change("fiber", "synced", "update")
+
+        foreign = Brain.create(name="foreign-change-log")
+        await storage.save_brain(foreign)
+        storage.set_brain(foreign.id)
+        await storage.record_change("synapse", "tail", "update", payload={"v": 99})
+        storage.set_brain(main_brain)
+
+        cursor = None
+        deleted = 0
+        pages = 0
+        while True:
+            removed, cursor, exhausted = await storage.collapse_pending_updates(
+                max_rows=2, cursor=cursor
+            )
+            deleted += removed
+            pages += 1
+            if exhausted:
+                break
+
+        assert pages >= 3, "unique prefix pages must not starve later duplicate keys"
+        assert deleted == 1
+        main = storage._change_log[main_brain]
+        assert any(entry.id == first for entry in main) is False
+        assert {
+            (entry.entity_type, entry.entity_id, entry.payload.get("v"))
+            for entry in main
+            if entry.operation == "update"
+        } == {
+            ("fiber", "synced", None),
+            ("synapse", "unique-1", None),
+            ("synapse", "unique-2", None),
+            ("synapse", "unique-3", None),
+            ("synapse", "tail", 2),
+            ("fiber", "synced", None),
+        }
+        assert sum(entry.synced for entry in main) == 1
+        assert sum(entry.operation == "insert" for entry in main) == 2
+
+        storage.set_brain(foreign.id)
+        foreign_entries = await storage.get_unsynced_changes(limit=10)
+        assert len(foreign_entries) == 1
+        assert foreign_entries[0].payload == {"v": 99}
+
     async def test_keeps_only_the_newest_update_per_entity(self, storage: InMemoryStorage) -> None:
         for _ in range(5):
             await storage.record_change("synapse", "s-1", "update")
         await storage.record_change("synapse", "s-2", "update")
 
-        removed = await storage.collapse_pending_updates()
+        removed = await _collapse_all(storage)
 
         assert removed == 4, f"5 updates of s-1 collapse to 1, so 4 go; got {removed}"
         pending = await storage.get_unsynced_changes()
@@ -155,7 +212,7 @@ class TestCollapsePendingUpdates:
         first = await storage.record_change("synapse", "s-1", "update", payload={"weight": 0.1})
         last = await storage.record_change("synapse", "s-1", "update", payload={"weight": 0.9})
 
-        await storage.collapse_pending_updates()
+        await _collapse_all(storage)
 
         pending = await storage.get_unsynced_changes()
         assert len(pending) == 1
@@ -175,7 +232,7 @@ class TestCollapsePendingUpdates:
         await storage.record_change("neuron", "n-1", "delete")
         await storage.record_change("neuron", "n-1", "delete")
 
-        removed = await storage.collapse_pending_updates()
+        removed = await _collapse_all(storage)
 
         assert removed == 0
         assert len(await storage.get_unsynced_changes()) == 4
@@ -187,7 +244,7 @@ class TestCollapsePendingUpdates:
         await storage.mark_synced(await _last_sequence(storage))
         await storage.record_change("synapse", "s-1", "update")
 
-        removed = await storage.collapse_pending_updates()
+        removed = await _collapse_all(storage)
 
         assert removed == 0, "no two PENDING updates share an entity here"
         assert await _total(storage) == 3, "synced rows must survive the collapse"
@@ -210,13 +267,13 @@ class TestCollapsePendingUpdates:
             return state
 
         before = end_state(await storage.get_unsynced_changes())
-        await storage.collapse_pending_updates()
+        await _collapse_all(storage)
         after = end_state(await storage.get_unsynced_changes())
 
         assert after == before, "collapsing changed what a peer would converge to"
 
     async def test_nothing_to_collapse_is_not_an_error(self, storage: InMemoryStorage) -> None:
-        assert await storage.collapse_pending_updates() == 0
+        assert await _collapse_all(storage) == 0
 
 
 class TestCollapseIsWiredIn:
@@ -242,6 +299,18 @@ class TestCollapseIsWiredIn:
 async def _last_sequence(storage: InMemoryStorage) -> int:
     stats = await storage.get_change_log_stats()
     return int(stats["last_sequence"])
+
+
+async def _collapse_all(storage: InMemoryStorage, *, max_rows: int = 200_000) -> int:
+    cursor = None
+    removed = 0
+    while True:
+        page_removed, cursor, exhausted = await storage.collapse_pending_updates(
+            max_rows=max_rows, cursor=cursor
+        )
+        removed += page_removed
+        if exhausted:
+            return removed
 
 
 async def _total(storage: InMemoryStorage) -> int:

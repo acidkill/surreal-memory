@@ -6,6 +6,7 @@ depth priors, mirroring the semantics of the SQLite backend mixins.
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from datetime import datetime, timedelta
 from typing import Any
@@ -166,41 +167,77 @@ class InMemorySyncMixin:
         self._change_log[brain_id] = kept
         return pruned
 
-    async def collapse_pending_updates(self, max_rows: int = 200_000) -> int:
+    async def collapse_pending_updates(
+        self, max_rows: int = 200_000, cursor: str | None = None
+    ) -> tuple[int, str | None, bool]:
         """Drop pending ``update`` rows superseded by a newer pending update.
 
         Mirrors the SurrealDB implementation: only ``operation == "update"``
         rows that are still unsynced are eligible, and the newest entry per
         (entity_type, entity_id) always survives.
         """
+        if max_rows < 1:
+            raise ValueError("max_rows must be positive")
         brain_id = self._get_brain_id()
         entries = self._change_log.get(brain_id, [])
-        if not entries:
-            return 0
+        if cursor is None:
+            watermark = self._change_log_seq.get(brain_id, 0)
+            last_sequence = 0
+            last_id = 0
+        else:
+            try:
+                state = json.loads(cursor)
+                if (
+                    not isinstance(state, dict)
+                    or set(state) != {"brain_id", "watermark", "sequence", "id"}
+                    or state["brain_id"] != brain_id
+                    or type(state["watermark"]) is not int
+                    or type(state["sequence"]) is not int
+                    or type(state["id"]) is not int
+                ):
+                    raise ValueError
+                watermark = int(state["watermark"])
+                last_sequence = int(state["sequence"])
+                last_id = int(state["id"])
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+                raise ValueError("invalid change-log collapse cursor") from exc
+            if not 0 <= last_sequence <= watermark or not 0 <= last_id <= watermark:
+                raise ValueError("invalid change-log collapse cursor")
+
+        eligible = [
+            entry
+            for entry in entries
+            if not entry.synced and entry.operation == "update" and entry.id <= watermark
+        ]
+        candidates = [
+            entry for entry in eligible if (entry.id, entry.id) > (last_sequence, last_id)
+        ][:max_rows]
+        if not candidates:
+            return 0, cursor, True
 
         newest: dict[tuple[str, str], int] = {}
-        for entry in entries:
-            if entry.synced or entry.operation != "update":
-                continue
+        for entry in eligible:
             key = (entry.entity_type, entry.entity_id)
-            if entry.id > newest.get(key, -1):
-                newest[key] = entry.id
+            newest[key] = max(entry.id, newest.get(key, -1))
 
-        removed = 0
-        kept: list[ChangeEntry] = []
-        for entry in entries:
-            superseded = (
-                not entry.synced
-                and entry.operation == "update"
-                and entry.id != newest.get((entry.entity_type, entry.entity_id), entry.id)
-            )
-            if superseded and removed < max_rows:
-                removed += 1
-                continue
-            kept.append(entry)
+        doomed_ids = {
+            entry.id
+            for entry in candidates
+            if entry.id < newest[(entry.entity_type, entry.entity_id)]
+        }
+        self._change_log[brain_id] = [entry for entry in entries if entry.id not in doomed_ids]
 
-        self._change_log[brain_id] = kept
-        return removed
+        last = candidates[-1]
+        next_cursor = json.dumps(
+            {
+                "brain_id": brain_id,
+                "watermark": watermark,
+                "sequence": last.id,
+                "id": last.id,
+            },
+            separators=(",", ":"),
+        )
+        return len(doomed_ids), next_cursor, len(candidates) < max_rows
 
     async def seed_change_log(self, device_id: str = "") -> dict[str, int]:
         """Seed the change log with all existing entities as 'insert' entries."""

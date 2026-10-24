@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import json
 import logging
 import math
 import random
@@ -258,12 +259,9 @@ def _prefer_ws_transport(url: str) -> str:
 # the statement batch fails.
 _BATCH_WRITE_CHUNK = 500
 
-# Ceiling on rows one collapse_pending_updates pass may delete. The first run
-# against a neglected log faces millions of rows; deleting them in a single pass
-# would stall the consolidation that called it. The pass is idempotent and runs
-# on every consolidation, so a backlog drains over several runs instead of one
-# long stall -- and the caller reports the truncation rather than presenting a
-# partial pass as a finished one.
+# Ceiling on eligible candidate rows one collapse_pending_updates call reads.
+# The caller checkpoints the cursor between pages so a large backlog drains
+# without one unbounded consolidation step.
 _COLLAPSE_MAX_ROWS = 200_000
 
 # Delete batch for the collapse. Much larger than _BATCH_WRITE_CHUNK because
@@ -4057,7 +4055,9 @@ class SurrealDBStorage(
         await self._query(f"DELETE FROM change_log WHERE {where}", cutoff=cutoff)
         return doomed
 
-    async def collapse_pending_updates(self, max_rows: int = _COLLAPSE_MAX_ROWS) -> int:
+    async def collapse_pending_updates(
+        self, max_rows: int = _COLLAPSE_MAX_ROWS, cursor: str | None = None
+    ) -> tuple[int, str | None, bool]:
         """Drop pending ``update`` rows that a newer pending update supersedes.
 
         The change log is a replication journal, and replication converges on
@@ -4068,16 +4068,13 @@ class SurrealDBStorage(
         superseded rows come to dominate the table -- tens of them per edge --
         and nothing else removes them.
 
-        The winner is chosen WITHIN the batch this pass reads, not by a global
-        aggregate. That is both cheaper and equally safe: the row surviving each
-        batch is the newest one *in* it, and the globally newest row is by
-        definition never older than any batch-local maximum -- so it either sits
-        outside the batch untouched, or is the batch maximum and survives. It
-        can never be the row deleted. A global ``GROUP BY`` over the whole table
-        would give the same answer while scanning every row to get it, which on
-        a large backlog cost more than the deletes themselves. Repeated passes
-        converge, because each pass strictly reduces the number of superseded
-        rows.
+        Each call reads one bounded sequence-indexed page, then finds global
+        maxima only for that page's distinct entity IDs. The returned cursor
+        records the high-water sequence observed on the first page, so each page
+        advances through a bounded sequence range without skipping a winner that
+        fell across a page. Independent writers can append rows with a reused
+        local sequence during the scan; those rows are eligible for the next run.
+        Equal maximum sequences are retained because their order is ambiguous.
 
         Deliberately narrow, because the safety argument does not extend:
 
@@ -4088,31 +4085,94 @@ class SurrealDBStorage(
           governed by :meth:`prune_synced_changes`; running two retention
           policies over one table is how a table ends up with neither.
 
-        Bounded by ``max_rows`` per pass so a first run against a large backlog
-        cannot turn into a multi-minute stall. The return value is the number
-        actually deleted, and the caller reports truncation rather than
-        presenting a partial pass as a finished one.
+        Bounded by ``max_rows`` candidates per call. The caller must continue
+        with the returned cursor until ``exhausted`` is true.
         """
+        if max_rows < 1:
+            raise ValueError("max_rows must be positive")
         lit = _brain_literal(self._get_brain_id())
         scope = f"brain_id = {lit} AND operation = 'update' AND synced = false"
+        if cursor is None:
+            # shortcut: sequences are instance-local; later-run work may be appended
+            # within this range by another writer or after this process restarts.
+            high_rows = await self._query(
+                f"SELECT sequence FROM change_log WHERE brain_id = {lit} "
+                "ORDER BY sequence DESC LIMIT 1"
+            )
+            watermark = int(high_rows[0].get("sequence", 0) or 0) if high_rows else 0
+            last_sequence = 0
+            last_id = ""
+        else:
+            try:
+                state = json.loads(cursor)
+                if (
+                    not isinstance(state, dict)
+                    or set(state) != {"brain_id", "watermark", "sequence", "id"}
+                    or state["brain_id"] != self._get_brain_id()
+                    or type(state["watermark"]) is not int
+                    or type(state["sequence"]) is not int
+                    or not isinstance(state["id"], str)
+                ):
+                    raise ValueError
+                watermark = state["watermark"]
+                last_sequence = state["sequence"]
+                last_id = state["id"]
+            except (json.JSONDecodeError, TypeError, ValueError, KeyError) as exc:
+                raise ValueError("invalid change-log collapse cursor") from exc
+            if (
+                watermark < 0
+                or last_sequence < 0
+                or last_sequence > watermark
+                or not last_id
+                or ":" in last_id
+            ):
+                raise ValueError("invalid change-log collapse cursor")
 
-        # No ORDER BY: which superseded rows a capped pass removes is immaterial
-        # (they are all redundant), while sorting is not — the filter includes
-        # `operation`, which no index covers, so the sort would be paid over
-        # every matching row.
+        conditions = [scope, "sequence <= $watermark"]
+        params: dict[str, Any] = {"watermark": watermark, "cap": max_rows}
+        if cursor is not None:
+            conditions.append(
+                "(sequence > $last_sequence OR "
+                "(sequence = $last_sequence AND id > type::record('change_log', $last_id)))"
+            )
+            params.update(last_sequence=last_sequence, last_id=last_id)
         candidates = await self._query(
-            f"SELECT id, entity_type, entity_id, sequence FROM change_log WHERE {scope} LIMIT $cap",
-            cap=max_rows,
+            "SELECT id, entity_type, entity_id, sequence FROM change_log WHERE "
+            + " AND ".join(conditions)
+            + " ORDER BY sequence ASC, id ASC LIMIT $cap",
+            **params,
         )
         if not candidates:
-            return 0
+            return 0, cursor, True
+        last_record_id = str(candidates[-1].get("id", ""))
+        if not last_record_id.startswith("change_log:") or ":" in last_record_id.split(":", 1)[1]:
+            raise ValueError("unsafe change-log row id in collapse page")
 
         newest: dict[tuple[str, str], int] = {}
-        for row in candidates:
-            key = (str(row.get("entity_type", "")), str(row.get("entity_id", "")))
-            seq = int(row.get("sequence", 0) or 0)
-            if seq > newest.get(key, -1):
-                newest[key] = seq
+        for entity_type in {str(row.get("entity_type", "")) for row in candidates}:
+            entity_ids = list(
+                {
+                    str(row.get("entity_id", ""))
+                    for row in candidates
+                    if row.get("entity_type") == entity_type
+                }
+            )
+            rows = await self._query(
+                f"SELECT entity_id, math::max(sequence) AS latest_sequence FROM change_log "
+                f"WHERE {scope} AND sequence <= $watermark AND entity_type = $entity_type "
+                "AND entity_id IN $entity_ids GROUP BY entity_id",
+                watermark=watermark,
+                entity_type=entity_type,
+                entity_ids=entity_ids,
+            )
+            newest.update(
+                {
+                    (entity_type, str(row.get("entity_id", ""))): int(
+                        row.get("latest_sequence", 0) or 0
+                    )
+                    for row in rows
+                }
+            )
 
         # Keep the typed RecordIDs the driver handed back. The same IDs can be
         # bound as a record-list DELETE source; stringifying them loses their
@@ -4125,10 +4185,8 @@ class SurrealDBStorage(
             # charset validation rather than trusting arbitrary returned values.
             and _CHANGE_LOG_ID_SAFE.match(str(row["id"]))
             and int(row.get("sequence", 0) or 0)
-            != newest.get((str(row.get("entity_type", "")), str(row.get("entity_id", ""))), -1)
+            < newest.get((str(row.get("entity_type", "")), str(row.get("entity_id", ""))), -1)
         ]
-        if not doomed:
-            return 0
 
         # Use the native IDs as the table source so SurrealDB addresses the
         # selected records directly. Repeat all eligibility guards at deletion
@@ -4145,7 +4203,17 @@ class SurrealDBStorage(
                 brain_id=self._get_brain_id(),
             )
             deleted_count += len(deleted_ids)
-        return deleted_count
+        last = candidates[-1]
+        next_cursor = json.dumps(
+            {
+                "brain_id": self._get_brain_id(),
+                "watermark": watermark,
+                "sequence": int(last.get("sequence", 0) or 0),
+                "id": last_record_id.split(":", 1)[1],
+            },
+            separators=(",", ":"),
+        )
+        return deleted_count, next_cursor, len(candidates) < max_rows
 
     async def seed_change_log(self, device_id: str = "") -> dict[str, int]:
         brain_id = self._get_brain_id()
