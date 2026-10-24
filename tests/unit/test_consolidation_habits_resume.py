@@ -185,13 +185,14 @@ async def test_sequential_pair_effect_replays_once_but_new_run_reinforces(
 @pytest.mark.asyncio
 async def test_query_candidate_manifest_survives_interruption_and_changed_events(
     store: InMemoryStorage,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     brain_id = store.current_brain_id
     assert brain_id is not None
     brain = await store.get_brain(brain_id)
     assert brain is not None
-    reference_time = utcnow()
     await _seed_query_events(store)
+    reference_time = utcnow()
 
     captured: list[dict[str, object]] = []
 
@@ -228,6 +229,11 @@ async def test_query_candidate_manifest_survives_interruption_and_changed_events
             action_context="newly introduced topic resilience checkpoint",
             session_id=f"changed-session-{index}",
         )
+
+    async def fail_if_action_history_is_read(*_args: Any, **_kwargs: Any) -> list[Any]:
+        raise AssertionError("resumed query mining must use its frozen manifest")
+
+    monkeypatch.setattr(store, "get_action_sequences", fail_if_action_history_is_read)
 
     report = await learn_query_patterns(
         store,

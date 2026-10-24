@@ -880,6 +880,8 @@ class InMemoryStorage(
         session_id: str | None = None,
         since: datetime | None = None,
         limit: int = 1000,
+        after: tuple[datetime, str] | None = None,
+        until: datetime | None = None,
     ) -> list[Any]:
         limit = min(limit, 1000)
         from surreal_memory.core.action_event import ActionEvent
@@ -888,9 +890,16 @@ class InMemoryStorage(
         results: list[ActionEvent] = []
 
         for event in self._action_events[brain_id]:
+            if "action_type" not in event:
+                continue
             if session_id is not None and event["session_id"] != session_id:
                 continue
-            if since is not None and event["created_at"] < since:
+            created = ensure_naive_utc(event["created_at"])
+            if since is not None and created < ensure_naive_utc(since):
+                continue
+            if until is not None and created > ensure_naive_utc(until):
+                continue
+            if after is not None and (created, str(event["id"])) <= after:
                 continue
             results.append(
                 ActionEvent(
@@ -904,11 +913,9 @@ class InMemoryStorage(
                     created_at=event["created_at"],
                 )
             )
-            if len(results) >= limit:
-                break
 
-        results.sort(key=lambda e: e.created_at)
-        return results
+        results.sort(key=lambda e: (ensure_naive_utc(e.created_at), e.id))
+        return results[:limit]
 
     async def prune_action_events(self, older_than: datetime) -> int:
         brain_id = self._get_brain_id()
@@ -1054,6 +1061,8 @@ class InMemoryStorage(
         brain_id: str,
         since: datetime | None = None,
         limit: int = 5000,
+        after: tuple[datetime, str] | None = None,
+        until: datetime | None = None,
     ) -> list[dict[str, Any]]:
         """Return buffered tool events (tool_name + created_at) oldest-first.
 
@@ -1065,16 +1074,24 @@ class InMemoryStorage(
             if "tool_name" not in ev:
                 continue
             created = ev.get("created_at")
-            if since is not None and isinstance(created, datetime) and created <= since:
+            if not isinstance(created, datetime):
+                continue
+            normalized_created = ensure_naive_utc(created)
+            if since is not None and normalized_created <= ensure_naive_utc(since):
+                continue
+            if until is not None and normalized_created > ensure_naive_utc(until):
+                continue
+            if after is not None and (normalized_created, str(ev.get("id", ""))) <= after:
                 continue
             out.append(
                 {
+                    "id": ev.get("id", ""),
                     "tool_name": ev.get("tool_name", ""),
                     "session_id": ev.get("session_id", ""),
                     "created_at": created,
                 }
             )
-        out.sort(key=lambda e: str(e["created_at"]))
+        out.sort(key=lambda e: (ensure_naive_utc(e["created_at"]), str(e["id"])))
         return out[: min(int(limit), 20000)]
 
     async def mark_events_processed(self, brain_id: str, event_ids: list[int]) -> None:

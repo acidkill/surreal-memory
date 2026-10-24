@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 from surreal_memory.core.fiber import Fiber
 from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.core.synapse import Synapse, SynapseType
+from surreal_memory.engine.habit_input import action_events, tool_events
 from surreal_memory.utils.timeutils import utcnow
 
 if TYPE_CHECKING:
@@ -45,6 +46,59 @@ class SequencePair:
     action_b: str
     count: int
     avg_gap_seconds: float
+
+
+_SEQUENCE_AGGREGATION_MAX_KEYS = 50_000
+_SEQUENCE_CANDIDATE_MAX_COMBINATIONS = 250_000
+_ACTION_HABIT_PAGE_SIZE = 1000
+
+
+class _SequencePairAccumulator:
+    def __init__(self, window_seconds: float, *, ignore_self: bool = False) -> None:
+        self.window = window_seconds
+        self.ignore_self = ignore_self
+        self.previous: dict[str | None, tuple[str, datetime]] = {}
+        self.session_order: dict[str | None, int] = {}
+        self.session_positions: dict[str | None, int] = {}
+        self.counts: dict[tuple[str, str], list[float | int]] = {}
+        self.orders: dict[tuple[str, str], tuple[int, int]] = {}
+
+    def add(self, session_id: str | None, action: str, created_at: datetime) -> None:
+        if session_id not in self.session_order:
+            if len(self.session_order) >= _SEQUENCE_AGGREGATION_MAX_KEYS:
+                raise RuntimeError("sequence habit session aggregation limit reached")
+            self.session_order[session_id] = len(self.session_order)
+            self.session_positions[session_id] = 0
+        position = self.session_positions[session_id]
+        prior = self.previous.get(session_id)
+        if prior is not None:
+            prior_action, prior_time = prior
+            gap = (created_at - prior_time).total_seconds()
+            pair = (prior_action, action)
+            if gap <= self.window and not (self.ignore_self and prior_action == action):
+                if pair not in self.counts:
+                    if len(self.counts) >= _SEQUENCE_AGGREGATION_MAX_KEYS:
+                        raise RuntimeError("sequence habit pair aggregation limit reached")
+                    self.counts[pair] = [0, 0.0]
+                    self.orders[pair] = (self.session_order[session_id], position)
+                else:
+                    self.orders[pair] = min(
+                        self.orders[pair], (self.session_order[session_id], position)
+                    )
+                totals = self.counts[pair]
+                totals[0] = int(totals[0]) + 1
+                totals[1] = float(totals[1]) + gap
+        self.previous[session_id] = (action, created_at)
+        self.session_positions[session_id] = position + 1
+
+    def pairs(self) -> list[SequencePair]:
+        pairs = [
+            SequencePair(a, b, int(totals[0]), float(totals[1]) / int(totals[0]))
+            for (a, b), totals in self.counts.items()
+        ]
+        pairs.sort(key=lambda pair: self.orders[(pair.action_a, pair.action_b)])
+        pairs.sort(key=lambda pair: pair.count, reverse=True)
+        return pairs
 
 
 @dataclass(frozen=True)
@@ -285,6 +339,21 @@ def extract_habit_candidates(
     return candidates
 
 
+def _guard_habit_candidate_expansion(pairs: Sequence[SequencePair], min_frequency: int) -> None:
+    """Fail closed before dense pair graphs make trigram expansion unbounded."""
+    frequent = [pair for pair in pairs if pair.count >= min_frequency]
+    pair_map: dict[str, list[SequencePair]] = defaultdict(list)
+    for pair in frequent:
+        pair_map[pair.action_a].append(pair)
+    combinations = len(frequent)
+    for pair in frequent:
+        combinations += sum(
+            pair_bc.action_b != pair.action_a for pair_bc in pair_map.get(pair.action_b, ())
+        )
+        if combinations > _SEQUENCE_CANDIDATE_MAX_COMBINATIONS:
+            raise RuntimeError("habit candidate expansion limit reached; scan is incomplete")
+
+
 def heuristic_habit_name(steps: tuple[str, ...]) -> str:
     """Generate a human-readable name from action steps.
 
@@ -374,16 +443,25 @@ async def learn_habits(
         candidates = _habit_candidates_from_manifest(resume_manifest)
     else:
         since = reference_time - timedelta(days=30)
-        events = await storage.get_action_sequences(since=since)
-        report.sequences_analyzed = len(events)
-        if len(events) < 2:
+        accumulator = _SequencePairAccumulator(config.sequential_window_seconds)
+        session_ids: set[str] = set()
+        async for event in action_events(
+            storage, since=since, until=reference_time, page_size=_ACTION_HABIT_PAGE_SIZE
+        ):
+            report.sequences_analyzed += 1
+            if event.session_id:
+                session_ids.add(event.session_id)
+                if len(session_ids) > _SEQUENCE_AGGREGATION_MAX_KEYS:
+                    raise RuntimeError("sequence habit session aggregation limit reached")
+            accumulator.add(event.session_id, event.action_type, event.created_at)
+        if report.sequences_analyzed < 2:
             return [], report
 
-        pairs = mine_sequential_pairs(events, config.sequential_window_seconds)
+        pairs = accumulator.pairs()
         if not pairs:
             return [], report
-        session_ids = {event.session_id for event in events if event.session_id}
         total_sessions = max(len(session_ids), 1)
+        _guard_habit_candidate_expansion(pairs, config.habit_min_frequency)
         candidates = extract_habit_candidates(pairs, config.habit_min_frequency, total_sessions)
         if not candidates:
             return [], report
@@ -540,7 +618,7 @@ async def _materialize_habits(
 
 # Tool-usage habit mining tunables (module-level — no BrainConfig migration).
 _TOOL_HABIT_LOOKBACK_DAYS = 30
-_TOOL_HABIT_MAX_EVENTS = 5000
+_TOOL_HABIT_PAGE_SIZE = 5000
 _TOOL_HABIT_MAX = 25  # cap materialized tool habits per run to avoid flooding
 # Tool events are orders of magnitude denser than action events (hundreds per
 # session vs a handful), so the configured habit_min_frequency (default 3) lets
@@ -561,8 +639,6 @@ async def learn_tool_habits(
     on_progress: HabitProgressCallback | None = None,
 ) -> tuple[list[LearnedHabit], HabitReport]:
     """Learn tool habits, optionally resuming a frozen candidate plan."""
-    from surreal_memory.core.action_event import ActionEvent
-
     report = HabitReport()
     if resume_manifest is not None:
         candidates = _habit_candidates_from_manifest(resume_manifest)
@@ -572,47 +648,34 @@ async def learn_tool_habits(
             return [], report
 
         since = reference_time - timedelta(days=_TOOL_HABIT_LOOKBACK_DAYS)
-        rows = await storage.get_tool_events_for_mining(
-            brain_id, since=since, limit=_TOOL_HABIT_MAX_EVENTS
-        )
-        if len(rows) < 2:
-            return [], report
-
-        events: list[ActionEvent] = []
-        for row in rows:
-            created = row.get("created_at")
-            if isinstance(created, str):
-                try:
-                    created = datetime.fromisoformat(created.replace("Z", "+00:00"))
-                except ValueError:
-                    continue
-            if not isinstance(created, datetime):
-                continue
-            if created.tzinfo is not None:
-                created = created.replace(tzinfo=None)
+        accumulator = _SequencePairAccumulator(config.sequential_window_seconds, ignore_self=True)
+        tool_count = 0
+        async for row in tool_events(
+            storage,
+            brain_id,
+            since=since,
+            until=reference_time,
+            page_size=_TOOL_HABIT_PAGE_SIZE,
+        ):
             tool = str(row.get("tool_name") or "").strip()
             if not tool:
                 continue
-            events.append(
-                ActionEvent(
-                    brain_id=brain_id,
-                    session_id=None,
-                    action_type=tool,
-                    created_at=created,
-                )
-            )
-        report.sequences_analyzed = len(events)
-        if len(events) < 2:
+            created = row["created_at"]
+            if isinstance(created, str):
+                created = datetime.fromisoformat(created.replace("Z", "+00:00"))
+            if not isinstance(created, datetime):
+                raise RuntimeError("habit input tool page has an invalid timestamp")
+            accumulator.add(None, tool, created)
+            tool_count += 1
+        report.sequences_analyzed = tool_count
+        if tool_count < 2:
             return [], report
-
-        pairs = mine_sequential_pairs(events, config.sequential_window_seconds)
-        pairs = [pair for pair in pairs if pair.action_a != pair.action_b]
+        pairs = accumulator.pairs()
         if not pairs:
             return [], report
 
-        effective_min_freq = max(
-            config.habit_min_frequency, len(events) // _TOOL_HABIT_FREQ_DIVISOR
-        )
+        effective_min_freq = max(config.habit_min_frequency, tool_count // _TOOL_HABIT_FREQ_DIVISOR)
+        _guard_habit_candidate_expansion(pairs, effective_min_freq)
         candidates = extract_habit_candidates(pairs, effective_min_freq, total_sessions=1)
         if not candidates:
             return [], report

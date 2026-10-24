@@ -13,6 +13,7 @@ from surreal_memory.engine.query_pattern_mining import (
     QueryPatternCandidate,
     QueryPatternReport,
     TopicPair,
+    _QueryPairAccumulator,
     extract_pattern_candidates,
     extract_topics,
     learn_query_patterns,
@@ -226,7 +227,6 @@ class TestLearnQueryPatterns:
         assert brain is not None
 
         # Create recall events with repeated topic pairs
-        now = utcnow()
         for session_idx in range(5):
             sid = f"session-{session_idx}"
             await store.record_action(
@@ -240,8 +240,99 @@ class TestLearnQueryPatterns:
                 session_id=sid,
             )
 
+        now = utcnow()
         report = await learn_query_patterns(store, brain.config, now)
         assert report.topics_extracted > 0
+
+    async def test_reads_recall_events_past_legacy_limit_with_timestamp_ties(
+        self, store: InMemoryStorage
+    ) -> None:
+        brain_id = store.current_brain_id
+        assert brain_id is not None
+        brain = await store.get_brain(brain_id)
+        assert brain is not None
+        now = utcnow()
+        created_at = now - timedelta(minutes=1)
+        store._action_events[brain_id] = [
+            {
+                "id": f"{index:04d}",
+                "brain_id": brain_id,
+                "session_id": None,
+                "action_type": "other",
+                "action_context": "",
+                "tags": (),
+                "fiber_id": None,
+                "created_at": created_at,
+            }
+            for index in range(1001)
+        ]
+        for index in range(3):
+            store._action_events[brain_id].append(
+                {
+                    "id": f"z{index}",
+                    "brain_id": brain_id,
+                    "session_id": f"tail-{index}",
+                    "action_type": "recall",
+                    "action_context": "cedar birch",
+                    "tags": (),
+                    "fiber_id": None,
+                    "created_at": created_at,
+                }
+            )
+            store._action_events[brain_id].append(
+                {
+                    "id": f"zz{index}",
+                    "brain_id": brain_id,
+                    "session_id": f"tail-{index}",
+                    "action_type": "recall",
+                    "action_context": "maple willow",
+                    "tags": (),
+                    "fiber_id": None,
+                    "created_at": created_at,
+                }
+            )
+
+        report = await learn_query_patterns(store, brain.config, now)
+        assert report.patterns_learned > 0
+        assert report.topics_extracted >= 4
+
+    def test_streaming_query_pairs_match_reference_miner_ties(self) -> None:
+        timestamp = utcnow()
+        events = [
+            ActionEvent(
+                id="a1",
+                session_id="first",
+                action_type="recall",
+                action_context="alpha apple",
+                created_at=timestamp,
+            ),
+            ActionEvent(
+                id="b1",
+                session_id="second",
+                action_type="recall",
+                action_context="cedar date",
+                created_at=timestamp,
+            ),
+            ActionEvent(
+                id="c1",
+                session_id="first",
+                action_type="recall",
+                action_context="berry citrus",
+                created_at=timestamp,
+            ),
+            ActionEvent(
+                id="d1",
+                session_id="second",
+                action_type="recall",
+                action_context="elder fig",
+                created_at=timestamp,
+            ),
+        ]
+        accumulator = _QueryPairAccumulator(600)
+        for event in events:
+            accumulator.add(event.session_id, event.action_context, event.created_at)
+
+        assert accumulator.pairs() == mine_query_topic_pairs(events)
 
 
 # ── Integration: suggest_follow_up_queries ───────────────────────

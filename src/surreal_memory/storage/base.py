@@ -1539,6 +1539,8 @@ class NeuralStorage(ABC):
         session_id: str | None = None,
         since: datetime | None = None,
         limit: int = 1000,
+        after: tuple[datetime, str] | None = None,
+        until: datetime | None = None,
     ) -> list[Any]:
         """Get action events ordered by time.
 
@@ -1568,6 +1570,8 @@ class NeuralStorage(ABC):
         brain_id: str,
         since: datetime | None = None,
         limit: int = 5000,
+        after: tuple[datetime, str] | None = None,
+        until: datetime | None = None,
     ) -> list[dict[str, Any]]:
         """Return tool events (tool_name + created_at) oldest-first for habit mining.
 

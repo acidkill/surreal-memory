@@ -15,6 +15,8 @@ from surreal_memory.core.synapse import SynapseType
 from surreal_memory.engine.sequence_mining import (
     SequencePair,
     _existing_habit_steps,
+    _guard_habit_candidate_expansion,
+    _SequencePairAccumulator,
     extract_habit_candidates,
     heuristic_habit_name,
     learn_habits,
@@ -478,6 +480,276 @@ class TestToolHabits:
         assert any(h.metadata.get("_habit_source") == "tool_events" for h in habits)
         names = {h.name for h in learned}
         assert any("Read" in n and "Edit" in n for n in names)
+
+    async def test_reads_tail_past_legacy_limit_and_keeps_global_frequency_floor(
+        self, store: InMemoryStorage
+    ) -> None:
+        brain_id = store.current_brain_id
+        assert brain_id is not None
+        now = utcnow()
+        created_at = now - timedelta(minutes=1)
+        rows = [
+            {
+                "id": f"{index:05d}",
+                "brain_id": brain_id,
+                "tool_name": "NoiseA" if index % 2 == 0 else "NoiseB",
+                "session_id": "prefix",
+                "created_at": created_at,
+            }
+            for index in range(4999)
+        ]
+        rows.append(
+            {
+                "id": "04999a",
+                "brain_id": brain_id,
+                "tool_name": "TailA",
+                "session_id": "tail",
+                "created_at": created_at,
+            }
+        )
+        for index in range(51):
+            rows.extend(
+                (
+                    {
+                        "id": f"z{index:04d}b",
+                        "brain_id": brain_id,
+                        "tool_name": "TailB",
+                        "session_id": "tail",
+                        "created_at": created_at,
+                    },
+                    {
+                        "id": f"z{index:04d}c",
+                        "brain_id": brain_id,
+                        "tool_name": "Break",
+                        "session_id": "tail",
+                        "created_at": created_at,
+                    },
+                )
+            )
+            if index < 50:
+                rows.append(
+                    {
+                        "id": f"z{index + 1:04d}a",
+                        "brain_id": brain_id,
+                        "tool_name": "TailA",
+                        "session_id": "tail",
+                        "created_at": created_at,
+                    }
+                )
+        store._action_events[brain_id] = rows
+
+        learned, report = await learn_tool_habits(
+            store,
+            BrainConfig(habit_min_frequency=2, sequential_window_seconds=60.0),
+            now,
+        )
+
+        assert report.sequences_analyzed == len(rows)
+        assert any("TailA" in habit.name and "TailB" in habit.name for habit in learned)
+
+    async def test_global_tool_frequency_floor_rejects_tail_only_noise(
+        self, store: InMemoryStorage
+    ) -> None:
+        brain_id = store.current_brain_id
+        assert brain_id is not None
+        now = utcnow()
+        created_at = now - timedelta(minutes=1)
+        rows = [
+            {
+                "id": f"{index:05d}",
+                "brain_id": brain_id,
+                "tool_name": "NoiseA" if index % 2 == 0 else "NoiseB",
+                "session_id": "prefix",
+                "created_at": created_at,
+            }
+            for index in range(5000)
+        ]
+        for index in range(30):
+            rows.extend(
+                (
+                    {
+                        "id": f"z{index:04d}a",
+                        "brain_id": brain_id,
+                        "tool_name": "RareA",
+                        "session_id": "tail",
+                        "created_at": created_at,
+                    },
+                    {
+                        "id": f"z{index:04d}b",
+                        "brain_id": brain_id,
+                        "tool_name": "RareB",
+                        "session_id": "tail",
+                        "created_at": created_at,
+                    },
+                    {
+                        "id": f"z{index:04d}c",
+                        "brain_id": brain_id,
+                        "tool_name": "Break",
+                        "session_id": "tail",
+                        "created_at": created_at,
+                    },
+                )
+            )
+        store._action_events[brain_id] = rows
+
+        learned, report = await learn_tool_habits(
+            store,
+            BrainConfig(habit_min_frequency=2, sequential_window_seconds=60.0),
+            now,
+        )
+
+        assert report.sequences_analyzed == len(rows)
+        assert not any("RareA" in habit.name for habit in learned)
+
+    async def test_resumed_tool_manifest_does_not_read_source_events(
+        self, store: InMemoryStorage, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def fail_if_read(*_args: object, **_kwargs: object) -> list[dict[str, object]]:
+            raise AssertionError("resumed tool mining must use its frozen manifest")
+
+        monkeypatch.setattr(store, "get_tool_events_for_mining", fail_if_read)
+        learned, report = await learn_tool_habits(
+            store,
+            BrainConfig(habit_min_frequency=2, sequential_window_seconds=60.0),
+            utcnow(),
+            run_id="resume-tool",
+            resume_manifest=[
+                {
+                    "steps": ["Read", "Write"],
+                    "frequency": 2,
+                    "avg_duration_seconds": 1.0,
+                    "confidence": 1.0,
+                }
+            ],
+            resume_cursor=1,
+        )
+
+        assert learned == []
+        assert report.sequences_analyzed == 0
+
+    async def test_action_habit_adjacency_crosses_page_boundary(
+        self, store: InMemoryStorage
+    ) -> None:
+        brain_id = store.current_brain_id
+        assert brain_id is not None
+        now = utcnow()
+        created_at = now - timedelta(minutes=1)
+        rows = [
+            {
+                "id": f"{index:04d}",
+                "brain_id": brain_id,
+                "session_id": f"prefix-{index}",
+                "action_type": "noise",
+                "action_context": "",
+                "tags": (),
+                "fiber_id": None,
+                "created_at": created_at,
+            }
+            for index in range(999)
+        ]
+        rows.extend(
+            (
+                {
+                    "id": "0999",
+                    "brain_id": brain_id,
+                    "session_id": "tail",
+                    "action_type": "TailA",
+                    "action_context": "",
+                    "tags": (),
+                    "fiber_id": None,
+                    "created_at": created_at,
+                },
+                {
+                    "id": "z0000b",
+                    "brain_id": brain_id,
+                    "session_id": "tail",
+                    "action_type": "TailB",
+                    "action_context": "",
+                    "tags": (),
+                    "fiber_id": None,
+                    "created_at": created_at,
+                },
+                {
+                    "id": "z0000c",
+                    "brain_id": brain_id,
+                    "session_id": "tail",
+                    "action_type": "Break",
+                    "action_context": "",
+                    "tags": (),
+                    "fiber_id": None,
+                    "created_at": created_at,
+                },
+                {
+                    "id": "z0001a",
+                    "brain_id": brain_id,
+                    "session_id": "tail",
+                    "action_type": "TailA",
+                    "action_context": "",
+                    "tags": (),
+                    "fiber_id": None,
+                    "created_at": created_at,
+                },
+                {
+                    "id": "z0001b",
+                    "brain_id": brain_id,
+                    "session_id": "tail",
+                    "action_type": "TailB",
+                    "action_context": "",
+                    "tags": (),
+                    "fiber_id": None,
+                    "created_at": created_at,
+                },
+            )
+        )
+        store._action_events[brain_id] = rows
+
+        learned, report = await learn_habits(
+            store,
+            BrainConfig(habit_min_frequency=2, sequential_window_seconds=60.0),
+            now,
+        )
+
+        assert report.sequences_analyzed == 1004
+        assert any(habit.steps == ("TailA", "TailB") for habit in learned)
+
+    def test_streaming_pairs_match_reference_miner_ties(self) -> None:
+        timestamp = utcnow()
+        events = [
+            ActionEvent(id="01", session_id="first", action_type="A", created_at=timestamp),
+            ActionEvent(id="02", session_id="second", action_type="C", created_at=timestamp),
+            ActionEvent(id="03", session_id="first", action_type="B", created_at=timestamp),
+            ActionEvent(id="04", session_id="second", action_type="D", created_at=timestamp),
+        ]
+        accumulator = _SequencePairAccumulator(60)
+        for event in events:
+            accumulator.add(event.session_id, event.action_type, event.created_at)
+
+        assert accumulator.pairs() == mine_sequential_pairs(events, 60)
+
+        tool_events = [
+            ActionEvent(id="t1", action_type="ToolA", created_at=timestamp),
+            ActionEvent(id="t2", action_type="ToolB", created_at=timestamp),
+            ActionEvent(id="t3", action_type="ToolB", created_at=timestamp),
+            ActionEvent(id="t4", action_type="ToolC", created_at=timestamp),
+        ]
+        tool_accumulator = _SequencePairAccumulator(60, ignore_self=True)
+        for event in tool_events:
+            tool_accumulator.add(None, event.action_type, event.created_at)
+        expected = [
+            pair
+            for pair in mine_sequential_pairs(tool_events, 60)
+            if pair.action_a != pair.action_b
+        ]
+        assert tool_accumulator.pairs() == expected
+
+    def test_dense_trigram_expansion_fails_closed(self) -> None:
+        pairs = [
+            *(SequencePair(f"left-{index}", "middle", 2, 1.0) for index in range(510)),
+            *(SequencePair("middle", f"right-{index}", 2, 1.0) for index in range(510)),
+        ]
+
+        with pytest.raises(RuntimeError, match="candidate expansion limit"):
+            _guard_habit_candidate_expansion(pairs, min_frequency=2)
 
     async def test_self_pairs_do_not_form_habits(self, store: InMemoryStorage) -> None:
         """Bash → Bash repetition is not a workflow and must not become a habit."""

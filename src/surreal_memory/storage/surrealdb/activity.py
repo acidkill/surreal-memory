@@ -9,7 +9,7 @@ from typing import Any
 from uuid import uuid4
 
 from surreal_memory.core.action_event import ActionEvent
-from surreal_memory.storage.surrealdb._ids import _to_surreal_id
+from surreal_memory.storage.surrealdb._ids import _record_id_part, _to_surreal_id
 from surreal_memory.utils.timeutils import utcnow
 
 logger = logging.getLogger(__name__)
@@ -32,10 +32,11 @@ def _parse_datetime(val: Any) -> datetime:
 def _row_to_action_event(row: dict[str, Any], brain_id: str) -> ActionEvent:
     raw_tags = row.get("tags", [])
     tags: tuple[str, ...] = tuple(str(t) for t in raw_tags) if raw_tags else ()
-    raw_id = str(row.get("id", ""))
-    eid = raw_id.split(":")[-1] if ":" in raw_id else raw_id
+    eid = _record_id_part(str(row.get("id", "")))
+    if not eid:
+        raise RuntimeError("action-log row has no stable record id")
     return ActionEvent(
-        id=eid or str(uuid4()),
+        id=eid,
         brain_id=brain_id,
         session_id=row.get("session_id"),
         action_type=str(row.get("action_type", "")),
@@ -368,6 +369,8 @@ class SurrealDBActivityMixin:
         session_id: str | None = None,
         since: datetime | None = None,
         limit: int = 1000,
+        after: tuple[datetime, str] | None = None,
+        until: datetime | None = None,
     ) -> list[ActionEvent]:
         """Return action events ordered by created_at ASC."""
         brain_id = self._get_brain_id()
@@ -381,8 +384,17 @@ class SurrealDBActivityMixin:
         if since is not None:
             sql += " AND created_at > $since"
             params["since"] = since
+        if until is not None:
+            sql += " AND created_at <= $until"
+            params["until"] = until
 
-        sql += " ORDER BY created_at ASC LIMIT $limit"
+        if after is not None:
+            sql += " AND (created_at > $cursor_time OR (created_at = $cursor_time"
+            sql += " AND id > type::record('action_log', $cursor_id)))"
+            params["cursor_time"] = after[0]
+            params["cursor_id"] = _to_surreal_id(after[1])
+
+        sql += " ORDER BY created_at ASC, id ASC LIMIT $limit"
         params["limit"] = safe_limit
 
         rows = await self._query(sql, **params)

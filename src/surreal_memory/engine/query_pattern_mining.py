@@ -19,12 +19,13 @@ import logging
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.core.synapse import Synapse, SynapseType
+from surreal_memory.engine.habit_input import action_events
 from surreal_memory.extraction.keywords import extract_keywords
 from surreal_memory.utils.timeutils import utcnow
 
@@ -40,6 +41,9 @@ logger = logging.getLogger(__name__)
 # Mining window for recall events. Matches the habit miner's 30-day horizon so both
 # passes describe the same recent behaviour rather than two different eras.
 _QUERY_PATTERN_WINDOW_DAYS = 30
+_QUERY_PATTERN_WINDOW_SECONDS = 600.0
+_QUERY_PATTERN_PAGE_SIZE = 1000
+_QUERY_AGGREGATION_MAX_KEYS = 50_000
 
 
 @dataclass(frozen=True)
@@ -57,6 +61,69 @@ class TopicPair:
     topic_b: str
     count: int
     avg_gap_seconds: float
+
+
+class _QueryPairAccumulator:
+    def __init__(self, window_seconds: float) -> None:
+        self.window = window_seconds
+        self.previous: dict[str | None, tuple[list[str], datetime]] = {}
+        self.session_order: dict[str | None, int] = {}
+        self.session_positions: dict[str | None, int] = {}
+        self.counts: dict[tuple[str, str], list[float | int]] = {}
+        self.orders: dict[tuple[str, str], tuple[int, int, int]] = {}
+        self.topics: set[str] = set()
+
+    def add(self, session_id: str | None, context: str, created_at: datetime) -> None:
+        if session_id not in self.session_order:
+            if len(self.session_order) >= _QUERY_AGGREGATION_MAX_KEYS:
+                raise RuntimeError("query habit session aggregation limit reached")
+            self.session_order[session_id] = len(self.session_order)
+            self.session_positions[session_id] = 0
+        position = self.session_positions[session_id]
+        topics = extract_topics(context)
+        if len(self.topics) + len(set(topics) - self.topics) > _QUERY_AGGREGATION_MAX_KEYS:
+            raise RuntimeError("query habit topic aggregation limit reached")
+        self.topics.update(topics)
+        prior = self.previous.get(session_id)
+        if prior is not None:
+            prior_topics, prior_time = prior
+            gap = (created_at - prior_time).total_seconds()
+            if gap <= self.window:
+                for left_index, left in enumerate(prior_topics):
+                    for right_index, right in enumerate(topics):
+                        if left == right:
+                            continue
+                        pair = (left, right)
+                        if pair not in self.counts:
+                            if len(self.counts) >= _QUERY_AGGREGATION_MAX_KEYS:
+                                raise RuntimeError("query habit pair aggregation limit reached")
+                            self.counts[pair] = [0, 0.0]
+                            self.orders[pair] = (
+                                self.session_order[session_id],
+                                position,
+                                left_index * max(len(topics), 1) + right_index,
+                            )
+                        else:
+                            order = (
+                                self.session_order[session_id],
+                                position,
+                                left_index * max(len(topics), 1) + right_index,
+                            )
+                            self.orders[pair] = min(self.orders[pair], order)
+                        totals = self.counts[pair]
+                        totals[0] = int(totals[0]) + 1
+                        totals[1] = float(totals[1]) + gap
+        self.previous[session_id] = (topics, created_at)
+        self.session_positions[session_id] = position + 1
+
+    def pairs(self) -> list[TopicPair]:
+        pairs = [
+            TopicPair(a, b, int(totals[0]), float(totals[1]) / int(totals[0]))
+            for (a, b), totals in self.counts.items()
+        ]
+        pairs.sort(key=lambda pair: self.orders[(pair.topic_a, pair.topic_b)])
+        pairs.sort(key=lambda pair: pair.count, reverse=True)
+        return pairs
 
 
 @dataclass(frozen=True)
@@ -290,24 +357,31 @@ async def learn_query_patterns(
     if resume_manifest is not None:
         candidates = _query_candidates_from_manifest(resume_manifest)
     else:
-        events = await storage.get_action_sequences(
-            since=reference_time - timedelta(days=_QUERY_PATTERN_WINDOW_DAYS), limit=1000
-        )
-        recall_events = [
-            event for event in events if event.action_type == "recall" and event.action_context
-        ]
-        if len(recall_events) < 3:
+        since = reference_time - timedelta(days=_QUERY_PATTERN_WINDOW_DAYS)
+        accumulator = _QueryPairAccumulator(_QUERY_PATTERN_WINDOW_SECONDS)
+        recall_count = 0
+        session_ids: set[str] = set()
+        async for event in action_events(
+            storage,
+            since=since,
+            until=reference_time,
+            page_size=_QUERY_PATTERN_PAGE_SIZE,
+        ):
+            if event.action_type != "recall" or not event.action_context:
+                continue
+            recall_count += 1
+            if event.session_id:
+                session_ids.add(event.session_id)
+                if len(session_ids) > _QUERY_AGGREGATION_MAX_KEYS:
+                    raise RuntimeError("query habit session aggregation limit reached")
+            accumulator.add(event.session_id, event.action_context, event.created_at)
+        if recall_count < 3:
             return report
 
-        all_topics: set[str] = set()
-        for event in recall_events:
-            all_topics.update(extract_topics(event.action_context))
-        report.topics_extracted = len(all_topics)
-
-        pairs = mine_query_topic_pairs(recall_events)
+        report.topics_extracted = len(accumulator.topics)
+        pairs = accumulator.pairs()
         if not pairs:
             return report
-        session_ids = {event.session_id for event in recall_events if event.session_id}
         total_sessions = max(len(session_ids), 1)
         candidates = extract_pattern_candidates(
             pairs,
