@@ -697,7 +697,7 @@ async def distill_reasoning_patterns(
     *,
     embedder: EmbeddingProvider | None = None,
     drain: bool = False,
-    progress: Callable[[MiningProgress], None | Awaitable[None]] | None = None,
+    progress: Callable[[MiningProgress], Awaitable[None] | None] | None = None,
     pending_patterns: Sequence[dict[str, Any]] = (),
     pattern_checkpoint: Callable[[Sequence[dict[str, Any]]], Awaitable[None]] | None = None,
 ) -> DistillResult:
