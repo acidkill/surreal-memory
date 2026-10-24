@@ -127,6 +127,9 @@ class SemanticDiscoveryResult:
     source_fingerprint: str | None = None
     source_token: str | None = None
     reference_time_rebuilt: bool = False
+    continuation: dict[str, Any] | None = None
+    coverage_offset: int | None = None
+    coverage_complete: bool = False
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -1009,9 +1012,13 @@ async def _discover_semantic_synapses_resumable(
     manifest_version = manifest.get("version")
     if manifest and (
         manifest.get("kind") != "semantic_link_discovery"
-        or manifest_version not in (1, 2, 3)
+        or manifest_version not in (1, 2, 3, 4)
         or (manifest_version == 2 and manifest_stage != "similarity")
-        or (manifest_version == 3 and manifest_stage not in {"neurons", "synapses", "similarity"})
+        or (
+            manifest_version in (3, 4)
+            and manifest_stage not in {"neurons", "synapses", "similarity"}
+        )
+        or (manifest_version == 4 and manifest.get("source_state_ref") is None)
     ):
         raise RuntimeError("invalid semantic_link discovery checkpoint")
     brain_id = getattr(storage, "current_brain_id", None)
@@ -1094,6 +1101,66 @@ async def _discover_semantic_synapses_resumable(
         token = await _capture_source_token(storage)
     else:
         raise RuntimeError("storage does not support semantic source mutation fencing")
+    batch_index = (
+        durable_neuron_state.get("batch_index", 0) if durable_neuron_state is not None else 0
+    )
+    if type(batch_index) is not int or batch_index < 0:
+        raise RuntimeError("invalid semantic_link discovery batch")
+    coverage_offset = (
+        durable_neuron_state.get("coverage_offset") if durable_neuron_state is not None else None
+    )
+    if coverage_offset is not None and (type(coverage_offset) is not int or coverage_offset < 0):
+        raise RuntimeError("invalid semantic_link coverage window")
+    next_batch = manifest.get("next_batch")
+    next_window = manifest.get("next_window")
+    if next_window is not None and next_batch is None:
+        raise RuntimeError("semantic_link coverage continuation has no batch boundary")
+    expected_source_fingerprint = (
+        durable_neuron_state.get("coverage_source_fingerprint")
+        if durable_neuron_state is not None
+        else None
+    )
+    if next_batch is not None:
+        pair_cap = min(config.semantic_discovery_max_pairs, MAX_PAIRS_HARD_CAP)
+        window_transition = next_window is not None
+        expected_window = (
+            0 if coverage_offset is None else coverage_offset + MAX_NEURONS_TO_LINK - 1
+        )
+        if (
+            type(next_batch) is not int
+            or next_batch != batch_index + 1
+            or reference_time is None
+            or durable_neuron_state is None
+            or saved_stage != "similarity"
+            or type(saved.get("synapses_created")) is not int
+            or (
+                (not window_transition and saved["synapses_created"] != pair_cap)
+                or (
+                    window_transition
+                    and (
+                        type(next_window) is not int
+                        or next_window != expected_window
+                        or next_window + 1 >= durable_neuron_state.get("eligible_total", 0)
+                        or saved["synapses_created"] >= pair_cap
+                    )
+                )
+            )
+        ):
+            raise RuntimeError("invalid semantic_link applied-batch continuation")
+        # Revisit the capped row too: a cap may have split its top-K peers.
+        # Indexed live pair checks exclude the previous batch's committed edges.
+        batch_index = next_batch
+        durable_neuron_state = dict(durable_neuron_state)
+        durable_neuron_state["batch_index"] = batch_index
+        durable_neuron_state["legacy_checkpoint"] = None
+        if window_transition:
+            # Rebuild one bounded ID-order window against the same frozen source.
+            expected_source_fingerprint = durable_neuron_state["source_fingerprint"]
+            coverage_offset = next_window
+            durable_neuron_state = None
+        saved = {}
+        saved_stage = ""
+        saved_cursor = None
     fingerprint_state = (
         durable_neuron_state.get("fingerprint")
         if isinstance(durable_neuron_state, Mapping)
@@ -1241,6 +1308,9 @@ async def _discover_semantic_synapses_resumable(
             "edge_complete": False,
             "source_complete": False,
             "similarity_rebuild": None,
+            "batch_index": batch_index,
+            "coverage_offset": coverage_offset,
+            "coverage_source_fingerprint": expected_source_fingerprint,
         }
 
     saved_run_id = source_rebuild.get("run_id")
@@ -1312,7 +1382,7 @@ async def _discover_semantic_synapses_resumable(
         checkpoint_cursor = saved_cursor if preserve_legacy_cursor and saved_stage else cursor
         details = {
             "kind": "semantic_link_discovery",
-            "version": 3,
+            "version": 4 if batch_index else 3,
             "stage": checkpoint_stage or stage,
             "cursor": checkpoint_cursor,
             "source_state_ref": {
@@ -1351,6 +1421,13 @@ async def _discover_semantic_synapses_resumable(
         priority = type_rank * 2 + (0 if neuron.type == NeuronType.CONCEPT else 1)
         type_ranks[neuron.type] += 1
         eligible_total += 1
+
+        if coverage_offset is not None:
+            if coverage_offset < eligible_total <= coverage_offset + MAX_NEURONS_TO_LINK:
+                eligible.append(neuron)
+                vectors.append([float(value) for value in embedding])
+                candidate_priorities.append(priority)
+            return
 
         if eligible_total <= MAX_NEURONS_TO_LINK:
             eligible.append(neuron)
@@ -1664,6 +1741,11 @@ async def _discover_semantic_synapses_resumable(
     if token is not None:
         await _assert_source_unchanged(storage, token, created_before=reference_time)
     source_fingerprint = fingerprint.finish()
+    if (
+        expected_source_fingerprint is not None
+        and source_fingerprint != expected_source_fingerprint
+    ):
+        raise RuntimeError("semantic_link frozen source changed between candidate windows")
     source_rebuild["source_complete"] = True
     source_rebuild["source_fingerprint"] = source_fingerprint
     if not source_scan_complete_on_entry:
@@ -1740,7 +1822,7 @@ async def _discover_semantic_synapses_resumable(
     async def _existing_pairs(pairs: list[tuple[str, str]]) -> set[tuple[str, str]]:
         if not pairs:
             return set()
-        if reference_time is None:
+        if reference_time is None or batch_index:
             found = await pair_lookup(pairs)
         else:
             found = await pair_lookup(pairs, created_before=reference_time)
@@ -2103,6 +2185,10 @@ async def _discover_semantic_synapses_resumable(
     except ImportError:
         considered = min(len(eligible), _FALLBACK_MAX_NEURONS)
         if len(eligible) > considered:
+            if reference_time is not None:
+                raise RuntimeError(
+                    "numpy is required to complete this frozen semantic candidate window"
+                )
             logger.warning(
                 "numpy is not installed: semantic discovery is running its pure-python "
                 "fallback and will consider only %d of %d eligible neurons this pass. "
@@ -2140,6 +2226,13 @@ async def _discover_semantic_synapses_resumable(
         raise RuntimeError("semantic_link similarity cursor is beyond the candidate rows")
     if token is not None:
         await _assert_source_unchanged(storage, token, created_before=reference_time)
+    next_window = None
+    if len(new_synapses) < max_pairs and eligible_before_resample:
+        proposed_window = (
+            0 if coverage_offset is None else coverage_offset + MAX_NEURONS_TO_LINK - 1
+        )
+        if proposed_window + 1 < eligible_total:
+            next_window = proposed_window
     return SemanticDiscoveryResult(
         neurons_embedded=len(vectors),
         pairs_evaluated=pairs_evaluated,
@@ -2152,4 +2245,33 @@ async def _discover_semantic_synapses_resumable(
         source_fingerprint=source_fingerprint,
         source_token=token,
         reference_time_rebuilt=reference_time_rebuilt,
+        continuation=(
+            {
+                "kind": "semantic_link_discovery",
+                "version": 4,
+                "stage": "similarity",
+                "cursor": str(durable_row_cursor),
+                "source_state_ref": {
+                    "state_id": state_id,
+                    "revision": state_revision,
+                    "state_revision": state_revision,
+                    "source_token": token,
+                },
+                "next_batch": batch_index + 1,
+                **({"next_window": next_window} if next_window is not None else {}),
+            }
+            if reference_time is not None
+            and (len(new_synapses) >= max_pairs or next_window is not None)
+            else None
+        ),
+        coverage_offset=coverage_offset,
+        coverage_complete=(
+            len(new_synapses) < max_pairs
+            and (
+                not eligible_before_resample
+                or (
+                    coverage_offset is not None and coverage_offset + len(vectors) >= eligible_total
+                )
+            )
+        ),
     )

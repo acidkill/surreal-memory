@@ -91,6 +91,25 @@ is a sampled retrieval probe rather than a full integrity audit.
 
 ## Semantic snapshot retention
 
+For saved runs, semantic discovery retains its frozen reference time across
+bounded pair batches. A batch that reaches the pair cap pauses after its writes
+are committed; `--resume` continues discovery instead of declaring the stage
+complete. The cap and strategy time budget remain unchanged.
+
+After the initial least-connected sample, deterministic ID-order candidate
+windows with a one-candidate overlap cover the remaining frozen eligible
+population. The report distinguishes a candidate window from the initial
+resampling and explicitly marks completed frozen candidate coverage. This
+coverage applies the existing similarity and top-K rules within bounded windows;
+it does not promise every possible pair across different windows. A changed
+frozen source fails validation before another batch is applied.
+
+Continuation discovery checkpoints use manifest version 4, and apply manifests
+with more work use version 3. Older packages reject these checkpoints; do not
+downgrade while such a run is unfinished. NumPy is required for a frozen window
+larger than the pure-Python fallback limit; a missing NumPy installation stops
+that window rather than silently dropping its remaining candidates.
+
 ```toml
 [maintenance]
 semantic_discovery_state_retention_days = 7

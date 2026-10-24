@@ -315,6 +315,22 @@ class TestCounterContract:
         assert "candidates resampled: 10000 of 12000" in text
         assert "NOT comparable" in text
 
+    def test_semantic_population_window_is_not_reported_as_resampling(self) -> None:
+        report = ConsolidationReport()
+        report.extra.update(
+            semantic_candidates_total=12000,
+            semantic_candidates_scanned=2001,
+            semantic_coverage_offset=9999,
+        )
+        text = report.summary()
+        assert "candidate window: 9999 + 2001 of 12000" in text
+        assert "candidates resampled" not in text
+
+    def test_semantic_frozen_coverage_completion_is_explicit(self) -> None:
+        report = ConsolidationReport()
+        report.extra["semantic_coverage_complete"] = True
+        assert "frozen candidate coverage complete" in report.summary()
+
     def test_summarize_input_truncation_is_announced(self) -> None:
         """DEF-16: a capped clustering input must not read as a complete one."""
         report = ConsolidationReport()

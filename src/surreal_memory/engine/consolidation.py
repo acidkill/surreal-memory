@@ -420,11 +420,16 @@ class ConsolidationReport:
             line += " [truncated at cap]"
         total = self.extra.get("semantic_candidates_total")
         scanned = self.extra.get("semantic_candidates_scanned")
-        if total and scanned:
+        offset = self.extra.get("semantic_coverage_offset")
+        if total and scanned and offset is not None:
+            line += f" [candidate window: {offset} + {scanned} of {total}]"
+        elif total and scanned:
             line += (
                 f" [candidates resampled: {scanned} of {total} — counters are NOT "
                 "comparable with the previous run]"
             )
+        if self.extra.get("semantic_coverage_complete"):
+            line += " [frozen candidate coverage complete]"
         return line
 
     def _stage_transitions_suffix(self) -> str:
@@ -10689,6 +10694,7 @@ class ConsolidationEngine:
                 elif saved.get("kind") == "semantic_link_synapses" and saved.get("version") in (
                     1,
                     2,
+                    3,
                 ):
                     manifest = saved
                     raw_synapses = manifest["synapses"]
@@ -10744,6 +10750,16 @@ class ConsolidationEngine:
                 raise ConsolidationProgressError("invalid semantic-link pending snapshot") from exc
 
         raw_strategy_counters = state.get("counters")
+        committed_counters = {
+            name: int(raw_strategy_counters.get(name, 0))
+            if isinstance(raw_strategy_counters, dict)
+            else 0
+            for name in (
+                "semantic_synapses_created",
+                "semantic_synapses_skipped",
+                "semantic_link_failures",
+            )
+        }
         semantic_written = (
             raw_strategy_counters.get("semantic_synapses_created")
             if isinstance(raw_strategy_counters, dict)
@@ -10767,15 +10783,18 @@ class ConsolidationEngine:
                     cursor=phase_cursor,
                     pending=[discovery_snapshot],
                     counters={
-                        key: int(details[key])
-                        for key in (
-                            "eligible_neurons",
-                            "existing_pairs",
-                            "synapses_created",
-                            "skipped_existing",
-                            "pairs_evaluated",
-                        )
-                        if isinstance(details.get(key), (int, float))
+                        **committed_counters,
+                        **{
+                            key: int(details[key])
+                            for key in (
+                                "eligible_neurons",
+                                "existing_pairs",
+                                "synapses_created",
+                                "skipped_existing",
+                                "pairs_evaluated",
+                            )
+                            if isinstance(details.get(key), (int, float))
+                        },
                     },
                 )
 
@@ -10821,13 +10840,15 @@ class ConsolidationEngine:
                 "neurons_embedded": result.neurons_embedded,
                 "truncated": result.truncated,
                 "reference_time_rebuilt": result.reference_time_rebuilt,
+                "coverage_offset": result.coverage_offset,
+                "coverage_complete": result.coverage_complete,
             }
             result_fingerprint = result.source_fingerprint
             if result_fingerprint is None and synapses:
                 result_fingerprint = await source_fingerprint(synapses)
             manifest = {
                 "kind": "semantic_link_synapses",
-                "version": 2,
+                "version": 3 if result.continuation is not None else 2,
                 "source_fingerprint": result_fingerprint,
                 "source_token": result.source_token if reference_time is not None else None,
                 "reference_time": (
@@ -10837,6 +10858,7 @@ class ConsolidationEngine:
                 ),
                 "metrics": metrics,
                 "synapses": [encode_synapse(synapse) for synapse in synapses],
+                "continuation": result.continuation,
             }
             serialized = json.dumps(
                 manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")
@@ -10846,9 +10868,9 @@ class ConsolidationEngine:
                 cursor=None,
                 pending=[serialized],
                 counters={
-                    "semantic_synapses_created": 0,
-                    "semantic_synapses_skipped": int(metrics["skipped_existing"]),
-                    "semantic_link_failures": 0,
+                    **committed_counters,
+                    "semantic_synapses_skipped": committed_counters["semantic_synapses_skipped"]
+                    + int(metrics["skipped_existing"]),
                 },
             )
             # Discovery may have persisted a cursor to the outer strategy state.
@@ -10867,8 +10889,12 @@ class ConsolidationEngine:
             report.extra["semantic_candidates_scanned"] = int(metrics["neurons_embedded"])
         if metrics.get("truncated"):
             report.extra["semantic_link_truncated"] = True
+        if metrics.get("coverage_offset") is not None:
+            report.extra["semantic_coverage_offset"] = int(metrics["coverage_offset"])
+        if metrics.get("coverage_complete"):
+            report.extra["semantic_coverage_complete"] = True
 
-        raw_counters = state.get("counters")
+        raw_counters = self._strategy_progress_state().get("counters")
         counters = raw_counters if isinstance(raw_counters, dict) else {}
         created = int(counters.get("semantic_synapses_created", 0))
         raw_skipped = counters.get("semantic_synapses_skipped")
@@ -10938,6 +10964,30 @@ class ConsolidationEngine:
 
         # Persist the final partial group before marking the stage complete.
         await checkpoint_apply()
+
+        continuation = manifest.get("continuation")
+        if continuation is not None:
+            if failures:
+                raise ConsolidationProgressError(
+                    "semantic-link batch has failed writes; continuation was not started"
+                )
+            if not isinstance(continuation, dict) or reference_time is None:
+                raise ConsolidationProgressError("invalid semantic-link batch continuation")
+            await self._checkpoint_progress(
+                "semantic_link_discovery_batch",
+                cursor=None,
+                pending=[json.dumps(continuation, sort_keys=True, separators=(",", ":"))],
+                counters={
+                    "semantic_synapses_created": created,
+                    "semantic_synapses_skipped": skipped,
+                    "semantic_link_failures": failures,
+                },
+            )
+            report.semantic_synapses_created = created
+            raise ConsolidationPausedError(
+                "semantic_link applied its bounded pair batch; frozen-source discovery "
+                "continues with the next --resume"
+            )
 
         await self._checkpoint_progress(
             "semantic_link_complete",

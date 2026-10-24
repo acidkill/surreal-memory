@@ -3,7 +3,7 @@
 > Forward-looking vision. What's next, what's possible, where we're going.
 > ZERO LLM dependency — pure algorithmic, regex, graph-based.
 
-**Current state**: v3.12.2 — 57 MCP tools, 8100+ tests, durable consolidation recovery,
+**Current state**: v3.12.2 — 57 MCP tools, 8200+ tests, durable consolidation recovery,
 bounded native-record maintenance, compression lineage safeguards, and prevention
 of passive read/capture feedback. Neuroscience engine (10 brain-inspired algorithms)
 and tiered memory loading (HOT/WARM/COLD) remain available.
