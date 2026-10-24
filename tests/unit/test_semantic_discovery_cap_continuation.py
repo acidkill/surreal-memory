@@ -211,6 +211,15 @@ async def test_batch_start_row_survives_interrupt_before_first_similarity_row(
     committed_cursor = int(first_batch["cursor"])
     assert committed_cursor > 0
     assert len(storage.added_synapses) == 6
+    first_ref = first_batch["source_state_ref"]
+    first_source = storage.semantic_discovery_states[(first_ref["state_id"], first_ref["revision"])]
+    first_checkpoint = first_source["legacy_checkpoint"]
+    expected_fence = {
+        "row": committed_cursor,
+        "similarity_backend": first_checkpoint["similarity_backend"],
+        "source_fingerprint": first_checkpoint["source_fingerprint"],
+        "similarity_top_k": first_checkpoint["similarity_top_k"],
+    }
 
     progress.pause_phase = "semantic_link_discovery_similarity"
     progress.pause_after_phase_calls = (
@@ -226,7 +235,7 @@ async def test_batch_start_row_survives_interrupt_before_first_similarity_row(
     source_state = storage.semantic_discovery_states[
         (source_ref["state_id"], source_ref["revision"])
     ]
-    assert source_state["batch_resume_row"] == committed_cursor
+    assert source_state["batch_resume_fence"] == expected_fence
     assert interrupted["cursor"] is None
     assert len(storage.added_synapses) == 6
 
@@ -312,7 +321,7 @@ async def test_batch_resume_row_is_optional_for_older_checkpoints(
     source_state = storage.semantic_discovery_states[
         (source_ref["state_id"], source_ref["revision"])
     ]
-    assert source_state.pop("batch_resume_row") == committed_cursor
+    assert source_state.pop("batch_resume_fence")["row"] == committed_cursor
     before_resume_calls = similarity_calls
 
     for _ in range(10):
@@ -358,10 +367,77 @@ async def test_malformed_batch_resume_row_fails_closed(
     source_state = storage.semantic_discovery_states[
         (source_ref["state_id"], source_ref["revision"])
     ]
-    source_state["batch_resume_row"] = "not-an-integer"
+    source_state["batch_resume_fence"] = {
+        "row": "not-an-integer",
+        "similarity_backend": "python_float64",
+        "source_fingerprint": "0" * 64,
+        "similarity_top_k": 5,
+    }
     before = len(storage.added_synapses)
 
-    with pytest.raises(RuntimeError, match="invalid semantic_link batch resume cursor"):
+    with pytest.raises(RuntimeError, match="invalid semantic_link batch resume fence"):
+        await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+            ConsolidationReport(), dry_run=False
+        )
+    assert len(storage.added_synapses) == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tamper", "error"),
+    [
+        ("backend", "similarity backend changed after its applied batch"),
+        ("fingerprint", "source changed after its applied-batch checkpoint"),
+        ("top_k", "semantic_link batch resume top-K changed"),
+        ("row_bool", "invalid semantic_link batch resume fence"),
+        ("row_out_of_range", "applied-batch cursor exceeds candidate rows"),
+    ],
+)
+async def test_restored_batch_resume_fence_rejects_changes(
+    monkeypatch: pytest.MonkeyPatch, tamper: str, error: str
+) -> None:
+    import sys
+
+    from surreal_memory.engine import semantic_discovery
+
+    numpy = pytest.importorskip("numpy") if tamper == "backend" else None
+    storage, progress, _reference_time = _semantic_link_fixture(monkeypatch, pair_cap=6)
+    _force_semantic_python_fallback(monkeypatch)
+    with pytest.raises(ConsolidationPausedError, match="bounded pair batch"):
+        await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+            ConsolidationReport(), dry_run=False
+        )
+
+    progress.pause_phase = "semantic_link_discovery_similarity"
+    progress.pause_after_phase_calls = (
+        progress.phase_calls.get("semantic_link_discovery_similarity", 0) + 1
+    )
+    with pytest.raises(ConsolidationPausedError, match="simulated interruption"):
+        await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+            ConsolidationReport(), dry_run=False
+        )
+    interrupted = json.loads(progress.strategy_state("semantic_link")["pending"][0])
+    source_ref = interrupted["source_state_ref"]
+    source_state = storage.semantic_discovery_states[
+        (source_ref["state_id"], source_ref["revision"])
+    ]
+    fence = source_state["batch_resume_fence"]
+    if tamper == "backend":
+        monkeypatch.setitem(sys.modules, "numpy", numpy)
+    elif tamper == "fingerprint":
+        old_fingerprint = fence["source_fingerprint"]
+        fence["source_fingerprint"] = ("0" if old_fingerprint[0] != "0" else "1") + old_fingerprint[
+            1:
+        ]
+    elif tamper == "top_k":
+        monkeypatch.setattr(semantic_discovery, "SEMANTIC_TOP_K", fence["similarity_top_k"] - 1)
+    elif tamper == "row_bool":
+        fence["row"] = True
+    elif tamper == "row_out_of_range":
+        fence["row"] = len(storage.neurons)
+    before = len(storage.added_synapses)
+
+    with pytest.raises(RuntimeError, match=error):
         await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
             ConsolidationReport(), dry_run=False
         )
