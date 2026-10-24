@@ -173,6 +173,199 @@ async def test_semantic_link_resume_after_batch_checkpoint_and_later_discovery_p
     assert len(storage.added_synapses) == 10
     assert len(storage.added_synapses) == len(set(storage.added_synapses))
     assert progress.strategy_state("semantic_link")["counters"]["semantic_synapses_created"] == 10
+    expected_pairs = {
+        (f"semantic-node-{left}", f"semantic-node-{right}")
+        for left in range(5)
+        for right in range(left + 1, 5)
+    }
+    assert {
+        tuple(sorted((synapse.source_id, synapse.target_id)))
+        for synapse in storage.synapses.values()
+    } == expected_pairs
+
+
+@pytest.mark.asyncio
+async def test_batch_start_row_survives_interrupt_before_first_similarity_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from surreal_memory.engine import semantic_discovery
+
+    storage, progress, _reference_time = _semantic_link_fixture(monkeypatch, pair_cap=6)
+    _force_semantic_python_fallback(monkeypatch)
+    monkeypatch.setattr(semantic_discovery, "_YIELD_EVERY_ROWS", 1)
+    original_cosine = semantic_discovery._cosine_similarity
+    similarity_calls = 0
+
+    def counted_cosine(left: list[float], right: list[float]) -> float:
+        nonlocal similarity_calls
+        similarity_calls += 1
+        return original_cosine(left, right)
+
+    monkeypatch.setattr(semantic_discovery, "_cosine_similarity", counted_cosine)
+    with pytest.raises(ConsolidationPausedError, match="bounded pair batch"):
+        await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+            ConsolidationReport(), dry_run=False
+        )
+
+    first_batch = json.loads(progress.strategy_state("semantic_link")["pending"][0])
+    committed_cursor = int(first_batch["cursor"])
+    assert committed_cursor > 0
+    assert len(storage.added_synapses) == 6
+
+    progress.pause_phase = "semantic_link_discovery_similarity"
+    progress.pause_after_phase_calls = (
+        progress.phase_calls.get("semantic_link_discovery_similarity", 0) + 1
+    )
+    with pytest.raises(ConsolidationPausedError, match="simulated interruption"):
+        await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+            ConsolidationReport(), dry_run=False
+        )
+
+    interrupted = json.loads(progress.strategy_state("semantic_link")["pending"][0])
+    source_ref = interrupted["source_state_ref"]
+    source_state = storage.semantic_discovery_states[
+        (source_ref["state_id"], source_ref["revision"])
+    ]
+    assert source_state["batch_resume_row"] == committed_cursor
+    assert interrupted["cursor"] is None
+    assert len(storage.added_synapses) == 6
+
+    progress.pause_phase = "semantic_link_discovery_similarity"
+    progress.pause_after_phase_calls = (
+        progress.phase_calls.get("semantic_link_discovery_similarity", 0) + 2
+    )
+    before_resume_calls = similarity_calls
+    with pytest.raises(ConsolidationPausedError, match="simulated interruption"):
+        await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+            ConsolidationReport(), dry_run=False
+        )
+    assert similarity_calls - before_resume_calls == len(storage.neurons) - 1
+    row_checkpoint = json.loads(progress.strategy_state("semantic_link")["pending"][0])
+    row_source_ref = row_checkpoint["source_state_ref"]
+    row_source = storage.semantic_discovery_states[
+        (row_source_ref["state_id"], row_source_ref["revision"])
+    ]
+    assert row_source["legacy_checkpoint"]["cursor"] == str(committed_cursor)
+    assert len(storage.added_synapses) == 6
+
+    for _ in range(10):
+        try:
+            await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+                ConsolidationReport(), dry_run=False
+            )
+        except ConsolidationPausedError:
+            pass
+        if progress.strategy_state("semantic_link")["phase"] == "semantic_link_complete":
+            break
+    else:
+        pytest.fail("semantic_link did not finish after restoring the batch start row")
+
+    assert len(storage.added_synapses) == 10
+    assert len(storage.added_synapses) == len(set(storage.added_synapses))
+    assert progress.strategy_state("semantic_link")["counters"]["semantic_synapses_created"] == 10
+    expected_pairs = {
+        (f"semantic-node-{left}", f"semantic-node-{right}")
+        for left in range(5)
+        for right in range(left + 1, 5)
+    }
+    assert {
+        tuple(sorted((synapse.source_id, synapse.target_id)))
+        for synapse in storage.synapses.values()
+    } == expected_pairs
+
+
+@pytest.mark.asyncio
+async def test_batch_resume_row_is_optional_for_older_checkpoints(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from surreal_memory.engine import semantic_discovery
+
+    storage, progress, _reference_time = _semantic_link_fixture(monkeypatch, pair_cap=6)
+    _force_semantic_python_fallback(monkeypatch)
+    original_cosine = semantic_discovery._cosine_similarity
+    similarity_calls = 0
+
+    def counted_cosine(left: list[float], right: list[float]) -> float:
+        nonlocal similarity_calls
+        similarity_calls += 1
+        return original_cosine(left, right)
+
+    monkeypatch.setattr(semantic_discovery, "_cosine_similarity", counted_cosine)
+    with pytest.raises(ConsolidationPausedError, match="bounded pair batch"):
+        await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+            ConsolidationReport(), dry_run=False
+        )
+    committed_cursor = int(
+        json.loads(progress.strategy_state("semantic_link")["pending"][0])["cursor"]
+    )
+
+    progress.pause_phase = "semantic_link_discovery_similarity"
+    progress.pause_after_phase_calls = (
+        progress.phase_calls.get("semantic_link_discovery_similarity", 0) + 1
+    )
+    with pytest.raises(ConsolidationPausedError, match="simulated interruption"):
+        await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+            ConsolidationReport(), dry_run=False
+        )
+    interrupted = json.loads(progress.strategy_state("semantic_link")["pending"][0])
+    source_ref = interrupted["source_state_ref"]
+    source_state = storage.semantic_discovery_states[
+        (source_ref["state_id"], source_ref["revision"])
+    ]
+    assert source_state.pop("batch_resume_row") == committed_cursor
+    before_resume_calls = similarity_calls
+
+    for _ in range(10):
+        try:
+            await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+                ConsolidationReport(), dry_run=False
+            )
+        except ConsolidationPausedError:
+            pass
+        if progress.strategy_state("semantic_link")["phase"] == "semantic_link_complete":
+            break
+    else:
+        pytest.fail("legacy semantic_link checkpoint did not finish through safe replay")
+
+    assert similarity_calls - before_resume_calls == len(storage.neurons) * (
+        len(storage.neurons) - 1
+    )
+    assert len(storage.added_synapses) == 10
+    assert len(storage.added_synapses) == len(set(storage.added_synapses))
+    assert progress.strategy_state("semantic_link")["counters"]["semantic_synapses_created"] == 10
+
+
+@pytest.mark.asyncio
+async def test_malformed_batch_resume_row_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage, progress, _reference_time = _semantic_link_fixture(monkeypatch, pair_cap=6)
+    with pytest.raises(ConsolidationPausedError, match="bounded pair batch"):
+        await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+            ConsolidationReport(), dry_run=False
+        )
+
+    progress.pause_phase = "semantic_link_discovery_similarity"
+    progress.pause_after_phase_calls = (
+        progress.phase_calls.get("semantic_link_discovery_similarity", 0) + 1
+    )
+    with pytest.raises(ConsolidationPausedError, match="simulated interruption"):
+        await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+            ConsolidationReport(), dry_run=False
+        )
+    interrupted = json.loads(progress.strategy_state("semantic_link")["pending"][0])
+    source_ref = interrupted["source_state_ref"]
+    source_state = storage.semantic_discovery_states[
+        (source_ref["state_id"], source_ref["revision"])
+    ]
+    source_state["batch_resume_row"] = "not-an-integer"
+    before = len(storage.added_synapses)
+
+    with pytest.raises(RuntimeError, match="invalid semantic_link batch resume cursor"):
+        await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+            ConsolidationReport(), dry_run=False
+        )
+    assert len(storage.added_synapses) == before
 
 
 @pytest.mark.asyncio

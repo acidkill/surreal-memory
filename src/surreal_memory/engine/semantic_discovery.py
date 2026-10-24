@@ -1165,6 +1165,12 @@ async def _discover_semantic_synapses_resumable(
     batch_cursor_row: int | None = None
     batch_resume_backend: str | None = None
     batch_resume_fingerprint: str | None = None
+    if durable_neuron_state is not None and "batch_resume_row" in durable_neuron_state:
+        raw_batch_resume_row = durable_neuron_state["batch_resume_row"]
+        if type(raw_batch_resume_row) is not int or raw_batch_resume_row < 0:
+            raise RuntimeError("invalid semantic_link batch resume cursor")
+        batch_resume_row = raw_batch_resume_row
+        batch_cursor_row = raw_batch_resume_row
     if next_batch is not None:
         pair_cap = min(config.semantic_discovery_max_pairs, MAX_PAIRS_HARD_CAP)
         window_transition = next_window is not None
@@ -1212,6 +1218,8 @@ async def _discover_semantic_synapses_resumable(
                 raise RuntimeError("invalid semantic_link applied-batch similarity cursor") from exc
             if str(parsed_batch_resume_row) != batch_cursor:
                 raise RuntimeError("invalid semantic_link applied-batch similarity cursor")
+            if batch_cursor_row is not None and batch_cursor_row != parsed_batch_resume_row:
+                raise RuntimeError("semantic_link batch resume cursor changed")
             batch_cursor_row = parsed_batch_resume_row
             saved_top_k = saved.get("similarity_top_k")
             if saved_top_k is not None and (
@@ -1230,6 +1238,10 @@ async def _discover_semantic_synapses_resumable(
         durable_neuron_state = dict(durable_neuron_state)
         durable_neuron_state["batch_index"] = batch_index
         durable_neuron_state["legacy_checkpoint"] = None
+        if batch_resume_row is not None:
+            durable_neuron_state["batch_resume_row"] = batch_resume_row
+        else:
+            durable_neuron_state.pop("batch_resume_row", None)
         if window_transition:
             # Rebuild one bounded ID-order window against the same frozen source.
             expected_source_fingerprint = durable_neuron_state["source_fingerprint"]
@@ -2136,6 +2148,7 @@ async def _discover_semantic_synapses_resumable(
             details["source_token"] = token
         source_rebuild["similarity_rebuild"] = None
         source_rebuild["legacy_checkpoint"] = details
+        source_rebuild.pop("batch_resume_row", None)
         await write_source_checkpoint("similarity", str(index))
         durable_row_cursor = index
 
