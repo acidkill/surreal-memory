@@ -10768,6 +10768,13 @@ class ConsolidationEngine:
                 "semantic_link_failures",
             )
         }
+        # Discovery may take long enough to time out before it returns a result.
+        # Keep the report useful on that path by exposing durable totals before
+        # awaiting discovery; pending-apply resumes retain their existing flow.
+        report_counters_preloaded = manifest is None
+        if report_counters_preloaded:
+            report.semantic_synapses_created = committed_counters["semantic_synapses_created"]
+            report.semantic_synapses_skipped = committed_counters["semantic_synapses_skipped"]
         semantic_written = (
             raw_strategy_counters.get("semantic_synapses_created")
             if isinstance(raw_strategy_counters, dict)
@@ -10992,6 +10999,8 @@ class ConsolidationEngine:
                 },
             )
             report.semantic_synapses_created = created
+            if report_counters_preloaded:
+                report.semantic_synapses_skipped = skipped
             raise ConsolidationPausedError(
                 "semantic_link applied its bounded pair batch; frozen-source discovery "
                 "continues with the next --resume"
@@ -11009,9 +11018,12 @@ class ConsolidationEngine:
         )
         report.semantic_synapses_created = created
         # On resume, skipped includes the saved discovery count plus write collisions.
-        report.semantic_synapses_skipped += max(
-            0, skipped - int(metrics.get("skipped_existing", 0))
-        )
+        if report_counters_preloaded:
+            report.semantic_synapses_skipped = skipped
+        else:
+            report.semantic_synapses_skipped += max(
+                0, skipped - int(metrics.get("skipped_existing", 0))
+            )
         if failures:
             report.extra["semantic_link_failures"] = (
                 int(report.extra.get("semantic_link_failures", 0)) + failures
