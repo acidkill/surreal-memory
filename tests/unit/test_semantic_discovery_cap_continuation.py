@@ -20,6 +20,7 @@ from tests.unit.test_consolidation_mid_strategies_resume import (
     _Progress,
     _Storage,
 )
+from tests.unit.test_semantic_discovery_state import _SnapshotStorage
 
 
 def _semantic_link_fixture(
@@ -105,6 +106,30 @@ async def test_semantic_link_continues_capped_batches_until_all_pairs_are_draine
     assert len(storage.added_synapses) == 10
     assert len(storage.added_synapses) == len(set(storage.added_synapses))
     assert paused_batches >= 4
+
+
+@pytest.mark.asyncio
+async def test_applied_batch_keeps_its_staged_source_loadable_under_the_current_lease(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage, progress, _reference_time = _semantic_link_fixture(monkeypatch)
+    with pytest.raises(ConsolidationPausedError):
+        await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+            ConsolidationReport(), dry_run=False
+        )
+
+    manifest = json.loads(progress.strategy_state("semantic_link")["pending"][0])
+    ref = manifest["source_state_ref"]
+    payload = storage.semantic_discovery_states[(ref["state_id"], ref["revision"])]
+    snapshot_storage = _SnapshotStorage()
+    snapshot_storage.current_brain_id = storage.current_brain_id
+    await snapshot_storage.save_semantic_discovery_state(ref["state_id"], ref["revision"], payload)
+    snapshot_storage.progress = {**progress.state, "owner_token": progress.owner_token}
+    snapshot_storage.lease = {"owner_token": progress.owner_token}
+    assert (
+        await snapshot_storage.load_semantic_discovery_state(ref["state_id"], ref["revision"])
+        == payload
+    )
 
 
 @pytest.mark.asyncio

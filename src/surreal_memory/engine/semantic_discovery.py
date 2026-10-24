@@ -2251,7 +2251,12 @@ async def _discover_semantic_synapses_resumable(
                 "version": 4,
                 "stage": "similarity",
                 "cursor": str(durable_row_cursor),
-                "source_state_ref": {"state_id": state_id, "revision": state_revision},
+                "source_state_ref": {
+                    "state_id": state_id,
+                    "revision": state_revision,
+                    "state_revision": state_revision,
+                    "source_token": token,
+                },
                 "next_batch": batch_index + 1,
                 **({"next_window": next_window} if next_window is not None else {}),
             }
