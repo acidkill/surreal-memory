@@ -738,6 +738,81 @@ async def test_semantic_link_replays_saved_synapse_after_interruption_without_du
 
 
 @pytest.mark.asyncio
+async def test_semantic_link_discovery_timeout_reports_saved_cumulative_counters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = _Storage()
+    progress = _Progress("semantic_link")
+    progress.strategy_state("semantic_link").update(
+        phase="semantic_link_discovery_neurons",
+        pending=[
+            json.dumps({"kind": "semantic_link_discovery", "stage": "neurons", "cursor": "node-9"})
+        ],
+        counters={
+            "semantic_synapses_created": 26_286,
+            "semantic_synapses_skipped": 29_652,
+            "semantic_link_failures": 0,
+        },
+    )
+
+    async def timeout_during_census(*_args: Any, **_kwargs: Any) -> SemanticDiscoveryResult:
+        raise TimeoutError("synthetic neuron census timeout")
+
+    monkeypatch.setattr(
+        "surreal_memory.engine.semantic_discovery.discover_semantic_synapses",
+        timeout_during_census,
+    )
+    report = ConsolidationReport()
+
+    with pytest.raises(TimeoutError, match="synthetic neuron census timeout"):
+        await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+            report, dry_run=False
+        )
+
+    assert report.semantic_synapses_created == 26_286
+    assert report.semantic_synapses_skipped == 29_652
+    assert storage.added_synapses == []
+
+
+@pytest.mark.asyncio
+async def test_semantic_link_resume_keeps_cumulative_report_counts_after_discovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = _Storage()
+    progress = _Progress("semantic_link")
+    progress.strategy_state("semantic_link").update(
+        phase="semantic_link_discovery_neurons",
+        pending=[json.dumps({"kind": "semantic_link_discovery", "stage": "neurons"})],
+        counters={
+            "semantic_synapses_created": 26_286,
+            "semantic_synapses_skipped": 29_652,
+            "semantic_link_failures": 0,
+        },
+    )
+    result = SemanticDiscoveryResult(
+        neurons_embedded=0,
+        pairs_evaluated=0,
+        synapses_created=0,
+        skipped_existing=2,
+        eligible_total=0,
+        synapses=[],
+    )
+    monkeypatch.setattr(
+        "surreal_memory.engine.semantic_discovery.discover_semantic_synapses",
+        lambda *_args, **_kwargs: _semantic_discovery_result(result),
+    )
+    report = ConsolidationReport()
+
+    await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+        report, dry_run=False
+    )
+
+    assert report.semantic_synapses_created == 26_286
+    assert report.semantic_synapses_skipped == 29_654
+    assert storage.added_synapses == []
+
+
+@pytest.mark.asyncio
 async def test_semantic_link_resume_preserves_legacy_fingerprint_order_for_mixed_ids() -> None:
     config = SimpleNamespace(embedding_enabled=True, semantic_discovery_similarity_threshold=0.7)
     neuron_ids = ["a0b", "a-b", "b0", "b-z", "z-neuron"]
