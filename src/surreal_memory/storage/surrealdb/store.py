@@ -4143,7 +4143,7 @@ class SurrealDBStorage(
         page_id = last_id if cursor is not None else None
         exhausted = False
         while len(candidates) < max_rows:
-            conditions = [scope, "sequence <= $watermark"]
+            conditions = [scope]
             page_cap = min(_COLLAPSE_READ_PAGE_ROWS, max_rows - len(candidates))
             page_params: dict[str, Any] = {"watermark": watermark, "cap": page_cap}
             if page_sequence is not None and page_id is not None:
@@ -4155,6 +4155,8 @@ class SurrealDBStorage(
                     ]
                 )
                 page_params.update(last_sequence=page_sequence, last_id=page_id)
+            # SurrealDB selects the first range bound here; seek forward from the cursor.
+            conditions.append("sequence <= $watermark")
             page = await self._query(
                 "SELECT id, entity_type, entity_id, sequence FROM change_log "
                 "WITH INDEX idx_changelog_seq WHERE "
@@ -4195,7 +4197,8 @@ class SurrealDBStorage(
         before_id: Any | None = None
         previous_cursor: tuple[int, str] | None = None
         while len(newest) < len(needed):
-            conditions = [scope, "sequence >= $min_sequence", "sequence <= $upper_sequence"]
+            # Put the descending seek bound first instead of rescanning the newer prefix.
+            conditions = [scope, "sequence <= $upper_sequence", "sequence >= $min_sequence"]
             maxima_params: dict[str, Any] = {
                 "min_sequence": min_sequence,
                 "upper_sequence": upper_sequence,

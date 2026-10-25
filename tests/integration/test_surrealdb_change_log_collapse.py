@@ -276,6 +276,50 @@ async def test_small_pages_reach_late_duplicates_and_keep_tied_maxima_and_protec
 
 
 @pytest.mark.asyncio
+async def test_collapse_keyset_plans_seek_from_advancing_boundary(
+    storage: SurrealDBStorage,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(store_module, "_COLLAPSE_READ_PAGE_ROWS", 1)
+    for entity in ("first", "middle", "last"):
+        for revision in (1, 2):
+            await storage.record_change("synapse", entity, "update", payload={"v": revision})
+
+    emitted: list[tuple[str, dict[str, Any]]] = []
+    original_query = storage._query
+
+    async def capture(sql: str, **params: Any) -> list[dict[str, Any]]:
+        if "WITH INDEX idx_changelog_seq" in sql:
+            emitted.append((sql, dict(params)))
+        return await original_query(sql, **params)
+
+    monkeypatch.setattr(storage, "_query", capture)
+    await storage.collapse_pending_updates(max_rows=3)
+
+    forward = next(item for item in emitted if "last_sequence" in item[1])
+    backward = next(item for item in emitted if "before_id" in item[1])
+
+    def scans(plan: Any) -> list[dict[str, Any]]:
+        if isinstance(plan, list):
+            return [scan for child in plan for scan in scans(child)]
+        if not isinstance(plan, dict):
+            return []
+        own = [plan["attributes"]] if plan.get("operator") == "IndexScan" else []
+        return own + [scan for child in plan.values() for scan in scans(child)]
+
+    for (sql, params), direction, boundary in (
+        (forward, "Forward", f"MoreThanEqual {forward[1]['last_sequence']}"),
+        (backward, "Backward", f"LessThanEqual {backward[1]['upper_sequence']}"),
+    ):
+        plan = await storage._query_response(sql + " EXPLAIN", **params)
+        indexed = scans(plan)
+        assert len(indexed) == 1, plan
+        assert indexed[0]["index"] == "idx_changelog_seq", plan
+        assert indexed[0]["direction"] == direction, plan
+        assert boundary in indexed[0]["access"], plan
+
+
+@pytest.mark.asyncio
 async def test_small_pages_report_empty_tail_and_reject_malformed_cursor(
     storage: SurrealDBStorage,
 ) -> None:

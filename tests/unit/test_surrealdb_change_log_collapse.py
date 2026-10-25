@@ -213,6 +213,10 @@ async def test_collapse_keyset_scans_global_maxima_across_pages_and_entity_types
     first_maxima, second_maxima = store._query.await_args_list[2:]
     assert first_maxima.kwargs["upper_sequence"] == 5
     assert second_maxima.kwargs["upper_sequence"] == 4
+    for call in (first_maxima, second_maxima):
+        assert call.args[0].index("sequence <= $upper_sequence") < call.args[0].index(
+            "sequence >= $min_sequence"
+        )
     assert str(second_maxima.kwargs["before_id"]) == "change_log:other"
     assert store._query_values.await_args.kwargs["record_ids"] == [neuron_old, synapse_old]
 
@@ -338,6 +342,10 @@ async def test_candidate_wire_pages_preserve_ties_and_round_trip_quoted_numeric_
     assert all("WITH INDEX idx_changelog_seq" in call.args[0] for call in candidate_queries)
     assert candidate_queries[2].kwargs["last_sequence"] == 1
     assert candidate_queries[2].kwargs["last_id"] == "b"
+    for call in candidate_queries[1:]:
+        assert call.args[0].index("sequence >= $last_sequence") < call.args[0].index(
+            "sequence <= $watermark"
+        )
 
     quoted = {
         "id": _RecordID("change_log:⟨123⟩"),
