@@ -14,6 +14,7 @@ import re
 
 from surreal_memory.storage.surrealdb.schema import (
     SCHEMA_SQL,
+    SCHEMA_VERSION,
     _parse_schema_statements,
     ensure_schema,
 )
@@ -74,6 +75,13 @@ class TestParseSchemaStatements:
         table_defines = [s for s in statements if s.startswith("DEFINE TABLE ")]
         assert len(table_defines) >= 26, table_defines
 
+    def test_change_log_entity_maxima_index_is_additive_and_ordered_for_key_lookup(self) -> None:
+        assert SCHEMA_VERSION == 12
+        statements = _parse_schema_statements(SCHEMA_SQL)
+        index = next(s for s in statements if "idx_changelog_entity_max" in s)
+        assert "FIELDS brain_id, entity_type, entity_id, operation, synced, sequence" in index
+        assert "CONCURRENTLY" not in index
+
 
 class _RecordingConn:
     """Minimal storage-connection stub recording every executed statement."""
@@ -97,6 +105,7 @@ class TestEnsureSchemaExecution:
         # SurrealDB rejects on a SCHEMALESS table — see SCHEMA_SQL rationale comment.
         assert "DEFINE TABLE neuron SCHEMALESS" in joined
         assert "HNSW DIMENSION 1024" in joined
+        assert any("idx_changelog_entity_max" in statement for statement in conn.executed)
 
     async def test_a_failing_statement_does_not_abort_the_rest(self) -> None:
         class _FlakyConn(_RecordingConn):

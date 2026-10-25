@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import uuid
 from collections import Counter
@@ -13,6 +14,7 @@ from urllib.parse import urlparse
 import pytest
 import pytest_asyncio
 
+import surreal_memory.storage.surrealdb.store as store_module
 from surreal_memory.core.brain import Brain
 from surreal_memory.storage.surrealdb.store import SurrealDBStorage
 from surreal_memory.utils.timeutils import ensure_naive_utc
@@ -191,7 +193,9 @@ async def test_collapse_preserves_replay_state_brain_scope_and_protected_rows(
 @pytest.mark.asyncio
 async def test_small_pages_reach_late_duplicates_and_keep_tied_maxima_and_protected_rows(
     storage: SurrealDBStorage,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(store_module, "_COLLAPSE_READ_PAGE_ROWS", 1)
     active_brain_id = storage._get_brain_id()
     foreign_brain = Brain.create(name="change-log-collapse-small-page-foreign")
     await storage.save_brain(foreign_brain)
@@ -202,6 +206,9 @@ async def test_small_pages_reach_late_duplicates_and_keep_tied_maxima_and_protec
         await storage.record_change("synapse", "tail", "update", payload={"v": revision})
         for revision in (1, 2, 3)
     ]
+    for entity_type in ("neuron", "fiber"):
+        for revision in (1, 2):
+            await storage.record_change(entity_type, "shared-id", "update", payload={"v": revision})
     await storage._query(
         "UPDATE change_log SET sequence = $tie_sequence "
         "WHERE brain_id = $brain_id AND sequence IN $sequences",
@@ -237,13 +244,19 @@ async def test_small_pages_reach_late_duplicates_and_keep_tied_maxima_and_protec
             break
 
     assert pages >= 3, "unique-key prefix pages must not starve the duplicate tail"
-    assert collapsed == 1
+    assert collapsed == 3
     active_rows = await storage._query(
         "SELECT * FROM change_log WHERE brain_id = $brain_id ORDER BY sequence, id",
         brain_id=active_brain_id,
     )
     tail_rows = [row for row in active_rows if row.get("entity_id") == "tail"]
     assert sorted(row["payload"]["v"] for row in tail_rows) == [2, 3]
+    shared_id_rows = [row for row in active_rows if row.get("entity_id") == "shared-id"]
+    assert len(shared_id_rows) == 2
+    assert {(row["entity_type"], row["payload"]["v"]) for row in shared_id_rows} == {
+        ("neuron", 2),
+        ("fiber", 2),
+    }
     assert (
         sum(
             row.get("entity_id") == "synced" and bool(row.get("synced", False))
@@ -260,6 +273,101 @@ async def test_small_pages_reach_late_duplicates_and_keep_tied_maxima_and_protec
     )
     assert len(foreign_rows) == 1
     assert foreign_rows[0]["payload"] == {"v": 99}
+
+
+@pytest.mark.asyncio
+async def test_collapse_keyset_plans_seek_from_advancing_boundary(
+    storage: SurrealDBStorage,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(store_module, "_COLLAPSE_READ_PAGE_ROWS", 1)
+    for entity in ("first", "middle", "last"):
+        for revision in (1, 2):
+            await storage.record_change("synapse", entity, "update", payload={"v": revision})
+
+    emitted: list[tuple[str, dict[str, Any], list[dict[str, Any]]]] = []
+    original_query = storage._query
+
+    async def capture(sql: str, **params: Any) -> list[dict[str, Any]]:
+        rows = await original_query(sql, **params)
+        if "WITH INDEX idx_changelog_seq" in sql or "WITH INDEX idx_changelog_entity_max" in sql:
+            emitted.append((sql, dict(params), rows))
+        return rows
+
+    monkeypatch.setattr(storage, "_query", capture)
+    await storage.collapse_pending_updates(max_rows=3)
+
+    forward = next(item for item in emitted if "last_sequence" in item[1])
+    maxima = next(item for item in emitted if "idx_changelog_entity_max" in item[0])
+
+    def scans(plan: Any) -> list[dict[str, Any]]:
+        if isinstance(plan, list):
+            return [scan for child in plan for scan in scans(child)]
+        if not isinstance(plan, dict):
+            return []
+        own = [plan["attributes"]] if plan.get("operator") == "IndexScan" else []
+        if plan.get("operation") == "Iterate Index":
+            own = [plan["detail"]["plan"]]
+        return own + [scan for child in plan.values() for scan in scans(child)]
+
+    def has_operator(plan: Any, operator: str) -> bool:
+        if isinstance(plan, list):
+            return any(has_operator(child, operator) for child in plan)
+        if not isinstance(plan, dict):
+            return False
+        return (
+            plan.get("operator") == operator
+            or (operator == "TableScan" and plan.get("operation") == "Iterate Table")
+            or any(has_operator(child, operator) for child in plan.values())
+        )
+
+    forward_plan = await storage._query_response(forward[0] + " EXPLAIN", **forward[1])
+    forward_index = scans(forward_plan)
+    assert len(forward_index) == 1, forward_plan
+    assert forward_index[0]["index"] == "idx_changelog_seq", forward_plan
+    assert forward_index[0]["direction"] == "Forward", forward_plan
+    assert f"MoreThanEqual {forward[1]['last_sequence']}" in forward_index[0]["access"]
+
+    assert maxima[0].count(" LIMIT 1)") == 1, maxima[0]
+    maxima_explain_sql = maxima[0].replace(" LIMIT 1)", " LIMIT 1 EXPLAIN)")
+    maxima_plan = await storage._query_response(maxima_explain_sql, **maxima[1])
+    maxima_index = scans(maxima_plan)
+    assert maxima[1]["entity_type"] == "synapse"
+    assert maxima[1]["entity_ids"] == ["first", "middle"]
+    assert len(maxima_index) == len(maxima[1]["entity_ids"]), maxima_plan
+    for entity_id in maxima[1]["entity_ids"]:
+        point_scans = [
+            scan
+            for scan in maxima_index
+            if entity_id in str(scan.get("prefix", scan.get("access")))
+        ]
+        assert len(point_scans) == 1, maxima_plan
+        scan = point_scans[0]
+        assert scan["index"] == "idx_changelog_entity_max", maxima_plan
+        if "prefix" in scan:
+            assert scan["prefix"] == [
+                storage._get_brain_id(),
+                "synapse",
+                entity_id,
+                "update",
+                False,
+            ], scan
+            assert scan["ranges"] == [{"operator": "<=", "value": maxima[1]["watermark"]}], scan
+        else:
+            access = str(scan["access"])
+            assert scan["direction"] == "Backward", maxima_plan
+            assert all(value in access for value in (storage._get_brain_id(), "synapse", entity_id))
+            assert f"LessThanEqual {maxima[1]['watermark']}" in access, access
+
+    noindex_sql = maxima[0].replace("WITH INDEX idx_changelog_entity_max", "WITH NOINDEX")
+    noindex_rows = await storage._query(noindex_sql, **maxima[1])
+    assert sorted(noindex_rows, key=lambda row: row["entity_id"]) == sorted(
+        maxima[2], key=lambda row: row["entity_id"]
+    )
+    noindex_explain_sql = noindex_sql.replace(" LIMIT 1)", " LIMIT 1 EXPLAIN)")
+    noindex_plan = await storage._query_response(noindex_explain_sql, **maxima[1])
+    assert scans(noindex_plan) == []
+    assert has_operator(noindex_plan, "TableScan"), noindex_plan
 
 
 @pytest.mark.asyncio
@@ -286,6 +394,42 @@ async def test_small_pages_report_empty_tail_and_reject_malformed_cursor(
         brain_id=brain_id,
     )
     assert len(rows) == 2
+
+
+@pytest.mark.asyncio
+async def test_update_appended_after_watermark_is_left_for_the_next_pass(
+    storage: SurrealDBStorage,
+) -> None:
+    brain_id = storage._get_brain_id()
+    await storage.record_change("synapse", "watermark-tail", "update", payload={"v": 1})
+    await storage.record_change("synapse", "watermark-tail", "update", payload={"v": 2})
+
+    injected = False
+    original_query_response = storage._query_response
+
+    async def inject_after_watermark(sql: str, **params: Any) -> Any:
+        nonlocal injected
+        rows = await original_query_response(sql, **params)
+        if not injected and "ORDER BY sequence DESC LIMIT 1" in sql:
+            injected = True
+            await storage.record_change("synapse", "watermark-tail", "update", payload={"v": 3})
+        return rows
+
+    storage._query_response = inject_after_watermark  # type: ignore[method-assign]
+    deleted, cursor, exhausted = await storage.collapse_pending_updates(max_rows=10)
+    storage._query_response = original_query_response  # type: ignore[method-assign]
+
+    rows = await storage._query(
+        "SELECT * FROM change_log WHERE brain_id = $brain_id AND entity_id = $entity_id "
+        "AND operation = 'update' ORDER BY sequence",
+        brain_id=brain_id,
+        entity_id="watermark-tail",
+    )
+    assert injected
+    assert deleted == 1
+    assert exhausted
+    assert json.loads(cursor or "")["watermark"] == 2
+    assert [row["payload"]["v"] for row in rows] == [2, 3]
 
 
 @pytest.mark.asyncio
