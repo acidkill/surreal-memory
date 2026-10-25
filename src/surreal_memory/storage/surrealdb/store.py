@@ -4209,11 +4209,13 @@ class SurrealDBStorage(
         for entity_type, entity_ids in ids_by_type.items():
             for key_batch in _chunked(sorted(entity_ids), _COLLAPSE_MAXIMA_KEY_BATCH):
                 rows = await self._query(
-                    "SELECT entity_id, math::max(sequence) AS latest_sequence "
-                    "FROM change_log WITH INDEX idx_changelog_entity_max WHERE "
+                    "RETURN array::flatten($entity_ids.map(|$entity_id| ("
+                    "SELECT entity_id, sequence FROM change_log "
+                    "WITH INDEX idx_changelog_entity_max WHERE "
                     f"brain_id = {lit} AND entity_type = $entity_type "
-                    "AND entity_id IN $entity_ids AND operation = 'update' "
-                    "AND synced = false AND sequence <= $watermark GROUP BY entity_id",
+                    "AND entity_id = $entity_id AND operation = 'update' "
+                    "AND synced = false AND sequence <= $watermark "
+                    "ORDER BY sequence DESC LIMIT 1)))",
                     entity_type=entity_type,
                     entity_ids=key_batch,
                     watermark=watermark,
@@ -4221,7 +4223,7 @@ class SurrealDBStorage(
                 newest.update(
                     {
                         (entity_type, str(row.get("entity_id", ""))): int(
-                            row.get("latest_sequence", 0) or 0
+                            row.get("sequence", 0) or 0
                         )
                         for row in rows
                     }

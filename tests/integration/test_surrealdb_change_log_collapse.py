@@ -324,23 +324,29 @@ async def test_collapse_keyset_plans_seek_from_advancing_boundary(
     assert forward_index[0]["direction"] == "Forward", forward_plan
     assert f"MoreThanEqual {forward[1]['last_sequence']}" in forward_index[0]["access"]
 
-    maxima_plan = await storage._query_response(maxima[0] + " EXPLAIN", **maxima[1])
+    assert maxima[0].count(" LIMIT 1)") == 1, maxima[0]
+    maxima_explain_sql = maxima[0].replace(" LIMIT 1)", " LIMIT 1 EXPLAIN)")
+    maxima_plan = await storage._query_response(maxima_explain_sql, **maxima[1])
     maxima_index = scans(maxima_plan)
-    assert len(maxima_index) == 1, maxima_plan
-    assert maxima_index[0]["index"] == "idx_changelog_entity_max", maxima_plan
     assert maxima[1]["entity_type"] == "synapse"
     assert maxima[1]["entity_ids"] == ["first", "middle"]
-    access = str(maxima_index[0]["access"])
-    assert all(
-        value in access for value in (storage._get_brain_id(), "synapse", *maxima[1]["entity_ids"])
-    ), access
+    assert len(maxima_index) == len(maxima[1]["entity_ids"]), maxima_plan
+    for entity_id in maxima[1]["entity_ids"]:
+        point_scans = [scan for scan in maxima_index if entity_id in str(scan["access"])]
+        assert len(point_scans) == 1, maxima_plan
+        access = str(point_scans[0]["access"])
+        assert point_scans[0]["index"] == "idx_changelog_entity_max", maxima_plan
+        assert point_scans[0]["direction"] == "Backward", maxima_plan
+        assert all(value in access for value in (storage._get_brain_id(), "synapse", entity_id))
+        assert f"LessThanEqual {maxima[1]['watermark']}" in access, access
 
     noindex_sql = maxima[0].replace("WITH INDEX idx_changelog_entity_max", "WITH NOINDEX")
     noindex_rows = await storage._query(noindex_sql, **maxima[1])
     assert sorted(noindex_rows, key=lambda row: row["entity_id"]) == sorted(
         maxima[2], key=lambda row: row["entity_id"]
     )
-    noindex_plan = await storage._query_response(noindex_sql + " EXPLAIN", **maxima[1])
+    noindex_explain_sql = noindex_sql.replace(" LIMIT 1)", " LIMIT 1 EXPLAIN)")
+    noindex_plan = await storage._query_response(noindex_explain_sql, **maxima[1])
     assert scans(noindex_plan) == []
     assert has_operator(noindex_plan, "TableScan"), noindex_plan
 
