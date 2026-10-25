@@ -306,6 +306,8 @@ async def test_collapse_keyset_plans_seek_from_advancing_boundary(
         if not isinstance(plan, dict):
             return []
         own = [plan["attributes"]] if plan.get("operator") == "IndexScan" else []
+        if plan.get("operation") == "Iterate Index":
+            own = [plan["detail"]["plan"]]
         return own + [scan for child in plan.values() for scan in scans(child)]
 
     def has_operator(plan: Any, operator: str) -> bool:
@@ -313,8 +315,10 @@ async def test_collapse_keyset_plans_seek_from_advancing_boundary(
             return any(has_operator(child, operator) for child in plan)
         if not isinstance(plan, dict):
             return False
-        return plan.get("operator") == operator or any(
-            has_operator(child, operator) for child in plan.values()
+        return (
+            plan.get("operator") == operator
+            or (operator == "TableScan" and plan.get("operation") == "Iterate Table")
+            or any(has_operator(child, operator) for child in plan.values())
         )
 
     forward_plan = await storage._query_response(forward[0] + " EXPLAIN", **forward[1])
@@ -332,13 +336,28 @@ async def test_collapse_keyset_plans_seek_from_advancing_boundary(
     assert maxima[1]["entity_ids"] == ["first", "middle"]
     assert len(maxima_index) == len(maxima[1]["entity_ids"]), maxima_plan
     for entity_id in maxima[1]["entity_ids"]:
-        point_scans = [scan for scan in maxima_index if entity_id in str(scan["access"])]
+        point_scans = [
+            scan
+            for scan in maxima_index
+            if entity_id in str(scan.get("prefix", scan.get("access")))
+        ]
         assert len(point_scans) == 1, maxima_plan
-        access = str(point_scans[0]["access"])
-        assert point_scans[0]["index"] == "idx_changelog_entity_max", maxima_plan
-        assert point_scans[0]["direction"] == "Backward", maxima_plan
-        assert all(value in access for value in (storage._get_brain_id(), "synapse", entity_id))
-        assert f"LessThanEqual {maxima[1]['watermark']}" in access, access
+        scan = point_scans[0]
+        assert scan["index"] == "idx_changelog_entity_max", maxima_plan
+        if "prefix" in scan:
+            assert scan["prefix"] == [
+                storage._get_brain_id(),
+                "synapse",
+                entity_id,
+                "update",
+                False,
+            ], scan
+            assert scan["ranges"] == [{"operator": "<=", "value": maxima[1]["watermark"]}], scan
+        else:
+            access = str(scan["access"])
+            assert scan["direction"] == "Backward", maxima_plan
+            assert all(value in access for value in (storage._get_brain_id(), "synapse", entity_id))
+            assert f"LessThanEqual {maxima[1]['watermark']}" in access, access
 
     noindex_sql = maxima[0].replace("WITH INDEX idx_changelog_entity_max", "WITH NOINDEX")
     noindex_rows = await storage._query(noindex_sql, **maxima[1])
