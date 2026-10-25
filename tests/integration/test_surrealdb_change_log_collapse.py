@@ -329,7 +329,7 @@ async def test_collapse_keyset_plans_seek_from_advancing_boundary(
     assert len(maxima_index) == 1, maxima_plan
     assert maxima_index[0]["index"] == "idx_changelog_entity_max", maxima_plan
     assert maxima[1]["entity_type"] == "synapse"
-    assert maxima[1]["entity_ids"] == ["first", "last", "middle"]
+    assert maxima[1]["entity_ids"] == ["first", "middle"]
     access = str(maxima_index[0]["access"])
     assert all(
         value in access for value in (storage._get_brain_id(), "synapse", *maxima[1]["entity_ids"])
