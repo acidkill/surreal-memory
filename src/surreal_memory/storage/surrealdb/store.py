@@ -272,6 +272,9 @@ _COLLAPSE_MAX_ROWS = 200_000
 # Maximum rows returned in one candidate or maxima query.
 _COLLAPSE_READ_PAGE_ROWS = 5_000
 
+# Bound the key list sent to each indexed per-entity maxima query.
+_COLLAPSE_MAXIMA_KEY_BATCH = 1_000
+
 # Delete batch for the collapse. Much larger than _BATCH_WRITE_CHUNK because
 # these statements carry only record ids — no payloads, no vectors — so the
 # request body stays small while the round-trip count drops by an order of
@@ -4076,11 +4079,11 @@ class SurrealDBStorage(
         superseded rows come to dominate the table -- tens of them per edge --
         and nothing else removes them.
 
-        Each call reads one bounded candidate page, then scans backward through
-        bounded sequence-indexed pages until it finds the global maxima for that
-        page's distinct entities. The returned cursor records the high-water
-        sequence observed on the first page, so each call advances without
-        skipping a winner that falls across a page. Independent writers can append
+        Each call reads one bounded candidate page, then reads indexed maxima
+        for bounded batches of that page's distinct entities. The returned
+        cursor records the high-water sequence observed on the first page, so
+        each call advances without skipping a winner that falls across a page.
+        Independent writers can append
         rows with a reused local sequence during the scan; those rows are eligible
         for the next run. Equal maximum sequences are retained because their order
         is ambiguous.
@@ -4188,50 +4191,41 @@ class SurrealDBStorage(
         if not last_record_id.startswith("change_log:") or ":" in last_record_id.split(":", 1)[1]:
             raise ValueError("unsafe change-log row id in collapse page")
 
-        needed = {
-            (str(row.get("entity_type", "")), str(row.get("entity_id", ""))) for row in candidates
-        }
         newest: dict[tuple[str, str], int] = {}
-        min_sequence = min(int(row.get("sequence", 0) or 0) for row in candidates)
-        upper_sequence = watermark
-        before_id: Any | None = None
-        previous_cursor: tuple[int, str] | None = None
-        while len(newest) < len(needed):
-            # Put the descending seek bound first instead of rescanning the newer prefix.
-            conditions = [scope, "sequence <= $upper_sequence", "sequence >= $min_sequence"]
-            maxima_params: dict[str, Any] = {
-                "min_sequence": min_sequence,
-                "upper_sequence": upper_sequence,
-                "cap": _COLLAPSE_READ_PAGE_ROWS,
-            }
-            if before_id is not None:
-                conditions.append(
-                    "(sequence < $before_sequence OR "
-                    "(sequence = $before_sequence AND id < $before_id))"
-                )
-                maxima_params.update(before_sequence=upper_sequence, before_id=before_id)
-            rows = await self._query(
-                "SELECT id, entity_type, entity_id, sequence FROM change_log "
-                "WITH INDEX idx_changelog_seq WHERE "
-                + " AND ".join(conditions)
-                + " ORDER BY sequence DESC, id DESC LIMIT $cap",
-                **maxima_params,
+        index_info = await self._query_response(
+            "INFO FOR INDEX idx_changelog_entity_max ON TABLE change_log"
+        )
+        # ensure_schema defines this index without CONCURRENTLY; still fail closed
+        # if DDL was skipped or an operator is building it in the background.
+        building = index_info.get("building") if isinstance(index_info, dict) else None
+        if not isinstance(building, dict) or building.get("status") != "ready":
+            raise RuntimeError("change-log entity maxima index is not ready")
+
+        ids_by_type: dict[str, set[str]] = {}
+        for row in candidates:
+            ids_by_type.setdefault(str(row.get("entity_type", "")), set()).add(
+                str(row.get("entity_id", ""))
             )
-            if not rows:
-                break
-            last = rows[-1]
-            last_sequence = int(last.get("sequence", 0) or 0)
-            last_id = str(last.get("id", ""))
-            last_cursor = (last_sequence, last_id)
-            if previous_cursor is not None and last_cursor >= previous_cursor:
-                raise RuntimeError("change-log maxima scan cursor did not advance")
-            for row in rows:
-                key = (str(row.get("entity_type", "")), str(row.get("entity_id", "")))
-                if key in needed and key not in newest:
-                    newest[key] = int(row.get("sequence", 0) or 0)
-            previous_cursor = last_cursor
-            upper_sequence = last_sequence
-            before_id = last["id"]
+        for entity_type, entity_ids in ids_by_type.items():
+            for key_batch in _chunked(sorted(entity_ids), _COLLAPSE_MAXIMA_KEY_BATCH):
+                rows = await self._query(
+                    "SELECT entity_id, math::max(sequence) AS latest_sequence "
+                    "FROM change_log WITH INDEX idx_changelog_entity_max WHERE "
+                    f"brain_id = {lit} AND entity_type = $entity_type "
+                    "AND entity_id IN $entity_ids AND operation = 'update' "
+                    "AND synced = false AND sequence <= $watermark GROUP BY entity_id",
+                    entity_type=entity_type,
+                    entity_ids=key_batch,
+                    watermark=watermark,
+                )
+                newest.update(
+                    {
+                        (entity_type, str(row.get("entity_id", ""))): int(
+                            row.get("latest_sequence", 0) or 0
+                        )
+                        for row in rows
+                    }
+                )
 
         # Keep the typed RecordIDs the driver handed back. The same IDs can be
         # bound as a record-list DELETE source; stringifying them loses their

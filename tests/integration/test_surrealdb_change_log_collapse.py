@@ -285,19 +285,20 @@ async def test_collapse_keyset_plans_seek_from_advancing_boundary(
         for revision in (1, 2):
             await storage.record_change("synapse", entity, "update", payload={"v": revision})
 
-    emitted: list[tuple[str, dict[str, Any]]] = []
+    emitted: list[tuple[str, dict[str, Any], list[dict[str, Any]]]] = []
     original_query = storage._query
 
     async def capture(sql: str, **params: Any) -> list[dict[str, Any]]:
-        if "WITH INDEX idx_changelog_seq" in sql:
-            emitted.append((sql, dict(params)))
-        return await original_query(sql, **params)
+        rows = await original_query(sql, **params)
+        if "WITH INDEX idx_changelog_seq" in sql or "WITH INDEX idx_changelog_entity_max" in sql:
+            emitted.append((sql, dict(params), rows))
+        return rows
 
     monkeypatch.setattr(storage, "_query", capture)
     await storage.collapse_pending_updates(max_rows=3)
 
     forward = next(item for item in emitted if "last_sequence" in item[1])
-    backward = next(item for item in emitted if "before_id" in item[1])
+    maxima = next(item for item in emitted if "idx_changelog_entity_max" in item[0])
 
     def scans(plan: Any) -> list[dict[str, Any]]:
         if isinstance(plan, list):
@@ -307,16 +308,41 @@ async def test_collapse_keyset_plans_seek_from_advancing_boundary(
         own = [plan["attributes"]] if plan.get("operator") == "IndexScan" else []
         return own + [scan for child in plan.values() for scan in scans(child)]
 
-    for (sql, params), direction, boundary in (
-        (forward, "Forward", f"MoreThanEqual {forward[1]['last_sequence']}"),
-        (backward, "Backward", f"LessThanEqual {backward[1]['upper_sequence']}"),
-    ):
-        plan = await storage._query_response(sql + " EXPLAIN", **params)
-        indexed = scans(plan)
-        assert len(indexed) == 1, plan
-        assert indexed[0]["index"] == "idx_changelog_seq", plan
-        assert indexed[0]["direction"] == direction, plan
-        assert boundary in indexed[0]["access"], plan
+    def has_operator(plan: Any, operator: str) -> bool:
+        if isinstance(plan, list):
+            return any(has_operator(child, operator) for child in plan)
+        if not isinstance(plan, dict):
+            return False
+        return plan.get("operator") == operator or any(
+            has_operator(child, operator) for child in plan.values()
+        )
+
+    forward_plan = await storage._query_response(forward[0] + " EXPLAIN", **forward[1])
+    forward_index = scans(forward_plan)
+    assert len(forward_index) == 1, forward_plan
+    assert forward_index[0]["index"] == "idx_changelog_seq", forward_plan
+    assert forward_index[0]["direction"] == "Forward", forward_plan
+    assert f"MoreThanEqual {forward[1]['last_sequence']}" in forward_index[0]["access"]
+
+    maxima_plan = await storage._query_response(maxima[0] + " EXPLAIN", **maxima[1])
+    maxima_index = scans(maxima_plan)
+    assert len(maxima_index) == 1, maxima_plan
+    assert maxima_index[0]["index"] == "idx_changelog_entity_max", maxima_plan
+    assert maxima[1]["entity_type"] == "synapse"
+    assert maxima[1]["entity_ids"] == ["first", "last", "middle"]
+    access = str(maxima_index[0]["access"])
+    assert all(
+        value in access for value in (storage._get_brain_id(), "synapse", *maxima[1]["entity_ids"])
+    ), access
+
+    noindex_sql = maxima[0].replace("WITH INDEX idx_changelog_entity_max", "WITH NOINDEX")
+    noindex_rows = await storage._query(noindex_sql, **maxima[1])
+    assert sorted(noindex_rows, key=lambda row: row["entity_id"]) == sorted(
+        maxima[2], key=lambda row: row["entity_id"]
+    )
+    noindex_plan = await storage._query_response(noindex_sql + " EXPLAIN", **maxima[1])
+    assert scans(noindex_plan) == []
+    assert has_operator(noindex_plan, "TableScan"), noindex_plan
 
 
 @pytest.mark.asyncio

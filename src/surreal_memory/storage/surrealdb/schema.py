@@ -220,6 +220,9 @@ DEFINE FIELD synced         ON change_log TYPE bool DEFAULT false;
 DEFINE FIELD sequence       ON change_log TYPE int;
 DEFINE INDEX idx_changelog_brain  ON change_log FIELDS brain_id;
 DEFINE INDEX idx_changelog_seq    ON change_log FIELDS brain_id, sequence;
+-- Per-entity maxima avoids rescanning the whole journal once per candidate page.
+DEFINE INDEX idx_changelog_entity_max ON change_log
+    FIELDS brain_id, entity_type, entity_id, operation, synced, sequence;
 -- v10: without this, every count filtered on `synced` degrades to a full read of
 -- the brain's change_log, because the planner has to fetch the field from each
 -- row. Measured on a large log: an equivalent count filtered on a field the
