@@ -28,6 +28,14 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from surreal_memory.hooks.receipts import (
+    bind_hook_context,
+    capture_metadata,
+    capture_receipt,
+    emit_receipt,
+    runtime_session_id,
+)
+
 logger = logging.getLogger(__name__)
 
 # Max lines to read from transcript tail (increased for longer sessions)
@@ -47,6 +55,9 @@ def read_hook_input() -> dict[str, Any]:
         if not raw.strip():
             return {}
         result: dict[str, Any] = json.loads(raw)
+        if not isinstance(result, dict):
+            return {}
+        bind_hook_context(result)
         return result
     except (json.JSONDecodeError, OSError):
         return {}
@@ -329,7 +340,7 @@ async def _embedding_dedup(
             )
         return filtered
     except Exception:
-        logger.debug("Embedding dedup failed, using original list", exc_info=True)
+        logger.debug("Embedding dedup failed, using original list")
         return items
 
 
@@ -442,6 +453,8 @@ async def capture_text(text: str, project_name: str | None = None) -> dict[str, 
 
         auto_redact_severity = config.safety.auto_redact_min_severity
         saved: list[str] = []
+        memory_ids: list[str] = []
+        failed_writes = 0
         gate_rejected = False
 
         # Write gate check for stop hook (auto-capture path). SHADOW logs the
@@ -511,14 +524,17 @@ async def capture_text(text: str, project_name: str | None = None) -> dict[str, 
                     memory_type=mem_type,
                     priority=Priority.from_int(item.get("priority", 5)),
                     source="stop_hook",
+                    metadata=capture_metadata(),
                     tags=set(base_tags),
                     project_id=project_id,
                 )
                 await storage.add_typed_memory(typed_mem)
                 saved.append(redacted_content[:60])
+                memory_ids.append(result.fiber.id)
                 captured_keys.append(content_key(content))
             except Exception:
-                logger.debug("Failed to save stop-hook memory", exc_info=True)
+                failed_writes += 1
+                logger.debug("Failed to save stop-hook memory")
                 continue
 
         # Fall back to a session summary if no patterns were detected. Skipped
@@ -590,19 +606,20 @@ async def capture_text(text: str, project_name: str | None = None) -> dict[str, 
                             memory_type=MemoryType.CONTEXT,
                             priority=Priority.from_int(4),
                             source="stop_hook",
+                            metadata=capture_metadata(),
                             tags=set(summary_tags),
                             project_id=project_id,
                         )
                         await storage.add_typed_memory(typed_mem)
                         saved.append(redacted_summary[:60])
+                        memory_ids.append(result.fiber.id)
                         captured_keys.append(content_key(summary))
                     except Exception:
-                        logger.debug("Failed to save session summary", exc_info=True)
-
-        # Persist idempotency state so the next turn's re-read skips these.
-        mark_seen(skey, captured_keys)
+                        failed_writes += 1
+                        logger.debug("Failed to save session summary")
 
         await storage.batch_save()
+        mark_seen(skey, captured_keys)
 
         if saved:
             message = f"Session end: captured {len(saved)} memories"
@@ -621,13 +638,15 @@ async def capture_text(text: str, project_name: str | None = None) -> dict[str, 
         return {
             "saved": len(saved),
             "memories": saved,
+            "memory_ids": memory_ids,
+            "failed_writes": failed_writes,
             "message": message,
         }
     finally:
         try:
             await storage.close()
         except Exception:
-            logger.debug("storage.close() failed (non-fatal)", exc_info=True)
+            logger.debug("storage.close() failed (non-fatal)")
 
 
 def main() -> None:
@@ -639,6 +658,9 @@ def main() -> None:
     )
     parser.add_argument("--transcript", "-t", help="Path to JSONL transcript file")
     parser.add_argument("--text", help="Direct text to capture (alternative to transcript)")
+    parser.add_argument(
+        "--json", action="store_true", help="Emit a versioned JSON receipt on stdout"
+    )
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
 
     args = parser.parse_args()
@@ -666,13 +688,32 @@ def main() -> None:
             resolved = Path(transcript_path).resolve()
             allowed_dir = Path.home().resolve() / ".claude"
             if not resolved.is_relative_to(allowed_dir):
+                if args.json:
+                    emit_receipt(
+                        capture_receipt(
+                            {"saved": 0, "message": "Transcript path outside allowed directory"},
+                            runtime_session_id(),
+                        )
+                    )
                 logger.warning("Transcript path outside allowed directory, skipping")
                 sys.exit(0)
             text = read_transcript_tail(transcript_path)
         else:
+            if args.json:
+                emit_receipt(
+                    capture_receipt(
+                        {"saved": 0, "message": "No transcript path"}, runtime_session_id()
+                    )
+                )
             sys.exit(0)
 
     if not text or len(text.strip()) < 50:
+        if args.json:
+            emit_receipt(
+                capture_receipt(
+                    {"saved": 0, "message": "No substantial content"}, runtime_session_id()
+                )
+            )
         print("No substantial content to capture", file=sys.stderr)  # noqa: T201
         sys.exit(0)
 
@@ -681,6 +722,11 @@ def main() -> None:
 
     try:
         result = asyncio.run(capture_text(text, project_name))
+        if args.json:
+            receipt_result = capture_receipt(result, runtime_session_id())
+            emit_receipt(receipt_result)
+            if receipt_result["status"] == "failed":
+                sys.exit(1)
         saved = result.get("saved", 0)
         if saved > 0:
             print(  # noqa: T201
@@ -692,9 +738,13 @@ def main() -> None:
                 f"[Surreal-Memory] Session end: {result.get('message', 'no memories')}",
                 file=sys.stderr,
             )
-    except Exception as exc:
-        print(f"[Surreal-Memory] Stop hook error: {exc}", file=sys.stderr)  # noqa: T201
-        sys.exit(0)  # Never block session termination
+    except Exception:
+        if args.json:
+            emit_receipt(
+                capture_receipt({"saved": 0, "error": "capture_failed"}, runtime_session_id())
+            )
+        print("[Surreal-Memory] Stop hook error: capture_failed", file=sys.stderr)  # noqa: T201
+        sys.exit(1 if args.json else 0)  # Never block session termination
 
 
 if __name__ == "__main__":

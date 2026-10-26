@@ -33,6 +33,9 @@ import json
 import logging
 import os
 import re
+import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -61,16 +64,48 @@ def _state_path() -> Path:
 def session_key(transcript_path: str | None = None) -> str:
     """Stable per-session key.
 
-    Prefers ``CLAUDE_SESSION_ID`` (set by Claude Code); falls back to a hash
-    of the transcript path, then a constant. The fallback degrades safely:
+    Uses the calling client's session identity, preserving Claude fallback. An
+    optional ``SMEM_CAPTURE_SCOPE`` digest separates project/brain/agent scopes.
+    Falls back to a hash of the transcript path, then a constant. The fallback degrades safely:
     worst case the seen-set is shared a bit too broadly within one machine.
     """
-    sid = os.environ.get("CLAUDE_SESSION_ID", "").strip()
-    if sid:
-        return sid
-    if transcript_path:
-        return "tp_" + hashlib.md5(transcript_path.encode("utf-8")).hexdigest()[:16]
-    return "default"
+    from surreal_memory.hooks.receipts import runtime_session_id
+
+    sid = runtime_session_id()
+    scope = os.environ.get("SMEM_CAPTURE_SCOPE", "").strip()
+    if not sid and transcript_path:
+        sid = "tp_" + hashlib.md5(transcript_path.encode("utf-8")).hexdigest()[:16]
+    sid = sid or "default"
+    return f"{scope}:{sid}" if scope else sid
+
+
+@contextmanager
+def local_scope_lock(scope_id: str) -> Iterator[None]:
+    """Serialize same-scope checkpoint work across local hook processes."""
+    path = _state_path().parent / f"checkpoint-{scope_id}.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+b") as lock_file:
+        os.chmod(path, 0o600)
+        if os.name == "nt":
+            msvcrt: Any = __import__("msvcrt")
+            lock_file.seek(0, os.SEEK_END)
+            if lock_file.tell() == 0:
+                lock_file.write(b"\0")
+                lock_file.flush()
+            lock_file.seek(0)
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if os.name == "nt":
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def content_key(content: str) -> str:
@@ -123,41 +158,49 @@ def load_seen(skey: str) -> set[str]:
 
 
 def mark_seen(skey: str, new_keys: list[str]) -> None:
-    """Persist newly captured content keys for this session (bounded, atomic-ish).
+    """Persist newly captured keys under an inter-process lock and atomic replace.
 
-    Never raises -- idempotency bookkeeping must not break a capture path.
+    Never raises: idempotency bookkeeping must not break a capture path.
     """
     if not new_keys:
         return
     try:
         from surreal_memory.utils.timeutils import utcnow
 
-        ts = utcnow().isoformat()
-
-        data = _load_all()
-        entry = data.get(skey, {})
-        existing = entry.get("hashes", []) if isinstance(entry, dict) else []
-        if not isinstance(existing, list):
-            existing = []
-
-        seen_existing = set(existing)
-        combined = existing + [k for k in new_keys if k not in seen_existing]
-        if len(combined) > _MAX_HASHES_PER_SESSION:
-            combined = combined[-_MAX_HASHES_PER_SESSION:]
-        data[skey] = {"hashes": combined, "ts": ts}
-
-        # Bound the number of retained sessions (drop oldest by timestamp).
-        if len(data) > _MAX_SESSIONS:
-            ordered = sorted(
-                data.items(),
-                key=lambda kv: kv[1].get("ts", "") if isinstance(kv[1], dict) else "",
-            )
-            data = dict(ordered[-_MAX_SESSIONS:])
-
         path = _state_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-        tmp.replace(path)
-    except (OSError, TypeError, ValueError):
+        with local_scope_lock("capture-state"):
+            data = _load_all()
+            entry = data.get(skey, {})
+            existing = entry.get("hashes", []) if isinstance(entry, dict) else []
+            if not isinstance(existing, list):
+                existing = []
+            seen_existing = set(existing)
+            combined = existing + [k for k in new_keys if k not in seen_existing]
+            if len(combined) > _MAX_HASHES_PER_SESSION:
+                combined = combined[-_MAX_HASHES_PER_SESSION:]
+            data[skey] = {"hashes": combined, "ts": utcnow().isoformat()}
+
+            if len(data) > _MAX_SESSIONS:
+                ordered = sorted(
+                    data.items(),
+                    key=lambda kv: kv[1].get("ts", "") if isinstance(kv[1], dict) else "",
+                )
+                data = dict(ordered[-_MAX_SESSIONS:])
+
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=path.parent,
+                prefix=f".{path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as tmp:
+                os.chmod(tmp.name, 0o600)
+                json.dump(data, tmp, ensure_ascii=False)
+                tmp.flush()
+                os.fsync(tmp.fileno())
+                temp_path = Path(tmp.name)
+            temp_path.replace(path)
+    except (OSError, TypeError, ValueError, ImportError):
         logger.debug("capture_state: mark_seen failed (non-fatal)", exc_info=True)
