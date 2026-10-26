@@ -364,9 +364,9 @@ places, the environment wins.
 | Variable | Read in |
 |---|---|
 | `BGE_M3_API_KEY` | `src/surreal_memory/engine/reranker.py` |
-| `CLAUDE_SESSION_ID` | `src/surreal_memory/hooks/capture_state.py`, `src/surreal_memory/hooks/post_tool_use.py`, `src/surreal_memory/hooks/receipts.py` |
+| `CLAUDE_SESSION_ID` | `src/surreal_memory/hooks/post_tool_use.py`, `src/surreal_memory/hooks/receipts.py` |
 | `CLIPROXY_URL` | `src/surreal_memory/server/routes/oauth.py` |
-| `CODEX_SESSION_ID` | `src/surreal_memory/hooks/capture_state.py`, `src/surreal_memory/hooks/post_tool_use.py`, `src/surreal_memory/hooks/receipts.py` |
+| `CODEX_SESSION_ID` | `src/surreal_memory/hooks/post_tool_use.py`, `src/surreal_memory/hooks/receipts.py` |
 | `COGNEE_API_KEY` | `src/surreal_memory/integration/adapters/cognee_adapter.py`, `src/surreal_memory/mcp/index_handler.py` |
 | `GEMINI_API_KEY` | `src/surreal_memory/engine/embedding/gemini_embedding.py`, `src/surreal_memory/engine/semantic_discovery.py` |
 | `GOOGLE_API_KEY` | `src/surreal_memory/engine/embedding/gemini_embedding.py`, `src/surreal_memory/engine/semantic_discovery.py` |
@@ -381,7 +381,7 @@ places, the environment wins.
 | `OPENROUTER_API_KEY` | `src/surreal_memory/engine/semantic_discovery.py` |
 | `SMEM_CAPTURE_SCOPE` | `src/surreal_memory/hooks/capture_state.py` |
 | `SMEM_EVENT_ID` | `src/surreal_memory/hooks/receipts.py` |
-| `SMEM_HOOK_SOURCE` | `src/surreal_memory/hooks/post_tool_use.py` |
+| `SMEM_HOOK_SOURCE` | `src/surreal_memory/hooks/post_tool_use.py`, `src/surreal_memory/hooks/receipts.py` |
 | `SMEM_PROJECT` | `src/surreal_memory/hooks/project_context.py` |
 | `SURREALDB_AUTH_LEVEL` | `src/surreal_memory/storage/surrealdb/connection.py` |
 | `SURREALDB_DB` | `src/surreal_memory/cli/commands/storage.py`, `src/surreal_memory/storage/surrealdb/connection.py` |

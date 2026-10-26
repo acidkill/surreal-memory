@@ -57,10 +57,39 @@ def capture_receipt(result: dict[str, Any], session_id: str = "") -> dict[str, A
 
 
 def runtime_session_id() -> str:
-    """Return the active runtime session identifier, preferring Codex."""
+    """Resolve identity without letting a parent Codex session override Claude."""
     import os
 
+    if os.environ.get("SMEM_HOOK_SOURCE") == "codex":
+        return os.environ.get("CODEX_SESSION_ID", "").strip()
     return (
-        os.environ.get("CODEX_SESSION_ID", "").strip()
-        or os.environ.get("CLAUDE_SESSION_ID", "").strip()
+        os.environ.get("CLAUDE_SESSION_ID", "").strip()
+        or os.environ.get("CODEX_SESSION_ID", "").strip()
     )
+
+
+def bind_hook_context(value: dict[str, Any]) -> None:
+    """Bind stdin identity before capture, including legacy Claude invocations."""
+    import os
+
+    client = (
+        "codex"
+        if value.get("source") == "codex" or os.environ.get("SMEM_HOOK_SOURCE") == "codex"
+        else "claude"
+    )
+    session_id = value.get("session_id")
+    if isinstance(session_id, str) and session_id.strip():
+        os.environ["SMEM_HOOK_SOURCE"] = client
+        os.environ["CODEX_SESSION_ID" if client == "codex" else "CLAUDE_SESSION_ID"] = (
+            session_id.strip()
+        )
+
+
+def capture_metadata() -> dict[str, str]:
+    """Record the calling client and session alongside captured memories."""
+    import os
+
+    return {
+        "capture_client": "codex" if os.environ.get("SMEM_HOOK_SOURCE") == "codex" else "claude",
+        "capture_session_id": runtime_session_id(),
+    }

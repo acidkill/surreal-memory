@@ -52,9 +52,33 @@ def test_session_key_uses_codex_and_scope_then_preserves_claude_fallback(monkeyp
     monkeypatch.setenv("CODEX_SESSION_ID", "codex-session")
     monkeypatch.setenv("CLAUDE_SESSION_ID", "claude-session")
     monkeypatch.setenv("SMEM_CAPTURE_SCOPE", "scope-digest")
+    monkeypatch.setenv("SMEM_HOOK_SOURCE", "codex")
     assert capture_state.session_key() == "scope-digest:codex-session"
     monkeypatch.delenv("CODEX_SESSION_ID")
+    monkeypatch.delenv("SMEM_HOOK_SOURCE")
     assert capture_state.session_key() == "scope-digest:claude-session"
+
+
+@pytest.mark.parametrize("module", ["pre_compact", "stop"])
+@pytest.mark.parametrize("client", ["claude", "codex"])
+def test_stdin_session_identity_is_forwarded(module, client, monkeypatch) -> None:
+    import importlib
+    import io
+    import sys
+
+    from surreal_memory.hooks.receipts import capture_metadata, runtime_session_id
+
+    monkeypatch.setenv("CODEX_SESSION_ID", "parent-codex")
+    monkeypatch.setenv("CLAUDE_SESSION_ID", "parent-claude")
+    monkeypatch.delenv("SMEM_HOOK_SOURCE", raising=False)
+    payload = {"session_id": "actual-session", "source": client}
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
+    assert importlib.import_module(f"surreal_memory.hooks.{module}").read_hook_input() == payload
+    assert runtime_session_id() == "actual-session"
+    assert capture_metadata() == {
+        "capture_client": client,
+        "capture_session_id": "actual-session",
+    }
 
 
 def test_mark_seen_parallel_sessions_preserves_all_keys(tmp_path, monkeypatch) -> None:

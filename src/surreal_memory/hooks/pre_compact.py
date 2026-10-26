@@ -23,7 +23,13 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from surreal_memory.hooks.receipts import capture_receipt, emit_receipt, runtime_session_id
+from surreal_memory.hooks.receipts import (
+    bind_hook_context,
+    capture_metadata,
+    capture_receipt,
+    emit_receipt,
+    runtime_session_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +50,9 @@ def read_hook_input() -> dict[str, Any]:
         if not raw.strip():
             return {}
         result: dict[str, Any] = json.loads(raw)
+        if not isinstance(result, dict):
+            return {}
+        bind_hook_context(result)
         return result
     except (json.JSONDecodeError, OSError):
         return {}
@@ -303,6 +312,7 @@ async def flush_text(text: str, project_name: str | None = None) -> dict[str, An
                     memory_type=mem_type,
                     priority=Priority.from_int(item.get("priority", 5)),
                     source="pre_compact_hook",
+                    metadata=capture_metadata(),
                     tags=set(base_tags),
                     project_id=project_id,
                 )

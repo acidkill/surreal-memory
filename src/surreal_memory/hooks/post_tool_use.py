@@ -198,6 +198,7 @@ def _format_event(hook_input: dict[str, Any]) -> dict[str, Any]:
         "success": tool_error is None,
         "duration_ms": int(duration_ms) if isinstance(duration_ms, (int, float)) else 0,
         "session_id": str(hook_input.get("session_id") or _get_session_id()),
+        "capture_client": "codex" if os.environ.get("SMEM_HOOK_SOURCE") == "codex" else "claude",
         "task_context": "",  # Populated by processing engine if session is active
         "created_at": _utcnow_iso(),
     }

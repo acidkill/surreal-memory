@@ -82,6 +82,7 @@ def test_failed_noise_tool_is_retained(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setenv("SURREAL_MEMORY_DIR", str(tmp_path))
+    monkeypatch.setenv("SMEM_HOOK_SOURCE", "codex")
     monkeypatch.setattr(sys, "argv", ["smem-hook-post-tool-use", "--json"])
     monkeypatch.setattr(
         sys,
@@ -100,6 +101,7 @@ def test_failed_noise_tool_is_retained(
     assert json.loads(capsys.readouterr().out)["status"] == "saved"
     event = json.loads((tmp_path / "tool_events.jsonl").read_text())
     assert event["session_id"] == "codex-a"
+    assert event["capture_client"] == "codex"
     assert event["success"] is False
     assert (tmp_path / "tool_events.jsonl").stat().st_mode & 0o077 == 0
 

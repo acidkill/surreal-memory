@@ -64,15 +64,14 @@ def _state_path() -> Path:
 def session_key(transcript_path: str | None = None) -> str:
     """Stable per-session key.
 
-    Prefers Codex's ``CODEX_SESSION_ID``, then ``CLAUDE_SESSION_ID``. An
+    Uses the calling client's session identity, preserving Claude fallback. An
     optional ``SMEM_CAPTURE_SCOPE`` digest separates project/brain/agent scopes.
     Falls back to a hash of the transcript path, then a constant. The fallback degrades safely:
     worst case the seen-set is shared a bit too broadly within one machine.
     """
-    sid = (
-        os.environ.get("CODEX_SESSION_ID", "").strip()
-        or os.environ.get("CLAUDE_SESSION_ID", "").strip()
-    )
+    from surreal_memory.hooks.receipts import runtime_session_id
+
+    sid = runtime_session_id()
     scope = os.environ.get("SMEM_CAPTURE_SCOPE", "").strip()
     if not sid and transcript_path:
         sid = "tp_" + hashlib.md5(transcript_path.encode("utf-8")).hexdigest()[:16]
