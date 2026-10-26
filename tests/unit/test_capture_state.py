@@ -23,6 +23,8 @@ from surreal_memory.hooks.capture_state import (
 def isolated_state_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Every test gets its own capture_state.json, never the real one."""
     monkeypatch.setenv("SURREAL_MEMORY_DIR", str(tmp_path))
+    monkeypatch.delenv("CODEX_SESSION_ID", raising=False)
+    monkeypatch.delenv("SMEM_CAPTURE_SCOPE", raising=False)
     return tmp_path
 
 

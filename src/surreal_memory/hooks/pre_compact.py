@@ -23,6 +23,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from surreal_memory.hooks.receipts import capture_receipt, emit_receipt, runtime_session_id
+
 logger = logging.getLogger(__name__)
 
 # Max lines to read from transcript tail
@@ -228,6 +230,8 @@ async def flush_text(text: str, project_name: str | None = None) -> dict[str, An
 
         auto_redact_severity = config.safety.auto_redact_min_severity
         saved: list[str] = []
+        memory_ids: list[str] = []
+        failed_writes = 0
         gate_rejected = False
 
         # Write gate for the compaction flush (intent=auto). This path encoded
@@ -304,15 +308,15 @@ async def flush_text(text: str, project_name: str | None = None) -> dict[str, An
                 )
                 await storage.add_typed_memory(typed_mem)
                 saved.append(redacted_content[:60])
+                memory_ids.append(result.fiber.id)
                 captured_keys.append(content_key(content))
             except Exception:
-                logger.debug("Failed to save flush memory", exc_info=True)
+                failed_writes += 1
+                logger.debug("Failed to save flush memory")
                 continue
 
-        # Persist idempotency state so the next re-read skips these.
-        mark_seen(skey, captured_keys)
-
         await storage.batch_save()
+        mark_seen(skey, captured_keys)
 
         if saved:
             message = f"Emergency flush: captured {len(saved)} memories"
@@ -329,6 +333,8 @@ async def flush_text(text: str, project_name: str | None = None) -> dict[str, An
         return {
             "saved": len(saved),
             "memories": saved,
+            "memory_ids": memory_ids,
+            "failed_writes": failed_writes,
             "mode": "emergency_flush",
             "threshold": EMERGENCY_THRESHOLD,
             "message": message,
@@ -337,7 +343,7 @@ async def flush_text(text: str, project_name: str | None = None) -> dict[str, An
         try:
             await storage.close()
         except Exception:
-            logger.debug("storage.close() failed (non-fatal)", exc_info=True)
+            logger.debug("storage.close() failed (non-fatal)")
 
 
 def main() -> None:
@@ -355,6 +361,9 @@ def main() -> None:
     parser.add_argument(
         "--text",
         help="Direct text to flush (alternative to transcript)",
+    )
+    parser.add_argument(
+        "--json", action="store_true", help="Emit a versioned JSON receipt on stdout"
     )
     parser.add_argument(
         "--debug",
@@ -392,15 +401,34 @@ def main() -> None:
             resolved = Path(transcript_path).resolve()
             allowed_dir = Path.home().resolve() / ".claude"
             if not resolved.is_relative_to(allowed_dir):
+                if args.json:
+                    emit_receipt(
+                        capture_receipt(
+                            {"saved": 0, "message": "Transcript path outside allowed directory"},
+                            runtime_session_id(),
+                        )
+                    )
                 print("Transcript path outside allowed directory, skipping", file=sys.stderr)  # noqa: T201
                 sys.exit(0)
             text = read_transcript_tail(transcript_path)
         else:
             # No transcript path — nothing to flush
+            if args.json:
+                emit_receipt(
+                    capture_receipt(
+                        {"saved": 0, "message": "No transcript path"}, runtime_session_id()
+                    )
+                )
             sys.exit(0)
 
     if not text or len(text.strip()) < 50:
         # Too little content to analyze
+        if args.json:
+            emit_receipt(
+                capture_receipt(
+                    {"saved": 0, "message": "No substantial content"}, runtime_session_id()
+                )
+            )
         print("No substantial content to flush", file=sys.stderr)  # noqa: T201
         sys.exit(0)
 
@@ -409,6 +437,10 @@ def main() -> None:
 
     try:
         result = asyncio.run(flush_text(text, project_name))
+        if args.json:
+            emit_receipt(capture_receipt(result, runtime_session_id()))
+            if capture_receipt(result, runtime_session_id())["status"] == "failed":
+                sys.exit(1)
         saved = result.get("saved", 0)
         if saved > 0:
             print(  # noqa: T201
@@ -421,8 +453,12 @@ def main() -> None:
                 file=sys.stderr,
             )
     except Exception:
+        if args.json:
+            emit_receipt(
+                capture_receipt({"saved": 0, "error": "capture_failed"}, runtime_session_id())
+            )
         print("[Surreal-Memory] Pre-compact flush failed", file=sys.stderr)  # noqa: T201
-        sys.exit(0)  # Don't block compaction on errors
+        sys.exit(1 if args.json else 0)  # Don't block compaction on errors
 
 
 if __name__ == "__main__":
