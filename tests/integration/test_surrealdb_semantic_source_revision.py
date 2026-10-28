@@ -29,6 +29,7 @@ from surreal_memory.engine.consolidation_progress import (
     ConsolidationPausedError,
 )
 from surreal_memory.engine.semantic_validation import SemanticSourceValidation
+from surreal_memory.storage.surrealdb._ids import _to_surreal_id
 from surreal_memory.storage.surrealdb.schema import SCHEMA_VERSION, ensure_schema
 from surreal_memory.storage.surrealdb.semantic_discovery_state import (
     SemanticDiscoveryStateConflictError,
@@ -360,7 +361,11 @@ async def test_validation_proof_resumes_under_rotated_lease_with_real_classifier
     await resumed.restore()
     assert resumed.session.watermark == first_cursor
     tracked_ids = resumed.session.post_reference_ids["neuron"]
-    tracked_late = [neuron for neuron in late if any(neuron.id in value for value in tracked_ids)]
+    tracked_late = [
+        neuron
+        for neuron in late
+        if any(_to_surreal_id(neuron.id) in value for value in tracked_ids)
+    ]
     assert tracked_late, f"no late neuron in restored classifier IDs: {sorted(tracked_ids)}"
     deleted_late_id = tracked_late[0].id
     assert await store.delete_neuron(deleted_late_id)
@@ -375,7 +380,8 @@ async def test_validation_proof_resumes_under_rotated_lease_with_real_classifier
     # A second finite range includes the deletion after the persisted create.
     await resumed.assert_unchanged(publish)
     assert all(
-        deleted_late_id not in value for value in resumed.session.post_reference_ids["neuron"]
+        _to_surreal_id(deleted_late_id) not in value
+        for value in resumed.session.post_reference_ids["neuron"]
     )
     await store.update_neuron(replace(old, content="changed frozen projection"))
     with pytest.raises(SemanticSourceChangedError):

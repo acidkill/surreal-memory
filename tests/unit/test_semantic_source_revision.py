@@ -1566,6 +1566,7 @@ async def test_restored_post_reference_update_cannot_move_created_at_into_frozen
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(180)  # Stream the production-sized budget under CI coverage instrumentation.
 async def test_fence_session_streams_beyond_the_real_two_million_row_invocation_budget() -> None:
     import surreal_memory.storage.surrealdb.semantic_source_revision as revision_module
 
