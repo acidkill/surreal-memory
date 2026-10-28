@@ -243,6 +243,7 @@ async def test_legacy_priority_sorted_digest_accepts_raw_id_order_snapshot(
         ("digest", "similarity checkpoint hash mismatch"),
         ("index", "similarity result index is out of range"),
         ("duplicate", "checkpoint contains a duplicate pair"),
+        ("nonfinite", "similarity result changed"),
     ],
 )
 async def test_invalid_legacy_results_fail_before_live_pair_lookup(
@@ -255,6 +256,8 @@ async def test_invalid_legacy_results_fail_before_live_pair_lookup(
         legacy["result_prefix_digest"] = "f" * 64
     elif tamper == "index":
         legacy["results"][-1][1] = len(state["candidates"])
+    elif tamper == "nonfinite":
+        legacy["results"][-1][2] = "nan"
     else:
         # Results are source ordered; duplicating the first pair at the next
         # position keeps the serialized row order valid while testing its set.
