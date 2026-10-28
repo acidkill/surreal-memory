@@ -3657,15 +3657,19 @@ class SurrealDBStorage(
         # synapse table (see _brain_literal docstring). $stypes is a list param,
         # which does not affect the brain_id index pick. Consistent with K2.
         lit = _brain_literal(brain_id)
-        organic_rows = await self._query(
+        organic_sql = (
             f"SELECT count() AS c FROM synapse "
             f"WHERE brain_id = {lit} "
             f"AND in.metadata.indexed != true "
             f"AND out.metadata.indexed != true "
             f"AND type NOT IN $stypes "
-            f"GROUP ALL",
-            stypes=list(_structural),
+            f"GROUP ALL"
         )
+        try:
+            organic_rows = await self._query(organic_sql, stypes=list(_structural))
+        except _DeadWebSocketReceiverError:
+            # This specific SELECT is read-only; a single replay cannot duplicate writes.
+            organic_rows = await self._query(organic_sql, stypes=list(_structural))
         synapse_stats["organic_synapse_count"] = (
             int(organic_rows[0].get("c", 0)) if organic_rows else 0
         )
