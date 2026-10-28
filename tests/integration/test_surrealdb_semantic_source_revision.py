@@ -359,8 +359,11 @@ async def test_validation_proof_resumes_under_rotated_lease_with_real_classifier
     )
     await resumed.restore()
     assert resumed.session.watermark == first_cursor
-    assert any(late[0].id in value for value in resumed.session.post_reference_ids["neuron"])
-    assert await store.delete_neuron(late[0].id)
+    tracked_ids = resumed.session.post_reference_ids["neuron"]
+    tracked_late = [neuron for neuron in late if any(neuron.id in value for value in tracked_ids)]
+    assert tracked_late, f"no late neuron in restored classifier IDs: {sorted(tracked_ids)}"
+    deleted_late_id = tracked_late[0].id
+    assert await store.delete_neuron(deleted_late_id)
     for _ in range(10):
         try:
             await resumed.assert_unchanged(publish)
@@ -371,7 +374,9 @@ async def test_validation_proof_resumes_under_rotated_lease_with_real_classifier
         pytest.fail("finite target did not finish")
     # A second finite range includes the deletion after the persisted create.
     await resumed.assert_unchanged(publish)
-    assert all(late[0].id not in value for value in resumed.session.post_reference_ids["neuron"])
+    assert all(
+        deleted_late_id not in value for value in resumed.session.post_reference_ids["neuron"]
+    )
     await store.update_neuron(replace(old, content="changed frozen projection"))
     with pytest.raises(SemanticSourceChangedError):
         await resumed.assert_unchanged(publish)

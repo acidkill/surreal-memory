@@ -1496,6 +1496,76 @@ async def test_fence_session_resumes_proven_create_then_delete_safely(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("include_created_at", [True, False])
+async def test_restored_post_reference_update_cannot_move_created_at_into_frozen_scope(
+    include_created_at: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import surreal_memory.storage.surrealdb.semantic_source_revision as revision_module
+
+    monkeypatch.setattr(revision_module, "_DATABASE_FEED_MAX_ROWS", 2)
+    cutoff = datetime(2026, 9, 24, 12, 0)
+    created = {
+        "id": "neuron:late-restored",
+        "brain_id": "brain-a",
+        "created_at": cutoff + timedelta(seconds=1),
+    }
+    updated = {key: value for key, value in created.items() if key != "created_at"}
+    if include_created_at:
+        updated["created_at"] = cutoff - timedelta(seconds=1)
+    original = _token(
+        captured_at=cutoff - timedelta(seconds=1),
+        versionstamp=100,
+        created_at_readonly=False,
+    )
+    target = _token(captured_at=cutoff, versionstamp=104, created_at_readonly=False)
+    storage = _DatabaseFeedSessionStorage(
+        [
+            _feed_event(100, {"create": {"id": "semantic_source_barrier:origin"}}),
+            _feed_event(101, {"create": created}),
+            _feed_event(102, {"create": {"id": "noise:middle"}}),
+            _feed_event(103, {"update": updated}),
+            _feed_event(104, {"create": {"id": "semantic_source_barrier:target"}}),
+        ]
+    )
+
+    async def capture_target() -> str:
+        return target
+
+    storage.capture_semantic_source_token = capture_target  # type: ignore[method-assign]
+    session = storage._create_semantic_source_fence_session(original, created_before=cutoff)
+
+    assert await session.verify() == "pending"
+    assert session.post_reference_ids["neuron"] == {"neuron:late-restored"}
+    checkpoint = {
+        "token": session.token,
+        "brain_id": session.brain_id,
+        "token_versionstamp": session.token_versionstamp,
+        "created_before": session.created_before,
+        "validation_token": session.validation_token,
+        "target_token": session.target_token,
+        "watermark": session.watermark,
+        "scanned_database_rows": session.scanned_database_rows,
+        "scanned_source_rows": dict(session.scanned_source_rows),
+        "post_reference_ids": {
+            table: set(ids) for table, ids in session.post_reference_ids.items()
+        },
+    }
+    restored = storage._create_semantic_source_fence_session(original, created_before=cutoff)
+    for name, value in checkpoint.items():
+        setattr(restored, name, value)
+
+    with pytest.raises(SemanticSourceChangedError, match="neuron changed"):
+        await restored.verify()
+    assert restored.token == original
+    assert restored.target_token == target
+    assert restored.watermark == checkpoint["watermark"]
+    assert restored.scanned_database_rows == checkpoint["scanned_database_rows"]
+    assert restored.scanned_source_rows == checkpoint["scanned_source_rows"]
+    assert restored.post_reference_ids == checkpoint["post_reference_ids"]
+
+
+@pytest.mark.asyncio
 async def test_fence_session_streams_beyond_the_real_two_million_row_invocation_budget() -> None:
     import surreal_memory.storage.surrealdb.semantic_source_revision as revision_module
 

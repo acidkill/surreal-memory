@@ -11,6 +11,7 @@ from typing import Any
 from surreal_memory.engine.consolidation_progress import ConsolidationPausedError
 
 _IDS_PER_PAGE = 4096
+_REFS_PER_PAGE = 512
 _MAX_PAGE_BYTES = 1_000_000
 ValidationCheckpoint = Callable[[dict[str, Any], dict[str, int]], Awaitable[None]]
 
@@ -115,7 +116,11 @@ class SemanticSourceValidation:
                 raise RuntimeError("invalid semantic source validation cursor")
             ids: dict[str, set[str]] = {"neuron": set(), "synapse": set()}
             seen_pages: set[tuple[str, int]] = set()
-            for page_ref in pages:
+            pending: list[tuple[Any, tuple[Mapping[str, Any], ...]]] = [
+                (page_ref, ()) for page_ref in reversed(pages)
+            ]
+            while pending:
+                page_ref, ancestors = pending.pop()
                 if not isinstance(page_ref, Mapping):
                     raise RuntimeError("invalid semantic source validation page reference")
                 page_key = (page_ref.get("state_id"), page_ref.get("revision"))
@@ -124,21 +129,31 @@ class SemanticSourceValidation:
                     or type(page_key[1]) is not int
                     or page_key in seen_pages
                     or page_ref.get("source_token") != self.token
+                    or len(ancestors) > 63
                 ):
                     raise RuntimeError("invalid semantic source validation page reference")
                 seen_pages.add((str(page_key[0]), int(page_key[1])))
                 page = await self.storage._load_semantic_discovery_state_page(
-                    *page_key, parent_ref=ref
+                    *page_key, parent_ref=ref, ancestor_refs=ancestors
                 )
                 if not isinstance(page, Mapping) or page_ref.get("sha256") != _digest(page):
                     raise RuntimeError("semantic source validation page hash mismatch")
                 if (
                     len(_encoded(page)) > _MAX_PAGE_BYTES
-                    or page.get("kind") != "semantic_source_validation_ids"
+                    or page.get("kind")
+                    not in {"semantic_source_validation_ids", "semantic_source_validation_index"}
                     or page.get("version") != 1
                     or any(page.get(key) != scope[key] for key in scope if key != "owner_token")
-                    or not isinstance(page.get("records"), list)
                 ):
+                    raise RuntimeError("invalid semantic source validation classifier page")
+                self._saved_pages.add(str(page_ref["sha256"]))
+                if page["kind"] == "semantic_source_validation_index":
+                    children = page.get("classifier_pages")
+                    if not isinstance(children, list) or not children:
+                        raise RuntimeError("invalid semantic source validation classifier index")
+                    pending.extend((child, (*ancestors, page_ref)) for child in reversed(children))
+                    continue
+                if not isinstance(page.get("records"), list):
                     raise RuntimeError("invalid semantic source validation classifier page")
                 for record in page["records"]:
                     if (
@@ -151,7 +166,6 @@ class SemanticSourceValidation:
                     ):
                         raise RuntimeError("invalid semantic source validation classifier record")
                     ids[record[0]].add(record[1])
-                self._saved_pages.add(str(page_ref["sha256"]))
             # No partially loaded page or malformed root can alter the session.
             self.session.watermark = watermark
             self.session.scanned_database_rows = database_rows
@@ -217,17 +231,31 @@ class SemanticSourceValidation:
                     }
                 )
             )
+        while len(pages) > _REFS_PER_PAGE:
+            pages = [
+                await save(
+                    {
+                        **scope,
+                        "kind": "semantic_source_validation_index",
+                        "version": 1,
+                        "classifier_pages": pages[start : start + _REFS_PER_PAGE],
+                    }
+                )
+                for start in range(0, len(pages), _REFS_PER_PAGE)
+            ]
         root = {
             **scope,
             "kind": "semantic_source_validation",
             "version": 1,
             "validation_token": self.session.validation_token,
-            "target_token": self.session.target_token,
             "watermark": self.session.watermark,
             "scanned_database_rows": self.session.scanned_database_rows,
             "scanned_source_rows": self.session.scanned_source_rows,
             "classifier_pages": pages,
         }
+        # SurrealDB omits NONE object fields; hash the same shape it persists.
+        if self.session.target_token is not None:
+            root["target_token"] = self.session.target_token
         self.reference = await save(root)
         return self.reference
 

@@ -852,6 +852,22 @@ class SurrealDBSemanticSourceRevisionMixin:
                 raise SemanticSourceChangedError(
                     f"{table} changed since the semantic source token was captured"
                 )
+            if not created_at_readonly:
+                created_at = record.get("created_at")
+                if created_at is None:
+                    raise SemanticSourceChangedError(
+                        f"{table} changed since the semantic source token was captured"
+                    )
+                try:
+                    created_at = self._parse_datetime(created_at)
+                except (TypeError, ValueError) as exc:
+                    raise SemanticSourceFenceUnavailableError(
+                        f"{table} changefeed returned an invalid created_at"
+                    ) from exc
+                if created_at <= created_before:
+                    raise SemanticSourceChangedError(
+                        f"{table} changed since the semantic source token was captured"
+                    )
             return
         if action == "update" and not created_at_readonly:
             raise SemanticSourceChangedError(

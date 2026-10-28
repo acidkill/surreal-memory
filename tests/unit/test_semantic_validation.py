@@ -152,3 +152,50 @@ async def test_scope_change_rejects_proof_before_restoring_cursor() -> None:
     ).hexdigest()
     with pytest.raises(RuntimeError, match="scope"):
         await validation(storage, reference=ref).restore()
+
+
+@pytest.mark.asyncio
+async def test_verified_root_round_trips_when_database_omits_null_fields() -> None:
+    storage = Storage()
+    proof = validation(storage)
+    ref = await proof.snapshot()
+    assert ref is not None
+    storage.published = ref
+    root = storage.rows[(ref["state_id"], ref["revision"])]
+    for key in list(root):
+        if root[key] is None:
+            del root[key]
+    storage.session = Session()
+    await validation(storage, reference=ref).restore()
+    assert storage.session.target_token is None
+
+
+@pytest.mark.asyncio
+async def test_classifier_reference_index_is_bounded_and_restored(monkeypatch: Any) -> None:
+    import surreal_memory.engine.semantic_validation as module
+
+    monkeypatch.setattr(module, "_IDS_PER_PAGE", 2)
+    monkeypatch.setattr(module, "_REFS_PER_PAGE", 2, raising=False)
+    storage = Storage()
+    expected = {f"neuron:{i}" for i in range(17)}
+    storage.session.post_reference_ids["neuron"] = expected
+    ref = await validation(storage).snapshot()
+    assert ref is not None
+    storage.published = ref
+    assert all(
+        len(row["classifier_pages"]) <= 2
+        for row in storage.rows.values()
+        if "classifier_pages" in row
+    )
+    assert any(row["kind"] == "semantic_source_validation_index" for row in storage.rows.values())
+    storage.session = Session()
+    await validation(storage, reference=ref).restore()
+    assert storage.session.post_reference_ids["neuron"] == expected
+    index = next(
+        row for row in storage.rows.values() if row["kind"] == "semantic_source_validation_index"
+    )
+    index["classifier_pages"].clear()
+    storage.session = Session()
+    with pytest.raises(RuntimeError, match="hash"):
+        await validation(storage, reference=ref).restore()
+    assert storage.session.post_reference_ids["neuron"] == set()

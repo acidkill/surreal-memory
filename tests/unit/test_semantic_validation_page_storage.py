@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime
 from typing import Any
 
 import pytest
 
+from surreal_memory.engine.semantic_validation import SemanticSourceValidation
 from surreal_memory.storage.surrealdb.semantic_discovery_state import (
     SurrealDBSemanticDiscoveryStateMixin,
 )
+
+_OWNER_TOKEN = "owner-1"  # noqa: S105 - synthetic owner token
 
 
 class _PageStorage(SurrealDBSemanticDiscoveryStateMixin):
@@ -45,6 +49,22 @@ class _PageStorage(SurrealDBSemanticDiscoveryStateMixin):
         if sql.startswith("SELECT * FROM consolidation_lease"):
             return [self.lease] if self.lease else []
         return []
+
+
+class _ValidationSession:
+    def __init__(self, ids: set[str] | None = None) -> None:
+        self.watermark = 7
+        self.validation_token = "validation-1"  # noqa: S105 - synthetic token
+        self.target_token = None
+        self.scanned_database_rows = 3
+        self.scanned_source_rows = {"neuron": 2, "synapse": 1}
+        self.post_reference_ids = {
+            "neuron": ids or set(),
+            "synapse": set(),
+        }
+
+    async def verify(self) -> str:
+        return "verified"
 
 
 def _canonical_sha(payload: dict[str, Any]) -> str:
@@ -109,6 +129,54 @@ async def _published_storage() -> tuple[_PageStorage, dict[str, Any]]:
     return storage, parent_ref
 
 
+async def _publish_index_tree() -> tuple[_PageStorage, dict[str, Any], dict[str, Any]]:
+    storage, parent_ref = await _published_storage()
+    leaf_payload = storage.rows[storage._record_id("ids-page-1", 1)]["payload"]
+    leaf_ref = {
+        "state_id": "ids-page-1",
+        "revision": 1,
+        "state_revision": 1,
+        "source_token": "source-1",
+        "sha256": _canonical_sha(leaf_payload),
+    }
+    inner_payload = {
+        "brain_id": "brain-a",
+        "run_id": "run-1",
+        "owner_token": "owner-1",
+        "source_token": "source-1",
+        "kind": "semantic_source_validation_index",
+        "version": 1,
+        "classifier_pages": [leaf_ref],
+    }
+    inner_ref = {
+        "state_id": "index-inner",
+        "revision": 1,
+        "state_revision": 1,
+        "source_token": "source-1",
+        "sha256": _canonical_sha(inner_payload),
+    }
+    outer_payload = {
+        **{
+            key: inner_payload[key] for key in ("brain_id", "run_id", "owner_token", "source_token")
+        },
+        "kind": "semantic_source_validation_index",
+        "version": 1,
+        "classifier_pages": [inner_ref],
+    }
+    outer_ref = {
+        "state_id": "index-outer",
+        "revision": 1,
+        "state_revision": 1,
+        "source_token": "source-1",
+        "sha256": _canonical_sha(outer_payload),
+    }
+    root_row = storage.rows[storage._record_id("validation-root", 1)]
+    root_row["payload"]["classifier_pages"] = [outer_ref]
+    await storage.save_semantic_discovery_state("index-inner", 1, inner_payload)
+    await storage.save_semantic_discovery_state("index-outer", 1, outer_payload)
+    return storage, parent_ref, inner_ref
+
+
 @pytest.mark.asyncio
 async def test_load_trusted_child_page_requires_published_root_and_exact_hash() -> None:
     storage, parent_ref = await _published_storage()
@@ -130,6 +198,112 @@ async def test_load_trusted_child_page_requires_published_root_and_exact_hash() 
         "revision": 1,
     }
     assert "idx_sds_state_revision" in page_queries[-1][0]
+
+
+@pytest.mark.asyncio
+async def test_load_page_through_multilevel_hash_checked_index_path() -> None:
+    storage, parent_ref, inner_ref = await _publish_index_tree()
+    root_ref = storage.rows[storage._record_id("validation-root", 1)]["payload"][
+        "classifier_pages"
+    ][0]
+
+    loaded = await storage._load_semantic_discovery_state_page(
+        "ids-page-1", 1, parent_ref=parent_ref, ancestor_refs=[root_ref, inner_ref]
+    )
+
+    assert loaded is not None
+    assert loaded["records"] == [["memory", "record-1"]]
+
+
+@pytest.mark.asyncio
+async def test_load_page_rejects_corrupt_or_unreachable_index() -> None:
+    storage, parent_ref, inner_ref = await _publish_index_tree()
+    root_ref = storage.rows[storage._record_id("validation-root", 1)]["payload"][
+        "classifier_pages"
+    ][0]
+    storage.rows[storage._record_id("index-inner", 1)]["payload"]["classifier_pages"] = []
+    assert (
+        await storage._load_semantic_discovery_state_page(
+            "ids-page-1", 1, parent_ref=parent_ref, ancestor_refs=[root_ref, inner_ref]
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_engine_snapshot_restore_uses_storage_loader_for_multilevel_indexes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import surreal_memory.engine.semantic_validation as validation_module
+
+    monkeypatch.setattr(validation_module, "_IDS_PER_PAGE", 2)
+    monkeypatch.setattr(validation_module, "_REFS_PER_PAGE", 2)
+    storage, parent_ref = await _published_storage()
+    ids = {f"neuron:{index}" for index in range(18)}
+    initial_session = _ValidationSession(ids)
+    storage._create_semantic_source_fence_session = lambda _token, **_kwargs: initial_session  # type: ignore[attr-defined]
+    proof = SemanticSourceValidation(
+        storage,
+        "source-1",
+        reference_time=datetime(2026, 10, 28),
+        run_id="run-1",
+        owner_token=_OWNER_TOKEN,
+    )
+
+    root_ref = await proof.snapshot()
+
+    assert root_ref is not None
+    root = storage.rows[storage._record_id(root_ref["state_id"], root_ref["revision"])]["payload"]
+    assert len(root["classifier_pages"]) == 2
+    assert (
+        sum(
+            payload.get("kind") == "semantic_source_validation_ids"
+            for row in storage.rows.values()
+            if str(row.get("state_id", "")).startswith("validation-")
+            if isinstance((payload := row.get("payload")), dict)
+        )
+        == 9
+    )
+    storage.progress["strategy_states"] = {
+        "semantic_source_validation": {
+            "state_id": root_ref["state_id"],
+            "state_revision": root_ref["revision"],
+            "source_token": root_ref["source_token"],
+        }
+    }
+    restored_session = _ValidationSession()
+    storage._create_semantic_source_fence_session = lambda _token, **_kwargs: restored_session  # type: ignore[attr-defined]
+    resumed = SemanticSourceValidation(
+        storage,
+        "source-1",
+        reference_time=datetime(2026, 10, 28),
+        run_id="run-1",
+        owner_token=_OWNER_TOKEN,
+        reference=root_ref,
+    )
+
+    await resumed.restore()
+
+    assert restored_session.watermark == 7
+    assert restored_session.post_reference_ids["neuron"] == ids
+    page_reads = [
+        params["state_id"]
+        for sql, params in storage.queries
+        if sql.startswith("SELECT * FROM semantic_discovery_state WITH INDEX")
+    ]
+    assert any(state_id.startswith("validation-") for state_id in page_reads)
+
+    storage, parent_ref, inner_ref = await _publish_index_tree()
+    root_ref = dict(
+        storage.rows[storage._record_id("validation-root", 1)]["payload"]["classifier_pages"][0]
+    )
+    root_ref["state_id"] = "unreachable-index"
+    assert (
+        await storage._load_semantic_discovery_state_page(
+            "ids-page-1", 1, parent_ref=parent_ref, ancestor_refs=[root_ref, inner_ref]
+        )
+        is None
+    )
 
 
 @pytest.mark.asyncio
