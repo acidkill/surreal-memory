@@ -31,6 +31,7 @@ from surreal_memory.engine.consolidation_group_plan import (
 )
 from surreal_memory.engine.consolidation_progress import (
     INCOMPLETE_STATUSES,
+    ConsolidationChunkCompleteError,
     ConsolidationLeaseLostError,
     ConsolidationPausedError,
     ConsolidationProgressError,
@@ -927,7 +928,13 @@ class ConsolidationEngine:
         }
         handler = dispatch.get(strategy)
         if handler is not None:
-            await handler()
+            while True:
+                try:
+                    await handler()
+                    return
+                except ConsolidationChunkCompleteError:
+                    # A chunk limit bounds work and checkpoint size, not command duration.
+                    await self._check_progress_budget()
 
     async def run(
         self,
@@ -11087,7 +11094,7 @@ class ConsolidationEngine:
             report.semantic_synapses_created = created
             if report_counters_preloaded:
                 report.semantic_synapses_skipped = skipped
-            raise ConsolidationPausedError(
+            raise ConsolidationChunkCompleteError(
                 "semantic_link applied its bounded pair batch; frozen-source discovery "
                 "continues with the next --resume"
             )

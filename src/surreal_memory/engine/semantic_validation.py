@@ -8,7 +8,10 @@ from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from typing import Any
 
-from surreal_memory.engine.consolidation_progress import ConsolidationPausedError
+from surreal_memory.engine.consolidation_progress import (
+    ConsolidationChunkCompleteError,
+    ConsolidationPausedError,
+)
 
 _IDS_PER_PAGE = 4096
 _REFS_PER_PAGE = 512
@@ -260,7 +263,7 @@ class SemanticSourceValidation:
         return self.reference
 
     async def assert_unchanged(self, checkpoint: ValidationCheckpoint) -> None:
-        """Pause normally after publishing proof, without permitting source/apply work."""
+        """Publish pending proof before yielding a chunk, never permitting unverified work."""
         await self.restore()
         verify = getattr(self.session, "verify", None)
         if not callable(verify):
@@ -290,7 +293,7 @@ class SemanticSourceValidation:
             "validation_cursor": self.session.watermark,
         }
         await checkpoint(reference, counters)
-        raise ConsolidationPausedError(
+        raise ConsolidationChunkCompleteError(
             "semantic_link source validation paused after verified changefeed prefix "
             f"at {self.session.watermark}; continue with --resume"
         )

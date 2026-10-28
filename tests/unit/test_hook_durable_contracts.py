@@ -70,7 +70,7 @@ def test_stdin_session_identity_is_forwarded(module, client, monkeypatch) -> Non
 
     monkeypatch.setenv("CODEX_SESSION_ID", "parent-codex")
     monkeypatch.setenv("CLAUDE_SESSION_ID", "parent-claude")
-    monkeypatch.delenv("SMEM_HOOK_SOURCE", raising=False)
+    monkeypatch.setenv("SMEM_HOOK_SOURCE", "")
     payload = {"session_id": "actual-session", "source": client}
     monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
     assert importlib.import_module(f"surreal_memory.hooks.{module}").read_hook_input() == payload
