@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 _CHANGEFEED_RETENTION = timedelta(days=7)
@@ -19,7 +19,6 @@ _TOKEN_MAX_AGE = timedelta(days=6, hours=15, minutes=36)
 _TOKEN_VERSION = 1
 _BARRIER_CHANGEFEED_PAGE_SIZE = 128
 _BARRIER_CHANGEFEED_MAX_ROWS = 100_000
-_SOURCE_CHANGEFEED_PAGE_SIZE = 128
 _SOURCE_CHANGEFEED_MAX_ROWS = 100_000
 _SOURCE_TABLES = ("neuron", "synapse")
 # SurrealDB applies LIMIT to the database-wide feed before it keeps one table's
@@ -43,6 +42,10 @@ class SemanticSourceFenceExpiredError(SemanticSourceFenceError):
 
 class SemanticSourceFenceUnavailableError(SemanticSourceFenceError):
     """The source changefeed could not be checked; callers must fail closed."""
+
+
+class SemanticSourceValidationPending(SemanticSourceFenceError):  # noqa: N818 - public API name
+    """The bounded invocation ended before its captured barrier was verified."""
 
 
 class SurrealDBSemanticSourceRevisionMixin:
@@ -177,7 +180,8 @@ class SurrealDBSemanticSourceRevisionMixin:
             name = record.get("name")
             return str(name) if name is not None else None
         record_id = record.get("id")
-        return str(record_id).split(":", 1)[0] if record_id is not None else None
+        record_id_text = str(record_id) if record_id is not None else ""
+        return record_id_text.split(":", 1)[0] if ":" in record_id_text else None
 
     @staticmethod
     def _projection_neutral_update(
@@ -510,12 +514,10 @@ class SurrealDBSemanticSourceRevisionMixin:
             )
 
         if created_before is not None:
-            await self._assert_source_unchanged_before(
-                brain_id,
-                versionstamp,
-                self._parse_datetime(created_before),
-                created_at_readonly=created_at_readonly,
+            session = self._create_semantic_source_fence_session(
+                since_token, created_before=created_before
             )
+            await session.assert_unchanged()
             return
 
         for table in _SOURCE_TABLES:
@@ -549,16 +551,28 @@ class SurrealDBSemanticSourceRevisionMixin:
             self._parse_datetime(created_before),
         )
 
-    async def _assert_source_session_unchanged(self, session: _SemanticSourceFenceSession) -> None:
+    async def _assert_source_session_unchanged(
+        self,
+        session: _SemanticSourceFenceSession,
+        *,
+        budget_check: Callable[[], Awaitable[bool]] | None = None,
+    ) -> Literal["verified", "pending"]:
         brain_id = self._get_brain_id()
-        versionstamp, captured_at, created_at_readonly = self._decode_token(session.token, brain_id)
+        original_stamp, _, _ = self._decode_token(session.token, brain_id)
         if (
             brain_id != session.brain_id
-            or versionstamp != session.token_versionstamp
+            or original_stamp != session.token_versionstamp
             or self._parse_datetime(session.created_before) != session.created_before
         ):
             raise SemanticSourceFenceExpiredError(
                 "semantic source fence session no longer matches its captured scope"
+            )
+        validation_stamp, captured_at, created_at_readonly = self._decode_token(
+            session.validation_token, brain_id
+        )
+        if validation_stamp > session.watermark:
+            raise SemanticSourceFenceExpiredError(
+                "semantic source fence validation token is ahead of its watermark"
             )
         server_now = await self._server_now()
         age = server_now - captured_at
@@ -569,15 +583,56 @@ class SurrealDBSemanticSourceRevisionMixin:
                 "semantic source token is older than the safe changefeed window"
             )
 
-        # All mutable state is staged locally. Cancellation or any malformed,
-        # unknown, expired, or changed-source event leaves the published cursor
-        # and post-reference ID sets untouched.
+        # All mutable state is staged locally; only a complete event and a
+        # verified barrier can publish cursor or classifier state.
+        target_token = session.target_token
+        restored_target = target_token is not None
+        if target_token is None:
+            if session.watermark != validation_stamp:
+                raise SemanticSourceFenceExpiredError(
+                    "semantic source fence watermark lacks a validation token"
+                )
+            target_token = await self.capture_semantic_source_token()
+        target_stamp, target_captured_at, _ = self._decode_token(target_token, brain_id)
+        if (
+            target_stamp < validation_stamp
+            or session.watermark > target_stamp
+            or target_captured_at < captured_at
+        ):
+            raise SemanticSourceFenceExpiredError(
+                "semantic source fence target barrier precedes its watermark"
+            )
+        if restored_target and session.watermark >= target_stamp:
+            raise SemanticSourceFenceExpiredError(
+                "pending semantic source target is not ahead of its watermark"
+            )
+        if restored_target and target_captured_at > server_now:
+            raise SemanticSourceFenceExpiredError("semantic source target token is from the future")
         cursor = session.watermark
         scanned_database_rows = session.scanned_database_rows
         scanned_source_rows = dict(session.scanned_source_rows)
+        invocation_database_rows = 0
+        invocation_source_rows = dict.fromkeys(_SOURCE_TABLES, 0)
         post_reference_ids = {table: set(ids) for table, ids in session.post_reference_ids.items()}
         last_stamp = cursor
+        barrier_seen = cursor == target_stamp
+        if barrier_seen:
+            self._publish_source_session(
+                session,
+                cursor=cursor,
+                scanned_database_rows=scanned_database_rows,
+                scanned_source_rows=scanned_source_rows,
+                post_reference_ids=post_reference_ids,
+                validation_token=target_token,
+                target_token=None,
+            )
+            return "verified"
+
+        pending = False
         while True:
+            if budget_check is not None and not await budget_check():
+                pending = True
+                break
             try:
                 events = await self._query(
                     f"SHOW CHANGES FOR DATABASE SINCE {cursor} LIMIT {_DATABASE_FEED_PAGE_SIZE}"
@@ -596,6 +651,10 @@ class SurrealDBSemanticSourceRevisionMixin:
                     "database changefeed returned an invalid page"
                 )
             if not events:
+                if cursor < target_stamp:
+                    raise SemanticSourceFenceUnavailableError(
+                        "semantic source target barrier was not present in its changefeed"
+                    )
                 break
 
             page_start = cursor
@@ -627,7 +686,11 @@ class SurrealDBSemanticSourceRevisionMixin:
                     raise SemanticSourceFenceUnavailableError(
                         "database changefeed returned an invalid event"
                     )
-                source_tables_in_event: set[str] = set()
+                if stamp > target_stamp:
+                    raise SemanticSourceFenceUnavailableError(
+                        "semantic source target barrier was not present in its changefeed"
+                    )
+                tables_in_event: set[str] = set()
                 for change in changes:
                     table = self._change_table(change)
                     if table is None:
@@ -636,7 +699,20 @@ class SurrealDBSemanticSourceRevisionMixin:
                         )
                     if table not in _SOURCE_TABLES:
                         continue
-                    source_tables_in_event.add(table)
+                    tables_in_event.add(table)
+                if invocation_database_rows >= _DATABASE_FEED_MAX_ROWS:
+                    pending = True
+                    break
+                if any(
+                    invocation_source_rows[table] >= _SOURCE_CHANGEFEED_MAX_ROWS
+                    for table in tables_in_event
+                ):
+                    pending = True
+                    break
+                for change in changes:
+                    table = self._change_table(change)
+                    if table not in _SOURCE_TABLES:
+                        continue
                     self._classify_source_change(
                         table,
                         change,
@@ -645,36 +721,73 @@ class SurrealDBSemanticSourceRevisionMixin:
                         created_at_readonly=created_at_readonly,
                         post_reference_ids=post_reference_ids[table],
                     )
-                for table in source_tables_in_event:
+                for table in tables_in_event:
                     scanned_source_rows[table] += 1
-                    if scanned_source_rows[table] >= _SOURCE_CHANGEFEED_MAX_ROWS:
-                        raise SemanticSourceFenceUnavailableError(
-                            f"{table} changefeed exceeded the bounded scan limit"
-                        )
+                    invocation_source_rows[table] += 1
                 cursor = stamp
                 last_stamp = stamp
                 scanned_database_rows += 1
+                invocation_database_rows += 1
                 advanced = True
-                if scanned_database_rows > _DATABASE_FEED_MAX_ROWS:
-                    raise SemanticSourceFenceUnavailableError(
-                        "database changefeed exceeded the bounded scan limit"
-                    )
+                if stamp == target_stamp:
+                    barrier_seen = True
+                    break
+
+            if barrier_seen:
+                break
+            if pending:
+                break
 
             if len(events) < _DATABASE_FEED_PAGE_SIZE:
                 break
-            if scanned_database_rows >= _DATABASE_FEED_MAX_ROWS:
-                raise SemanticSourceFenceUnavailableError(
-                    "database changefeed exceeded the bounded scan limit"
-                )
             if not advanced:
                 raise SemanticSourceFenceUnavailableError(
                     "database changefeed pagination did not advance"
                 )
 
+        if not barrier_seen and not pending:
+            raise SemanticSourceFenceUnavailableError(
+                "semantic source target barrier was not present in its changefeed"
+            )
+        if pending:
+            self._publish_source_session(
+                session,
+                cursor=cursor,
+                scanned_database_rows=scanned_database_rows,
+                scanned_source_rows=scanned_source_rows,
+                post_reference_ids=post_reference_ids,
+                validation_token=session.validation_token,
+                target_token=target_token,
+            )
+            return "pending"
+        self._publish_source_session(
+            session,
+            cursor=cursor,
+            scanned_database_rows=scanned_database_rows,
+            scanned_source_rows=scanned_source_rows,
+            post_reference_ids=post_reference_ids,
+            validation_token=target_token,
+            target_token=None,
+        )
+        return "verified"
+
+    @staticmethod
+    def _publish_source_session(
+        session: _SemanticSourceFenceSession,
+        *,
+        cursor: int,
+        scanned_database_rows: int,
+        scanned_source_rows: dict[str, int],
+        post_reference_ids: dict[str, set[str]],
+        validation_token: str,
+        target_token: str | None,
+    ) -> None:
         session.watermark = cursor
         session.scanned_database_rows = scanned_database_rows
         session.scanned_source_rows = scanned_source_rows
         session.post_reference_ids = post_reference_ids
+        session.validation_token = validation_token
+        session.target_token = target_token
 
     def _classify_source_change(
         self,
@@ -767,99 +880,6 @@ class SurrealDBSemanticSourceRevisionMixin:
             )
         post_reference_ids.add(record_id_text)
 
-    async def _assert_source_unchanged_before(
-        self,
-        brain_id: str,
-        versionstamp: int,
-        created_before: datetime,
-        *,
-        created_at_readonly: bool,
-    ) -> None:
-        """Page source feeds, ignoring only records provably outside the run.
-
-        A post-cutoff ``created_at`` on an update is not proof of a post-cutoff
-        creation unless the token was captured after verifying both fields are
-        READONLY. Legacy tokens therefore require a visible create event before
-        later updates/deletes for that id can be ignored.
-        """
-        for table in _SOURCE_TABLES:
-            cursor = versionstamp
-            scanned = 0
-            post_reference_ids: set[str] = set()
-            while scanned < _SOURCE_CHANGEFEED_MAX_ROWS:
-                limit = min(
-                    _SOURCE_CHANGEFEED_PAGE_SIZE,
-                    _SOURCE_CHANGEFEED_MAX_ROWS - scanned,
-                )
-                try:
-                    events = await self._show_table_changes(table, cursor, limit)
-                except Exception as exc:
-                    message = str(exc).lower()
-                    if any(word in message for word in ("expired", "retention", "changefeed")):
-                        raise SemanticSourceFenceExpiredError(
-                            f"{table} changefeed history is unavailable"
-                        ) from exc
-                    raise SemanticSourceFenceUnavailableError(
-                        f"could not inspect {table} changefeed"
-                    ) from exc
-
-                if not events:
-                    break
-
-                page_start = cursor
-                skipped_inclusive_boundary = False
-                advanced = False
-                for event in events:
-                    raw_stamp = event.get("versionstamp")
-                    if (
-                        not isinstance(raw_stamp, int)
-                        or isinstance(raw_stamp, bool)
-                        or raw_stamp < 0
-                        or raw_stamp < cursor
-                    ):
-                        raise SemanticSourceFenceUnavailableError(
-                            f"{table} changefeed returned an invalid versionstamp"
-                        )
-                    if raw_stamp == page_start and not skipped_inclusive_boundary:
-                        skipped_inclusive_boundary = True
-                        continue
-
-                    changes = event.get("changes")
-                    if not isinstance(changes, (list, tuple)) or not changes:
-                        raise SemanticSourceFenceUnavailableError(
-                            f"{table} changefeed returned an invalid event"
-                        )
-                    for change in changes:
-                        if not isinstance(change, Mapping):
-                            raise SemanticSourceFenceUnavailableError(
-                                f"{table} changefeed returned an unclassifiable change"
-                            )
-                        self._classify_source_change(
-                            table,
-                            change,
-                            brain_id=brain_id,
-                            created_before=created_before,
-                            created_at_readonly=created_at_readonly,
-                            post_reference_ids=post_reference_ids,
-                        )
-
-                    cursor = raw_stamp
-                    scanned += 1
-                    advanced = True
-                    if scanned >= _SOURCE_CHANGEFEED_MAX_ROWS:
-                        break
-
-                if scanned >= _SOURCE_CHANGEFEED_MAX_ROWS:
-                    raise SemanticSourceFenceUnavailableError(
-                        f"{table} changefeed exceeded the bounded scan limit"
-                    )
-                if len(events) < limit:
-                    break
-                if not advanced:
-                    raise SemanticSourceFenceUnavailableError(
-                        f"{table} changefeed pagination did not advance"
-                    )
-
 
 class _SemanticSourceFenceSession:
     """Invocation-scoped cursor and classifier state; never persisted."""
@@ -877,13 +897,28 @@ class _SemanticSourceFenceSession:
         self.brain_id = brain_id
         self.token_versionstamp = token_versionstamp
         self.created_before = created_before
+        self.validation_token = token
+        self.target_token: str | None = None
         self.watermark = token_versionstamp
         self.scanned_database_rows = 0
         self.scanned_source_rows = dict.fromkeys(_SOURCE_TABLES, 0)
         self.post_reference_ids: dict[str, set[str]] = {table: set() for table in _SOURCE_TABLES}
         self._lock = asyncio.Lock()
 
-    async def assert_unchanged(self) -> None:
-        """Validate changes since the last completed scan, serially and atomically."""
+    async def verify(
+        self,
+        *,
+        budget_check: Callable[[], Awaitable[bool]] | None = None,
+    ) -> Literal["verified", "pending"]:
+        """Validate one bounded range, serially and atomically."""
         async with self._lock:
-            await self.storage._assert_source_session_unchanged(self)
+            return await self.storage._assert_source_session_unchanged(
+                self, budget_check=budget_check
+            )
+
+    async def assert_unchanged(self) -> None:
+        """Require this bounded validation invocation to reach its barrier."""
+        if await self.verify() == "pending":
+            raise SemanticSourceValidationPending(
+                "semantic source validation is pending at its bounded invocation budget"
+            )

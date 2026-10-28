@@ -457,7 +457,7 @@ async def test_semantic_link_rejects_source_mutation_between_capped_batches(
     assert len(storage.added_synapses) == pair_cap
 
     continuation = json.loads(progress.strategy_state("semantic_link")["pending"][0])
-    assert continuation["version"] == 4  # Older engines must reject unconsumed batches.
+    assert continuation["version"] == 5  # Older engines must reject unconsumed batches.
 
     candidate = storage.neurons["semantic-node-0"]
     storage.neurons[candidate.id] = candidate.with_metadata(_embedding=[0.0, 1.0])

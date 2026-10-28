@@ -33,6 +33,7 @@ from surreal_memory.core.synapse import Synapse, SynapseType
 from surreal_memory.engine._sha256_native import compress_sha256_blocks
 from surreal_memory.engine.consolidation_progress import ConsolidationPausedError
 from surreal_memory.engine.edge_identity import deterministic_edge_id
+from surreal_memory.engine.semantic_validation import SemanticSourceValidation
 
 if TYPE_CHECKING:
     from surreal_memory.core.brain import BrainConfig
@@ -126,6 +127,7 @@ class SemanticDiscoveryResult:
     """
     source_fingerprint: str | None = None
     source_token: str | None = None
+    source_validation_ref: dict[str, Any] | None = None
     reference_time_rebuilt: bool = False
     continuation: dict[str, Any] | None = None
     coverage_offset: int | None = None
@@ -1019,17 +1021,26 @@ async def _discover_semantic_synapses_resumable(
         return cast("dict[str, int]", await get_degrees(created_before=reference_time))
 
     manifest = dict(resume_state or {})
+    validation_ref = manifest.get("source_validation_ref")
+    if validation_ref is not None and not isinstance(validation_ref, Mapping):
+        raise RuntimeError("invalid semantic source validation reference")
+    if manifest.get("version") == 5 and manifest.get("stage") == "validation":
+        original = manifest.get("discovery")
+        if not isinstance(original, Mapping) or validation_ref is None:
+            raise RuntimeError("invalid semantic source validation checkpoint")
+        manifest = dict(original)
+    published_manifest = dict(manifest)
     manifest_stage = str(manifest.get("stage") or "")
     manifest_version = manifest.get("version")
     if manifest and (
         manifest.get("kind") != "semantic_link_discovery"
-        or manifest_version not in (1, 2, 3, 4)
+        or manifest_version not in (1, 2, 3, 4, 5)
         or (manifest_version == 2 and manifest_stage != "similarity")
         or (
-            manifest_version in (3, 4)
+            manifest_version in (3, 4, 5)
             and manifest_stage not in {"neurons", "synapses", "similarity"}
         )
-        or (manifest_version == 4 and manifest.get("source_state_ref") is None)
+        or (manifest_version in (4, 5) and manifest.get("source_state_ref") is None)
     ):
         raise RuntimeError("invalid semantic_link discovery checkpoint")
     brain_id = getattr(storage, "current_brain_id", None)
@@ -1072,6 +1083,49 @@ async def _discover_semantic_synapses_resumable(
     token = saved.get("source_token")
     if isinstance(durable_neuron_state, Mapping):
         token = durable_neuron_state.get("source_token")
+    validation: SemanticSourceValidation | None = None
+    source_fence_session: Any = None
+
+    async def checkpoint_validation(ref: dict[str, Any], counters: dict[str, int]) -> None:
+        await checkpoint(
+            "validation",
+            published_manifest.get("cursor"),
+            {
+                "kind": "semantic_link_discovery",
+                "version": 5,
+                "stage": "validation",
+                "cursor": published_manifest.get("cursor"),
+                "discovery": published_manifest,
+                "source_validation_ref": ref,
+                **counters,
+            },
+        )
+
+    async def assert_source_fence() -> None:
+        nonlocal validation, source_fence_session
+        if not isinstance(token, str) or not token:
+            raise RuntimeError("semantic source rebuild checkpoint has no valid mutation token")
+        create = getattr(storage, "_create_semantic_source_fence_session", None)
+        if reference_time is not None and callable(create):
+            if validation is None and run_id is not None and owner_token is not None:
+                validation = SemanticSourceValidation(
+                    storage,
+                    token,
+                    reference_time=reference_time,
+                    run_id=run_id,
+                    owner_token=owner_token,
+                    reference=validation_ref,
+                    budget_check=budget_check,
+                )
+            if validation is not None:
+                await validation.assert_unchanged(checkpoint_validation)
+                return
+            if source_fence_session is None:
+                source_fence_session = create(token, created_before=reference_time)
+        await _assert_source_unchanged(
+            storage, token, created_before=reference_time, session=source_fence_session
+        )
+
     reference_time_rebuilt = False
     if reference_time is not None:
         expected_reference_time = reference_time.isoformat(timespec="microseconds")
@@ -1092,12 +1146,11 @@ async def _discover_semantic_synapses_resumable(
                 )
             # Prove that only post-reference records changed before replacing the
             # staged source. Pre-reference updates/deletes still invalidate it.
-            await _assert_source_unchanged(
-                storage,
-                token,
-                created_before=reference_time,
-            )
+            await assert_source_fence()
             token = await _capture_source_token(storage)
+            validation = None
+            validation_ref = None
+            source_fence_session = None
             reference_time_rebuilt = True
             durable_neuron_state = None
             state_id = None
@@ -1111,36 +1164,11 @@ async def _discover_semantic_synapses_resumable(
     verify_fence = getattr(storage, "assert_semantic_source_unchanged", None)
     fence_available = callable(capture_fence) and callable(verify_fence)
     if token is not None:
-        create_fence_session = getattr(storage, "_create_semantic_source_fence_session", None)
-        source_fence_session = (
-            create_fence_session(token, created_before=reference_time)
-            if reference_time is not None and callable(create_fence_session)
-            else None
-        )
-        await _assert_source_unchanged(
-            storage,
-            token,
-            created_before=reference_time,
-            session=source_fence_session,
-        )
+        await assert_source_fence()
     elif fence_available:
         token = await _capture_source_token(storage)
-        create_fence_session = getattr(storage, "_create_semantic_source_fence_session", None)
-        source_fence_session = (
-            create_fence_session(token, created_before=reference_time)
-            if reference_time is not None and callable(create_fence_session)
-            else None
-        )
     else:
         raise RuntimeError("storage does not support semantic source mutation fencing")
-
-    async def assert_source_fence() -> None:
-        await _assert_source_unchanged(
-            storage,
-            token,
-            created_before=reference_time,
-            session=source_fence_session,
-        )
 
     batch_index = (
         durable_neuron_state.get("batch_index", 0) if durable_neuron_state is not None else 0
@@ -1227,7 +1255,7 @@ async def _discover_semantic_synapses_resumable(
         if not window_transition:
             batch_cursor = manifest.get("cursor")
             if (
-                manifest_version != 4
+                manifest_version not in (4, 5)
                 or not isinstance(batch_cursor, str)
                 or not batch_cursor.isdecimal()
                 or saved_version != 2
@@ -1496,7 +1524,7 @@ async def _discover_semantic_synapses_resumable(
     async def write_source_checkpoint(
         stage: str, cursor: str | None, *, preserve_legacy_cursor: bool = False
     ) -> None:
-        nonlocal state_revision
+        nonlocal state_revision, published_manifest
         save = getattr(storage, "save_semantic_discovery_state", None)
         if not callable(save):
             raise RuntimeError("storage cannot save semantic_link staged source state")
@@ -1519,7 +1547,7 @@ async def _discover_semantic_synapses_resumable(
         checkpoint_cursor = saved_cursor if preserve_legacy_cursor and saved_stage else cursor
         details = {
             "kind": "semantic_link_discovery",
-            "version": 4 if batch_index else 3,
+            "version": 5,
             "stage": checkpoint_stage or stage,
             "cursor": checkpoint_cursor,
             "source_state_ref": {
@@ -1529,6 +1557,10 @@ async def _discover_semantic_synapses_resumable(
                 "source_token": token,
             },
         }
+        if validation is not None:
+            proof_ref = await validation.snapshot()
+            if proof_ref is not None:
+                details["source_validation_ref"] = proof_ref
         encoded_manifest = json.dumps(
             [json.dumps(details, ensure_ascii=False, sort_keys=True, separators=(",", ":"))],
             ensure_ascii=False,
@@ -1537,6 +1569,7 @@ async def _discover_semantic_synapses_resumable(
         if len(encoded_manifest) > _MAX_NEURON_CHECKPOINT_BYTES:
             raise RuntimeError("semantic_link staged source manifest exceeds 512 KiB")
         await checkpoint(checkpoint_stage or stage, checkpoint_cursor, details)
+        published_manifest = details
 
     async def record_neuron(neuron: Neuron) -> None:
         nonlocal eligible_total, degree_by_id, degree_probe_complete, candidate_heap
@@ -1904,6 +1937,7 @@ async def _discover_semantic_synapses_resumable(
         return SemanticDiscoveryResult(
             source_fingerprint=source_fingerprint,
             source_token=token,
+            source_validation_ref=await validation.snapshot() if validation is not None else None,
             reference_time_rebuilt=reference_time_rebuilt,
         )
 
@@ -2395,11 +2429,12 @@ async def _discover_semantic_synapses_resumable(
         truncated=len(new_synapses) >= max_pairs,
         source_fingerprint=source_fingerprint,
         source_token=token,
+        source_validation_ref=await validation.snapshot() if validation is not None else None,
         reference_time_rebuilt=reference_time_rebuilt,
         continuation=(
             {
                 "kind": "semantic_link_discovery",
-                "version": 4,
+                "version": 5,
                 "stage": "similarity",
                 "cursor": str(durable_row_cursor),
                 "source_state_ref": {
@@ -2409,6 +2444,11 @@ async def _discover_semantic_synapses_resumable(
                     "source_token": token,
                 },
                 "next_batch": batch_index + 1,
+                **(
+                    {"source_validation_ref": validation.reference}
+                    if validation is not None and validation.reference is not None
+                    else {}
+                ),
                 **({"next_window": next_window} if next_window is not None else {}),
             }
             if reference_time is not None

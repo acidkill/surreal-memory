@@ -26,7 +26,9 @@ from surreal_memory.core.synapse import Synapse, SynapseType
 from surreal_memory.engine.consolidation_progress import (
     CONSOLIDATION_ENGINE_VERSION,
     PROGRESS_FORMAT_VERSION,
+    ConsolidationPausedError,
 )
+from surreal_memory.engine.semantic_validation import SemanticSourceValidation
 from surreal_memory.storage.surrealdb.schema import SCHEMA_VERSION, ensure_schema
 from surreal_memory.storage.surrealdb.semantic_discovery_state import (
     SemanticDiscoveryStateConflictError,
@@ -210,15 +212,28 @@ async def test_frozen_fence_session_tracks_late_rows_and_reads_only_the_feed_suf
     session = store._create_semantic_source_fence_session(token, created_before=reference_time)
 
     database_feed_reads = 0
+    source_cursors: list[int] = []
+    capturing = False
     original_query = store._query
+    original_capture = store.capture_semantic_source_token
+
+    async def capture_barrier() -> str:
+        nonlocal capturing
+        capturing = True
+        try:
+            return await original_capture()
+        finally:
+            capturing = False
 
     async def count_database_feed_reads(sql: str, **params: Any) -> list[dict[str, Any]]:
         nonlocal database_feed_reads
-        if sql.startswith("SHOW CHANGES FOR DATABASE SINCE "):
+        if not capturing and sql.startswith("SHOW CHANGES FOR DATABASE SINCE "):
             database_feed_reads += 1
+            source_cursors.append(int(sql.rsplit(" LIMIT ", 1)[0].rsplit(" ", 1)[1]))
         return await original_query(sql, **params)
 
     monkeypatch.setattr(store, "_query", count_database_feed_reads)
+    monkeypatch.setattr(store, "capture_semantic_source_token", capture_barrier)
     await session.assert_unchanged()
 
     late = replace(
@@ -244,17 +259,122 @@ async def test_frozen_fence_session_tracks_late_rows_and_reads_only_the_feed_suf
     await session.assert_unchanged()
 
     session_read_start = database_feed_reads
+    source_cursors.clear()
     await session.assert_unchanged()
     await session.assert_unchanged()
     session_reads = database_feed_reads - session_read_start
+    session_cursors = list(source_cursors)
 
     stateless_read_start = database_feed_reads
+    source_cursors.clear()
     await store.assert_semantic_source_unchanged(token, created_before=reference_time)
     await store.assert_semantic_source_unchanged(token, created_before=reference_time)
     stateless_reads = database_feed_reads - stateless_read_start
 
     assert session_reads == 2
-    assert stateless_reads == 4
+    assert stateless_reads == 2
+    original_stamp, _, _ = store._decode_token(token, store.current_brain_id)
+    assert all(cursor > original_stamp for cursor in session_cursors)
+    assert source_cursors == [original_stamp, original_stamp]
+
+
+@pytest.mark.asyncio
+async def test_validation_proof_resumes_under_rotated_lease_with_real_classifier_pages(
+    store,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import surreal_memory.storage.surrealdb.semantic_source_revision as revision
+
+    monkeypatch.setattr(revision, "_SOURCE_CHANGEFEED_MAX_ROWS", 2)
+    old = replace(
+        Neuron.create(type=NeuronType.CONCEPT, content="frozen-validation-source"),
+        created_at=utcnow() - timedelta(days=1),
+    )
+    await store.add_neuron(old)
+    reference_time = store._parse_datetime(await store._query_response("RETURN time::now()"))
+    token = await store.capture_semantic_source_token()
+    late = [
+        replace(
+            Neuron.create(type=NeuronType.CONCEPT, content=f"late-validation-{index}"),
+            created_at=reference_time + timedelta(seconds=5),
+        )
+        for index in range(5)
+    ]
+    for neuron in late:
+        await store.add_neuron(neuron)
+    brain_id = store.current_brain_id
+    run_id = uuid.uuid4().hex
+    owner = uuid.uuid4().hex
+    assert await store.acquire_consolidation_lease(brain_id, owner, lease_seconds=120)
+    state = {
+        "brain_id": brain_id,
+        "run_id": run_id,
+        "schema_version": SCHEMA_VERSION,
+        "engine_version": CONSOLIDATION_ENGINE_VERSION,
+        "format_version": PROGRESS_FORMAT_VERSION,
+        "requested_strategies": ["semantic_link"],
+        "completed_strategies": [],
+        "options_fingerprint": "validation-integration-options",
+        "reference_time": reference_time,
+        "owner_token": owner,
+        "status": "paused",
+        "current_strategy": "semantic_link",
+        "phase": "semantic_link_validation",
+        "cursor": None,
+        "strategy_states": {},
+        "counters": {},
+        "started_at": utcnow(),
+        "updated_at": utcnow(),
+        "last_error": None,
+    }
+    await store.create_consolidation_progress(state)
+    published: dict[str, Any] = {}
+
+    async def publish(ref: dict[str, Any], counters: dict[str, int]) -> None:
+        published.update(ref)
+        state["strategy_states"] = {
+            "semantic_link": {"pending": [json.dumps({"source_validation_ref": ref})]}
+        }
+        assert await store.save_consolidation_progress(brain_id, owner, state) is not None
+
+    proof = SemanticSourceValidation(
+        store, token, reference_time=reference_time, run_id=run_id, owner_token=owner
+    )
+    with pytest.raises(ConsolidationPausedError, match="source validation"):
+        await proof.assert_unchanged(publish)
+    assert proof.session.scanned_source_rows["neuron"] == 2
+    first_cursor = proof.session.watermark
+
+    assert await store.release_consolidation_lease(brain_id, owner)
+    owner = uuid.uuid4().hex
+    assert await store.acquire_consolidation_lease(brain_id, owner, lease_seconds=120)
+    assert await store.claim_consolidation_progress(brain_id, owner) is not None
+    resumed = SemanticSourceValidation(
+        store,
+        token,
+        reference_time=reference_time,
+        run_id=run_id,
+        owner_token=owner,
+        reference=published,
+    )
+    await resumed.restore()
+    assert resumed.session.watermark == first_cursor
+    assert any(late[0].id in value for value in resumed.session.post_reference_ids["neuron"])
+    assert await store.delete_neuron(late[0].id)
+    for _ in range(10):
+        try:
+            await resumed.assert_unchanged(publish)
+        except ConsolidationPausedError:
+            continue
+        break
+    else:
+        pytest.fail("finite target did not finish")
+    # A second finite range includes the deletion after the persisted create.
+    await resumed.assert_unchanged(publish)
+    assert all(late[0].id not in value for value in resumed.session.post_reference_ids["neuron"])
+    await store.update_neuron(replace(old, content="changed frozen projection"))
+    with pytest.raises(SemanticSourceChangedError):
+        await resumed.assert_unchanged(publish)
 
 
 @pytest.mark.asyncio

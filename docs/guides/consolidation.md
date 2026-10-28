@@ -104,11 +104,27 @@ coverage applies the existing similarity and top-K rules within bounded windows;
 it does not promise every possible pair across different windows. A changed
 frozen source fails validation before another batch is applied.
 
-Continuation discovery checkpoints use manifest version 4, and apply manifests
-with more work use version 3. Older packages reject these checkpoints; do not
-downgrade while such a run is unfinished. NumPy is required for a frozen window
+Discovery checkpoints use manifest version 5, and apply manifests use version 4.
+Previous manifest versions remain readable. Older packages reject newly written
+checkpoints; do not downgrade while such a run is unfinished. NumPy is required for a frozen window
 larger than the pure-Python fallback limit; a missing NumPy installation stops
 that window rather than silently dropping its remaining candidates.
+
+Source validation captures a finite changefeed barrier. Its 100,000 events per
+source table and 2,000,000 database events are budgets for one invocation, not
+limits on the saved run's history. A large safe history pauses normally with CLI
+exit 1 and a separately reported verified cursor. The next resume continues that
+prefix, including the classifier's paged record-ID evidence. It does not apply
+another synapse batch until the required range has been verified. Concurrent
+recall statistics and new memories can be classified without changing the frozen
+source; changes to that source, unknown events and missing history still fail
+closed. Neither a pause nor a positive validation count proves run completion.
+
+Validation pages are immutable snapshots of at most 1 MB, published through the
+same lease-fenced checkpoint. An interrupted or unconfirmed write cannot publish
+a partial transaction. The original source token, frozen reference time,
+completed strategies and consolidation counters are preserved. The validation
+base moves to a newer barrier only after the intervening range is proved.
 
 ```toml
 [maintenance]
