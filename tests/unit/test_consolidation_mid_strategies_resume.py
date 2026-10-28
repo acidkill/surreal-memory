@@ -1759,7 +1759,7 @@ async def test_semantic_link_resumes_similarity_cursor_without_recomputing_rows(
     discovery_state = json.loads(checkpoint["pending"][0])
     assert checkpoint["phase"] == "semantic_link_discovery_similarity"
     assert discovery_state["stage"] == "similarity"
-    assert discovery_state["version"] == 3
+    assert discovery_state["version"] == 5
     assert discovery_state["cursor"] == "3"
     _manifest, source_state = _staged_semantic_state(storage, checkpoint["pending"])
     assert source_state["run_id"] == "test-run"
@@ -1820,7 +1820,7 @@ async def test_semantic_link_preserves_similarity_checkpoint_during_source_repla
 
     durable = json.loads(progress.strategy_state("semantic_link")["pending"][0])
     assert durable["stage"] == "similarity"
-    assert durable["version"] == 3
+    assert durable["version"] == 5
     assert durable["cursor"] == "3"
     replay_writes: list[tuple[str, str | None]] = []
 
@@ -1933,7 +1933,7 @@ async def test_semantic_v1_similarity_rebuild_advances_without_replacing_legacy_
             budget_check=pause_before_second_replayed_row,
         )
     after_first_replay = snapshots[-1]
-    assert after_first_replay["version"] == 3
+    assert after_first_replay["version"] == 5
     assert after_first_replay["cursor"] == "1"
     _manifest, replay_state = _staged_semantic_state(storage, [json.dumps(after_first_replay)])
     assert replay_state["legacy_checkpoint"]["version"] == 1
@@ -1958,7 +1958,7 @@ async def test_semantic_v1_similarity_rebuild_advances_without_replacing_legacy_
             budget_check=pause_after_legacy_cursor_verification,
         )
     promoted = snapshots[-1]
-    assert promoted["version"] == 3
+    assert promoted["version"] == 5
     assert promoted["cursor"] == "1"
     _manifest, promoted_state = _staged_semantic_state(storage, [json.dumps(promoted)])
     assert promoted_state["legacy_checkpoint"]["version"] == 2
@@ -2039,7 +2039,7 @@ async def test_semantic_v1_synapse_prefix_rebuild_advances_across_budgeted_calls
             resume_state=durable,
             budget_check=pause_after_edge_page,
         )
-    assert durable["version"] == 3
+    assert durable["version"] == 5
     assert durable["stage"] == "synapses"
     assert durable["cursor"] == edges[1].id
     _manifest, first_rebuild = _staged_semantic_state(storage, [json.dumps(durable)])
@@ -2144,7 +2144,7 @@ async def test_semantic_discovery_manifest_stays_small_for_ten_thousand_long_ids
     manifest_bytes = len(
         json.dumps([json.dumps(durable, separators=(",", ":"))], separators=(",", ":")).encode()
     )
-    assert durable["version"] == 3
+    assert durable["version"] == 5
     assert manifest_bytes < 512 * 1024
     _manifest, source_state = _staged_semantic_state(storage, [json.dumps(durable)])
     assert len(source_state["candidates"]) == 10_000
@@ -2232,7 +2232,7 @@ async def test_semantic_v1_neuron_checkpoint_at_36988_advances_in_bounded_calls(
     assert rebuild["legacy_neuron_cursor"] == neurons[prefix_length - 1].id
     assert rebuild["neuron_cursor"] >= neurons[prefix_length - 1].id
     assert rebuild["legacy_neuron_verified"] is True
-    assert durable["version"] == 3
+    assert durable["version"] == 5
     manifest_bytes = len(
         json.dumps([json.dumps(durable, separators=(",", ":"))], separators=(",", ":")).encode()
     )
@@ -2289,7 +2289,7 @@ async def test_semantic_v1_neuron_prefix_rebuild_is_bounded_and_resumable(
             resume_state=durable,
             budget_check=one_page_budget,
         )
-    assert durable["version"] == 3
+    assert durable["version"] == 5
     assert durable["cursor"] == neurons[1].id
     _manifest, rebuild = _staged_semantic_state(storage, [json.dumps(durable)])
     assert rebuild["legacy_neuron_cursor"] == neurons[3].id
@@ -2436,7 +2436,7 @@ async def test_semantic_link_budget_pause_checkpoints_last_completed_similarity_
 
     durable = snapshots[-1]
     assert durable["stage"] == "similarity"
-    assert durable["version"] == 3
+    assert durable["version"] == 5
     assert durable["cursor"] == "2"
     _manifest, staged = _staged_semantic_state(storage, [json.dumps(durable)])
     logical = staged["legacy_checkpoint"]
@@ -2574,7 +2574,7 @@ async def test_semantic_link_restarts_from_last_durable_similarity_checkpoint(
     checkpoint = progress.strategy_state("semantic_link")
     discovery_state = json.loads(checkpoint["pending"][0])
     assert checkpoint["phase"] == "semantic_link_discovery_similarity"
-    assert discovery_state["version"] == 3
+    assert discovery_state["version"] == 5
     assert discovery_state["cursor"] == "1"
     assert storage.added_synapses == []
 

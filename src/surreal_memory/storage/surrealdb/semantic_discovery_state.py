@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Mapping, Sequence
 from datetime import timedelta
 from hashlib import sha256
-from typing import Any
+from typing import Any, cast
 
 from surreal_memory.utils.timeutils import utcnow
 
@@ -251,6 +251,182 @@ class SurrealDBSemanticDiscoveryStateMixin:
         if payload.get("source_token") != row.get("source_token"):
             return None
         return dict(payload)
+
+    async def _load_semantic_discovery_state_page(
+        self,
+        state_id: str,
+        revision: int,
+        *,
+        parent_ref: Mapping[str, Any],
+        ancestor_refs: Sequence[Mapping[str, Any]] = (),
+    ) -> Mapping[str, Any] | None:
+        """Load a bounded classifier page through a verified proof-index path."""
+        if not isinstance(state_id, str) or not state_id:
+            raise ValueError("state_id must be a non-empty string")
+        if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
+            raise ValueError("revision must be a positive integer")
+        if not isinstance(parent_ref, Mapping) or not isinstance(ancestor_refs, Sequence):
+            return None
+        if isinstance(ancestor_refs, (str, bytes)) or len(ancestor_refs) > 63:
+            return None
+        parent_state_id = parent_ref.get("state_id")
+        parent_revision = parent_ref.get("revision")
+        if (
+            not isinstance(parent_state_id, str)
+            or not parent_state_id
+            or isinstance(parent_revision, bool)
+            or not isinstance(parent_revision, int)
+            or parent_revision < 1
+        ):
+            return None
+
+        # The root loader enforces the live run, manifest pointer, and lease.
+        root = await self.load_semantic_discovery_state(parent_state_id, parent_revision)
+        if (
+            root is None
+            or root.get("kind") != "semantic_source_validation"
+            or type(root.get("version")) is not int
+            or root.get("version") != 1
+            or root.get("source_token") != parent_ref.get("source_token")
+        ):
+            return None
+        brain_id = self._get_brain_id()
+        if brain_id != root.get("brain_id"):
+            return None
+
+        def matching_ref(parent: Mapping[str, Any], expected: Mapping[str, Any]) -> bool:
+            refs = parent.get("classifier_pages")
+            if not isinstance(refs, list):
+                return False
+            for ref in refs:
+                if (
+                    isinstance(ref, Mapping)
+                    and ref.get("state_id") == expected.get("state_id")
+                    and type(ref.get("revision")) is int
+                    and ref.get("revision") == expected.get("revision")
+                    and type(ref.get("state_revision")) is int
+                    and ref.get("state_revision") == expected.get("state_revision")
+                    and ref.get("source_token") == root.get("source_token")
+                    and isinstance(ref.get("sha256"), str)
+                    and ("sha256" not in expected or ref.get("sha256") == expected.get("sha256"))
+                ):
+                    return True
+            return False
+
+        async def load_referenced(
+            expected: Mapping[str, Any], *, kind: str | tuple[str, ...]
+        ) -> Mapping[str, Any] | None:
+            allowed_kinds = (kind,) if isinstance(kind, str) else kind
+            ref_state_id = expected.get("state_id")
+            ref_revision = expected.get("revision")
+            if (
+                not isinstance(ref_state_id, str)
+                or not ref_state_id
+                or type(ref_revision) is not int
+                or ref_revision < 1
+                or type(expected.get("state_revision")) is not int
+                or expected.get("state_revision") != ref_revision
+                or expected.get("source_token") != root.get("source_token")
+                or not isinstance(expected.get("sha256"), str)
+            ):
+                return None
+            rows = await self._query(
+                "SELECT * FROM semantic_discovery_state WITH INDEX idx_sds_state_revision "
+                "WHERE brain_id = $brain_id AND state_id = $state_id "
+                "AND revision = $revision LIMIT 1",
+                brain_id=brain_id,
+                state_id=ref_state_id,
+                revision=ref_revision,
+            )
+            if not rows:
+                return None
+            row = rows[0]
+            payload = row.get("payload")
+            if not isinstance(payload, Mapping):
+                return None
+            if (
+                row.get("brain_id") != brain_id
+                or row.get("state_id") != ref_state_id
+                or type(row.get("revision")) is not int
+                or row.get("revision") != ref_revision
+                or row.get("run_id") != root.get("run_id")
+                or row.get("owner_token") != root.get("owner_token")
+                or row.get("source_token") != root.get("source_token")
+                or payload.get("brain_id") != row.get("brain_id")
+                or payload.get("run_id") != row.get("run_id")
+                or payload.get("owner_token") != row.get("owner_token")
+                or payload.get("source_token") != row.get("source_token")
+                or payload.get("reference_time") != root.get("reference_time")
+                or payload.get("kind") not in allowed_kinds
+                or type(payload.get("version")) is not int
+                or payload.get("version") != 1
+                or self._contains_vector_field(payload)
+            ):
+                return None
+            try:
+                serialized = json.dumps(
+                    dict(payload), sort_keys=True, separators=(",", ":"), ensure_ascii=False
+                )
+                encoded = serialized.encode("utf-8")
+            except (TypeError, ValueError, UnicodeEncodeError):
+                return None
+            if len(encoded) > _MAX_SNAPSHOT_BYTES or sha256(encoded).hexdigest() != expected.get(
+                "sha256"
+            ):
+                return None
+            payload_kind = payload.get("kind")
+            if payload_kind == "semantic_source_validation_index":
+                if not isinstance(payload.get("classifier_pages"), list):
+                    return None
+            elif payload_kind == "semantic_source_validation_ids":
+                if not isinstance(payload.get("records"), list) or any(
+                    not isinstance(record, list)
+                    or len(record) != 2
+                    or not all(isinstance(part, str) and part for part in record)
+                    for record in payload.get("records", [])
+                ):
+                    return None
+            return cast("Mapping[str, Any]", json.loads(serialized))
+
+        current: Mapping[str, Any] = root
+        for ancestor_ref in ancestor_refs:
+            if not isinstance(ancestor_ref, Mapping) or not matching_ref(current, ancestor_ref):
+                return None
+            current_page = await load_referenced(
+                ancestor_ref, kind="semantic_source_validation_index"
+            )
+            if current_page is None:
+                return None
+            current = current_page
+
+        target_ref = {
+            "state_id": state_id,
+            "revision": revision,
+            "state_revision": revision,
+            "source_token": root.get("source_token"),
+        }
+        if not matching_ref(current, target_ref):
+            return None
+        final_ref = next(
+            (
+                ref
+                for ref in current["classifier_pages"]
+                if isinstance(ref, Mapping)
+                and ref.get("state_id") == state_id
+                and type(ref.get("revision")) is int
+                and ref.get("revision") == revision
+                and type(ref.get("state_revision")) is int
+                and ref.get("state_revision") == revision
+                and ref.get("source_token") == root.get("source_token")
+            ),
+            None,
+        )
+        if final_ref is None:
+            return None
+        return await load_referenced(
+            final_ref,
+            kind=("semantic_source_validation_ids", "semantic_source_validation_index"),
+        )
 
     async def prune_semantic_discovery_state(
         self, *, older_than: timedelta, keep_run_ids: Collection[str]

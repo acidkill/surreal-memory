@@ -635,6 +635,14 @@ class ConsolidationReport:
             self._drift_cluster_line(),
             f"  Duration: {self.duration_ms:.1f}ms",
         ]
+        if "validation_database_events" in self.extra:
+            lines.append(
+                "  Semantic source validation: "
+                f"{self.extra['validation_database_events']} database events verified, "
+                f"{self.extra.get('validation_neuron_events', 0)} neuron / "
+                f"{self.extra.get('validation_synapse_events', 0)} synapse events; "
+                f"cursor={self.extra.get('validation_cursor', 'unknown')}"
+            )
         if self.merge_details:
             lines.append("  Merge details:")
             for detail in self.merge_details:
@@ -10447,6 +10455,7 @@ class ConsolidationEngine:
             _SemanticFingerprintBuilder,
             discover_semantic_synapses,
         )
+        from surreal_memory.engine.semantic_validation import SemanticSourceValidation
         from surreal_memory.storage.surrealdb.semantic_source_revision import (
             SemanticSourceChangedError,
         )
@@ -10691,7 +10700,70 @@ class ConsolidationEngine:
         pending = state.get("pending")
         resume_discovery: dict[str, Any] | None = None
         manifest: dict[str, Any] | None = None
+        validation: SemanticSourceValidation | None = None
         serialized: str
+
+        async def validate_pending_source() -> None:
+            nonlocal validation, serialized
+            assert manifest is not None
+            source_token = manifest.get("source_token")
+            if source_token is None:
+                return
+            if not isinstance(source_token, str) or not source_token:
+                raise ConsolidationProgressError("invalid semantic-link source token")
+            create = getattr(self._storage, "_create_semantic_source_fence_session", None)
+            if reference_time is None or not callable(create):
+                verify = getattr(self._storage, "assert_semantic_source_unchanged", None)
+                if not callable(verify):
+                    raise ConsolidationProgressError(
+                        "semantic-link source mutation fence is unavailable"
+                    )
+                if reference_time is None:
+                    await verify(source_token)
+                else:
+                    await verify(source_token, created_before=reference_time)
+                return
+            if validation is None:
+                assert self._progress_session is not None
+                ref = manifest.get("source_validation_ref")
+                if ref is not None and not isinstance(ref, dict):
+                    raise ConsolidationProgressError("invalid semantic-link validation reference")
+                validation = SemanticSourceValidation(
+                    self._storage,
+                    source_token,
+                    reference_time=reference_time,
+                    run_id=str(self._progress_session.state["run_id"]),
+                    owner_token=self._progress_session.owner_token,
+                    reference=ref,
+                    budget_check=self._check_progress_budget,
+                )
+
+            async def checkpoint_validation(ref: dict[str, Any], counters: dict[str, int]) -> None:
+                nonlocal serialized
+                assert manifest is not None
+                manifest["version"] = 4
+                manifest["source_validation_ref"] = ref
+                serialized = json.dumps(
+                    manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                )
+                current = self._strategy_progress_state()
+                current_counters = current.get("counters") or {}
+                report.extra.update(counters)
+                report.semantic_synapses_created = int(
+                    current_counters.get("semantic_synapses_created", 0)
+                )
+                report.semantic_synapses_skipped = int(
+                    current_counters.get("semantic_synapses_skipped", 0)
+                )
+                await self._checkpoint_progress(
+                    "semantic_link_validation",
+                    cursor=current.get("cursor"),
+                    pending=[serialized],
+                    counters={**current_counters, **counters},
+                )
+
+            await validation.assert_unchanged(checkpoint_validation)
+
         if pending:
             if not isinstance(pending, (list, tuple)) or len(pending) != 1:
                 raise ConsolidationProgressError("invalid semantic-link pending checkpoint")
@@ -10703,6 +10775,7 @@ class ConsolidationEngine:
                     1,
                     2,
                     3,
+                    4,
                 ):
                     manifest = saved
                     raw_synapses = manifest["synapses"]
@@ -10719,24 +10792,7 @@ class ConsolidationEngine:
                         raise ConsolidationProgressError(
                             "semantic-link pending snapshot reference_time changed"
                         )
-                    source_token = manifest.get("source_token")
-                    if source_token is not None:
-                        verify_source = getattr(
-                            self._storage, "assert_semantic_source_unchanged", None
-                        )
-                        if not callable(verify_source):
-                            raise ConsolidationProgressError(
-                                "semantic-link source mutation fence is unavailable"
-                            )
-                        try:
-                            if reference_time is None:
-                                await verify_source(source_token)
-                            else:
-                                await verify_source(source_token, created_before=reference_time)
-                        except RuntimeError as exc:
-                            raise ConsolidationProgressError(
-                                f"semantic-link source fence failed: {exc}"
-                            ) from exc
+                    await validate_pending_source()
                     fingerprint_value = manifest.get("source_fingerprint")
                     if fingerprint_value is not None:
                         current_fingerprint = await source_fingerprint(synapses)
@@ -10744,6 +10800,7 @@ class ConsolidationEngine:
                             raise ConsolidationProgressError(
                                 "semantic-link source data changed after its pending checkpoint"
                             )
+                        await validate_pending_source()
                     metrics = manifest["metrics"]
                     if not isinstance(metrics, dict):
                         raise ValueError("metrics is not an object")
@@ -10807,11 +10864,23 @@ class ConsolidationEngine:
                                 "synapses_created",
                                 "skipped_existing",
                                 "pairs_evaluated",
+                                "validation_database_events",
+                                "validation_neuron_events",
+                                "validation_synapse_events",
+                                "validation_cursor",
                             )
                             if isinstance(details.get(key), (int, float))
                         },
                     },
                 )
+                for key in (
+                    "validation_database_events",
+                    "validation_neuron_events",
+                    "validation_synapse_events",
+                    "validation_cursor",
+                ):
+                    if key in details:
+                        report.extra[key] = details[key]
 
             try:
                 result = await discover_semantic_synapses(
@@ -10863,7 +10932,7 @@ class ConsolidationEngine:
                 result_fingerprint = await source_fingerprint(synapses)
             manifest = {
                 "kind": "semantic_link_synapses",
-                "version": 3 if result.continuation is not None else 2,
+                "version": 4,
                 "source_fingerprint": result_fingerprint,
                 "source_token": result.source_token if reference_time is not None else None,
                 "reference_time": (
@@ -10874,6 +10943,7 @@ class ConsolidationEngine:
                 "metrics": metrics,
                 "synapses": [encode_synapse(synapse) for synapse in synapses],
                 "continuation": result.continuation,
+                "source_validation_ref": result.source_validation_ref,
             }
             serialized = json.dumps(
                 manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")
@@ -10891,6 +10961,8 @@ class ConsolidationEngine:
             # Discovery may have persisted a cursor to the outer strategy state.
             # The final manifest starts a separate, deterministic apply cursor.
             cursor = None
+
+        await validate_pending_source()
 
         if metrics.get("reference_time_rebuilt"):
             report.extra["semantic_link_stage_rebuilt_for_reference_time"] = True
@@ -10920,9 +10992,17 @@ class ConsolidationEngine:
         applied_since_checkpoint = 0
 
         async def checkpoint_apply() -> None:
-            nonlocal applied_since_checkpoint
+            nonlocal applied_since_checkpoint, serialized
             if applied_since_checkpoint == 0:
                 return
+            if validation is not None:
+                proof_ref = await validation.snapshot()
+                if proof_ref is not None:
+                    manifest["version"] = 4
+                    manifest["source_validation_ref"] = proof_ref
+                    serialized = json.dumps(
+                        manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                    )
             await self._checkpoint_progress(
                 "semantic_link_apply",
                 cursor=cursor,
@@ -10976,6 +11056,7 @@ class ConsolidationEngine:
             applied_since_checkpoint += 1
             if applied_since_checkpoint >= _SEMANTIC_LINK_APPLY_CHECKPOINT_BATCH:
                 await checkpoint_apply()
+                await validate_pending_source()
 
         # Persist the final partial group before marking the stage complete.
         await checkpoint_apply()
@@ -10988,6 +11069,11 @@ class ConsolidationEngine:
                 )
             if not isinstance(continuation, dict) or reference_time is None:
                 raise ConsolidationProgressError("invalid semantic-link batch continuation")
+            if validation is not None:
+                proof_ref = await validation.snapshot()
+                if proof_ref is not None:
+                    continuation["version"] = 5
+                    continuation["source_validation_ref"] = proof_ref
             await self._checkpoint_progress(
                 "semantic_link_discovery_batch",
                 cursor=None,
