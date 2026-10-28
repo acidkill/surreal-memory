@@ -50,13 +50,13 @@ class SurrealDBSemanticDiscoveryStateMixin:
             return False
         if isinstance(value, str):
             candidate = value.lstrip()
-            if len(value) > _MAX_SNAPSHOT_BYTES or not candidate.startswith(("{", "[")):
+            # A pending apply manifest can contain thousands of synapses; the
+            # snapshot payload limit does not bound its serialized envelope.
+            if not candidate.startswith(("{", "[")):
                 return False
             try:
-                encoded_size = len(value.encode("utf-8"))
+                value.encode("utf-8")
             except UnicodeEncodeError:
-                return False
-            if encoded_size > _MAX_SNAPSHOT_BYTES:
                 return False
             try:
                 decoded = json.loads(value)
