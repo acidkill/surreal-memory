@@ -1803,6 +1803,7 @@ async def _discover_semantic_synapses_resumable(
     # Restore the original per-type interleave when the complete set fits the
     # cap. Above the cap, match _select_candidates: degree order with stable
     # interleaved ties, or the first interleaved cap when degree lookup fails.
+    snapshot_candidates: list[tuple[int, Neuron, list[float]]] | None = None
     if candidate_map:
         if degree_by_id:
             selected = sorted(
@@ -1814,10 +1815,20 @@ async def _discover_semantic_synapses_resumable(
         eligible = [item[1] for item in selected]
         vectors = [item[2] for item in selected]
     elif eligible:
+        if (
+            durable_neuron_state is not None
+            and not durable_neuron_state.get("bounded")
+            and source_scan_complete_on_entry
+            and durable_neuron_state.get("neuron_complete")
+            and saved_stage == "similarity"
+            and saved_version == 2
+        ):
+            snapshot_candidates = list(zip(candidate_priorities, eligible, vectors, strict=True))
         interleaved = sorted(
             zip(candidate_priorities, eligible, vectors, strict=True),
             key=lambda item: item[0],
         )
+        candidate_priorities = [item[0] for item in interleaved]
         eligible = [item[1] for item in interleaved]
         vectors = [item[2] for item in interleaved]
 
@@ -1956,20 +1967,20 @@ async def _discover_semantic_synapses_resumable(
     created_digest = hashlib.sha256(b"semantic-link-created-v1")
     checkpoint_results: list[tuple[int, int, str]] = []
 
-    def _make_synapse(i: int, j: int, sim: float) -> Synapse:
+    def _make_synapse(i: int, j: int, sim: float, candidates: list[Neuron]) -> Synapse:
         return Synapse.create(
-            source_id=eligible[i].id,
-            target_id=eligible[j].id,
+            source_id=candidates[i].id,
+            target_id=candidates[j].id,
             type=SynapseType.SIMILAR_TO,
             weight=sim * 0.6,
             metadata={"_semantic_discovery": True, "cosine_similarity": round(sim, 4)},
             synapse_id=deterministic_edge_id(
-                SynapseType.SIMILAR_TO, eligible[i].id, eligible[j].id
+                SynapseType.SIMILAR_TO, candidates[i].id, candidates[j].id
             ),
         )
 
-    def _update_created_digest(synapse: Synapse) -> None:
-        created_digest.update(
+    def _update_created_digest(synapse: Synapse, digest: _SHA256Digest = created_digest) -> None:
+        digest.update(
             json.dumps(
                 {
                     "id": synapse.id,
@@ -1986,7 +1997,7 @@ async def _discover_semantic_synapses_resumable(
 
     def _record_created_synapse(i: int, j: int, sim: float) -> None:
         pair = frozenset({eligible[i].id, eligible[j].id})
-        synapse = _make_synapse(i, j, sim)
+        synapse = _make_synapse(i, j, sim, eligible)
         new_synapses.append(synapse)
         checkpoint_results.append((i, j, sim.hex()))
         _update_created_digest(synapse)
@@ -2075,18 +2086,8 @@ async def _discover_semantic_synapses_resumable(
         raw_results = saved.get("results")
         if not isinstance(raw_results, list) or len(raw_results) > max_pairs:
             raise RuntimeError("invalid semantic_link similarity results")
-        result_pairs: list[tuple[str, str]] = []
-        for item in raw_results:
-            if (
-                isinstance(item, list)
-                and len(item) == 3
-                and type(item[0]) is int
-                and type(item[1]) is int
-                and 0 <= item[0] < row_count
-                and 0 <= item[1] < row_count
-            ):
-                result_pairs.append((eligible[item[0]].id, eligible[item[1]].id))
-        existing_result_pairs = await _existing_pairs(result_pairs)
+        parsed_results: list[tuple[int, int, float]] = []
+        result_indices: set[frozenset[int]] = set()
         last_source_index = -1
         results_per_source: dict[int, int] = {}
         for item in raw_results:
@@ -2117,16 +2118,13 @@ async def _discover_semantic_synapses_resumable(
                 sim = float.fromhex(similarity_hex)
             except ValueError as exc:
                 raise RuntimeError("invalid semantic_link similarity value") from exc
-            if sim.hex() != similarity_hex or sim < threshold:
+            if not math.isfinite(sim) or sim.hex() != similarity_hex or sim < threshold:
                 raise RuntimeError("semantic_link similarity result changed")
-            pair = frozenset({eligible[source_index].id, eligible[target_index].id})
-            if (
-                _canonical_pair(eligible[source_index].id, eligible[target_index].id)
-                in existing_result_pairs
-                or pair in created_this_run
-            ):
+            pair_indices = frozenset({source_index, target_index})
+            if pair_indices in result_indices:
                 raise RuntimeError("semantic_link checkpoint contains a duplicate pair")
-            _record_created_synapse(source_index, target_index, sim)
+            result_indices.add(pair_indices)
+            parsed_results.append((source_index, target_index, sim))
 
         def _saved_counter(name: str) -> int:
             value = saved.get(name)
@@ -2139,13 +2137,53 @@ async def _discover_semantic_synapses_resumable(
         pairs_evaluated = _saved_counter("pairs_evaluated")
         synapses_created = _saved_counter("synapses_created")
         if (
-            synapses_created != len(new_synapses)
+            synapses_created != len(parsed_results)
             or synapses_created > max_pairs
             or pairs_evaluated > (resume_row + 1) * top_k
             or synapses_created + skipped + skipped_created_this_run > pairs_evaluated
-            or created_digest.hexdigest() != saved.get("result_prefix_digest")
         ):
             raise RuntimeError("semantic_link similarity checkpoint failed validation")
+
+        def _matches_result_digest(candidates: list[Neuron]) -> bool:
+            digest = hashlib.sha256(b"semantic-link-created-v1")
+            for i, j, sim in parsed_results:
+                _update_created_digest(_make_synapse(i, j, sim, candidates), digest)
+            return digest.hexdigest() == saved.get("result_prefix_digest")
+
+        if snapshot_candidates is not None:
+            snapshot_neurons = [item[1] for item in snapshot_candidates]
+            snapshot_matches = _matches_result_digest(snapshot_neurons)
+            different_order = [neuron.id for neuron in snapshot_neurons] != [
+                neuron.id for neuron in eligible
+            ]
+            sorted_matches = (
+                _matches_result_digest(eligible) if different_order else snapshot_matches
+            )
+            if snapshot_matches and sorted_matches and different_order:
+                raise RuntimeError("semantic_link checkpoint candidate order is ambiguous")
+            if snapshot_matches:
+                # Legacy snapshots sorted IDs/vectors but kept pre-sort priorities.
+                eligible = snapshot_neurons
+                vectors = [item[2] for item in snapshot_candidates]
+                if different_order:
+                    logger.info("semantic_link restored snapshot candidate order from result hash")
+            elif not sorted_matches:
+                raise RuntimeError(
+                    "semantic_link similarity checkpoint hash mismatch: candidate order unverified"
+                )
+        elif not _matches_result_digest(eligible):
+            raise RuntimeError("semantic_link similarity checkpoint hash mismatch")
+
+        result_pairs = [(eligible[i].id, eligible[j].id) for i, j, _sim in parsed_results]
+        existing_result_pairs = await _existing_pairs(result_pairs)
+        for i, j, sim in parsed_results:
+            pair = frozenset({eligible[i].id, eligible[j].id})
+            if (
+                _canonical_pair(eligible[i].id, eligible[j].id) in existing_result_pairs
+                or pair in created_this_run
+            ):
+                raise RuntimeError("semantic_link checkpoint contains a duplicate pair")
+            _record_created_synapse(i, j, sim)
 
     if resume_v1_similarity and legacy_similarity_rebuild is not None:
         if not isinstance(legacy_similarity_rebuild, Mapping):

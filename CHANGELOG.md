@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Semantic-link checkpoints keep candidate neurons, vectors and priorities aligned.
+  Resuming older completed snapshots verifies result hashes before pair lookups
+  and preserves the verified index order; ambiguous ordering still stops safely.
 - Compression skips advanced legacy fibers without lineage receipts before
   loading their source records. Their original content and preservation-conflict
   result remain unchanged while avoiding reads that cannot advance compression.
