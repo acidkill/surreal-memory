@@ -34,6 +34,10 @@ class ConsolidationPausedError(ConsolidationProgressError):
     """The strategy reached its budget at a committed work-unit boundary."""
 
 
+class ConsolidationChunkCompleteError(ConsolidationPausedError):
+    """A committed chunk can continue within the current invocation's budget."""
+
+
 class ConsolidationLeaseBusyError(ConsolidationProgressError):
     """Another worker currently owns this brain's consolidation lease."""
 

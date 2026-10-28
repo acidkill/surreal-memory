@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import replace
@@ -122,6 +123,84 @@ async def _resume_semantic_link(storage: SurrealDBStorage, run_id: str) -> Any:
     )
 
 
+async def _run_semantic_link_until_chunk_pause(
+    storage: SurrealDBStorage,
+    reference_time: datetime,
+) -> Any:
+    progress = await storage.get_consolidation_progress(storage.current_brain_id)
+    initial_pending = None
+    run_id = None
+    if progress is not None:
+        run_id = str(progress["run_id"])
+        strategy_state = progress["strategy_states"]["semantic_link"]
+        initial_pending = strategy_state.get("pending")
+
+    engine = ConsolidationEngine(storage, ConsolidationConfig())
+    check_budget = engine._check_progress_budget
+
+    async def pause_after_committed_chunk() -> None:
+        session = engine._progress_session
+        state = session.strategy_state("semantic_link") if session is not None else {}
+        if (
+            state.get("phase") == "semantic_link_discovery_batch"
+            and state.get("pending") != initial_pending
+        ):
+            engine._strategy_deadline = time.perf_counter() - 1
+        await check_budget()
+
+    engine._check_progress_budget = pause_after_committed_chunk  # type: ignore[method-assign]
+    if run_id is None:
+        return await engine.run(
+            strategies=[ConsolidationStrategy.SEMANTIC_LINK],
+            reference_time=reference_time,
+        )
+    return await engine.run(
+        strategies=[ConsolidationStrategy.SEMANTIC_LINK],
+        resume_run_id=run_id,
+    )
+
+
+def _track_semantic_chunk_checkpoints(
+    monkeypatch: pytest.MonkeyPatch,
+    storage: SurrealDBStorage,
+) -> tuple[list[int], list[dict[str, Any]]]:
+    chunk_sizes: list[int] = []
+    staged_sources: list[dict[str, Any]] = []
+    previous_created = 0
+    save = storage.save_consolidation_progress
+
+    async def track_save(brain_id: str, owner_token: str, state: Any) -> Any:
+        nonlocal previous_created
+        strategy_state = state.get("strategy_states", {}).get("semantic_link", {})
+        counters = strategy_state.get("counters", {})
+        created = counters.get("semantic_synapses_created", 0)
+        if isinstance(created, int) and created > previous_created:
+            chunk_sizes.append(created - previous_created)
+            previous_created = created
+
+        pending = strategy_state.get("pending")
+        if strategy_state.get("phase") == "semantic_link_discovery_batch" and pending:
+            manifest = json.loads(pending[0])
+            continuation = (
+                manifest
+                if manifest.get("kind") == "semantic_link_discovery"
+                else manifest.get("continuation")
+            )
+            source_ref = (
+                continuation.get("source_state_ref") if isinstance(continuation, dict) else None
+            )
+            if isinstance(source_ref, dict):
+                staged = await storage.load_semantic_discovery_state(
+                    source_ref["state_id"], source_ref["revision"]
+                )
+                if staged is not None:
+                    staged_sources.append(dict(staged))
+        return await save(brain_id, owner_token, state)
+
+    monkeypatch.setattr(storage, "save_consolidation_progress", track_save)
+    return chunk_sizes, staged_sources
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("neuron_count", "candidate_limit"),
@@ -163,66 +242,25 @@ async def test_semantic_coverage_batches_resume_under_real_progress_leases(
     monkeypatch.setattr(store, "acquire_consolidation_lease", track_acquire)
     monkeypatch.setattr(store, "release_consolidation_lease", track_release)
 
-    run_id: str | None = None
-    previous_edge_count = 0
-    last_report = None
-    completed_in = 0
-    for attempt in range(40):
-        engine = ConsolidationEngine(store, ConsolidationConfig())
-        if run_id is None:
-            report = await engine.run(
-                strategies=[ConsolidationStrategy.SEMANTIC_LINK],
-                reference_time=reference_time,
-            )
-        else:
-            report = await engine.run(
-                strategies=[ConsolidationStrategy.SEMANTIC_LINK],
-                resume_run_id=run_id,
-            )
-
-        progress = await store.get_consolidation_progress(brain.id)
-        assert progress is not None
-        run_id = str(progress["run_id"])
-        edges = await store.get_synapses(type=SynapseType.SIMILAR_TO)
-        assert len(edges) - previous_edge_count <= PAIR_CAP
-        previous_edge_count = len(edges)
-        last_report = report
-
-        if attempt == 0:
-            assert report.extra["consolidation_status"] == "paused"
-            strategy_state = progress["strategy_states"]["semantic_link"]
-            pending = strategy_state["pending"]
-            assert len(pending) == 1
-            manifest = json.loads(pending[0])
-            source_ref = manifest["source_state_ref"]
-            inspection_owner = "semantic-coverage-inspect-" + uuid.uuid4().hex
-            assert await acquire(brain.id, inspection_owner)
-            try:
-                assert await store.claim_consolidation_progress(brain.id, inspection_owner)
-                staged = await store.load_semantic_discovery_state(
-                    source_ref["state_id"], source_ref["revision"]
-                )
-            finally:
-                assert await release(brain.id, inspection_owner)
-            assert staged is not None
-            assert staged["batch_index"] == 0
-            assert staged.get("coverage_offset") is None
-            assert staged["reference_time"] == reference_time.isoformat(timespec="microseconds")
-
-        status = report.extra.get("consolidation_status")
-        if status == "completed":
-            completed_in = attempt + 1
-            break
-        assert status == "paused"
-        assert progress["status"] == "paused"
-    else:
-        pytest.fail("semantic coverage batches did not complete within 40 lease attempts")
-
-    assert last_report is not None
-    assert last_report.extra["semantic_coverage_complete"] is True
-    assert len(acquired_owners) == completed_in
+    chunk_sizes, staged_sources = _track_semantic_chunk_checkpoints(monkeypatch, store)
+    last_report = await ConsolidationEngine(store, ConsolidationConfig()).run(
+        strategies=[ConsolidationStrategy.SEMANTIC_LINK],
+        reference_time=reference_time,
+    )
+    progress = await store.get_consolidation_progress(brain.id)
+    assert progress is not None
+    assert last_report.extra["consolidation_status"] == "completed"
+    assert len(acquired_owners) == 1
     assert released_owners == acquired_owners
-    assert len(set(acquired_owners)) == len(acquired_owners)
+    assert len(set(acquired_owners)) == 1
+    assert len(chunk_sizes) >= 2
+    assert all(0 < chunk_size <= PAIR_CAP for chunk_size in chunk_sizes)
+    assert staged_sources
+    assert staged_sources[0]["batch_index"] == 0
+    assert staged_sources[0].get("coverage_offset") is None
+    assert staged_sources[0]["reference_time"] == reference_time.isoformat(timespec="microseconds")
+
+    assert last_report.extra["semantic_coverage_complete"] is True
 
     final_progress = await store.get_consolidation_progress(brain.id)
     assert final_progress is not None
@@ -232,6 +270,7 @@ async def test_semantic_coverage_batches_resume_under_real_progress_leases(
         await store.get_synapses(type=SynapseType.SIMILAR_TO)
     )
     semantic_edges = await store.get_synapses(type=SynapseType.SIMILAR_TO)
+    assert sum(chunk_sizes) == len(semantic_edges)
     assert len(semantic_edges) == len({edge.id for edge in semantic_edges})
     assert all(edge.created_at > reference_time for edge in semantic_edges)
 
@@ -258,12 +297,12 @@ async def test_post_reference_neuron_is_excluded_from_frozen_semantic_coverage(
         lambda _config: (True, "fixture", "fixture"),
     )
 
-    first = await ConsolidationEngine(store, ConsolidationConfig()).run(
-        strategies=[ConsolidationStrategy.SEMANTIC_LINK], reference_time=reference_time
-    )
+    first = await _run_semantic_link_until_chunk_pause(store, reference_time)
     assert first.extra["consolidation_status"] == "paused"
     progress = await store.get_consolidation_progress(brain.id)
     assert progress is not None
+    assert progress["status"] == "paused"
+    assert len(await store.get_synapses(type=SynapseType.SIMILAR_TO)) == PAIR_CAP
 
     late_neuron = replace(
         Neuron.create(
@@ -277,15 +316,8 @@ async def test_post_reference_neuron_is_excluded_from_frozen_semantic_coverage(
     await store.add_neuron(late_neuron)
 
     run_id = str(progress["run_id"])
-    report = first
-    for _ in range(20):
-        report = await _resume_semantic_link(store, run_id)
-        edges = await store.get_synapses(type=SynapseType.SIMILAR_TO)
-        assert len(edges) <= 10
-        if report.extra.get("consolidation_status") == "completed":
-            break
-    else:
-        pytest.fail("semantic coverage did not finish after a post-reference insert")
+    report = await _resume_semantic_link(store, run_id)
+    assert report.extra["consolidation_status"] == "completed"
 
     edges = await store.get_synapses(type=SynapseType.SIMILAR_TO)
     linked_ids = {endpoint for edge in edges for endpoint in (edge.source_id, edge.target_id)}
@@ -310,9 +342,7 @@ async def test_pre_reference_mutation_between_windows_fails_closed_without_more_
     )
     monkeypatch.setattr("surreal_memory.engine.semantic_discovery.MAX_NEURONS_TO_LINK", 4)
 
-    first = await ConsolidationEngine(store, ConsolidationConfig()).run(
-        strategies=[ConsolidationStrategy.SEMANTIC_LINK], reference_time=reference_time
-    )
+    first = await _run_semantic_link_until_chunk_pause(store, reference_time)
     assert first.extra["consolidation_status"] == "paused"
     progress = await store.get_consolidation_progress(brain.id)
     assert progress is not None
@@ -323,14 +353,9 @@ async def test_pre_reference_mutation_between_windows_fails_closed_without_more_
     assert candidate is not None
     await store.update_neuron(candidate.with_metadata(_embedding=[0.0] + [1.0] * 1023))
 
-    report = None
-    for _ in range(3):
-        report = await _resume_semantic_link(store, str(progress["run_id"]))
-        after = await store.get_synapses(type=SynapseType.SIMILAR_TO)
-        assert len(after) == len(before)
-        if report.extra["consolidation_status"] != "paused":
-            break
-    assert report is not None
+    report = await _resume_semantic_link(store, str(progress["run_id"]))
+    after = await store.get_synapses(type=SynapseType.SIMILAR_TO)
+    assert len(after) == len(before)
     assert report.extra["consolidation_status"] == "failed"
     final = await store.get_consolidation_progress(brain.id)
     assert final is not None
@@ -359,9 +384,7 @@ async def test_tampered_batch_or_window_manifest_fails_closed(
             "surreal_memory.engine.semantic_discovery.MAX_NEURONS_TO_LINK", candidate_limit
         )
 
-    first = await ConsolidationEngine(store, ConsolidationConfig()).run(
-        strategies=[ConsolidationStrategy.SEMANTIC_LINK], reference_time=reference_time
-    )
+    first = await _run_semantic_link_until_chunk_pause(store, reference_time)
     assert first.extra["consolidation_status"] == "paused"
     progress = await store.get_consolidation_progress(brain.id)
     assert progress is not None
@@ -380,7 +403,7 @@ async def test_tampered_batch_or_window_manifest_fails_closed(
             continuation = manifest.get("continuation")
         if isinstance(continuation, dict) and tamper_field in continuation:
             break
-        report = await _resume_semantic_link(store, str(progress["run_id"]))
+        report = await _run_semantic_link_until_chunk_pause(store, reference_time)
         assert report.extra["consolidation_status"] == "paused"
         progress = await store.get_consolidation_progress(brain.id)
         assert progress is not None
@@ -465,39 +488,22 @@ async def test_id_order_windows_skip_ineligible_rows_and_cover_single_new_candid
     for neuron in ineligible:
         await store.add_neuron(neuron)
 
-    run_id: str | None = None
-    previous_edge_count = 0
-    last_report = None
-    coverage_reports: list[bool] = []
-    for _ in range(20):
-        if run_id is None:
-            report = await ConsolidationEngine(store, ConsolidationConfig()).run(
-                strategies=[ConsolidationStrategy.SEMANTIC_LINK],
-                reference_time=reference_time,
-            )
-        else:
-            report = await _resume_semantic_link(store, run_id)
-        last_report = report
-        coverage_reports.append(report.extra.get("semantic_coverage_complete", False))
-        progress = await store.get_consolidation_progress(brain.id)
-        assert progress is not None
-        run_id = str(progress["run_id"])
-        edges = await store.get_synapses(type=SynapseType.SIMILAR_TO)
-        assert len(edges) - previous_edge_count <= PAIR_CAP
-        previous_edge_count = len(edges)
-        if report.extra.get("consolidation_status") == "completed":
-            break
-    else:
-        pytest.fail("semantic coverage did not finish across ineligible ID-order rows")
+    chunk_sizes, _staged_sources = _track_semantic_chunk_checkpoints(monkeypatch, store)
+    last_report = await ConsolidationEngine(store, ConsolidationConfig()).run(
+        strategies=[ConsolidationStrategy.SEMANTIC_LINK],
+        reference_time=reference_time,
+    )
+    assert last_report.extra["consolidation_status"] == "completed"
+    assert len(chunk_sizes) >= 2
+    assert all(0 < chunk_size <= PAIR_CAP for chunk_size in chunk_sizes)
 
-    assert last_report is not None
     edges = await store.get_synapses(type=SynapseType.SIMILAR_TO)
+    assert sum(chunk_sizes) == len(edges)
     covered_ids = {endpoint for edge in edges for endpoint in (edge.source_id, edge.target_id)}
     assert len(edges) == 7
     assert covered_ids == eligible_ids
     assert last_report.extra["semantic_coverage_complete"] is True
     assert last_report.extra["semantic_coverage_offset"] == 3
-    assert all(not complete for complete in coverage_reports[:-1])
     progress = await store.get_consolidation_progress(brain.id)
     assert progress is not None
     assert (
