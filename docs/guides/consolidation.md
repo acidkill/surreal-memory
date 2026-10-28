@@ -92,9 +92,11 @@ is a sampled retrieval probe rather than a full integrity audit.
 ## Semantic snapshot retention
 
 For saved runs, semantic discovery retains its frozen reference time across
-bounded pair batches. A batch that reaches the pair cap pauses after its writes
-are committed; `--resume` continues discovery instead of declaring the stage
-complete. The cap and strategy time budget remain unchanged.
+bounded pair batches. After each capped batch commits its writes, the same
+invocation continues discovery while its original strategy and total time
+budgets permit. Chunk boundaries do not reset those deadlines or declare the
+stage complete. When a time budget expires, `--resume` continues the committed
+checkpoint. The pair cap and time limits remain unchanged.
 
 After the initial least-connected sample, deterministic ID-order candidate
 windows with a one-candidate overlap cover the remaining frozen eligible
@@ -111,14 +113,19 @@ larger than the pure-Python fallback limit; a missing NumPy installation stops
 that window rather than silently dropping its remaining candidates.
 
 Source validation captures a finite changefeed barrier. Its 100,000 events per
-source table and 2,000,000 database events are budgets for one invocation, not
-limits on the saved run's history. A large safe history pauses normally with CLI
-exit 1 and a separately reported verified cursor. The next resume continues that
-prefix, including the classifier's paged record-ID evidence. It does not apply
-another synapse batch until the required range has been verified. Concurrent
+source table and 2,000,000 database events bound one validation chunk, not the
+whole CLI invocation or the saved run's history. Each chunk checkpoints its
+verified cursor and the classifier's paged record-ID evidence, then continues
+within the original time budgets. Time exhaustion pauses normally with CLI
+exit 1; `--resume` continues the saved prefix. No synapse batch is applied until
+its required source range has been verified. Concurrent
 recall statistics and new memories can be classified without changing the frozen
 source; changes to that source, unknown events and missing history still fail
 closed. Neither a pause nor a positive validation count proves run completion.
+
+The report's `Duration` measures engine execution. CLI initialization and the
+before/after health diagnostics run outside that measurement, so shell elapsed
+time can exceed the reported duration.
 
 Validation pages are immutable snapshots of at most 1 MB, published through the
 same lease-fenced checkpoint. An interrupted or unconfirmed write cannot publish
