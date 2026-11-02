@@ -465,17 +465,13 @@ class SurrealDBSemanticDiscoveryStateMixin:
                     part = _record_id_part(str(cursor))
                     if not part or _to_surreal_id(part) != part:
                         raise SemanticDiscoveryStateError("invalid discovery prune cursor")
-                    source = f"semantic_discovery_state:`{part}`.."
+                    # On 3.2 a literal RecordIdScan materializes the tail before
+                    # LIMIT. A runtime range passes LIMIT to the storage iterator.
+                    source = "type::record('semantic_discovery_state', $cursor>..)"
                 page = await self._query(
                     "SELECT id, (brain_id = $brain_id AND created_at < $cutoff "
                     "AND run_id NOT IN $keep) AS eligible FROM "
-                    f"{source} "
-                    + (
-                        "WHERE id > type::record('semantic_discovery_state', $cursor) "
-                        if cursor
-                        else ""
-                    )
-                    + "LIMIT $limit",
+                    f"{source} LIMIT $limit",
                     brain_id=brain_id,
                     cutoff=cutoff,
                     keep=keep,

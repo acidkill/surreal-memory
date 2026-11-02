@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import json
 import os
+import sys
 import threading
 import uuid
 from datetime import timedelta
@@ -24,6 +25,7 @@ PAYLOAD_BYTES = 128 * 1024
 READ_PAGE_LIMIT = 64
 MAX_READ_PAGES = 4
 MAX_DELETES = 8
+PHYSICAL_SCAN_OPERATORS = {"TableScan", "RecordIdScan", "IndexScan", "DynamicScan"}
 
 
 def _rss_kib(pid: int) -> int:
@@ -52,6 +54,51 @@ def _reset_hwm(pid: int) -> None:
         ["/usr/bin/sudo", "-n", "/bin/sh", "-c", f"echo 5 > /proc/{pid}/clear_refs"],
         check=True,
     )
+
+
+def _physical_scans(plan: Any) -> list[dict[str, Any]]:
+    scans: list[dict[str, Any]] = []
+    if isinstance(plan, list):
+        for child in plan:
+            scans.extend(_physical_scans(child))
+    elif isinstance(plan, dict):
+        operator = plan.get("operator")
+        if isinstance(operator, str) and operator in PHYSICAL_SCAN_OPERATORS:
+            scans.append(
+                {
+                    "operator": operator,
+                    "context": plan.get("context"),
+                    "attributes": plan.get("attributes"),
+                    "metrics": plan.get("metrics"),
+                }
+            )
+        for child in plan.values():
+            scans.extend(_physical_scans(child))
+    return scans
+
+
+def _assert_physical_read_bound(evidence: dict[str, Any]) -> None:
+    scans = evidence["physical_scans"]
+    invalid = [
+        scan
+        for scan in scans
+        if not isinstance(scan.get("metrics"), dict)
+        or not isinstance(scan["metrics"].get("output_rows"), int)
+        or scan["metrics"]["output_rows"] > READ_PAGE_LIMIT
+    ]
+    if not scans or invalid:
+        print(
+            json.dumps(
+                {
+                    "benchmark_failure": "physical scan read bound exceeded or unreported",
+                    **evidence,
+                },
+                sort_keys=True,
+            ),
+            file=sys.stderr,
+            flush=True,
+        )
+        raise AssertionError("physical scan output_rows must be reported and <= 64 per page")
 
 
 class _RssSampler:
@@ -238,19 +285,42 @@ async def _run(mode: str, version: str) -> dict[str, Any]:
 
             first_sql, first_params, _ = warm_page_scans[0]
             scan_sql, scan_params, _ = page_scans[0]
-            plan = await SurrealDBStorage._query_response(
-                storage, scan_sql + " EXPLAIN FULL", **scan_params
-            )
-            first_plan = await SurrealDBStorage._query_response(
-                storage, first_sql + " EXPLAIN FULL", **first_params
-            )
-            plan_text = json.dumps(plan, default=str)
-            first_plan_text = json.dumps(first_plan, default=str)
-            assert "RecordIdScan" in plan_text, (
-                f"continuation plan lacks a primary record range scan: {plan_text[:1200]}"
-            )
-            assert ".." in plan_text
-            assert "semantic_discovery_state:" in scan_sql
+            page_evidence: list[dict[str, Any]] = []
+            for phase, queries in (("cursor_seed", warm_page_scans), ("measured", page_scans)):
+                for sql, params, result_rows in queries:
+                    plan = await SurrealDBStorage._query_response(
+                        storage, sql + " EXPLAIN FULL", **params
+                    )
+                    evidence = {
+                        "phase": phase,
+                        "sql": sql,
+                        "result_rows": result_rows,
+                        "physical_scans": _physical_scans(plan),
+                        "plan": json.dumps(plan, default=str),
+                    }
+                    _assert_physical_read_bound(evidence)
+                    page_evidence.append(evidence)
+            continuation = next(item for item in page_evidence if item["phase"] == "measured")
+            first_page = next(item for item in page_evidence if item["phase"] == "cursor_seed")
+            plan_text = continuation["plan"]
+            first_plan_text = first_page["plan"]
+            if not any(
+                s["operator"] in {"DynamicScan", "RecordIdScan"}
+                for s in continuation["physical_scans"]
+            ):
+                print(
+                    json.dumps(
+                        {
+                            "benchmark_failure": "continuation plan lacks primary record range",
+                            "page_scan_evidence": page_evidence,
+                        },
+                        sort_keys=True,
+                    ),
+                    file=sys.stderr,
+                    flush=True,
+                )
+                raise AssertionError("continuation plan lacks a primary record range scan")
+            assert "semantic_discovery_state" in scan_sql
             assert ".." in scan_sql
             measured.update(
                 rows_read=reads,
@@ -261,6 +331,7 @@ async def _run(mode: str, version: str) -> dict[str, Any]:
                 cursor_seed_rows=sum(count for _, _, count in warm_page_scans),
                 first_page_plan=first_plan_text,
                 continuation_plan=plan_text,
+                page_scan_evidence=page_evidence,
                 deletes=result["deleted"],
                 more=result["more"],
                 max_reads=(READ_PAGE_LIMIT + 1) * MAX_READ_PAGES,
