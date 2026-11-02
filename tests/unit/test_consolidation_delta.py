@@ -237,3 +237,46 @@ async def test_run_with_delta_forwards_progress_callback(
     engine_run.assert_awaited_once()
     assert engine_run.await_args is not None
     assert engine_run.await_args.kwargs["on_progress"] is callback
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failed_stage", ["before", "after", "both"])
+async def test_diagnostic_failure_preserves_engine_outcome(
+    failed_stage: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import surreal_memory.engine.consolidation_delta as delta_module
+    from surreal_memory.engine.consolidation import ConsolidationEngine, ConsolidationReport
+    from surreal_memory.engine.diagnostics import DiagnosticsEngine
+
+    report = ConsolidationReport()
+    report.extra["consolidation_status"] = "completed"
+    analyze = AsyncMock(
+        side_effect=[
+            ConnectionError("synthetic before outage")
+            if failed_stage in {"before", "both"}
+            else object(),
+            ConnectionError("synthetic after outage")
+            if failed_stage in {"after", "both"}
+            else object(),
+        ]
+    )
+    monkeypatch.setattr(DiagnosticsEngine, "analyze", analyze)
+    monkeypatch.setattr(delta_module, "_snapshot_from_report", lambda _: _make_snapshot())
+    run = AsyncMock(return_value=report)
+    monkeypatch.setattr(ConsolidationEngine, "run", run)
+    delta = await run_with_delta(MagicMock(), "default", resume_run_id="saved-run")
+
+    run.assert_awaited_once()
+    assert delta.report is report
+    assert delta.report.extra["consolidation_status"] == "completed"
+    assert (delta.before is None) == (failed_stage in {"before", "both"})
+    assert (delta.after is None) == (failed_stage in {"after", "both"})
+    assert delta.purity_delta is None
+    assert delta.connectivity_delta is None
+    assert delta.orphan_rate_delta is None
+    assert delta.to_dict()["grade_changed"] is None
+    assert delta.to_dict()["delta"] == {"purity": None, "connectivity": None, "orphan_rate": None}
+    assert "Health delta unavailable" in delta.summary()
+    assert "diagnostic_errors" in delta.to_dict()
+    assert set(report.extra["diagnostic_errors"].values()) == {"ConnectionError"}
+    assert "synthetic" not in str(delta.to_dict()["diagnostic_errors"])

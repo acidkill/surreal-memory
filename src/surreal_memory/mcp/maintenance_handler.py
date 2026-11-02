@@ -425,9 +425,11 @@ class MaintenanceHandler:
             status = delta.report.extra.get("consolidation_status", "completed")
             if status == "completed":
                 logger.info(
-                    "Session-end consolidation complete: %s | purity delta: %+.1f",
+                    "Session-end consolidation complete: %s | purity delta: %s",
                     delta.report.summary(),
-                    delta.purity_delta,
+                    f"{delta.purity_delta:+.1f}"
+                    if delta.purity_delta is not None
+                    else "unavailable",
                 )
             else:
                 logger.warning(
@@ -454,10 +456,12 @@ class MaintenanceHandler:
             summary = delta.report.summary()
             if status == "completed":
                 logger.info(
-                    "Auto-consolidation complete (strategies=%s): %s | purity delta: %+.1f",
+                    "Auto-consolidation complete (strategies=%s): %s | purity delta: %s",
                     strategy_names,
                     summary,
-                    delta.purity_delta,
+                    f"{delta.purity_delta:+.1f}"
+                    if delta.purity_delta is not None
+                    else "unavailable",
                 )
                 # Reset adaptive interval only after the requested work is complete.
                 self._effective_check_interval = None

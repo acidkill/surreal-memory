@@ -12,7 +12,7 @@ Usage:
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -57,27 +57,37 @@ class ConsolidationDelta:
         computed_at: When this delta was computed.
     """
 
-    before: HealthSnapshot
-    after: HealthSnapshot
+    before: HealthSnapshot | None
+    after: HealthSnapshot | None
     report: ConsolidationReport
     computed_at: datetime
 
     @property
-    def purity_delta(self) -> float:
+    def purity_delta(self) -> float | None:
         """Change in purity score (positive = improvement)."""
+        if self.before is None or self.after is None:
+            return None
         return round(self.after.purity_score - self.before.purity_score, 1)
 
     @property
-    def connectivity_delta(self) -> float:
+    def connectivity_delta(self) -> float | None:
+        if self.before is None or self.after is None:
+            return None
         return round(self.after.connectivity - self.before.connectivity, 4)
 
     @property
-    def orphan_rate_delta(self) -> float:
+    def orphan_rate_delta(self) -> float | None:
         """Change in orphan rate (negative = improvement)."""
+        if self.before is None or self.after is None:
+            return None
         return round(self.after.orphan_rate - self.before.orphan_rate, 4)
 
     def summary(self) -> str:
         """Human-readable delta summary."""
+        if self.before is None or self.after is None:
+            return (
+                self.report.summary() + "\n  Health delta unavailable: diagnostic snapshot failed"
+            )
         status = self.report.extra.get("consolidation_status")
         if status == "blocked" or (
             status in {"failed", "lease_lost", "timed_out"} and self.before == self.after
@@ -119,6 +129,7 @@ class ConsolidationDelta:
         ]
 
         for label, before_val, after_val, delta in metrics:
+            assert delta is not None  # Both snapshots were checked above.
             sign = "+" if delta > 0 else ""
             lines.append(f"  {label}: {before_val} -> {after_val} ({sign}{delta})")
 
@@ -130,33 +141,38 @@ class ConsolidationDelta:
 
     def to_dict(self) -> dict[str, object]:
         """Serialize for MCP/CLI JSON output."""
+        fields = (
+            "purity_score",
+            "grade",
+            "connectivity",
+            "diversity",
+            "orphan_rate",
+            "neuron_count",
+            "synapse_count",
+            "fiber_count",
+        )
+
+        def snapshot(value: HealthSnapshot | None) -> dict[str, object] | None:
+            return (
+                {key: item for key, item in asdict(value).items() if key in fields}
+                if value
+                else None
+            )
+
         return {
-            "before": {
-                "purity_score": self.before.purity_score,
-                "grade": self.before.grade,
-                "connectivity": self.before.connectivity,
-                "diversity": self.before.diversity,
-                "orphan_rate": self.before.orphan_rate,
-                "neuron_count": self.before.neuron_count,
-                "synapse_count": self.before.synapse_count,
-                "fiber_count": self.before.fiber_count,
-            },
-            "after": {
-                "purity_score": self.after.purity_score,
-                "grade": self.after.grade,
-                "connectivity": self.after.connectivity,
-                "diversity": self.after.diversity,
-                "orphan_rate": self.after.orphan_rate,
-                "neuron_count": self.after.neuron_count,
-                "synapse_count": self.after.synapse_count,
-                "fiber_count": self.after.fiber_count,
-            },
+            "before": snapshot(self.before),
+            "after": snapshot(self.after),
             "delta": {
                 "purity": self.purity_delta,
                 "connectivity": self.connectivity_delta,
                 "orphan_rate": self.orphan_rate_delta,
             },
-            "grade_changed": self.before.grade != self.after.grade,
+            "grade_changed": (
+                self.before.grade != self.after.grade
+                if self.before is not None and self.after is not None
+                else None
+            ),
+            "diagnostic_errors": self.report.extra.get("diagnostic_errors", {}),
         }
 
 
@@ -218,9 +234,17 @@ async def run_with_delta(
     diagnostics = DiagnosticsEngine(storage)
     engine = ConsolidationEngine(storage, config, tier_config=tier_config)
 
-    # Step 1: Before snapshot
-    before_report = await diagnostics.analyze(brain_id)
-    before = _snapshot_from_report(before_report)
+    diagnostic_errors: dict[str, str] = {}
+
+    async def snapshot(stage: str) -> HealthSnapshot | None:
+        try:
+            return _snapshot_from_report(await diagnostics.analyze(brain_id))
+        except Exception as exc:
+            diagnostic_errors[stage] = type(exc).__name__
+            return None
+
+    # Diagnostics are advisory: failure must not block a saved run's finalization.
+    before = await snapshot("before")
 
     # Step 2: Run consolidation
     report = await engine.run(
@@ -232,8 +256,9 @@ async def run_with_delta(
     )
 
     # Step 3: After snapshot
-    after_report = await diagnostics.analyze(brain_id)
-    after = _snapshot_from_report(after_report)
+    after = await snapshot("after")
+    if diagnostic_errors:
+        report.extra["diagnostic_errors"] = diagnostic_errors
 
     return ConsolidationDelta(
         before=before,

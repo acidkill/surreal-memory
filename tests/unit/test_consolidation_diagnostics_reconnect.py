@@ -119,6 +119,14 @@ async def test_repeated_receiver_failure_stops_after_one_read_retry(
     store = make_storage(failed)
     engine_runs = prepare_empty_diagnostics(store, monkeypatch)
     reconnects: list[int] = []
+    before_reconnects: list[int] = []
+
+    async def run_engine(self: Any, *args: Any, **kwargs: Any) -> ConsolidationReport:
+        before_reconnects.append(len(reconnects))
+        engine_runs.append(str(kwargs.get("resume_run_id")))
+        return ConsolidationReport()
+
+    monkeypatch.setattr(ConsolidationEngine, "run", run_engine)
 
     async def reconnect() -> None:
         reconnects.append(1)
@@ -127,13 +135,14 @@ async def test_repeated_receiver_failure_stops_after_one_read_retry(
         store._conn_loop = asyncio.get_running_loop()
 
     store._reconnect = reconnect  # type: ignore[method-assign]
-    with pytest.raises(_DeadWebSocketReceiverError):
-        await run_with_delta(store, "default", resume_run_id="synthetic-saved-run")
+    delta = await run_with_delta(store, "default", resume_run_id="synthetic-saved-run")
 
-    assert len(reconnects) == 1
+    assert delta.before is None
+    assert "before" in delta.report.extra["diagnostic_errors"]
+    assert before_reconnects == [1]
     assert sum(ORGANIC_SELECT in query for query in failed.queries) == 1
-    assert sum(ORGANIC_SELECT in query for query in replacement.queries) == 1
-    assert engine_runs == []
+    assert sum(ORGANIC_SELECT in query for query in replacement.queries) == 2
+    assert engine_runs == ["synthetic-saved-run"]
 
 
 @pytest.mark.asyncio

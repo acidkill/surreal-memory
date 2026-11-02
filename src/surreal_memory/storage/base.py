@@ -2715,9 +2715,9 @@ class NeuralStorage(ABC):
         raise NotImplementedError
 
     async def prune_semantic_discovery_state(
-        self, *, older_than: timedelta, keep_run_ids: Collection[str]
-    ) -> int:
-        """Delete expired semantic-discovery snapshots of runs not in ``keep_run_ids``."""
+        self, *, older_than: timedelta, keep_run_ids: Collection[str], owner_token: str
+    ) -> dict[str, Any]:
+        """Sweep a bounded page and report deletions and whether scanning can continue."""
         raise NotImplementedError
 
     async def find_existing_synapse_pairs(

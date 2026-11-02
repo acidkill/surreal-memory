@@ -4,6 +4,7 @@ import asyncio
 from copy import deepcopy
 from datetime import datetime, timedelta
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -673,3 +674,177 @@ def test_report_summary_renders_saved_checkpoint_details() -> None:
 
     assert "Dedup resumed from saved checkpoint: dedup_window_complete" in summary
     assert "Last committed checkpoint: prune phase=synapse_scan cursor=synapse:100" in summary
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("committed", [False, True])
+@pytest.mark.parametrize("readable", [False, True])
+async def test_terminal_write_acknowledgement_is_reconciled_without_replay(
+    committed: bool, readable: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from surreal_memory.engine.consolidation_progress import ConsolidationCompletionUnconfirmedError
+
+    storage = FakeProgressStorage()
+    session = await ConsolidationProgressSession.open(
+        storage, ["prune"], "fingerprint", REFERENCE_TIME
+    )
+    assert session is not None
+    await session.complete_strategy("prune")
+    saved = storage.save_consolidation_progress
+    writes: list[str] = []
+
+    async def lose_ack(brain_id: str, owner_token: str, state: dict[str, Any]) -> None:
+        writes.append(str(state["status"]))
+        if committed:
+            await saved(brain_id, owner_token, state)
+        raise ConnectionError("synthetic lost acknowledgement")
+
+    async def read(brain_id: str) -> dict[str, Any] | None:
+        if not readable:
+            raise ConnectionError("synthetic read outage")
+        return deepcopy(storage.progress)
+
+    monkeypatch.setattr(storage, "save_consolidation_progress", lose_ack)
+    monkeypatch.setattr(storage, "get_consolidation_progress", read)
+    try:
+        if committed and readable:
+            await session.complete()
+            assert session.state["status"] == "completed"
+        else:
+            with pytest.raises(ConsolidationCompletionUnconfirmedError):
+                await session.complete()
+            assert session.state["status"] != "completed"
+        assert writes == ["completed"]
+        assert storage.progress is not None
+        assert storage.progress["status"] == ("completed" if committed else "running")
+    finally:
+        await session.close()
+
+
+@pytest.mark.asyncio
+async def test_auto_tier_ambiguous_apply_is_not_replayed(monkeypatch: pytest.MonkeyPatch) -> None:
+    from surreal_memory.unified_config import TierConfig
+
+    storage = FakeProgressStorage()
+    engine = ConsolidationEngine(storage, tier_config=TierConfig(auto_enabled=True))
+    strategies = AsyncMock()
+    tiers = AsyncMock(side_effect=ConnectionError("synthetic partial tier apply"))
+    monkeypatch.setattr(engine, "_run_strategy", strategies)
+    monkeypatch.setattr(engine, "_run_auto_tier", tiers)
+
+    first = await engine.run([ConsolidationStrategy.PRUNE], reference_time=REFERENCE_TIME)
+    assert first.extra["consolidation_status"] == "failed"
+    assert storage.progress is not None
+    assert storage.progress["phase"] == "auto_tier_started"
+    second = await engine.run([ConsolidationStrategy.PRUNE], reference_time=REFERENCE_TIME)
+    assert second.extra["consolidation_status"] == "failed"
+    assert "outcome is unknown" in second.summary()
+    assert strategies.await_count == 1
+    assert tiers.await_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("receipt", ["auto_tier_completed", "strategy_completed"])
+async def test_auto_tier_receipt_allows_finalization_only_resume(
+    monkeypatch: pytest.MonkeyPatch,
+    receipt: str,
+) -> None:
+    from surreal_memory.unified_config import TierConfig
+
+    storage = FakeProgressStorage()
+    engine = ConsolidationEngine(storage, tier_config=TierConfig(auto_enabled=True))
+    strategies = AsyncMock()
+    tiers = AsyncMock()
+    monkeypatch.setattr(engine, "_run_strategy", strategies)
+    monkeypatch.setattr(engine, "_run_auto_tier", tiers)
+    saved = storage.save_consolidation_progress
+
+    async def fail_terminal(
+        brain_id: str, token: str, state: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        if state["status"] == "completed":
+            raise ConnectionError("synthetic final write failure")
+        return await saved(brain_id, token, state)
+
+    monkeypatch.setattr(storage, "save_consolidation_progress", fail_terminal)
+    first = await engine.run([ConsolidationStrategy.PRUNE], reference_time=REFERENCE_TIME)
+    assert first.extra["consolidation_status"] == "completion_unconfirmed"
+    assert storage.progress is not None
+    assert storage.progress["phase"] == "auto_tier_completed"
+    storage.progress["phase"] = receipt
+    monkeypatch.setattr(storage, "save_consolidation_progress", saved)
+    second = await engine.run([ConsolidationStrategy.PRUNE], reference_time=REFERENCE_TIME)
+    assert second.extra["consolidation_status"] == (
+        "completed" if receipt == "auto_tier_completed" else "failed"
+    )
+    if receipt != "auto_tier_completed":
+        assert "outcome is unknown" in second.summary()
+    assert strategies.await_count == 1
+    assert tiers.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_terminal_lease_rejection_is_reported_without_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = FakeProgressStorage()
+    engine = ConsolidationEngine(storage)
+    monkeypatch.setattr(engine, "_run_strategy", AsyncMock())
+    saved = storage.save_consolidation_progress
+
+    async def reject_terminal(
+        brain_id: str, token: str, state: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        if state["status"] == "completed":
+            return None
+        return await saved(brain_id, token, state)
+
+    monkeypatch.setattr(storage, "save_consolidation_progress", reject_terminal)
+    report = await engine.run([ConsolidationStrategy.PRUNE], reference_time=REFERENCE_TIME)
+    assert report.extra["consolidation_status"] == "lease_lost"
+    assert storage.progress is not None
+    assert storage.progress["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_terminal_readback_refuses_corrupt_empty_strategy_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from surreal_memory.engine.consolidation_progress import ConsolidationCompletionUnconfirmedError
+
+    storage = FakeProgressStorage()
+    session = await ConsolidationProgressSession.open(
+        storage, ["prune"], "fingerprint", REFERENCE_TIME
+    )
+    assert session is not None
+    await session.complete_strategy("prune")
+    saved = storage.save_consolidation_progress
+
+    async def corrupt_ack(brain_id: str, token: str, state: dict[str, Any]) -> None:
+        await saved(
+            brain_id, token, {**state, "requested_strategies": [], "completed_strategies": []}
+        )
+        raise ConnectionError("synthetic lost acknowledgement")
+
+    monkeypatch.setattr(storage, "save_consolidation_progress", corrupt_ack)
+    try:
+        with pytest.raises(ConsolidationCompletionUnconfirmedError):
+            await session.complete()
+    finally:
+        await session.close()
+
+
+@pytest.mark.asyncio
+async def test_cancellation_after_terminal_commit_does_not_pause_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = FakeProgressStorage()
+    engine = ConsolidationEngine(storage)
+    monkeypatch.setattr(engine, "_run_strategy", AsyncMock())
+    monkeypatch.setattr(
+        engine, "_prune_semantic_discovery_state", AsyncMock(side_effect=asyncio.CancelledError())
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await engine.run([ConsolidationStrategy.SEMANTIC_LINK], reference_time=REFERENCE_TIME)
+    assert storage.progress is not None
+    assert storage.progress["status"] == "completed"

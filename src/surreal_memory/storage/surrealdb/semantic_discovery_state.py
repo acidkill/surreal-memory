@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from collections.abc import Collection, Mapping, Sequence
 from datetime import timedelta
 from hashlib import sha256
 from typing import Any, cast
 
+from surreal_memory.storage.surrealdb._ids import _record_id_part, _to_surreal_id
 from surreal_memory.utils.timeutils import utcnow
 
 _MAX_SNAPSHOT_BYTES = 1_000_000
-# Snapshots are up to 1 MB each. A backlog of expired rows is removed by a
-# sequence of bounded statements rather than by one unbounded transaction.
-_PRUNE_BATCH_ROWS = 500
+_PRUNE_SCAN_ROWS = 64
+_PRUNE_SCAN_PAGES = 4
+_PRUNE_DELETE_ROWS = 8
+_PRUNE_SECONDS = 5.0
 
 
 class SemanticDiscoveryStateError(RuntimeError):
@@ -429,38 +433,89 @@ class SurrealDBSemanticDiscoveryStateMixin:
         )
 
     async def prune_semantic_discovery_state(
-        self, *, older_than: timedelta, keep_run_ids: Collection[str]
-    ) -> int:
-        """Delete snapshots older than ``older_than`` unless their run is in ``keep_run_ids``.
-
-        The only reader is ``load_semantic_discovery_state`` while the run that
-        wrote a snapshot is resumed, so a snapshot of a finished or replaced run
-        is never read again. Callers pass the run ids of every unfinished run;
-        age alone is not enough, because a paused run can be resumed after the
-        cutoff. Deletes in batches of at most ``_PRUNE_BATCH_ROWS`` rows and
-        returns the number of rows deleted.
-        """
+        self, *, older_than: timedelta, keep_run_ids: Collection[str], owner_token: str
+    ) -> dict[str, Any]:
+        """Make bounded, durable progress through discovery snapshots for this brain."""
         if not isinstance(older_than, timedelta) or older_than <= timedelta(0):
             raise ValueError("older_than must be a positive timedelta")
         if isinstance(keep_run_ids, str):
             raise TypeError("keep_run_ids must be a collection of run ids, not a string")
-        keep = sorted({str(run_id) for run_id in keep_run_ids})
+        if not owner_token:
+            raise ValueError("owner_token must be non-empty")
         brain_id = self._get_brain_id()
+        record_id = sha256(brain_id.encode()).hexdigest()
+        keep = sorted({str(run_id) for run_id in keep_run_ids})
         cutoff = utcnow() - older_than
+        deadline = time.monotonic() + _PRUNE_SECONDS
         deleted = 0
-        while True:
-            # Select and delete in one statement, so the predicate holds for
-            # every row removed. RETURN keeps the response to the ids alone.
-            rows = await self._query(
-                "DELETE (SELECT VALUE id FROM semantic_discovery_state "
-                "WITH INDEX idx_sds_created_at WHERE created_at < $cutoff "
-                "AND brain_id = $brain_id AND run_id NOT IN $keep LIMIT $limit) "
-                "RETURN VALUE $before.id",
-                cutoff=cutoff,
-                brain_id=brain_id,
-                keep=keep,
-                limit=_PRUNE_BATCH_ROWS,
-            )
-            deleted += len(rows)
-            if len(rows) < _PRUNE_BATCH_ROWS:
-                return deleted
+        more = True
+        for _ in range(_PRUNE_SCAN_PAGES):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            async with asyncio.timeout(remaining):
+                saved = await self._query(
+                    "SELECT cursor FROM type::record('semantic_discovery_prune_cursor', $record_id)",
+                    record_id=record_id,
+                )
+                cursor = saved[0].get("cursor") if saved else None
+                if cursor is None:
+                    source = "semantic_discovery_state"
+                else:
+                    part = _record_id_part(str(cursor))
+                    if not part or _to_surreal_id(part) != part:
+                        raise SemanticDiscoveryStateError("invalid discovery prune cursor")
+                    # On 3.2 a literal RecordIdScan materializes the tail before
+                    # LIMIT. A runtime range passes LIMIT to the storage iterator.
+                    source = "type::record('semantic_discovery_state', $cursor>..)"
+                page = await self._query(
+                    "SELECT id, (brain_id = $brain_id AND created_at < $cutoff "
+                    "AND run_id NOT IN $keep) AS eligible FROM "
+                    f"{source} LIMIT $limit",
+                    brain_id=brain_id,
+                    cutoff=cutoff,
+                    keep=keep,
+                    cursor=_record_id_part(str(cursor)) if cursor else None,
+                    limit=_PRUNE_SCAN_ROWS,
+                )
+                candidates: list[Any] = []
+                scanned = 0
+                for row in page:
+                    scanned += 1
+                    if row.get("eligible"):
+                        candidates.append(row["id"])
+                        if len(candidates) >= _PRUNE_DELETE_ROWS - deleted:
+                            break
+                more = scanned < len(page) or len(page) == _PRUNE_SCAN_ROWS
+                next_cursor = str(page[scanned - 1]["id"]) if scanned and more else None
+                result = await self._query(
+                    "RETURN { "
+                    "LET $lease = (UPDATE type::record('consolidation_lease', $record_id) "
+                    "SET sweep_fenced_at = time::now() WHERE brain_id = $brain_id "
+                    "AND owner_token = $owner_token AND expires_at > time::now() RETURN AFTER); "
+                    "IF array::len($lease) != 1 { THROW 'discovery prune lease lost'; }; "
+                    "LET $protected = (SELECT VALUE run_id FROM consolidation_progress "
+                    "WHERE brain_id = $brain_id AND status IN ['queued', 'running', 'paused', 'failed']); "
+                    "LET $removed = (DELETE $candidates WHERE brain_id = $brain_id "
+                    "AND created_at < $cutoff AND run_id NOT IN $keep "
+                    "AND run_id NOT IN $protected RETURN VALUE $before.id); "
+                    "UPSERT type::record('semantic_discovery_prune_cursor', $record_id) "
+                    "CONTENT {brain_id: $brain_id, cursor: $next_cursor ?? NONE} RETURN NONE; "
+                    "RETURN [{deleted: array::len($removed)}]; };",
+                    record_id=record_id,
+                    brain_id=brain_id,
+                    owner_token=owner_token,
+                    candidates=candidates,
+                    cutoff=cutoff,
+                    keep=keep,
+                    next_cursor=next_cursor,
+                )
+                count = result[0].get("deleted") if len(result) == 1 else None
+                if type(count) is not int or not 0 <= count <= len(candidates):
+                    raise SemanticDiscoveryStateError(
+                        "invalid discovery prune transaction response"
+                    )
+                deleted += count
+            if not more or deleted >= _PRUNE_DELETE_ROWS:
+                break
+        return {"deleted": deleted, "more": more}

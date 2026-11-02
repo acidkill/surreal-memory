@@ -287,3 +287,49 @@ def test_blocked_consolidation_suppresses_health_suggestions(
     output = capsys.readouterr().out
     assert "Consolidation blocked" in output
     assert "Hint:" not in output
+
+
+def test_unconfirmed_terminal_commit_prints_status_and_exits_nonzero(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    delta = MagicMock()
+    delta.summary.return_value = "Consolidation status: completion_unconfirmed"
+    delta.report.extra = {"consolidation_status": "completion_unconfirmed"}
+    delta.after = None
+    with (
+        patch.object(tools, "get_config", return_value=MagicMock()),
+        patch.object(tools, "resolve_brain", return_value="test-brain"),
+        patch.object(tools, "get_storage", new_callable=AsyncMock, return_value=MagicMock()),
+        patch.object(tools, "run_async", side_effect=lambda awaitable: asyncio.run(awaitable)),
+        patch(
+            "surreal_memory.engine.consolidation_delta.run_with_delta",
+            new_callable=AsyncMock,
+            return_value=delta,
+        ),
+    ):
+        with pytest.raises(typer.Exit) as exc_info:
+            tools.consolidate(strategy="prune")
+    assert exc_info.value.exit_code == 1
+    assert "completion_unconfirmed" in capsys.readouterr().out
+
+
+def test_completed_run_with_unavailable_health_still_exits_successfully(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    delta = MagicMock()
+    delta.summary.return_value = "Health delta unavailable: diagnostic snapshot failed"
+    delta.report.extra = {"consolidation_status": "completed"}
+    delta.after = None
+    with (
+        patch.object(tools, "get_config", return_value=MagicMock()),
+        patch.object(tools, "resolve_brain", return_value="test-brain"),
+        patch.object(tools, "get_storage", new_callable=AsyncMock, return_value=MagicMock()),
+        patch.object(tools, "run_async", side_effect=lambda awaitable: asyncio.run(awaitable)),
+        patch(
+            "surreal_memory.engine.consolidation_delta.run_with_delta",
+            new_callable=AsyncMock,
+            return_value=delta,
+        ),
+    ):
+        tools.consolidate(strategy="all")
+    assert "Health delta unavailable" in capsys.readouterr().out

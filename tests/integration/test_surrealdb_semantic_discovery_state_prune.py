@@ -31,6 +31,9 @@ from surreal_memory.storage.surrealdb.schema import SCHEMA_VERSION
 from surreal_memory.storage.surrealdb.store import SurrealDBStorage
 from surreal_memory.utils.timeutils import utcnow
 
+_OWNER = "owner"
+_STALE_OWNER = "stale"
+
 SURREALDB_URL = os.getenv("SURREALDB_URL")
 SURREALDB_USER = os.getenv("SURREALDB_USER", "root")
 SURREALDB_PASS = os.getenv("SURREALDB_PASS", "root")
@@ -104,84 +107,150 @@ async def _state_ids(store: SurrealDBStorage) -> set[str]:
     return {str(state_id) for state_id in rows}
 
 
-async def test_prune_removes_expired_snapshots_of_finished_runs_and_keeps_the_rest(
-    store: SurrealDBStorage,
-) -> None:
-    await _save_snapshot(store, "finished-old-1", run_id="run-finished", age=timedelta(days=30))
-    await _save_snapshot(store, "finished-old-2", run_id="run-finished", age=timedelta(days=8))
-    await _save_snapshot(store, "finished-young", run_id="run-finished", age=timedelta(days=6))
-    await _save_snapshot(store, "paused-old", run_id="run-paused", age=timedelta(days=90))
-    own_brain = store._get_brain_id()
-    other = Brain.create(name="semantic-discovery-prune-other")
+async def test_prune_keeps_protected_and_other_brain_snapshots(store: SurrealDBStorage) -> None:
+    await _save_snapshot(store, "finished-old", run_id="finished", age=timedelta(days=30))
+    await _save_snapshot(store, "finished-young", run_id="finished", age=timedelta(days=1))
+    await _save_snapshot(store, "paused-old", run_id="paused", age=timedelta(days=30))
+    brain_id = store._get_brain_id()
+    other = Brain.create(name="other")
     await store.save_brain(other)
     store.set_brain(other.id)
-    await _save_snapshot(store, "other-brain-old", run_id="run-finished", age=timedelta(days=30))
-    store.set_brain(own_brain)
-
-    deleted = await store.prune_semantic_discovery_state(
-        older_than=timedelta(days=7), keep_run_ids={"run-paused"}
+    await _save_snapshot(store, "other-old", run_id="finished", age=timedelta(days=30))
+    store.set_brain(brain_id)
+    assert await store.acquire_consolidation_lease(brain_id, "owner")
+    result = await store.prune_semantic_discovery_state(
+        older_than=timedelta(days=7), keep_run_ids={"paused"}, owner_token=_OWNER
     )
+    assert result == {"deleted": 1, "more": False}
+    assert await _state_ids(store) == {"finished-young", "paused-old", "other-old"}
 
-    assert deleted == 2
-    assert await _state_ids(store) == {"finished-young", "paused-old", "other-brain-old"}
 
-
-async def test_prune_deletes_in_batches_of_at_most_500_rows(
-    store: SurrealDBStorage, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_prune_repeated_calls_progress_and_fence_stale_owner(store: SurrealDBStorage) -> None:
     brain_id = store._get_brain_id()
-    created_at = utcnow() - timedelta(days=30)
     rows = [
         {
             "state_id": f"bulk-{index:04d}",
             "revision": 1,
             "brain_id": brain_id,
-            "run_id": "run-finished",
-            "owner_token": "owner-bulk",
-            "source_token": "source-bulk",
+            "run_id": "finished",
+            "owner_token": "old",
+            "source_token": "source",
             "payload": {"index": index},
-            "created_at": created_at,
+            "created_at": utcnow() - timedelta(days=30),
         }
-        for index in range(1203)
+        for index in range(19)
     ]
     await store._query("INSERT INTO semantic_discovery_state $rows RETURN NONE", rows=rows)
-    assert len(await _state_ids(store)) == 1203
-
-    batches: list[int] = []
-    query = store._query
-
-    async def recording_query(sql: str, **params: Any) -> list[dict[str, Any]]:
-        result = await query(sql, **params)
-        if sql.startswith("DELETE (SELECT VALUE id FROM semantic_discovery_state"):
-            batches.append(len(result))
-        return result
-
-    monkeypatch.setattr(store, "_query", recording_query)
-
-    deleted = await store.prune_semantic_discovery_state(
-        older_than=timedelta(days=7), keep_run_ids=[]
-    )
-
-    assert deleted == 1203
-    assert batches == [500, 500, 203]
+    assert await store.acquire_consolidation_lease(brain_id, "owner")
+    with pytest.raises(Exception, match="lease"):
+        await store.prune_semantic_discovery_state(
+            older_than=timedelta(days=7), keep_run_ids=[], owner_token=_STALE_OWNER
+        )
+    assert len(await _state_ids(store)) == 19
+    counts = []
+    for _ in range(10):
+        result = await store.prune_semantic_discovery_state(
+            older_than=timedelta(days=7), keep_run_ids=[], owner_token=_OWNER
+        )
+        counts.append(result["deleted"])
+        if not result["more"]:
+            break
+    assert counts == [8, 8, 3]
     assert await _state_ids(store) == set()
 
 
-async def test_prune_without_matches_returns_zero(store: SurrealDBStorage) -> None:
-    assert (
-        await store.prune_semantic_discovery_state(older_than=timedelta(days=7), keep_run_ids=[])
-        == 0
-    )
-    await _save_snapshot(store, "young", run_id="run-finished", age=timedelta(hours=1))
-    await _save_snapshot(store, "kept", run_id="run-paused", age=timedelta(days=30))
-
-    assert (
-        await store.prune_semantic_discovery_state(
-            older_than=timedelta(days=7), keep_run_ids=["run-paused"]
+async def test_prune_pages_past_numeric_record_ids_and_protected_rows(
+    store: SurrealDBStorage,
+) -> None:
+    brain_id = store._get_brain_id()
+    for index in range(65):
+        await store._query(
+            "CREATE type::record('semantic_discovery_state', $record_id) CONTENT $row RETURN NONE",
+            record_id=f"{index:064d}",
+            row={
+                "state_id": f"numeric-{index}",
+                "revision": 1,
+                "brain_id": brain_id,
+                "run_id": "protected" if index < 64 else "finished",
+                "owner_token": "old",
+                "source_token": "source",
+                "payload": {},
+                "created_at": utcnow() - timedelta(days=30),
+            },
         )
-        == 0
+    assert await store.acquire_consolidation_lease(brain_id, _OWNER)
+    result = await store.prune_semantic_discovery_state(
+        older_than=timedelta(days=7), keep_run_ids=["protected"], owner_token=_OWNER
     )
-    assert await _state_ids(store) == {"young", "kept"}
+    assert result == {"deleted": 1, "more": False}
+    assert len(await _state_ids(store)) == 64
+
+
+async def test_prune_rejects_lease_takeover_after_scan(
+    store: SurrealDBStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _save_snapshot(store, "race-target", run_id="finished", age=timedelta(days=30))
+    brain_id = store._get_brain_id()
+    assert await store.acquire_consolidation_lease(brain_id, _OWNER)
+    query = store._query
+    intercepted = False
+
+    async def take_over(sql: str, **params: Any) -> list[dict[str, Any]]:
+        nonlocal intercepted
+        if sql.startswith("RETURN { LET $lease") and not intercepted:
+            intercepted = True
+            await query(
+                "UPDATE consolidation_lease SET expires_at = $past WHERE brain_id = $brain_id",
+                past=utcnow() - timedelta(seconds=1),
+                brain_id=brain_id,
+            )
+            assert await store.acquire_consolidation_lease(brain_id, _STALE_OWNER)
+        return await query(sql, **params)
+
+    monkeypatch.setattr(store, "_query", take_over)
+    with pytest.raises(Exception, match="lease"):
+        await store.prune_semantic_discovery_state(
+            older_than=timedelta(days=7), keep_run_ids=[], owner_token=_OWNER
+        )
+    assert intercepted
+    assert await _state_ids(store) == {"race-target"}
+    cursor = await query(
+        "SELECT cursor FROM semantic_discovery_prune_cursor WHERE brain_id = $brain_id",
+        brain_id=brain_id,
+    )
+    assert not cursor
+
+
+async def test_prune_rolls_back_delete_on_transaction_failure(
+    store: SurrealDBStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _save_snapshot(store, "rollback-target", run_id="finished", age=timedelta(days=30))
+    brain_id = store._get_brain_id()
+    assert await store.acquire_consolidation_lease(brain_id, _OWNER)
+    query = store._query
+    intercepted = False
+
+    async def fail_before_cursor(sql: str, **params: Any) -> list[dict[str, Any]]:
+        nonlocal intercepted
+        if sql.startswith("RETURN { LET $lease"):
+            intercepted = True
+            marker = "UPSERT type::record('semantic_discovery_prune_cursor'"
+            assert marker in sql
+            sql = sql.replace(marker, "THROW 'injected after delete'; " + marker, 1)
+        return await query(sql, **params)
+
+    monkeypatch.setattr(store, "_query", fail_before_cursor)
+    with pytest.raises(Exception, match="injected after delete"):
+        await store.prune_semantic_discovery_state(
+            older_than=timedelta(days=7), keep_run_ids=[], owner_token=_OWNER
+        )
+    assert intercepted
+    assert await _state_ids(store) == {"rollback-target"}
+    cursor = await query(
+        "SELECT cursor FROM semantic_discovery_prune_cursor WHERE brain_id = $brain_id",
+        brain_id=brain_id,
+    )
+    assert not cursor
 
 
 async def test_unfinished_run_ids_come_from_progress_records(store: SurrealDBStorage) -> None:
@@ -210,6 +279,13 @@ async def test_unfinished_run_ids_come_from_progress_records(store: SurrealDBSto
     await store.start_consolidation_progress(state)
 
     assert await store.get_consolidation_run_ids(statuses=INCOMPLETE_STATUSES) == ["run-paused"]
+    await _save_snapshot(store, "protected-by-db", run_id="run-paused", age=timedelta(days=30))
+    assert await store.acquire_consolidation_lease(brain_id, _OWNER)
+    result = await store.prune_semantic_discovery_state(
+        older_than=timedelta(days=7), keep_run_ids=[], owner_token=_OWNER
+    )
+    assert result == {"deleted": 0, "more": False}
+    assert await _state_ids(store) == {"protected-by-db"}
 
     await store.start_consolidation_progress({**state, "status": "completed"})
     assert await store.get_consolidation_run_ids(statuses=INCOMPLETE_STATUSES) == []

@@ -138,11 +138,19 @@ base moves to a newer barrier only after the intervening range is proved.
 semantic_discovery_state_retention_days = 7
 ```
 
-After `semantic_link` completes, expired discovery snapshots from finished runs
-are deleted in batches of at most 500. The current run and queued/running/paused/
-failed runs are protected. `0` disables this cleanup. The report includes
-"Semantic discovery snapshots pruned"; a cleanup failure is reported without
-turning the completed semantic-link strategy into a failure.
+After a run containing `semantic_link` confirms its terminal checkpoint, it
+can spend a bounded amount of time scanning expired discovery snapshots. It
+deletes at most eight records per transaction, keeps a sweep cursor per brain,
+and protects the current run and unfinished runs. A sweep may take several
+completed consolidations. Setting retention to `0` disables the cleanup.
+The report counts confirmed removals separately from a deferred or failed sweep.
+
+If all strategies are saved but the checkpoint is still `running`, use
+`smem consolidate --resume` to finish the same run. Completed strategies are
+skipped. If the database disconnects during the final write, the CLI checks the
+saved run before reporting success. An unconfirmed result exits nonzero. Missing
+before/after diagnostics are reported as unavailable. A run with an uncertain
+auto-tier result stops for inspection instead of applying its tier changes again.
 
 ## Prevent read/capture feedback
 

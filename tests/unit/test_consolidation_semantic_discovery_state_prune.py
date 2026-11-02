@@ -29,6 +29,7 @@ class _PruneStorage(FakeProgressStorage):
         self.unfinished_run_ids = ["run-paused-elsewhere"]
         self.prune_calls: list[dict[str, Any]] = []
         self.prune_result = 3
+        self.prune_more = False
         self.prune_error: Exception | None = None
 
     async def get_consolidation_run_ids(
@@ -38,9 +39,11 @@ class _PruneStorage(FakeProgressStorage):
         return list(self.unfinished_run_ids)
 
     async def prune_semantic_discovery_state(
-        self, *, older_than: timedelta, keep_run_ids: Collection[str]
-    ) -> int:
+        self, *, older_than: timedelta, keep_run_ids: Collection[str], owner_token: str
+    ) -> dict[str, int | bool]:
         assert self.progress is not None
+        assert self.progress["status"] == "completed"
+        assert owner_token == self.lease_owner
         self.prune_calls.append(
             {
                 "older_than": older_than,
@@ -50,7 +53,7 @@ class _PruneStorage(FakeProgressStorage):
         )
         if self.prune_error is not None:
             raise self.prune_error
-        return self.prune_result
+        return {"deleted": self.prune_result, "more": self.prune_more}
 
 
 def _retention(monkeypatch: pytest.MonkeyPatch, days: int) -> None:
@@ -159,7 +162,7 @@ async def test_prune_failure_is_reported_without_failing_the_run(
         "RuntimeError: datastore unavailable"
     )
     assert (
-        "Semantic discovery snapshots pruned: 0 [prune FAILED: RuntimeError: datastore unavailable]"
+        "Semantic discovery snapshots pruned: unconfirmed [prune FAILED: RuntimeError: datastore unavailable]"
         in report.summary()
     )
 
@@ -225,3 +228,17 @@ def test_retention_defaults_to_seven_days_and_round_trips(tmp_path: Path) -> Non
     UnifiedConfig(data_dir=tmp_path, maintenance=disabled).save()
     loaded = UnifiedConfig.load(tmp_path / "config.toml")
     assert loaded.maintenance.semantic_discovery_state_retention_days == 0
+
+
+@pytest.mark.asyncio
+async def test_bounded_sweep_reports_continuation_without_failing_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _retention(monkeypatch, 7)
+    storage = _PruneStorage()
+    storage.prune_more = True
+    report = await _engine(storage, monkeypatch).run([ConsolidationStrategy.SEMANTIC_LINK])
+    assert report.extra["consolidation_status"] == "completed"
+    assert report.extra["semantic_discovery_state_prune_more"] is True
+    assert report.semantic_discovery_states_pruned == 3
+    assert "bounded sweep; scan continuation remains" in report.summary()
