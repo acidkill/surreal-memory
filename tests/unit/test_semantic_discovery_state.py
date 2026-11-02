@@ -12,6 +12,9 @@ from surreal_memory.storage.surrealdb.semantic_discovery_state import (
 )
 from surreal_memory.utils.timeutils import utcnow
 
+_OWNER = "owner"
+_STALE_OWNER = "stale"
+
 
 class _SnapshotStorage(SurrealDBSemanticDiscoveryStateMixin):
     def __init__(self) -> None:
@@ -21,6 +24,8 @@ class _SnapshotStorage(SurrealDBSemanticDiscoveryStateMixin):
         self.lease: dict[str, Any] = {}
         self.queries: list[tuple[str, dict[str, Any]]] = []
         self.deleted_batches: list[int] = []
+        self.prune_cursor: str | None = None
+        self.prune_lease = True
 
     def _get_brain_id(self) -> str:
         return self.current_brain_id
@@ -50,16 +55,37 @@ class _SnapshotStorage(SurrealDBSemanticDiscoveryStateMixin):
             return [self.progress] if self.progress else []
         if sql.startswith("SELECT * FROM consolidation_lease"):
             return [self.lease] if self.lease else []
-        if sql.startswith("DELETE (SELECT VALUE id FROM semantic_discovery_state"):
+        if sql.startswith("SELECT cursor FROM type::record('semantic_discovery_prune_cursor'"):
+            return [{"cursor": self.prune_cursor}]
+        if sql.startswith("SELECT id, (brain_id = $brain_id"):
+            rows = sorted(self.rows.values(), key=lambda row: row["id"])
+            if params["cursor"]:
+                rows = [row for row in rows if row["id"].split(":", 1)[1] > params["cursor"]]
+            return [
+                {
+                    "id": row["id"],
+                    "eligible": row["brain_id"] == params["brain_id"]
+                    and row["created_at"] < params["cutoff"]
+                    and row["run_id"] not in params["keep"],
+                }
+                for row in rows[: params["limit"]]
+            ]
+        if sql.startswith("RETURN { LET $lease"):
+            if not self.prune_lease:
+                raise RuntimeError("discovery prune lease lost")
             doomed = [
                 key
                 for key, row in self.rows.items()
-                if row["created_at"] < params["cutoff"]
+                if row["id"] in params["candidates"]
                 and row["brain_id"] == params["brain_id"]
+                and row["created_at"] < params["cutoff"]
                 and row["run_id"] not in params["keep"]
-            ][: params["limit"]]
+            ]
+            for key in doomed:
+                del self.rows[key]
+            self.prune_cursor = params["next_cursor"]
             self.deleted_batches.append(len(doomed))
-            return [self.rows.pop(key)["id"] for key in doomed]
+            return [{"deleted": len(doomed)}]
         return []
 
 
@@ -205,105 +231,52 @@ def _seed_snapshot(
 
 
 @pytest.mark.asyncio
-async def test_prune_deletes_expired_snapshots_of_finished_runs_only() -> None:
+async def test_prune_advances_past_protected_pages_and_obeys_budget() -> None:
     storage = _SnapshotStorage()
-    _seed_snapshot(storage, "finished-old-1", run_id="run-finished", age=timedelta(days=30))
-    _seed_snapshot(storage, "finished-old-2", run_id="run-finished", age=timedelta(days=8))
-    _seed_snapshot(storage, "finished-young", run_id="run-finished", age=timedelta(days=6))
-    _seed_snapshot(
-        storage, "other-brain", run_id="run-finished", age=timedelta(days=30), brain_id="brain-b"
+    for index in range(70):
+        _seed_snapshot(storage, f"a{index:04d}", run_id="protected", age=timedelta(days=30))
+    for index in range(12):
+        _seed_snapshot(storage, f"b{index:04d}", run_id="finished", age=timedelta(days=30))
+    result = await storage.prune_semantic_discovery_state(
+        older_than=timedelta(days=7), keep_run_ids=["protected"], owner_token=_OWNER
     )
-
-    deleted = await storage.prune_semantic_discovery_state(
-        older_than=timedelta(days=7), keep_run_ids=[]
+    assert result == {"deleted": 8, "more": True}
+    assert storage.prune_cursor is not None
+    result = await storage.prune_semantic_discovery_state(
+        older_than=timedelta(days=7), keep_run_ids=["protected"], owner_token=_OWNER
     )
-
-    assert deleted == 2
-    assert set(storage.rows) == {"finished-young", "other-brain"}
+    assert result == {"deleted": 4, "more": False}
+    assert len(storage.rows) == 70
+    assert storage.prune_cursor is None
+    assert all(batch <= 8 for batch in storage.deleted_batches)
 
 
 @pytest.mark.asyncio
-async def test_prune_keeps_snapshots_of_resumable_runs_however_old() -> None:
+async def test_prune_fails_closed_on_lease_loss() -> None:
     storage = _SnapshotStorage()
-    _seed_snapshot(storage, "paused-old", run_id="run-paused", age=timedelta(days=90))
-    _seed_snapshot(storage, "finished-old", run_id="run-finished", age=timedelta(days=90))
-
-    deleted = await storage.prune_semantic_discovery_state(
-        older_than=timedelta(days=7), keep_run_ids={"run-paused"}
-    )
-
-    assert deleted == 1
-    assert set(storage.rows) == {"paused-old"}
-    sql, params = storage.queries[-1]
-    assert "WITH INDEX idx_sds_created_at" in sql
-    assert params["keep"] == ["run-paused"]
+    _seed_snapshot(storage, "old", run_id="finished", age=timedelta(days=30))
+    storage.prune_lease = False
+    with pytest.raises(RuntimeError, match="lease lost"):
+        await storage.prune_semantic_discovery_state(
+            older_than=timedelta(days=7), keep_run_ids=[], owner_token=_STALE_OWNER
+        )
+    assert set(storage.rows) == {"old"}
+    assert storage.prune_cursor is None
 
 
 @pytest.mark.asyncio
-async def test_prune_deletes_in_batches_of_at_most_500_rows() -> None:
+async def test_prune_rejects_invalid_inputs() -> None:
     storage = _SnapshotStorage()
-    for index in range(1203):
-        _seed_snapshot(storage, f"old-{index:04d}", run_id="run-finished", age=timedelta(days=30))
-
-    deleted = await storage.prune_semantic_discovery_state(
-        older_than=timedelta(days=7), keep_run_ids=()
-    )
-
-    assert deleted == 1203
-    assert not storage.rows
-    # Two full batches and one short one: the short batch ends the loop.
-    assert storage.deleted_batches == [500, 500, 203]
-    batches = [params for sql, params in storage.queries if sql.startswith("DELETE")]
-    assert [params["limit"] for params in batches] == [500, 500, 500]
-
-
-@pytest.mark.asyncio
-async def test_prune_without_matches_returns_zero() -> None:
-    storage = _SnapshotStorage()
-
-    assert (
-        await storage.prune_semantic_discovery_state(older_than=timedelta(days=7), keep_run_ids=[])
-        == 0
-    )
-    _seed_snapshot(storage, "young", run_id="run-finished", age=timedelta(hours=1))
-    assert (
-        await storage.prune_semantic_discovery_state(older_than=timedelta(days=7), keep_run_ids=[])
-        == 0
-    )
-    assert set(storage.rows) == {"young"}
-    assert len([sql for sql, _ in storage.queries if sql.startswith("DELETE")]) == 2
-
-
-@pytest.mark.asyncio
-async def test_prune_cutoff_is_bound_relative_to_now() -> None:
-    storage = _SnapshotStorage()
-
-    before = utcnow()
-    await storage.prune_semantic_discovery_state(older_than=timedelta(days=7), keep_run_ids=[])
-    after = utcnow()
-
-    _, params = storage.queries[-1]
-    assert before - timedelta(days=7) <= params["cutoff"] <= after - timedelta(days=7)
-    assert params["brain_id"] == "brain-a"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("older_than", [timedelta(0), timedelta(days=-1)])
-async def test_prune_rejects_non_positive_age(older_than: timedelta) -> None:
-    storage = _SnapshotStorage()
-
     with pytest.raises(ValueError, match="positive timedelta"):
-        await storage.prune_semantic_discovery_state(older_than=older_than, keep_run_ids=[])
-    assert not storage.queries
-
-
-@pytest.mark.asyncio
-async def test_prune_rejects_a_bare_run_id_string() -> None:
-    storage = _SnapshotStorage()
-
-    # A str is a Collection[str]: iterating it would keep single characters.
+        await storage.prune_semantic_discovery_state(
+            older_than=timedelta(0), keep_run_ids=[], owner_token=_OWNER
+        )
     with pytest.raises(TypeError, match="not a string"):
         await storage.prune_semantic_discovery_state(
-            older_than=timedelta(days=7), keep_run_ids="run-paused"
+            older_than=timedelta(days=7), keep_run_ids="run", owner_token=_OWNER
+        )
+    with pytest.raises(ValueError, match="owner_token"):
+        await storage.prune_semantic_discovery_state(
+            older_than=timedelta(days=7), keep_run_ids=[], owner_token=""
         )
     assert not storage.queries

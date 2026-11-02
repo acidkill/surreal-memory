@@ -38,6 +38,9 @@ SOURCE_REVISION_DDL: tuple[str, ...] = (
     "DEFINE INDEX idx_sds_state_revision ON semantic_discovery_state FIELDS state_id, revision UNIQUE",
     "DEFINE INDEX idx_sds_brain_run ON semantic_discovery_state FIELDS brain_id, run_id",
     "DEFINE INDEX idx_sds_created_at ON semantic_discovery_state FIELDS created_at",
+    "DEFINE TABLE IF NOT EXISTS semantic_discovery_prune_cursor SCHEMAFULL",
+    "DEFINE FIELD brain_id ON semantic_discovery_prune_cursor TYPE string",
+    "DEFINE FIELD cursor ON semantic_discovery_prune_cursor TYPE option<string>",
     # Immutable run-scoped source pages for resumable consolidation census.
     "DEFINE TABLE IF NOT EXISTS consolidation_fiber_census SCHEMALESS",
     "DEFINE INDEX idx_census_run_page ON consolidation_fiber_census FIELDS run_id, strategy, filter_fingerprint, page_index UNIQUE",
@@ -648,6 +651,7 @@ DEFINE FIELD brain_id                 ON consolidation_lease TYPE string;
 DEFINE FIELD owner_token              ON consolidation_lease TYPE string;
 DEFINE FIELD acquired_at              ON consolidation_lease TYPE datetime;
 DEFINE FIELD expires_at               ON consolidation_lease TYPE datetime;
+DEFINE FIELD IF NOT EXISTS sweep_fenced_at ON consolidation_lease TYPE option<datetime>;
 DEFINE INDEX idx_clease_brain         ON consolidation_lease FIELDS brain_id UNIQUE;
 """
 

@@ -686,6 +686,7 @@ def consolidate(
             "failed",
             "lease_lost",
             "timed_out",
+            "completion_unconfirmed",
         }:
             completed = resume_checkpoint["completed_strategies"]
             if isinstance(completed, (list, tuple)):
@@ -710,7 +711,16 @@ def consolidate(
         if (
             strategy_name != "prune"
             and not dry_run
-            and status not in {"blocked", "failed", "lease_lost", "timed_out"}
+            and status
+            not in {
+                "paused",
+                "blocked",
+                "failed",
+                "lease_lost",
+                "timed_out",
+                "completion_unconfirmed",
+            }
+            and delta.after is not None
         ):
             try:
                 after = delta.after
@@ -741,7 +751,14 @@ def consolidate(
         # not on the text, so a partially failed pass must not exit 0 just
         # because it now degrades gracefully instead of crashing.
         failed = delta.report.extra.get("failed_strategies")
-        if failed or status in {"paused", "blocked", "failed", "lease_lost", "timed_out"}:
+        if failed or status in {
+            "paused",
+            "blocked",
+            "failed",
+            "lease_lost",
+            "timed_out",
+            "completion_unconfirmed",
+        }:
             raise typer.Exit(1)
 
     run_async(_consolidate())

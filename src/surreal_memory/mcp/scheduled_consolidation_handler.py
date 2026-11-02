@@ -116,10 +116,12 @@ class ScheduledConsolidationHandler:
             status = delta.report.extra.get("consolidation_status", "completed")
             if status == "completed":
                 logger.info(
-                    "Scheduled consolidation complete (strategies=%s): %s | purity delta: %+.1f",
+                    "Scheduled consolidation complete (strategies=%s): %s | purity delta: %s",
                     cfg.scheduled_consolidation_strategies,
                     delta.report.summary(),
-                    delta.purity_delta,
+                    f"{delta.purity_delta:+.1f}"
+                    if delta.purity_delta is not None
+                    else "unavailable",
                 )
             else:
                 logger.warning(

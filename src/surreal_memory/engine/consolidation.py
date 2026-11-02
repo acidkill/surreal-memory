@@ -32,6 +32,7 @@ from surreal_memory.engine.consolidation_group_plan import (
 from surreal_memory.engine.consolidation_progress import (
     INCOMPLETE_STATUSES,
     ConsolidationChunkCompleteError,
+    ConsolidationCompletionUnconfirmedError,
     ConsolidationLeaseLostError,
     ConsolidationPausedError,
     ConsolidationProgressError,
@@ -580,7 +581,9 @@ class ConsolidationReport:
         line = str(self.semantic_discovery_states_pruned)
         error = self.extra.get("semantic_discovery_state_prune_error")
         if error:
-            line += f" [prune FAILED: {error}]"
+            line = f"unconfirmed [prune FAILED: {error}]"
+        elif self.extra.get("semantic_discovery_state_prune_more"):
+            line += " [bounded sweep; scan continuation remains]"
         return line
 
     def _dedup_window_note(self) -> str:
@@ -678,7 +681,14 @@ class ConsolidationReport:
         for message in self.extra.get("consolidation_progress_messages", []):
             lines.append(f"  {message}")
         status = self.extra.get("consolidation_status")
-        if status in {"paused", "blocked", "failed", "lease_lost", "timed_out"}:
+        if status in {
+            "paused",
+            "blocked",
+            "failed",
+            "lease_lost",
+            "timed_out",
+            "completion_unconfirmed",
+        }:
             lines.append(f"  Consolidation status: {status}")
         if status == "blocked":
             lines.append("  Strategies were not executed; checkpoint preserved")
@@ -726,6 +736,7 @@ class ConsolidationReport:
             "failed",
             "lease_lost",
             "timed_out",
+            "completion_unconfirmed",
         }:
             return hints
         total_changes = (
@@ -1038,8 +1049,12 @@ class ConsolidationEngine:
                 report.duration_ms = (time.perf_counter() - start) * 1000
                 return report
 
+        resume_finalization_only = False
         if progress_session is not None:
             self._progress_session = progress_session
+            resume_finalization_only = progress_session.resumed and set(requested_names).issubset(
+                progress_session.completed_strategies
+            )
             if progress_session.resumed:
                 reference_time = progress_session.reference_time
                 report.started_at = reference_time
@@ -1050,7 +1065,7 @@ class ConsolidationEngine:
                         for strategy in ordered_strategies
                         if strategy.value not in completed
                     ),
-                    "unknown",
+                    "finalization",
                 )
                 resume_message = (
                     f"Consolidation: {resume_strategy} progress state found - resuming..."
@@ -1109,8 +1124,6 @@ class ConsolidationEngine:
                         )
                         if progress_session is not None:
                             await progress_session.complete_strategy(strategy.value)
-                            if strategy == ConsolidationStrategy.SEMANTIC_LINK:
-                                await self._prune_semantic_discovery_state(report)
                     except ConsolidationPausedError as exc:
                         paused_strategies.append(strategy.value)
                         if progress_session is not None:
@@ -1221,8 +1234,24 @@ class ConsolidationEngine:
                 and all_complete
             ):
                 try:
-                    await self._run_auto_tier(report, dry_run)
+                    auto_tier = self._tier_config is not None and self._tier_config.auto_enabled
+                    if auto_tier and progress_session is not None and not dry_run:
+                        phase = str(progress_session.state.get("phase", ""))
+                        if phase == "auto_tier_started" or (
+                            resume_finalization_only and phase != "auto_tier_completed"
+                        ):
+                            raise RuntimeError(
+                                "auto-tier outcome is unknown; refusing automatic replay of "
+                                "this finalization checkpoint"
+                            )
+                        if phase != "auto_tier_completed":
+                            await progress_session.finalization_checkpoint("auto_tier_started")
+                            await self._run_auto_tier(report, dry_run)
+                            await progress_session.finalization_checkpoint("auto_tier_completed")
+                    else:
+                        await self._run_auto_tier(report, dry_run)
                 except Exception as exc:
+                    progress_messages.append(f"Auto-tier finalization stopped: {exc}")
                     failed_strategies.append(f"auto_tier ({type(exc).__name__})")
                     report.extra["failed_strategies"] = failed_strategies
 
@@ -1230,11 +1259,30 @@ class ConsolidationEngine:
                 if paused:
                     report.extra["consolidation_status"] = "paused"
                 elif failed_strategies:
-                    await progress_session.fail("; ".join(failed_strategies))
                     report.extra["consolidation_status"] = "failed"
+                    try:
+                        await progress_session.fail("; ".join(failed_strategies))
+                    except ConsolidationLeaseLostError as exc:
+                        report.extra["consolidation_status"] = "lease_lost"
+                        progress_messages.append(str(exc))
+                    except Exception as exc:
+                        progress_messages.append(
+                            f"Failure checkpoint acknowledgement unavailable: {exc}; "
+                            "inspect the saved run before resuming."
+                        )
                 elif set(requested_names).issubset(progress_session.completed_strategies):
-                    await progress_session.complete()
-                    report.extra["consolidation_status"] = "completed"
+                    try:
+                        await progress_session.complete()
+                    except ConsolidationCompletionUnconfirmedError as exc:
+                        report.extra["consolidation_status"] = "completion_unconfirmed"
+                        progress_messages.append(str(exc))
+                    except ConsolidationLeaseLostError as exc:
+                        report.extra["consolidation_status"] = "lease_lost"
+                        progress_messages.append(str(exc))
+                    else:
+                        report.extra["consolidation_status"] = "completed"
+                        if ConsolidationStrategy.SEMANTIC_LINK in requested:
+                            await self._prune_semantic_discovery_state(report)
                 else:
                     await progress_session.pause()
                     report.extra["consolidation_status"] = "paused"
@@ -1259,7 +1307,11 @@ class ConsolidationEngine:
             report.duration_ms = (time.perf_counter() - start) * 1000
             return report
         except asyncio.CancelledError:
-            if progress_session is not None:
+            if (
+                progress_session is not None
+                and progress_session.state.get("status") != "completed"
+                and progress_session.state.get("phase") != "completion_unconfirmed"
+            ):
                 try:
                     await asyncio.shield(progress_session.pause())
                 except Exception:
@@ -1308,6 +1360,7 @@ class ConsolidationEngine:
         except Exception as e:
             logger.error("Auto-tier failed during consolidation: %s", e, exc_info=True)
             report.extra["auto_tier"] = {"error": "auto-tier failed"}
+            raise
 
     async def _prune(
         self,
@@ -11125,8 +11178,8 @@ class ConsolidationEngine:
     async def _prune_semantic_discovery_state(self, report: ConsolidationReport) -> None:
         """Delete discovery snapshots that no unfinished run can resume from.
 
-        Called once semantic_link is marked completed. Snapshots of this run and
-        of every unfinished run are kept however old they are, because resuming
+        Called only after the run's terminal checkpoint is confirmed. Snapshots
+        of this run and every unfinished run are kept however old they are, because resuming
         a run reads its own snapshots and nothing else. A failure is reported
         rather than raised: the strategy's work is already committed, and
         failing the run would only send it back to resume finished work.
@@ -11145,15 +11198,20 @@ class ConsolidationEngine:
             keep = set(await self._storage.get_consolidation_run_ids(statuses=INCOMPLETE_STATUSES))
             keep.add(str(progress_session.state["run_id"]))
             pruned = await self._storage.prune_semantic_discovery_state(
-                older_than=timedelta(days=retention_days), keep_run_ids=keep
+                older_than=timedelta(days=retention_days),
+                keep_run_ids=keep,
+                owner_token=progress_session.owner_token,
             )
         except Exception as exc:
             logger.warning("Semantic discovery snapshot prune failed", exc_info=True)
             report.extra["semantic_discovery_state_prune_error"] = f"{type(exc).__name__}: {exc}"
             return
-        report.semantic_discovery_states_pruned += pruned
-        if pruned:
-            logger.info("Pruned %d semantic discovery snapshots of finished runs", pruned)
+        report.semantic_discovery_states_pruned += pruned["deleted"]
+        report.extra["semantic_discovery_state_prune_more"] = pruned["more"]
+        if pruned["deleted"]:
+            logger.info(
+                "Pruned %d semantic discovery snapshots of finished runs", pruned["deleted"]
+            )
 
     async def _detect_drift(
         self,

@@ -109,6 +109,7 @@ _BRAIN_SCOPED_TABLES: tuple[str, ...] = (
     "consolidation_progress",
     "semantic_source_barrier",
     "semantic_discovery_state",
+    "semantic_discovery_prune_cursor",
     "cognitive_state",
     "decay_pass",
     "compression_backups",

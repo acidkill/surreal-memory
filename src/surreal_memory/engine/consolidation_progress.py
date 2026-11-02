@@ -30,6 +30,10 @@ class ConsolidationProgressError(RuntimeError):
     """Base error for durable consolidation coordination."""
 
 
+class ConsolidationCompletionUnconfirmedError(ConsolidationProgressError):
+    """The terminal checkpoint could not be confirmed without replaying writes."""
+
+
 class ConsolidationPausedError(ConsolidationProgressError):
     """The strategy reached its budget at a committed work-unit boundary."""
 
@@ -1182,13 +1186,54 @@ class ConsolidationProgressSession:
         self.state["last_error"] = error[:2000]
         await self._save()
 
+    async def finalization_checkpoint(self, phase: str) -> None:
+        """Persist a finalization boundary without inventing a strategy."""
+        self.state["phase"] = phase
+        await self._save()
+
     async def complete(self) -> None:
         self.state["status"] = "completed"
         self.state["current_strategy"] = None
         self.state["phase"] = "completed"
         self.state["cursor"] = None
         self.state["last_error"] = None
-        await self._save()
+        try:
+            await self._save()
+        except ConsolidationLeaseLostError:
+            raise
+        except asyncio.CancelledError:
+            self.state["status"] = "running"
+            self.state["phase"] = "completion_unconfirmed"
+            raise
+        except Exception as exc:
+            # A lost acknowledgement can follow a committed write; never replay it.
+            try:
+                persisted = await self.storage.get_consolidation_progress(self.brain_id)
+            except Exception:
+                persisted = None
+            if (
+                persisted
+                and persisted.get("run_id") == self.state.get("run_id")
+                and persisted.get("options_fingerprint") == self.state.get("options_fingerprint")
+                and persisted.get("brain_id") == self.brain_id
+                and persisted.get("status") == "completed"
+                and persisted.get("phase") == "completed"
+                and bool(self.state.get("requested_strategies"))
+                and persisted.get("requested_strategies") == self.state.get("requested_strategies")
+                and persisted.get("completed_strategies") == self.state.get("completed_strategies")
+                and set(self.state["requested_strategies"]).issubset(
+                    self.state["completed_strategies"]
+                )
+            ):
+                self.state = dict(persisted)
+                return
+            # Local intent is not durable evidence of completion.
+            self.state["status"] = "running"
+            self.state["phase"] = "completion_unconfirmed"
+            raise ConsolidationCompletionUnconfirmedError(
+                "terminal checkpoint was not confirmed; inspect the saved run and use "
+                "--resume if it remains unfinished"
+            ) from exc
 
     async def _save(self) -> None:
         if self._lease_lost:

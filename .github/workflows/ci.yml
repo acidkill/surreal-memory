@@ -221,6 +221,47 @@ jobs:
       - name: Run tests against a live SurrealDB
         run: pytest tests/ -v --timeout=120 -m "not stress"
 
+      # Run both shapes on fresh DB processes so setup/test history cannot
+      # contaminate the sampled RSS interval. The legacy delete loop is
+      # intentionally restricted to this disposable, memory-capped container.
+      - name: Benchmark bounded snapshot cleanup
+        run: |
+          set -euo pipefail
+          report="semantic-discovery-prune-${{ matrix.surrealdb }}.jsonl"
+          : > "$report"
+          for mode in legacy bounded; do
+            docker rm -f surrealdb-ci >/dev/null 2>&1 || true
+            docker run -d --name surrealdb-ci -p 8001:8001 --cpus=2 --memory=1g --memory-swap=1g \
+              surrealdb/surrealdb:v${{ matrix.surrealdb }} \
+              start memory --user root --pass root --bind 0.0.0.0:8001 \
+              --allow-experimental gql --allow-eval-query >/dev/null
+            ready=false
+            for _ in $(seq 1 30); do
+              if docker exec surrealdb-ci /surreal isready --endpoint http://localhost:8001 >/dev/null 2>&1; then
+                ready=true
+                break
+              fi
+              sleep 1
+            done
+            if [ "$ready" != true ]; then
+              echo "SurrealDB benchmark container did not become ready"
+              docker logs surrealdb-ci
+              exit 1
+            fi
+            pid="$(docker inspect --format='{{.State.Pid}}' surrealdb-ci)"
+            SURREALDB_CONTAINER_PID="$pid" python scripts/benchmark_semantic_discovery_prune.py \
+              --mode "$mode" --version "${{ matrix.surrealdb }}" | tee -a "$report"
+            docker rm -f surrealdb-ci >/dev/null
+          done
+          cat "$report" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload snapshot cleanup benchmark metrics
+        uses: actions/upload-artifact@v4
+        with:
+          name: semantic-discovery-prune-${{ matrix.surrealdb }}
+          path: semantic-discovery-prune-${{ matrix.surrealdb }}.jsonl
+          if-no-files-found: error
+
       - name: SurrealDB logs (on failure)
         if: failure()
         run: docker logs surrealdb-ci

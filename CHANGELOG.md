@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Consolidation confirms the final checkpoint before cleaning up snapshots.
+  An interrupted final write can be reconciled without repeating finished
+  strategies. Missing health measurements are reported as unavailable.
+- Snapshot cleanup bounds its scan and deletes, preserves unfinished runs,
+  and continues from a separate cursor for each brain.
+
 - Semantic-link checkpoints keep candidate neurons, vectors and priorities aligned.
   Resuming older completed snapshots verifies result hashes before pair lookups
   and preserves the verified index order; ambiguous ordering still stops safely.
