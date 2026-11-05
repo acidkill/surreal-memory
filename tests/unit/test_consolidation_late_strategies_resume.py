@@ -268,7 +268,7 @@ async def test_compress_resumes_after_committed_fiber_without_recompressing(
         ) -> Any:
             self.storage.compressed.append(fiber.id)
             if fiber.compression_tier >= target_tier:
-                return SimpleNamespace(skipped=True, tokens_saved=0)
+                return SimpleNamespace(skipped=True, tokens_saved=0, skip_reason="")
             fiber.compression_tier = target_tier
             return SimpleNamespace(skipped=False, tokens_saved=7)
 

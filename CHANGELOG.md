@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Compression reports a cumulative count of fibers whose originals were preserved,
+  with per-fiber details at DEBUG level. Resume retains committed counts and marks
+  older checkpoints with missing preservation history as partial.
 - Consolidation confirms the final checkpoint before cleaning up snapshots.
   An interrupted final write can be reconciled without repeating finished
   strategies. Missing health measurements are reported as unavailable.

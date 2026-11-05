@@ -393,7 +393,9 @@ async def test_skipped_result_defers_checkpoint_but_pending_and_receipt_do_not(
     )
 
     async def compress(_self: Any, fiber: Fiber, _tier: Any, **_kwargs: Any) -> Any:
-        return SimpleNamespace(skipped=fiber.id in {"f-00241", "f-00242"}, tokens_saved=0)
+        return SimpleNamespace(
+            skipped=fiber.id in {"f-00241", "f-00242"}, tokens_saved=0, skip_reason=""
+        )
 
     # Pending cleanup and the concurrent no-intent skip both return skipped.
     monkeypatch.setattr(CompressionEngine, "compress_fiber", compress)

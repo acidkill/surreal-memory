@@ -62,6 +62,14 @@ does not prove a stall. Check durable phase/page progress and the actual pending
 work before deciding that the run is stuck. Conversely, positive counters or
 small health changes do not prove that all strategies completed.
 
+`Compression originals preserved: N` counts fibers skipped to protect existing
+originals when matching lineage cannot be established. These routine details are
+available at DEBUG level. The count follows the saved run's committed compression
+cursor, including when compression completed before a later resume. Older
+checkpoints that already advanced without this counter show a **partial count**;
+the number covers only the counted suffix and does not imply a historical zero.
+The JSON report exposes `fibers_preserved` and `compression_counts_complete`.
+
 Do not blindly repeat resumes after a new validation or connection error. A lost
 WebSocket receiver does not prove that the last query failed to execute; 3.12.2
 surfaces that uncertainty instead of automatically replaying it.

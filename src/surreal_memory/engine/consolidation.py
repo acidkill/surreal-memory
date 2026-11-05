@@ -399,6 +399,8 @@ class ConsolidationReport:
     merge_details: list[MergeDetail] = field(default_factory=list)
     dry_run: bool = False
     extra: dict[str, Any] = field(default_factory=dict)
+    fibers_preserved: int = 0
+    compression_counts_complete: bool = True
 
     def _semantic_synapse_line(self) -> str:
         """Render the semantic-link counters so a capped run cannot be misread.
@@ -633,6 +635,12 @@ class ConsolidationReport:
             f"  Memories promoted (type): {self.memories_promoted}",
             f"  Stages advanced: {self.stages_advanced}{self._stage_transitions_suffix()}",
             f"  Fibers compressed: {self.fibers_compressed}",
+            f"  Compression originals preserved: {self.fibers_preserved}"
+            + (
+                ""
+                if self.compression_counts_complete
+                else " (partial count; earlier checkpoint did not record preservation skips)"
+            ),
             f"  Tokens saved: {self.tokens_saved}",
             f"  Reasoning traces ingested: {self.reasoning_traces_ingested}",
             f"  Reasoning patterns learned: {self.reasoning_patterns_learned}",
@@ -1052,6 +1060,10 @@ class ConsolidationEngine:
         resume_finalization_only = False
         if progress_session is not None:
             self._progress_session = progress_session
+            if ConsolidationStrategy.COMPRESS in requested:
+                self._restore_compression_report(
+                    report, progress_session.strategy_state(ConsolidationStrategy.COMPRESS.value)
+                )
             resume_finalization_only = progress_session.resumed and set(requested_names).issubset(
                 progress_session.completed_strategies
             )
@@ -11289,6 +11301,24 @@ class ConsolidationEngine:
 
         report.drift_clusters_persisted = persisted
 
+    @staticmethod
+    def _restore_compression_report(report: ConsolidationReport, progress: dict[str, Any]) -> None:
+        """Restore counters without inventing preservation history for old cursors."""
+        raw_counters = progress.get("counters")
+        counters = raw_counters if isinstance(raw_counters, dict) else {}
+        for name in ("fibers_compressed", "tokens_saved", "fibers_preserved"):
+            value = counters.get(name, 0)
+            setattr(report, name, int(value) if isinstance(value, (int, float)) else 0)
+        if "fibers_preserved" in counters:
+            report.compression_counts_complete = counters.get("compression_counts_complete") == 1
+        else:
+            report.compression_counts_complete = not (
+                progress.get("cursor") is not None
+                or progress.get("phase") not in (None, "starting")
+                or report.fibers_compressed
+                or report.tokens_saved
+            )
+
     async def _compress(
         self,
         report: ConsolidationReport,
@@ -11307,6 +11337,17 @@ class ConsolidationEngine:
         if not brain_id:
             _logger.debug("COMPRESS skipped: no brain context")
             return
+
+        progress = self._strategy_progress_state() if not dry_run else {}
+        self._restore_compression_report(report, progress)
+        total_compressed = report.fibers_compressed
+        total_tokens_saved = report.tokens_saved
+        total_preserved = report.fibers_preserved
+        counts_complete = report.compression_counts_complete
+        committed = (total_compressed, total_tokens_saved, total_preserved)
+        cursor = self._strategy_resume_cursor() if not dry_run else None
+        raw_run_id = self._progress_session.state.get("run_id") if self._progress_session else None
+        run_id = str(raw_run_id) if raw_run_id else None
 
         engine = CompressionEngine(self._storage)
         start = _time.perf_counter()
@@ -11328,17 +11369,30 @@ class ConsolidationEngine:
             )
             brain = None
 
-        progress = self._strategy_progress_state() if not dry_run else {}
-        counters = progress.get("counters")
-        raw_compressed = counters.get("fibers_compressed", 0) if isinstance(counters, dict) else 0
-        total_compressed = int(raw_compressed) if isinstance(raw_compressed, (int, float)) else 0
-        raw_tokens_saved = counters.get("tokens_saved", 0) if isinstance(counters, dict) else 0
-        total_tokens_saved = (
-            int(raw_tokens_saved) if isinstance(raw_tokens_saved, (int, float)) else 0
-        )
-        cursor = self._strategy_resume_cursor() if not dry_run else None
-        raw_run_id = self._progress_session.state.get("run_id") if self._progress_session else None
-        run_id = str(raw_run_id) if raw_run_id else None
+        async def checkpoint(fiber_cursor: str | None) -> None:
+            nonlocal committed
+            session = self._progress_session
+            if dry_run or session is None or self._active_strategy is None:
+                return
+            # The session stages new nested maps before saving; retain the acknowledged root.
+            previous_state = dict(session.state)
+            try:
+                await session.checkpoint(
+                    self._active_strategy.value,
+                    "compress_fibers",
+                    cursor=fiber_cursor,
+                    counters={
+                        "fibers_compressed": total_compressed,
+                        "tokens_saved": total_tokens_saved,
+                        "fibers_preserved": total_preserved,
+                        "compression_counts_complete": int(counts_complete),
+                    },
+                )
+            except BaseException:
+                session.state = previous_state
+                raise
+            committed = (total_compressed, total_tokens_saved, total_preserved)
+            await self._check_progress_budget()
 
         async def pending_fibers() -> AsyncIterator[tuple[Fiber, int]]:
             page_cursor = cursor
@@ -11357,108 +11411,89 @@ class ConsolidationEngine:
                 if len(page) < page_size:
                     return
 
-        async for fiber, remaining_on_page in pending_fibers():
-            await self._check_progress_budget()
-            fiber_cursor = str(fiber.id)
+        try:
+            async for fiber, remaining_on_page in pending_fibers():
+                await self._check_progress_budget()
+                fiber_cursor = str(fiber.id)
 
-            pending = fiber.metadata.get("_compression_pending") if not dry_run else None
-            receipt = fiber.metadata.get("_compression_receipt") if not dry_run else None
-            if (
-                pending is None
-                and run_id
-                and isinstance(receipt, dict)
-                and receipt.get("run_id") == run_id
-                and receipt.get("target_tier") == fiber.compression_tier
-            ):
-                total_compressed += 1
-                total_tokens_saved += int(receipt["tokens_saved"])
-                await self._checkpoint_progress(
-                    "compress_fibers",
-                    cursor=fiber_cursor,
-                    counters={
-                        "fibers_compressed": total_compressed,
-                        "tokens_saved": total_tokens_saved,
-                    },
-                )
-                continue
-            if (fiber.pinned or fiber.metadata.get("_verbatim")) and pending is None:
-                if not dry_run and remaining_on_page == 1:
-                    await self._checkpoint_progress(
-                        "compress_fibers",
-                        cursor=fiber_cursor,
-                        counters={
-                            "fibers_compressed": total_compressed,
-                            "tokens_saved": total_tokens_saved,
-                        },
+                pending = fiber.metadata.get("_compression_pending") if not dry_run else None
+                receipt = fiber.metadata.get("_compression_receipt") if not dry_run else None
+                if (
+                    pending is None
+                    and run_id
+                    and isinstance(receipt, dict)
+                    and receipt.get("run_id") == run_id
+                    and receipt.get("target_tier") == fiber.compression_tier
+                ):
+                    total_compressed += 1
+                    total_tokens_saved += int(receipt["tokens_saved"])
+                    await checkpoint(fiber_cursor)
+                    continue
+                if (fiber.pinned or fiber.metadata.get("_verbatim")) and pending is None:
+                    if not dry_run and remaining_on_page == 1:
+                        await checkpoint(fiber_cursor)
+                    continue
+
+                arousal = fiber.metadata.get("_arousal", 0.0) if fiber.metadata else 0.0
+                arousal_heat = float(arousal) * 0.3 if isinstance(arousal, (int, float)) else 0.0
+                target_tier = (
+                    CompressionTier(int(pending["target_tier"]))
+                    if isinstance(pending, dict)
+                    else engine.determine_target_tier(
+                        fiber,
+                        reference_time,
+                        heat_score=arousal_heat,
                     )
-                continue
-
-            arousal = fiber.metadata.get("_arousal", 0.0) if fiber.metadata else 0.0
-            arousal_heat = float(arousal) * 0.3 if isinstance(arousal, (int, float)) else 0.0
-            target_tier = (
-                CompressionTier(int(pending["target_tier"]))
-                if isinstance(pending, dict)
-                else engine.determine_target_tier(
-                    fiber,
-                    reference_time,
-                    heat_score=arousal_heat,
                 )
-            )
-            if pending is None and int(target_tier) <= fiber.compression_tier:
-                if not dry_run and remaining_on_page == 1:
-                    await self._checkpoint_progress(
-                        "compress_fibers",
-                        cursor=fiber_cursor,
-                        counters={
-                            "fibers_compressed": total_compressed,
-                            "tokens_saved": total_tokens_saved,
-                        },
+                if pending is None and int(target_tier) <= fiber.compression_tier:
+                    if not dry_run and remaining_on_page == 1:
+                        await checkpoint(fiber_cursor)
+                    continue
+
+                if _time.perf_counter() - start > time_budget:
+                    report.extra["compress_fibers_deferred"] = remaining_on_page
+                    raise ConsolidationPausedError(
+                        f"compression deferred at least {remaining_on_page} fibers "
+                        "at its time budget; the last committed fiber checkpoint is retained"
                     )
-                continue
 
-            if _time.perf_counter() - start > time_budget:
-                report.extra["compress_fibers_deferred"] = remaining_on_page
-                report.fibers_compressed += total_compressed
-                report.tokens_saved += total_tokens_saved
-                raise ConsolidationPausedError(
-                    f"compression deferred at least {remaining_on_page} fibers "
-                    "at its time budget; the last committed fiber checkpoint is retained"
-                )
+                try:
+                    result = await engine.compress_fiber(
+                        fiber,
+                        CompressionTier(target_tier),
+                        dry_run=dry_run,
+                        brain=brain,
+                        _pinned_neuron_ids=pinned_neuron_ids,
+                        **({"run_id": run_id} if run_id else {}),
+                    )
+                except Exception:
+                    _logger.error("Compression failed for fiber %s", fiber.id, exc_info=True)
+                    # Do not move the durable cursor past a failed fiber. The next run
+                    # must retry it instead of silently treating it as completed.
+                    raise
 
-            try:
-                result = await engine.compress_fiber(
-                    fiber,
-                    CompressionTier(target_tier),
-                    dry_run=dry_run,
-                    brain=brain,
-                    _pinned_neuron_ids=pinned_neuron_ids,
-                    **({"run_id": run_id} if run_id else {}),
-                )
-            except Exception:
-                _logger.error("Compression failed for fiber %s", fiber.id, exc_info=True)
-                # Do not move the durable cursor past a failed fiber. The next run
-                # must retry it instead of silently treating it as completed.
-                raise
-
-            if not result.skipped:
-                total_compressed += 1
-                total_tokens_saved += result.tokens_saved
-            # Skips have no new compression effect; replay at most one page.
-            # Keep effects and recovered intents durable before the next unit.
-            if not dry_run and (
-                not result.skipped or pending is not None or remaining_on_page == 1
+                if result.skipped and result.skip_reason == "preservation_conflict":
+                    total_preserved += 1
+                if not result.skipped:
+                    total_compressed += 1
+                    total_tokens_saved += result.tokens_saved
+                # Skips have no new compression effect; replay at most one page.
+                # Keep effects and recovered intents durable before the next unit.
+                if not dry_run and (
+                    not result.skipped or pending is not None or remaining_on_page == 1
+                ):
+                    await checkpoint(fiber_cursor)
+            if not dry_run and "fibers_preserved" not in (
+                self._strategy_progress_state().get("counters") or {}
             ):
-                await self._checkpoint_progress(
-                    "compress_fibers",
-                    cursor=fiber_cursor,
-                    counters={
-                        "fibers_compressed": total_compressed,
-                        "tokens_saved": total_tokens_saved,
-                    },
-                )
-
-        report.fibers_compressed += total_compressed
-        report.tokens_saved += total_tokens_saved
+                await checkpoint(cursor)
+        finally:
+            if self._progress_session is not None and not dry_run:
+                total_compressed, total_tokens_saved, total_preserved = committed
+            report.fibers_compressed = total_compressed
+            report.tokens_saved = total_tokens_saved
+            report.fibers_preserved = total_preserved
+            report.compression_counts_complete = counts_complete
 
     async def _lifecycle(
         self,
