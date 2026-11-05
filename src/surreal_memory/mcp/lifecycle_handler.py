@@ -337,6 +337,8 @@ class LifecycleHandler:
             # failed" without parsing prose.
             "drift_clusters_found": delta.report.drift_clusters_found,
             "drift_clusters_persisted": delta.report.drift_clusters_persisted,
+            "fibers_preserved": delta.report.fibers_preserved,
+            "compression_counts_complete": delta.report.compression_counts_complete,
             "extra": extra,
         }
         return result

@@ -942,6 +942,8 @@ class TestMCPToolCalls:
             # Detected vs persisted are separate so a failed write cannot masquerade
             # as "fewer clusters found".
             "drift_clusters_persisted": 0,
+            "fibers_preserved": 0,
+            "compression_counts_complete": True,
             "extra": {"alias_checks_failed": 1, "dedup_anchors_truncated": True},
         }
         assert "1 checks FAILED (state unknown)" in result["summary"]

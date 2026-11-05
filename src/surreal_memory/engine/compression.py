@@ -168,6 +168,8 @@ class CompressionReport:
     backups_created: int = 0
     dry_run: bool = False
     results: list[CompressionResult] = field(default_factory=list)
+    fibers_preserved: int = 0
+    compression_counts_complete: bool = True
 
     def summary(self) -> str:
         """Human-readable summary of the compression run."""
@@ -176,6 +178,7 @@ class CompressionReport:
             f"Compression Report{mode} ({self.started_at.strftime('%Y-%m-%d %H:%M')})",
             f"  Fibers compressed: {self.fibers_compressed}",
             f"  Fibers skipped: {self.fibers_skipped}",
+            f"  Compression originals preserved: {self.fibers_preserved}",
             f"  Tokens saved: {self.tokens_saved}",
             f"  Backups created: {self.backups_created}",
             f"  Duration: {self.duration_ms:.1f}ms",
@@ -1035,7 +1038,7 @@ class CompressionEngine:
 
     @staticmethod
     def _preservation_skip(fiber: Fiber) -> CompressionResult:
-        logger.warning(
+        logger.debug(
             "Preserving existing compression originals; fiber %s has no trusted matching lineage",
             fiber.id,
         )
@@ -1827,6 +1830,8 @@ class CompressionEngine:
                 report.results.append(result)
                 if result.skipped:
                     report.fibers_skipped += 1
+                    if result.skip_reason == "preservation_conflict":
+                        report.fibers_preserved += 1
                 else:
                     report.fibers_compressed += 1
                     report.tokens_saved += result.tokens_saved
@@ -1841,9 +1846,11 @@ class CompressionEngine:
 
         report.duration_ms = (time.perf_counter() - start) * 1000
         logger.info(
-            "Compression run complete: %d compressed, %d skipped, %d deferred, %d tokens saved",
+            "Compression run complete: %d compressed, %d skipped (%d originals preserved), "
+            "%d deferred, %d tokens saved",
             report.fibers_compressed,
             report.fibers_skipped,
+            report.fibers_preserved,
             report.fibers_deferred,
             report.tokens_saved,
         )
