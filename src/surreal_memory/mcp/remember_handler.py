@@ -108,7 +108,24 @@ class RememberHandler:
     # ──────────────────── Core tool handlers ────────────────────
 
     async def _remember(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Use the retry-safe coding path only when scope is explicitly requested."""
+        if args.get("scope") is not None:
+            from surreal_memory.mcp.coding_memory import remember_scoped
+
+            return await remember_scoped(self, args)
+        return await self._remember_impl(args)
+
+    async def _remember_impl(self, args: dict[str, Any]) -> dict[str, Any]:
         """Store a memory in the neural graph."""
+        from surreal_memory.hooks.agent_scope import project_identity, scope_tag
+
+        try:
+            coding_tag = scope_tag(args)
+            if args.get("scope") == "global_preference" and args.get("type") != "preference":
+                return {"error": "global_preference scope requires explicit type='preference'"}
+        except ValueError as exc:
+            return {"error": str(exc)}
+
         # Extract internal-only flags (not user-settable via MCP args)
         is_auto_capture = bool(args.pop("_auto_capture", False))
         if is_auto_capture and not self.config.write_gate.auto_capture_enabled:
@@ -307,7 +324,7 @@ class RememberHandler:
             priority = Priority.from_int(auto_score)
 
         # Build dedup pipeline if enabled (shared with every other write path)
-        dedup_pipeline = build_dedup_pipeline(storage, self.config)
+        dedup_pipeline = None if coding_tag else build_dedup_pipeline(storage, self.config)
 
         encoder = MemoryEncoder(storage, brain.config, dedup_pipeline=dedup_pipeline)
 
@@ -323,6 +340,8 @@ class RememberHandler:
             for t in raw_tags:
                 if isinstance(t, str) and len(t) <= 100:
                     tags.add(t)
+            if coding_tag:
+                tags.add(coding_tag)
             # Auto-inject agent identity tag
             agent_id = getattr(self, "_agent_id", "")
             if agent_id:
@@ -423,6 +442,9 @@ class RememberHandler:
                 tags=tags if tags else None,
                 trust_score=trust_score,
                 tier=raw_tier,
+                project_id=(args.get("project_id") or project_identity())
+                if args.get("scope") == "project"
+                else None,
             )
             await storage.add_typed_memory(typed_mem)
 
@@ -809,6 +831,8 @@ class RememberHandler:
                 "ephemeral",
                 "tier",
                 "location",
+                "scope",
+                "project_id",
             ):
                 if key in item:
                     single_args[key] = item[key]

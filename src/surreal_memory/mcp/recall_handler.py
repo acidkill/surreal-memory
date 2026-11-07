@@ -257,6 +257,15 @@ class RecallHandler:
 
     async def _recall(self, args: dict[str, Any]) -> dict[str, Any]:
         """Query memories via spreading activation."""
+        from surreal_memory.hooks.agent_scope import scope_tag
+        from surreal_memory.mcp.coding_memory import read_scoped
+
+        try:
+            if scope_tag(args):
+                return await read_scoped(await self.get_storage(), args, recall=True)
+        except (ValueError, TypeError) as exc:
+            return {"error": str(exc)}
+
         from surreal_memory.mcp.tool_handler_utils import (
             _build_citation_audit,
             _parse_tags,
@@ -1105,6 +1114,15 @@ class RecallHandler:
         This is intentional — HOT memories represent always-in-context data
         (safety boundaries, pinned knowledge) that should never be excluded.
         """
+        from surreal_memory.hooks.agent_scope import scope_tag
+        from surreal_memory.mcp.coding_memory import read_scoped
+
+        try:
+            if scope_tag(args):
+                return await read_scoped(await self.get_storage(), args, recall=False)
+        except (ValueError, TypeError) as exc:
+            return {"error": str(exc)}
+
         storage = await self.get_storage()
 
         limit = min(args.get("limit", 10), 200)

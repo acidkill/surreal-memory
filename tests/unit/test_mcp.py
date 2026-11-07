@@ -46,7 +46,7 @@ class TestMCPServer:
         with patch("surreal_memory.plugins.get_plugin_tools", return_value=[]):
             tools = server.get_tools()
 
-        assert len(tools) == 57
+        assert len(tools) == 58
         tool_names = {tool["name"] for tool in tools}
         assert tool_names == {
             "smem_remember",
@@ -58,6 +58,7 @@ class TestMCPServer:
             "smem_auto",
             "smem_suggest",
             "smem_session",
+            "smem_checkpoint",
             "smem_index",
             "smem_import",
             "smem_eternal",
@@ -1204,7 +1205,7 @@ class TestMCPProtocol:
         assert response["id"] == 2
         assert "result" in response
         assert "tools" in response["result"]
-        assert len(response["result"]["tools"]) == 57
+        assert len(response["result"]["tools"]) == 58
 
     @pytest.mark.asyncio
     async def test_tools_call_message(self, server: MCPServer) -> None:
@@ -1329,13 +1330,14 @@ class TestMCPProtocol:
 
         server.config.tool_memory = ToolMemoryConfig(enabled=enabled, blacklist=blacklist)
         storage = self._storage_capturing_tool_events()
+        server._storage = storage
         with patch.object(server, "get_storage", return_value=storage) as get_storage:
             await _record_tool_event(
                 server, tool_name, {}, utcnow(), success=success, reason="synthetic failure"
             )
 
         assert storage.insert_tool_events.await_count == int(recorded)
-        assert get_storage.await_count == int(recorded)
+        get_storage.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_timeout_records_a_diagnosable_reason(self, server: MCPServer) -> None:
@@ -1344,6 +1346,7 @@ class TestMCPProtocol:
         validation reject or an auth failure. Before this fix, task_context
         stayed "" for that case — indistinguishable from those other causes."""
         storage = self._storage_capturing_tool_events()
+        server._storage = storage
 
         with (
             patch.object(server, "get_storage", return_value=storage),
@@ -1369,6 +1372,7 @@ class TestMCPProtocol:
         from surreal_memory.storage.surrealdb.connection import StorageAuthError
 
         storage = self._storage_capturing_tool_events()
+        server._storage = storage
 
         with (
             patch.object(server, "get_storage", return_value=storage),
@@ -1394,6 +1398,7 @@ class TestMCPProtocol:
         """A generic exception's message can carry argument/content data, so
         only the class name — never str(exc) — is safe to persist here."""
         storage = self._storage_capturing_tool_events()
+        server._storage = storage
 
         with (
             patch.object(server, "get_storage", return_value=storage),
@@ -1418,6 +1423,7 @@ class TestMCPProtocol:
         error (e.g. remember_batch's new "All N item(s) failed") should have
         that string land in task_context, not an empty field."""
         storage = self._storage_capturing_tool_events()
+        server._storage = storage
 
         with (
             patch.object(server, "get_storage", return_value=storage),

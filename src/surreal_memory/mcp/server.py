@@ -150,6 +150,32 @@ class MCPServer(
         self._surface_brain: str = ""
         self._agent_id: str = ""
 
+    async def _checkpoint(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Validate and queue before connecting; retain writes across outages/timeouts."""
+        from surreal_memory.engine.agent_checkpoint import checkpoint, envelope
+        from surreal_memory.hooks.agent_journal import enqueue
+
+        try:
+            if args.get("action") == "save":
+                probe = envelope(args.get("scope"), args.get("state"), args.get("revision"))
+                if probe["scope"]["brain"] != self.config.current_brain:
+                    return {"status": "failed", "saved": 0, "error": "checkpoint brain mismatch"}
+                enqueue("checkpoint", args)
+
+            async def execute() -> dict[str, Any]:
+                return await checkpoint(await self.get_storage(), self.config, args)
+
+            return await asyncio.wait_for(execute(), timeout=10)
+        except (ValueError, TypeError) as exc:
+            return {"status": "failed", "saved": 0, "error": str(exc), "memory_ids": []}
+        except Exception:
+            return {
+                "status": "pending",
+                "saved": 0,
+                "error": "checkpoint_unavailable",
+                "memory_ids": [],
+            }
+
     async def get_storage(self) -> NeuralStorage:
         """Get or create shared storage instance.
 
@@ -239,6 +265,7 @@ class MCPServer(
             "smem_auto": self._auto,
             "smem_suggest": self._suggest,
             "smem_session": self._session,
+            "smem_checkpoint": self._checkpoint,
             "smem_index": self._index,
             "smem_import": self._import,
             "smem_eternal": self._eternal,
@@ -350,7 +377,10 @@ async def _record_tool_event(
     task_context = reason[:200] if (not success and reason) else ""
 
     try:
-        storage = await server.get_storage()
+        # Analytics must never open a backend after a failed/validation-only call.
+        storage = server._storage
+        if storage is None:
+            return
         brain_name = server.config.current_brain
         brain = await storage.get_brain(brain_name)
         if not brain:

@@ -24,6 +24,7 @@ TOOL_TIERS: dict[str, frozenset[str]] = {
             "smem_recap",
             "smem_todo",
             "smem_session",
+            "smem_checkpoint",
             "smem_situation",
             "smem_auto",
             "smem_eternal",
@@ -2180,3 +2181,93 @@ _ALL_TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
 ]
+
+
+_CODING_SCOPE_PROPERTIES: dict[str, Any] = {
+    "scope": {
+        "type": "string",
+        "enum": ["project", "global_preference"],
+        "description": "Explicit coding-memory scope. Global writes require type=preference.",
+    },
+    "project_id": {
+        "type": "string",
+        "maxLength": 4096,
+        "description": "Stable repository identity; requires scope=project. Defaults to SMEM_PROJECT or sanitized origin.",
+    },
+}
+for _tool in _ALL_TOOL_SCHEMAS:
+    if _tool["name"] in {"smem_remember", "smem_context", "smem_recall"}:
+        _tool["inputSchema"]["properties"].update(_CODING_SCOPE_PROPERTIES)
+        if _tool["name"] == "smem_context":
+            _tool["inputSchema"]["properties"]["max_tokens"] = {
+                "type": "integer",
+                "minimum": 50,
+                "maximum": 10000,
+                "description": "Scoped context budget (default 1500 tokens).",
+            }
+        if _tool["name"] != "smem_remember":
+            _tool["inputSchema"]["properties"]["include_global_preferences"] = {
+                "type": "boolean",
+                "description": "Also include explicitly global personal preferences; requires explicit scope.",
+            }
+    if _tool["name"] == "smem_remember_batch":
+        _tool["inputSchema"]["properties"]["memories"]["items"]["properties"].update(
+            _CODING_SCOPE_PROPERTIES
+        )
+
+_ALL_TOOL_SCHEMAS.append(
+    {
+        "name": "smem_checkpoint",
+        "description": "Save or load verified, exact-scope coding task continuity. Distinct from consolidation checkpoints. Save after milestones; load after compaction. A pending receipt is not brain persistence. Explicit source scope is required for cross-session handoff.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["save", "load"]},
+                "scope": {
+                    "type": "object",
+                    "properties": {
+                        key: {"type": "string", "minLength": 1}
+                        for key in ["brain", "project", "session_id", "agent_id"]
+                    },
+                    "required": ["brain", "project", "session_id", "agent_id"],
+                    "additionalProperties": False,
+                },
+                "revision": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Required for save. Increase after changes; identical retries reuse the revision.",
+                },
+                "state": {
+                    "type": "object",
+                    "properties": {
+                        "goal": {"type": "string", "minLength": 1},
+                        **{
+                            key: {"type": "array", "items": {"type": "string"}}
+                            for key in [
+                                "constraints",
+                                "approvals",
+                                "decisions",
+                                "completed",
+                                "next_actions",
+                                "blockers",
+                                "processes",
+                            ]
+                        },
+                    },
+                    "required": [
+                        "goal",
+                        "constraints",
+                        "approvals",
+                        "decisions",
+                        "completed",
+                        "next_actions",
+                        "blockers",
+                        "processes",
+                    ],
+                    "additionalProperties": False,
+                },
+            },
+            "required": ["action", "scope"],
+        },
+    }
+)

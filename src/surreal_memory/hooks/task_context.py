@@ -180,7 +180,12 @@ def validate_checkpoint(envelope: Any) -> dict[str, Any]:
 
 
 async def save_checkpoint(
-    checkpoint: dict[str, Any], project_name: str | None = None
+    checkpoint: dict[str, Any],
+    project_name: str | None = None,
+    *,
+    storage: Any = None,
+    config: Any = None,
+    already_locked: bool = False,
 ) -> dict[str, Any]:
     """Idempotently persist and read back one scoped Codex task checkpoint."""
     from surreal_memory.core.memory_types import MemoryType, Priority, TypedMemory
@@ -191,7 +196,7 @@ async def save_checkpoint(
     from surreal_memory.unified_config import get_config, get_shared_storage
     from surreal_memory.utils.timeutils import utcnow
 
-    config = get_config()
+    config = config if config is not None else get_config()
     if config.current_brain != checkpoint["scope"]["brain"]:
         raise ValueError("checkpoint brain does not match configured brain")
     project_name = project_name if project_name is not None else checkpoint["scope"]["project"]
@@ -207,7 +212,8 @@ async def save_checkpoint(
         return {"saved": 0, "status": "failed", "error": "checkpoint_sensitive"}
     from surreal_memory.hooks.capture_state import local_scope_lock
 
-    storage = await get_shared_storage(config.current_brain)
+    owns_storage = storage is None
+    storage = storage if storage is not None else await get_shared_storage(config.current_brain)
     scope_id = checkpoint["scope_id"]
     revision = checkpoint["revision"]
     content_hash = checkpoint["content_hash"]
@@ -224,7 +230,9 @@ async def save_checkpoint(
         "content_hash": content_hash,
     }
     try:
-        with local_scope_lock(scope_id):
+        from contextlib import nullcontext
+
+        with nullcontext() if already_locked else local_scope_lock(scope_id):
             fibers = await storage.find_fibers(
                 tags={"codex_checkpoint", f"codex_scope:{scope_id}", f"codex_revision:{revision}"},
                 limit=100,
@@ -343,7 +351,9 @@ async def save_checkpoint(
         return {"saved": 0, "status": "pending", "error": "checkpoint_pending"}
     finally:
         try:
-            await storage.close()
+            storage.enable_auto_save()
+            if owns_storage:
+                await storage.close()
         except Exception:
             logger.debug("storage.close() failed (non-fatal)")
 

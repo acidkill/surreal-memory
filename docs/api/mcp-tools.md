@@ -1,7 +1,7 @@
 # MCP Tools Reference
 
 Complete reference for all Surreal-Memory MCP tools.
-**57 tools** available via MCP stdio transport.
+**58 tools** available via MCP stdio transport.
 
 !!! tip
     Tools are called as MCP tool calls, not CLI commands. In Claude Code, call `smem_recall` directly — do not run `smem recall` in terminal.
@@ -75,6 +75,7 @@ Complete reference for all Surreal-Memory MCP tools.
   - [`smem_offload`](#smem_offload)
   - [`smem_inflate`](#smem_inflate)
   - [`smem_situation`](#smem_situation)
+  - [`smem_checkpoint`](#smem_checkpoint)
 
 ---
 
@@ -100,6 +101,8 @@ Store a memory. Auto-detects type if not specified. Error resolution: when a new
 | `ephemeral` | boolean | No | — | Session-scoped memory: auto-expires after TTL (default 24h), never synced to cloud, excluded from consolidation. Use ... |
 | `verbose_extraction` | boolean | No | — | Surface concept-extraction observability stats (dropped_short, dropped_noise, dropped_duplicate_entity) in the respon... |
 | `location` | object | No | — | Geographic location for this memory (WGS-84 degrees). Stored on the fiber metadata so recall's 'near' filter can find... |
+| `scope` | string (`project`, `global_preference`) | No | — | Explicit coding-memory scope. Global writes require type=preference. |
+| `project_id` | string | No | — | Stable repository identity; requires scope=project. Defaults to SMEM_PROJECT or sanitized origin. |
 | `compact` | boolean | No | — | Return compact response (strip metadata hints, truncate lists). Saves 60-80% tokens. |
 | `token_budget` | integer | No | — | Max tokens for response. Progressively strips content to fit budget. |
 
@@ -142,6 +145,9 @@ Query memories by semantic search with confidence ranking.
 | `permanent_only` | boolean | No | — | Exclude ephemeral (session-scoped) memories from results. Default: false (include all). |
 | `clean_for_prompt` | boolean | No | — | Return clean bullet-point text without section headers or neuron-type tags. Use when injecting recall output into pro... |
 | `tier` | string (`hot`, `warm`, `cold`) | No | — | Filter results by memory tier. Only return memories matching this tier. |
+| `scope` | string (`project`, `global_preference`) | No | — | Explicit coding-memory scope. Global writes require type=preference. |
+| `project_id` | string | No | — | Stable repository identity; requires scope=project. Defaults to SMEM_PROJECT or sanitized origin. |
+| `include_global_preferences` | boolean | No | — | Also include explicitly global personal preferences; requires explicit scope. |
 | `compact` | boolean | No | — | Return compact response (strip metadata hints, truncate lists). Saves 60-80% tokens. |
 | `token_budget` | integer | No | — | Max tokens for response. Progressively strips content to fit budget. |
 
@@ -165,6 +171,10 @@ Get recent memories as context.
 | `fresh_only` | boolean | No | — | Only include memories < 30 days old |
 | `warn_expiry_days` | integer | No | — | If set, warn about memories expiring within this many days. Adds expiry_warnings to response. |
 | `include_ghosts` | boolean | No | default: true | Include faded ghost memories at bottom of context with recall keys (default: true). Set false to suppress. |
+| `scope` | string (`project`, `global_preference`) | No | — | Explicit coding-memory scope. Global writes require type=preference. |
+| `project_id` | string | No | — | Stable repository identity; requires scope=project. Defaults to SMEM_PROJECT or sanitized origin. |
+| `max_tokens` | integer | No | — | Scoped context budget (default 1500 tokens). |
+| `include_global_preferences` | boolean | No | — | Also include explicitly global personal preferences; requires explicit scope. |
 | `compact` | boolean | No | — | Return compact response (strip metadata hints, truncate lists). Saves 60-80% tokens. |
 | `token_budget` | integer | No | — | Max tokens for response. Progressively strips content to fit budget. |
 
@@ -871,6 +881,19 @@ One-shot snapshot of the current working situation: active session task, top 3 r
 | `compact` | boolean | No | — | Return compact response (strip metadata hints, truncate lists). Saves 60-80% tokens. |
 | `token_budget` | integer | No | — | Max tokens for response. Progressively strips content to fit budget. |
 
+### `smem_checkpoint`
+
+Save or load verified, exact-scope coding task continuity. Distinct from consolidation checkpoints. Save after milestones; load after compaction. A pending receipt is not brain persistence. Explicit source scope is required for cross-session handoff.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `action` | string (`save`, `load`) | Yes | — | — |
+| `scope` | object | Yes | — | — |
+| `revision` | integer | No | — | Required for save. Increase after changes; identical retries reuse the revision. |
+| `state` | object | No | — | — |
+| `compact` | boolean | No | — | Return compact response (strip metadata hints, truncate lists). Saves 60-80% tokens. |
+| `token_budget` | integer | No | — | Max tokens for response. Progressively strips content to fit budget. |
+
 ---
 
-*Auto-generated by `scripts/gen_mcp_docs.py` from `tool_schemas.py` — 57 tools.*
+*Auto-generated by `scripts/gen_mcp_docs.py` from `tool_schemas.py` — 58 tools.*

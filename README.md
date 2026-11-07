@@ -163,7 +163,7 @@ smem recall "auth bug"
 
 ## 3 Tools. That's It.
 
-57 MCP tools are available, but you only need three:
+58 MCP tools are available, but you only need three:
 
 | Tool | What it does |
 |------|-------------|
@@ -179,7 +179,7 @@ Everything else — sessions, context loading, habit tracking, maintenance — w
 
 ```
                     ┌──────────────────────────────┐
-                    │       MCP Server (57 tools)   │
+                    │       MCP Server (58 tools)   │
                     └──────────┬───────────────────┘
                                │
                     ┌──────────▼───────────────────┐
