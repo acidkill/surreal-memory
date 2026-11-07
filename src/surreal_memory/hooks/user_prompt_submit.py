@@ -40,7 +40,7 @@ def read_hook_input() -> dict[str, Any]:
         if not raw.strip():
             return {}
         result: dict[str, Any] = json.loads(raw)
-        return result
+        return result if isinstance(result, dict) else {}
     except (json.JSONDecodeError, OSError):
         return {}
 

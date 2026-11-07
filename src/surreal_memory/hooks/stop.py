@@ -140,9 +140,9 @@ def read_transcript_tail(transcript_path: str, max_lines: int = MAX_TRANSCRIPT_L
 
     lines: list[str] = []
     try:
-        with open(path, encoding="utf-8", errors="replace") as f:
-            all_lines = f.readlines()
-        tail = all_lines[-max_lines:]
+        from surreal_memory.hooks.agent_transcript import tail_lines
+
+        tail = tail_lines(str(path), max_lines)
 
         for raw_line in tail:
             raw_line = raw_line.strip()
@@ -150,6 +150,8 @@ def read_transcript_tail(transcript_path: str, max_lines: int = MAX_TRANSCRIPT_L
                 continue
             try:
                 entry = json.loads(raw_line)
+                if not isinstance(entry, dict):
+                    continue
                 role = _get_entry_role(entry)
 
                 # Skip tool results entirely — data, not decisions

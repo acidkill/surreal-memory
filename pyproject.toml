@@ -157,6 +157,7 @@ Repository = "https://github.com/acidkill/surreal-memory"
 Issues = "https://github.com/acidkill/surreal-memory/issues"
 
 [project.scripts]
+smem-hook-agent = "surreal_memory.hooks.agent_lifecycle:main"
 smem = "surreal_memory.cli:main"
 smem-mcp = "surreal_memory.mcp:main"
 smem-hook-pre-compact = "surreal_memory.hooks.pre_compact:main"
