@@ -1,34 +1,81 @@
 {
-  "hooks": [
-    {
-      "event": "PreCompact",
-      "command": "smem-hook-pre-compact",
-      "description": "Flush conversation memories before context compaction",
-      "timeout": 30
-    },
-    {
-      "event": "Stop",
-      "command": "smem-hook-stop",
-      "description": "Capture session memories when the session ends normally",
-      "timeout": 30
-    },
-    {
-      "event": "PostToolUse",
-      "command": "smem-hook-post-tool-use",
-      "description": "Track tool usage patterns for tool memory learning",
-      "timeout": 10
-    },
-    {
-      "event": "SessionStart",
-      "command": "smem-hook-session-start",
-      "description": "Inject recent memories as context at the start of a new session",
-      "timeout": 10
-    },
-    {
-      "event": "UserPromptSubmit",
-      "command": "smem-hook-user-prompt-submit",
-      "description": "Inject learned reasoning strategies for the active model (opt-in)",
-      "timeout": 10
-    }
-  ]
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uvx --from surreal-memory smem-hook-agent --client claude",
+            "timeout": 12
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uvx --from surreal-memory smem-hook-agent --client claude",
+            "timeout": 12
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uvx --from surreal-memory smem-hook-agent --client claude",
+            "timeout": 12
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uvx --from surreal-memory smem-hook-agent --client claude",
+            "timeout": 12
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uvx --from surreal-memory smem-hook-agent --client claude",
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uvx --from surreal-memory smem-hook-agent --client claude",
+            "timeout": 12
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uvx --from surreal-memory smem-hook-agent --client claude",
+            "timeout": 12
+          }
+        ]
+      }
+    ]
+  }
 }

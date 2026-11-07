@@ -366,7 +366,7 @@ places, the environment wins.
 | `BGE_M3_API_KEY` | `src/surreal_memory/engine/reranker.py` |
 | `CLAUDE_SESSION_ID` | `src/surreal_memory/hooks/post_tool_use.py`, `src/surreal_memory/hooks/receipts.py` |
 | `CLIPROXY_URL` | `src/surreal_memory/server/routes/oauth.py` |
-| `CODEX_HOME` | `src/surreal_memory/hooks/agent_lifecycle.py` |
+| `CODEX_HOME` | `src/surreal_memory/cli/agent_setup.py`, `src/surreal_memory/hooks/agent_lifecycle.py` |
 | `CODEX_SESSION_ID` | `src/surreal_memory/hooks/post_tool_use.py`, `src/surreal_memory/hooks/receipts.py` |
 | `COGNEE_API_KEY` | `src/surreal_memory/integration/adapters/cognee_adapter.py`, `src/surreal_memory/mcp/index_handler.py` |
 | `GEMINI_API_KEY` | `src/surreal_memory/engine/embedding/gemini_embedding.py`, `src/surreal_memory/engine/semantic_discovery.py` |

@@ -295,6 +295,7 @@ def run_full_setup(
     skip_mcp: bool = False,
     skip_skills: bool = False,
     skip_embeddings: bool = False,
+    client: str | None = None,
 ) -> dict[str, Any]:
     """Run the full extended setup.
 
@@ -325,61 +326,71 @@ def run_full_setup(
     brain_name = setup_brain(data_dir)
     results["Brain"] = f"{brain_name} (ready)"
 
-    # 3. MCP
-    if skip_mcp:
-        results["Claude Code"] = "skipped"
-        results["Cursor"] = "skipped"
+    from surreal_memory.cli.agent_setup import detected_clients, setup_agents
+
+    if client is not None:
+        results.update(
+            setup_agents(client=client, force=force, skills=not skip_skills, mcp=not skip_mcp)
+        )
     else:
-        claude_status = setup_mcp_claude()
-        status_labels = {
-            "added": "MCP server configured",
-            "exists": "already configured",
-            "not_found": "not detected",
-            "failed": "failed",
-        }
-        results["Claude Code"] = status_labels.get(claude_status, claude_status)
-
-        cursor_status = setup_mcp_cursor()
-        cursor_labels = {
-            "added": "MCP server configured",
-            "exists": "already configured",
-            "not_found": "not detected",
-            "failed": "failed",
-        }
-        results["Cursor"] = cursor_labels.get(cursor_status, cursor_status)
-
-        desktop_status = setup_mcp_claude_desktop()
-        desktop_labels = {
-            "added": "MCP server configured",
-            "exists": "already configured",
-            "not_found": "not detected",
-            "failed": "failed",
-        }
-        results["Claude Desktop"] = desktop_labels.get(desktop_status, desktop_status)
-
-    # 4. Hooks
-    if not skip_mcp:
-        hook_status = setup_hooks_claude()
-        hook_labels = {
-            "added": "3 hooks installed (PreCompact, Stop, PostToolUse)",
-            "exists": "already configured",
-            "not_found": "Claude Code not detected",
-            "failed": "failed",
-        }
-        results["Hooks"] = hook_labels.get(hook_status, hook_status)
-
-    # 5. Skills
-    if skip_skills:
-        results["Skills"] = "skipped"
-    else:
-        skill_results = setup_skills(force=force)
-        if "Skills" in skill_results:
-            results["Skills"] = skill_results["Skills"]
+        # 3. MCP
+        if skip_mcp:
+            results["Claude Code"] = "skipped"
+            results["Cursor"] = "skipped"
         else:
-            installed = sum(
-                1 for s in skill_results.values() if s in ("installed", "updated", "exists")
-            )
-            results["Skills"] = f"{installed} skills ready"
+            claude_status = setup_mcp_claude()
+            status_labels = {
+                "added": "MCP server configured",
+                "exists": "already configured",
+                "not_found": "not detected",
+                "failed": "failed",
+            }
+            results["Claude Code"] = status_labels.get(claude_status, claude_status)
+
+            cursor_status = setup_mcp_cursor()
+            cursor_labels = {
+                "added": "MCP server configured",
+                "exists": "already configured",
+                "not_found": "not detected",
+                "failed": "failed",
+            }
+            results["Cursor"] = cursor_labels.get(cursor_status, cursor_status)
+
+            desktop_status = setup_mcp_claude_desktop()
+            desktop_labels = {
+                "added": "MCP server configured",
+                "exists": "already configured",
+                "not_found": "not detected",
+                "failed": "failed",
+            }
+            results["Claude Desktop"] = desktop_labels.get(desktop_status, desktop_status)
+
+        # 4. Hooks
+        if not skip_mcp:
+            hook_status = setup_hooks_claude()
+            hook_labels = {
+                "added": "5 lifecycle hooks installed (capture + recovery)",
+                "exists": "already configured",
+                "not_found": "Claude Code not detected",
+                "failed": "failed",
+            }
+            results["Hooks"] = hook_labels.get(hook_status, hook_status)
+
+        # 5. Skills
+        if skip_skills:
+            results["Skills"] = "skipped"
+        else:
+            skill_results = setup_skills(force=force)
+            if "Skills" in skill_results:
+                results["Skills"] = skill_results["Skills"]
+            else:
+                installed = sum(
+                    1 for s in skill_results.values() if s in ("installed", "updated", "exists")
+                )
+                results["Skills"] = f"{installed} skills ready"
+
+        if not skip_mcp and "codex" in detected_clients():
+            results.update(setup_agents(client="codex", skills=False))
 
     # ── Phase 2: Embedding auto-detect ──────────────────────────────────
 

@@ -386,52 +386,10 @@ def _load_settings(settings_path: Path) -> dict[str, Any]:
 
 
 def setup_hooks_claude() -> str:
-    """Auto-configure PreCompact and Stop hooks in Claude Code (~/.claude/settings.json).
+    """Install the shared fail-open lifecycle adapter for Claude Code."""
+    from surreal_memory.cli.agent_setup import setup_client_hooks
 
-    Injects hook entries so Surreal-Memory captures memories both before context
-    compaction (PreCompact) and at normal session end (Stop).
-    Safe to call repeatedly — skips hooks that are already present.
-
-    Returns status string: "added", "exists", "failed", or "not_found".
-    """
-    claude_dir = Path.home() / ".claude"
-    if not claude_dir.exists():
-        return "not_found"
-
-    settings_path = claude_dir / "settings.json"
-    existing = _load_settings(settings_path)
-    hooks_section: dict[str, Any] = existing.setdefault("hooks", {})
-
-    added = 0
-    hook_specs = [
-        ("PreCompact", _find_pre_compact_command(), 30),
-        ("Stop", _find_stop_command(), 30),
-        ("PostToolUse", _find_post_tool_use_command(), 5),
-    ]
-
-    # Matcher for PostToolUse: skip internal/noisy tools
-    post_tool_matcher = 'tool != "TodoRead" && tool != "TodoWrite" && tool != "TaskList"'
-
-    for event, cmd_str, timeout in hook_specs:
-        entries: list[dict[str, Any]] = hooks_section.setdefault(event, [])
-        if _is_smem_hook_present(entries):
-            continue
-        entry: dict[str, Any] = {
-            "hooks": [{"type": "command", "command": cmd_str, "timeout": timeout}],
-        }
-        if event == "PostToolUse":
-            entry["matcher"] = post_tool_matcher
-        entries.append(entry)
-        added += 1
-
-    if added == 0:
-        return "exists"
-
-    try:
-        settings_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
-        return "added"
-    except OSError:
-        return "failed"
+    return setup_client_hooks("claude")
 
 
 def _discover_bundled_skills() -> dict[str, Path]:
@@ -449,50 +407,52 @@ def _discover_bundled_skills() -> dict[str, Path]:
     return skills
 
 
-def setup_skills(*, force: bool = False) -> dict[str, str]:
-    """Install bundled skills to ~/.claude/skills/.
+def setup_skills(*, force: bool = False, client: str | None = None) -> dict[str, str]:
+    """Install packaged skill trees, preserving user edits unless --force is explicit."""
+    from surreal_memory.cli.agent_setup import selected_clients
 
-    Args:
-        force: Overwrite existing files even if different.
-
-    Returns:
-        Mapping of skill name to status string:
-        "installed", "exists", "updated", "update available", or "failed".
-        Returns {"Skills": "not_found ..."} if ~/.claude/ doesn't exist.
-    """
-    claude_dir = Path.home() / ".claude"
-    if not claude_dir.exists():
-        return {"Skills": "not_found (~/.claude/ not found)"}
-
+    clients = selected_clients(client)
+    if not clients:
+        return {"Skills": "not_found (no detected coding clients)"}
     bundled = _discover_bundled_skills()
-    if not bundled:
-        return {"Skills": "no bundled skills found"}
-
-    target_dir = claude_dir / "skills"
     results: dict[str, str] = {}
-
-    for name, source_path in bundled.items():
-        dest_dir = target_dir / name
-        dest_file = dest_dir / "SKILL.md"
-
-        try:
-            source_content = source_path.read_text(encoding="utf-8")
-            if dest_file.exists():
-                existing_content = dest_file.read_text(encoding="utf-8")
-                if existing_content == source_content:
-                    results[name] = "exists"
-                elif force:
-                    dest_file.write_text(source_content, encoding="utf-8")
-                    results[name] = "updated"
-                else:
-                    results[name] = "update available"
-            else:
-                dest_dir.mkdir(parents=True, exist_ok=True)
-                dest_file.write_text(source_content, encoding="utf-8")
-                results[name] = "installed"
-        except OSError:
-            results[name] = "failed"
-
+    for target in clients:
+        root = (
+            (Path.home() / ".agents" / "skills")
+            if target == "codex"
+            else Path.home() / ".claude" / "skills"
+        )
+        for name, source in bundled.items():
+            if name.startswith("coding-memory-") and name != "coding-memory-" + target:
+                continue
+            key = target + "/" + name if len(clients) > 1 else name
+            status = "exists"
+            try:
+                for src in sorted(source.parent.rglob("*")):
+                    if not src.is_file():
+                        continue
+                    dest = root / name / src.relative_to(source.parent)
+                    if dest.exists() and dest.read_bytes() == src.read_bytes():
+                        continue
+                    if dest.exists() and not force:
+                        status = "update available"
+                        continue
+                    was_present = dest.exists()
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    dest.write_bytes(src.read_bytes())
+                    if status != "update available":
+                        status = "updated" if was_present else "installed"
+                if name.startswith("coding-memory-"):
+                    common = source.parent.parent / "coding-memory-common" / "protocol.md"
+                    dest = root / name / "references" / "protocol.md"
+                    if dest.exists() and dest.read_bytes() != common.read_bytes() and not force:
+                        status = "update available"
+                    elif not dest.exists() or force:
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        dest.write_bytes(common.read_bytes())
+                results[key] = status
+            except OSError:
+                results[key] = "failed"
     return results
 
 

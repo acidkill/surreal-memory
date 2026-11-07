@@ -201,7 +201,7 @@ class TestRunFullSetup:
         assert "results" in result
         assert result["results"]["Brain"] == "default (ready)"
         assert result["results"]["Claude Code"] == "MCP server configured"
-        assert result["results"]["Hooks"] == "3 hooks installed (PreCompact, Stop, PostToolUse)"
+        assert result["results"]["Hooks"] == "5 lifecycle hooks installed (capture + recovery)"
         mock_summary.assert_called_once()
         mock_banner.assert_called_once()
 

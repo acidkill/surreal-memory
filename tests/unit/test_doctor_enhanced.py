@@ -31,6 +31,12 @@ class TestCheckHooks:
     def test_all_hooks_present(self, tmp_path: Path) -> None:
         settings = {
             "hooks": {
+                "SessionStart": [
+                    {"hooks": [{"type": "command", "command": "smem-hook-session-start"}]}
+                ],
+                "UserPromptSubmit": [
+                    {"hooks": [{"type": "command", "command": "smem-hook-user-prompt-submit"}]}
+                ],
                 "PreCompact": [
                     {"hooks": [{"type": "command", "command": "smem-hook-pre-compact"}]}
                 ],
@@ -47,12 +53,18 @@ class TestCheckHooks:
         with patch("surreal_memory.cli.doctor.Path.home", return_value=tmp_path):
             result = _check_hooks()
             assert result["status"] == OK
-            assert "3/3" in result["detail"]
+            assert "5/5" in result["detail"]
 
     def test_wrapper_referenced_but_missing_on_path(self, tmp_path: Path) -> None:
         """Hooks wired through smem-hook-env warn if the wrapper is not on PATH."""
         settings = {
             "hooks": {
+                "SessionStart": [
+                    {"hooks": [{"type": "command", "command": "smem-hook-session-start"}]}
+                ],
+                "UserPromptSubmit": [
+                    {"hooks": [{"type": "command", "command": "smem-hook-user-prompt-submit"}]}
+                ],
                 "PreCompact": [
                     {
                         "hooks": [
@@ -88,6 +100,12 @@ class TestCheckHooks:
         """Hooks wired through smem-hook-env pass when the wrapper resolves on PATH."""
         settings = {
             "hooks": {
+                "SessionStart": [
+                    {"hooks": [{"type": "command", "command": "smem-hook-session-start"}]}
+                ],
+                "UserPromptSubmit": [
+                    {"hooks": [{"type": "command", "command": "smem-hook-user-prompt-submit"}]}
+                ],
                 "PreCompact": [
                     {
                         "hooks": [
@@ -120,11 +138,17 @@ class TestCheckHooks:
         ):
             result = _check_hooks()
             assert result["status"] == OK
-            assert "3/3" in result["detail"]
+            assert "5/5" in result["detail"]
 
     def test_missing_hooks(self, tmp_path: Path) -> None:
         settings = {
             "hooks": {
+                "SessionStart": [
+                    {"hooks": [{"type": "command", "command": "smem-hook-session-start"}]}
+                ],
+                "UserPromptSubmit": [
+                    {"hooks": [{"type": "command", "command": "smem-hook-user-prompt-submit"}]}
+                ],
                 "PreCompact": [
                     {"hooks": [{"type": "command", "command": "smem-hook-pre-compact"}]}
                 ],
@@ -158,6 +182,12 @@ class TestCheckHooks:
         """Hooks using python -m surreal_memory.hooks.* should also be detected."""
         settings = {
             "hooks": {
+                "SessionStart": [
+                    {"hooks": [{"type": "command", "command": "smem-hook-session-start"}]}
+                ],
+                "UserPromptSubmit": [
+                    {"hooks": [{"type": "command", "command": "smem-hook-user-prompt-submit"}]}
+                ],
                 "PreCompact": [
                     {
                         "hooks": [
@@ -350,8 +380,8 @@ class TestRunDoctorIntegration:
         # dependencies, embedding, MCP config/connection/env, hooks,
         # dedup, surface, config freshness, CLI tools, SurrealDB
         # connection/version, Pro plugin, Python version.
-        assert result["total"] == 17
-        assert result["passed"] == 17
+        assert result["total"] == 18
+        assert result["passed"] == 18
 
     def test_quickstart_url_defined(self) -> None:
         assert "quickstart" in QUICKSTART_URL

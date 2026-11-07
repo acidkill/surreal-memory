@@ -194,6 +194,10 @@ def init(
         bool,
         typer.Option("--dedup", help="Enable dedup"),
     ] = False,
+    client: Annotated[
+        str | None,
+        typer.Option("--client", help="Configure codex, claude, or all; default: detected clients"),
+    ] = None,
 ) -> None:
     """Set up Surreal-Memory in one command.
 
@@ -221,7 +225,7 @@ def init(
     if wizard:
         from surreal_memory.cli.wizard import run_wizard
 
-        run_wizard(force=force)
+        run_wizard(force=force, client=client) if client is not None else run_wizard(force=force)
         return
 
     if full:
@@ -232,6 +236,7 @@ def init(
             skip_mcp=skip_mcp,
             skip_skills=skip_skills,
             skip_embeddings=skip_embeddings,
+            **({"client": client} if client is not None else {}),
         )
         return
 
@@ -258,63 +263,76 @@ def init(
     brain_name = setup_brain(data_dir)
     results["Brain"] = f"{brain_name} (ready)"
 
-    # 3. MCP auto-config
-    if skip_mcp:
-        results["Claude Code"] = "skipped (--skip-mcp)"
-        results["Cursor"] = "skipped (--skip-mcp)"
+    from surreal_memory.cli.agent_setup import detected_clients, setup_agents
+
+    if client is not None:
+        try:
+            results.update(
+                setup_agents(client=client, force=force, skills=not skip_skills, mcp=not skip_mcp)
+            )
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc)) from exc
     else:
-        claude_status = setup_mcp_claude()
-        status_labels = {
-            "added": "~/.claude.json (added MCP server)",
-            "exists": "~/.claude.json (already configured)",
-            "not_found": "not detected (~/.claude/ not found)",
-            "failed": "failed to write config",
-        }
-        results["Claude Code"] = status_labels.get(claude_status, claude_status)
-
-        cursor_status = setup_mcp_cursor()
-        cursor_labels = {
-            "added": "~/.cursor/mcp.json (added)",
-            "exists": "~/.cursor/mcp.json (already configured)",
-            "not_found": "not detected",
-            "failed": "failed to write config",
-        }
-        results["Cursor"] = cursor_labels.get(cursor_status, cursor_status)
-
-        desktop_status = setup_mcp_claude_desktop()
-        desktop_labels = {
-            "added": "claude_desktop_config.json (added MCP server)",
-            "exists": "claude_desktop_config.json (already configured)",
-            "not_found": "not detected (Claude Desktop not installed)",
-            "failed": "failed to write config",
-        }
-        results["Claude Desktop"] = desktop_labels.get(desktop_status, desktop_status)
-
-    # 4. Hooks (Claude Code only)
-    if not skip_mcp:
-        hook_status = setup_hooks_claude()
-        hook_labels = {
-            "added": "3 hooks installed (PreCompact, Stop, PostToolUse)",
-            "exists": "already configured",
-            "not_found": "not detected (~/.claude/ not found)",
-            "failed": "failed to write settings.json",
-        }
-        results["Hooks"] = hook_labels.get(hook_status, hook_status)
-
-    # 5. Skills
-    if skip_skills:
-        results["Skills"] = "skipped (--skip-skills)"
-    else:
-        skill_results = setup_skills(force=force)
-        if "Skills" in skill_results:
-            # Error case (e.g. ~/.claude/ not found)
-            results["Skills"] = skill_results["Skills"]
+        # 3. MCP auto-config
+        if skip_mcp:
+            results["Claude Code"] = "skipped (--skip-mcp)"
+            results["Cursor"] = "skipped (--skip-mcp)"
         else:
-            counts: dict[str, int] = {}
-            for status in skill_results.values():
-                counts[status] = counts.get(status, 0) + 1
-            parts = [f"{count} {status}" for status, count in counts.items()]
-            results["Skills"] = ", ".join(parts) if parts else "none found"
+            claude_status = setup_mcp_claude()
+            status_labels = {
+                "added": "~/.claude.json (added MCP server)",
+                "exists": "~/.claude.json (already configured)",
+                "not_found": "not detected (~/.claude/ not found)",
+                "failed": "failed to write config",
+            }
+            results["Claude Code"] = status_labels.get(claude_status, claude_status)
+
+            cursor_status = setup_mcp_cursor()
+            cursor_labels = {
+                "added": "~/.cursor/mcp.json (added)",
+                "exists": "~/.cursor/mcp.json (already configured)",
+                "not_found": "not detected",
+                "failed": "failed to write config",
+            }
+            results["Cursor"] = cursor_labels.get(cursor_status, cursor_status)
+
+            desktop_status = setup_mcp_claude_desktop()
+            desktop_labels = {
+                "added": "claude_desktop_config.json (added MCP server)",
+                "exists": "claude_desktop_config.json (already configured)",
+                "not_found": "not detected (Claude Desktop not installed)",
+                "failed": "failed to write config",
+            }
+            results["Claude Desktop"] = desktop_labels.get(desktop_status, desktop_status)
+
+        # 4. Hooks (Claude Code only)
+        if not skip_mcp:
+            hook_status = setup_hooks_claude()
+            hook_labels = {
+                "added": "5 lifecycle hooks installed (capture + recovery)",
+                "exists": "already configured",
+                "not_found": "not detected (~/.claude/ not found)",
+                "failed": "failed to write settings.json",
+            }
+            results["Hooks"] = hook_labels.get(hook_status, hook_status)
+
+        # 5. Skills
+        if skip_skills:
+            results["Skills"] = "skipped (--skip-skills)"
+        else:
+            skill_results = setup_skills(force=force)
+            if "Skills" in skill_results:
+                # Error case (e.g. ~/.claude/ not found)
+                results["Skills"] = skill_results["Skills"]
+            else:
+                counts: dict[str, int] = {}
+                for status in skill_results.values():
+                    counts[status] = counts.get(status, 0) + 1
+                parts = [f"{count} {status}" for status, count in counts.items()]
+                results["Skills"] = ", ".join(parts) if parts else "none found"
+
+        if not skip_mcp and "codex" in detected_clients():
+            results.update(setup_agents(client="codex", skills=False))
 
     print_summary(results)
 
@@ -896,6 +914,12 @@ def install_skills(
         bool,
         typer.Option("--list", "-l", help="List available skills without installing"),
     ] = False,
+    client: Annotated[
+        str | None,
+        typer.Option(
+            "--client", help="Install for codex, claude, or all; default: detected clients"
+        ),
+    ] = None,
 ) -> None:
     """Install Surreal-Memory skills to ~/.claude/skills/.
 
@@ -926,7 +950,14 @@ def install_skills(
         typer.echo()
         return
 
-    results = setup_skills(force=force)
+    try:
+        results = (
+            setup_skills(force=force, client=client)
+            if client is not None
+            else setup_skills(force=force)
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
 
     # Check for ~/.claude/ not found
     if "Skills" in results:

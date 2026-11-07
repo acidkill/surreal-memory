@@ -526,6 +526,7 @@ smem init [OPTIONS]
 | `--embeddings` | boolean | No | `False` | Set up embedding provider |
 | `--skip-embeddings` | boolean | No | `False` | Skip embedding provider setup |
 | `--dedup` | boolean | No | `False` | Enable dedup |
+| `--client` | text | No | — | Configure codex, claude, or all; default: detected clients |
 
 ### `smem setup`
 
@@ -620,6 +621,7 @@ smem install-skills [OPTIONS]
 |--------|------|----------|---------|-------------|
 | `--force / -f` | boolean | No | `False` | Overwrite existing skills with latest version |
 | `--list / -l` | boolean | No | `False` | List available skills without installing |
+| `--client` | text | No | — | Install for codex, claude, or all; default: detected clients |
 
 ## Server & MCP {#server}
 

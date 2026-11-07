@@ -2,6 +2,15 @@
 
 Persistent memory for AI agents — stores experiences as interconnected neurons, recalls through spreading activation.
 
+## Coding tasks
+
+Use [coding-memory-claude](skills/coding-memory-claude/SKILL.md) and its shared protocol
+for project-scoped knowledge, explicit personal preferences, milestone checkpoints,
+and compaction recovery. Its coding-specific workflow takes precedence over the generic
+examples below. Memory outages are fail open; pending writes are not confirmed saves.
+The plugin hooks require a published surreal-memory build containing `smem-hook-agent`;
+for local development install this checkout and use `smem init --client claude` instead.
+
 ## Usage
 
 **RECALL** — before responding to tasks that reference past work:

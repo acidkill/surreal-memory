@@ -113,6 +113,7 @@ nav:
     - Quickstart Guide: guides/quickstart-guide.md
     - Integration: guides/integration.md
     - MCP Server: guides/mcp-server.md
+    - Codex and Claude Coding Memory: guides/coding-agent-memory.md
     - Embedding Setup: guides/embedding-setup.md
     - Cloud Sync: guides/cloud-sync.md
     - Brain Sharing: guides/brain-sharing.md

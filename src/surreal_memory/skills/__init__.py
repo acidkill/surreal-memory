@@ -1,6 +1,6 @@
-"""Bundled Surreal-Memory skills for Claude Code.
+"""Bundled Surreal-Memory skills for Codex and Claude Code.
 
-Skills are installed to ~/.claude/skills/ via `smem install-skills`.
+Skills are installed to native client discovery paths via `smem install-skills --client`.
 """
 
 from __future__ import annotations

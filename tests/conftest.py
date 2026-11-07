@@ -273,6 +273,9 @@ def _isolated_home_dir(tmp_path_factory: pytest.TempPathFactory) -> Generator[No
     (surrealmemory_dir / "config.toml").touch()
     mp = pytest.MonkeyPatch()
     mp.setenv("HOME", str(fake_home))
+    # Client discovery must not see the runner's real Codex config while tests
+    # redirect Path.home() into disposable homes. Per-test overrides still work.
+    mp.delenv("CODEX_HOME", raising=False)
     # Companion to the $HOME redirect: `run_update_check_background()` in
     # `cli/update_check.py` short-circuits on this env var, so the suite makes
     # no PyPI calls even on a runner with egress. `#110`/`#121` closed the

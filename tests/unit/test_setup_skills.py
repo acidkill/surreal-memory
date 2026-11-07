@@ -90,9 +90,9 @@ class TestSetupSkills:
 
             result = setup_skills()
 
-        # All three should be installed
+        # Existing management skills plus the Claude coding skill should be installed
         installed = [n for n, s in result.items() if s == "installed"]
-        assert len(installed) == 3
+        assert len(installed) == 4
 
         # Files should exist
         for name in ("memory-intake", "memory-audit", "memory-evolution"):

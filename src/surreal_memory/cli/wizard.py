@@ -57,7 +57,7 @@ _PROVIDERS: list[dict[str, str]] = [
 ]
 
 
-def run_wizard(*, force: bool = False) -> None:
+def run_wizard(*, force: bool = False, client: str | None = None) -> None:
     """Run the interactive first-run wizard."""
     typer.echo()
     typer.secho("  Surreal-Memory Setup Wizard", bold=True)
@@ -85,34 +85,42 @@ def run_wizard(*, force: bool = False) -> None:
     else:
         results["Embedding"] = "skipped (can set up later with: smem setup embeddings)"
 
-    # Step 4: MCP auto-config
-    claude_status = setup_mcp_claude()
-    _format_mcp_result(results, "Claude Code", claude_status)
+    from surreal_memory.cli.agent_setup import detected_clients, setup_agents
 
-    cursor_status = setup_mcp_cursor()
-    _format_mcp_result(results, "Cursor", cursor_status)
-
-    desktop_status = setup_mcp_claude_desktop()
-    _format_mcp_result(results, "Claude Desktop", desktop_status)
-
-    # Step 5: Hooks
-    hook_status = setup_hooks_claude()
-    hook_labels = {
-        "added": "hooks installed",
-        "exists": "hooks already configured",
-        "not_found": "Claude Code not detected",
-        "failed": "failed to configure",
-    }
-    results["Hooks"] = hook_labels.get(hook_status, hook_status)
-
-    # Step 6: Skills
-    skill_results = setup_skills(force=force)
-    if "Skills" in skill_results:
-        results["Skills"] = skill_results["Skills"]
+    if client is not None:
+        results.update(setup_agents(client=client, force=force))
     else:
-        installed = sum(1 for s in skill_results.values() if s in ("installed", "updated"))
-        existing = sum(1 for s in skill_results.values() if s == "exists")
-        results["Skills"] = f"{installed} installed, {existing} existing"
+        # Step 4: MCP auto-config
+        claude_status = setup_mcp_claude()
+        _format_mcp_result(results, "Claude Code", claude_status)
+
+        cursor_status = setup_mcp_cursor()
+        _format_mcp_result(results, "Cursor", cursor_status)
+
+        desktop_status = setup_mcp_claude_desktop()
+        _format_mcp_result(results, "Claude Desktop", desktop_status)
+
+        # Step 5: Hooks
+        hook_status = setup_hooks_claude()
+        hook_labels = {
+            "added": "hooks installed",
+            "exists": "hooks already configured",
+            "not_found": "Claude Code not detected",
+            "failed": "failed to configure",
+        }
+        results["Hooks"] = hook_labels.get(hook_status, hook_status)
+
+        # Step 6: Skills
+        skill_results = setup_skills(force=force)
+        if "Skills" in skill_results:
+            results["Skills"] = skill_results["Skills"]
+        else:
+            installed = sum(1 for s in skill_results.values() if s in ("installed", "updated"))
+            existing = sum(1 for s in skill_results.values() if s == "exists")
+            results["Skills"] = f"{installed} installed, {existing} existing"
+
+        if "codex" in detected_clients():
+            results.update(setup_agents(client="codex", skills=False))
 
     # Step 7: Test memory (optional)
     _step_test_memory(brain_name)

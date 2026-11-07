@@ -1,7 +1,7 @@
 {
   "name": "surreal-memory",
   "version": "3.12.2",
-  "description": "Reflex-based memory system for AI agents with SurrealDB backend — stores experiences as interconnected neurons and recalls them through spreading activation, mimicking how the human brain works.",
+  "description": "Reflex-based memory system for AI agents with SurrealDB backend \u2014 stores experiences as interconnected neurons and recalls them through spreading activation, mimicking how the human brain works.",
   "author": {
     "name": "Toni Nowak / AI-Flow NOWAK"
   },
@@ -21,12 +21,16 @@
     "persistence",
     "associative"
   ],
-  "instructions": "Surreal-Memory: persistent memory for AI agents. RECALL at session start (smem recall), SAVE after each task (smem remember with type+priority+tags), flush at session end (smem auto). Use causal language ('chose X over Y because Z'). For scratch notes use ephemeral=true. All tools support compact=true to save tokens.",
+  "instructions": "Use the coding-memory-claude skill throughout coding tasks. Recall project-scoped knowledge, proactively save verified decisions/traps/fixes and explicit preferences through MCP, and save exact-scope smem_checkpoint state at milestones and before finishing. Restore after compaction. Pending is not saved; memory outages must not block coding or restore old approvals.",
   "skills": "./skills",
   "mcpServers": {
     "surreal-memory": {
       "command": "uvx",
-      "args": ["--from", "surreal-memory", "smem-mcp"]
+      "args": [
+        "--from",
+        "surreal-memory",
+        "smem-mcp"
+      ]
     }
   }
 }

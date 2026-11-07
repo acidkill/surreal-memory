@@ -85,6 +85,9 @@ def run_doctor(
     checks.append(_check_mcp_config())
     checks.append(_check_mcp_connection())
     checks.append(_check_hooks())
+    from surreal_memory.cli.agent_setup import check_agent_integrations
+
+    checks.append(check_agent_integrations())
     checks.append(_check_dedup())
     checks.append(_check_surface())
     checks.append(_check_config_freshness())
@@ -722,7 +725,7 @@ def _check_hooks() -> dict[str, Any]:
         }
 
     hooks_section = data.get("hooks", {})
-    expected = ["PreCompact", "Stop", "PostToolUse"]
+    expected = ["PreCompact", "Stop", "PostToolUse", "SessionStart", "UserPromptSubmit"]
     found: list[str] = []
 
     for event in expected:
