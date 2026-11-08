@@ -130,7 +130,7 @@ def _build_dynamic_action(
 
     neuron_count = metrics.get("neuron_count", 0)
     synapse_count = metrics.get("synapse_count", 0)
-    fiber_count = metrics.get("fiber_count", 0)
+    fiber_count = metrics.get("organic_fiber_count", metrics.get("fiber_count", 0))
     freshness = metrics.get("freshness", 0.0)
     orphan_rate = metrics.get("orphan_rate", 0.0)
     activation_efficiency = metrics.get("activation_efficiency", 0.0)
@@ -172,7 +172,7 @@ def _build_dynamic_action(
             "'after A then B', 'X is related to Y'."
         )
     elif component == "freshness":
-        fresh_count = int(freshness * max(fiber_count, 1))
+        fresh_count = int(metrics.get("fresh_organic_fiber_count", freshness * max(fiber_count, 1)))
         target_per_week = max(5, fiber_count // 10)
         return (
             f"Recall or store {target_per_week}+ memories this week "
@@ -181,10 +181,12 @@ def _build_dynamic_action(
     elif component == "consolidation_ratio":
         episodic_pct = int((1.0 - consolidation_ratio) * 100)
         return (
-            f"{episodic_pct}% of fibers are still episodic (target: 50%+ semantic). "
+            f"{episodic_pct}% of organic fibers have not reached semantic "
+            "(STM, working or episodic; target: 50%+ semantic). "
             "They advance to semantic only through spaced recall — reinforcement "
             "spread across 3+ distinct days (or 15+ rehearsals across 5+ time "
-            "windows). Running `smem consolidate` will not move this on its own."
+            "windows). Consolidation applies eligible stage changes; rerunning it "
+            "does not replace spaced recall."
         )
     elif component == "orphan_rate" and neuron_count > 0:
         orphan_count = int(orphan_rate * neuron_count)
@@ -308,6 +310,11 @@ class BrainHealthReport:
     stage_distribution: dict[str, int] | None = None
     semantic_gate_blockers: dict[str, int] | None = None
 
+    organic_fiber_count: int = 0
+    fresh_organic_fiber_count: int = 0
+    semantic_organic_fiber_count: int = 0
+    orphan_rate_sampled: bool = False
+
 
 # ── Report serialization ─────────────────────────────────────────
 
@@ -347,6 +354,10 @@ def build_health_payload(report: BrainHealthReport, *, brain: str) -> dict[str, 
         # counts lets a dashboard explain a purity move that the raw counts can't.
         "structural_neuron_count": report.structural_neuron_count,
         "connectivity_neuron_count": report.connectivity_neuron_count,
+        "organic_fiber_count": report.organic_fiber_count,
+        "fresh_organic_fiber_count": report.fresh_organic_fiber_count,
+        "semantic_organic_fiber_count": report.semantic_organic_fiber_count,
+        "orphan_rate_sampled": report.orphan_rate_sampled,
         "contradiction_count": report.contradiction_count,
         "conflict_rate": report.conflict_rate,
         "warnings": [
@@ -542,6 +553,7 @@ class DiagnosticsEngine:
             connected,
             stage_distribution,
             semantic_gate_blockers,
+            fiber_health_counts,
         ) = await asyncio.gather(
             self._storage.get_fibers(limit=10000),
             # run 013: activation efficiency is scored against the ORGANIC brain
@@ -551,15 +563,14 @@ class DiagnosticsEngine:
             _connected_or_none(),
             _stage_distribution_or_none(),
             _semantic_gate_blockers_or_none(),
+            self._storage.get_fiber_health_counts(brain_id, utcnow() - timedelta(days=7)),
         )
 
-        # run 013: consolidation ratio over the ORGANIC fiber count. Computed
-        # after the gather because it depends on `fibers` (the code_index tag
-        # filter), which the gather just returned. Code-index fibers never
-        # mature, so including them deflated the ratio on code-heavy brains.
-        organic_fiber_count = sum(1 for f in fibers if "code_index" not in (f.tags or set()))
-        consolidation_ratio = await self._compute_consolidation_ratio(
-            fiber_count, organic_fiber_count
+        organic_fiber_count = fiber_health_counts["organic_fiber_count"]
+        consolidation_ratio = (
+            fiber_health_counts["semantic_organic_fiber_count"] / organic_fiber_count
+            if organic_fiber_count
+            else 0.0
         )
 
         # Score connectivity on the semantic graph only — see _STRUCTURAL_SYNAPSE_TYPES.
@@ -577,8 +588,12 @@ class DiagnosticsEngine:
             organic_synapse_count = semantic_synapse_count
         connectivity = self._compute_connectivity(organic_synapse_count, connectivity_neuron_count)
         diversity = self._compute_diversity(synapse_stats)
-        # run 013: freshness on the organic fiber set only.
-        freshness = self._compute_freshness(fibers, organic_only=True)
+        freshness = (
+            fiber_health_counts["fresh_organic_fiber_count"] / organic_fiber_count
+            if organic_fiber_count
+            else 0.0
+        )
+        # shortcut: orphan membership uses newest 10k fibers, upgrade to backend coverage counts for exact rates.
         orphan_rate = await self._compute_orphan_rate(neuron_count, fibers, connected=connected)
         recall_confidence = self._compute_recall_confidence(synapse_stats)
 
@@ -649,6 +664,7 @@ class DiagnosticsEngine:
             "synapse_count": synapse_count,
             "semantic_synapse_count": semantic_synapse_count,
             "fiber_count": fiber_count,
+            **fiber_health_counts,
             "freshness": freshness,
             "orphan_rate": orphan_rate,
             "activation_efficiency": activation_efficiency,
@@ -681,6 +697,10 @@ class DiagnosticsEngine:
             connectivity_neuron_count=connectivity_neuron_count,
             stage_distribution=stage_distribution,
             semantic_gate_blockers=semantic_gate_blockers,
+            organic_fiber_count=organic_fiber_count,
+            fresh_organic_fiber_count=fiber_health_counts["fresh_organic_fiber_count"],
+            semantic_organic_fiber_count=fiber_health_counts["semantic_organic_fiber_count"],
+            orphan_rate_sampled=fiber_count > len(fibers),
         )
 
     # ── Metric computations ──────────────────────────────────────
@@ -751,43 +771,6 @@ class DiagnosticsEngine:
         expected_types = DiagnosticsEngine._EXPECTED_SYNAPSE_TYPES
         max_entropy = math.log(expected_types) if expected_types > 1 else 1.0
         return min(1.0, entropy / max_entropy)
-
-    @staticmethod
-    def _compute_freshness(fibers: list[Any], organic_only: bool = False) -> float:
-        """Compute fraction of fibers accessed/created in last 7 days.
-
-        run 013: when ``organic_only`` is set, code-index fibers are excluded —
-        a bulk re-index touches every source file and stamps them all recent,
-        which otherwise reports a brain with 20k indexed fibers as maximally
-        fresh even when no real memory was stored in a week.
-        """
-        if organic_only:
-            fibers = [f for f in fibers if "code_index" not in (f.tags or set())]
-        if not fibers:
-            return 0.0
-
-        now = utcnow()
-        cutoff = now - timedelta(days=7)
-        fresh_count = sum(1 for f in fibers if (f.last_conducted or f.created_at) >= cutoff)
-        return fresh_count / len(fibers)
-
-    async def _compute_consolidation_ratio(
-        self, fiber_count: int, organic_fiber_count: int | None = None
-    ) -> float:
-        """Compute fraction of fibers that reached SEMANTIC stage.
-
-        run 013: scores against the ORGANIC fiber count when available —
-        code-index fibers never mature past their initial stage, so including
-        them in the denominator deflates the ratio on code-heavy brains.
-        Falls back to the total when the organic count is unknown.
-        """
-        denom = organic_fiber_count if organic_fiber_count is not None else fiber_count
-        if denom == 0:
-            return 0.0
-        semantic_records = await self._storage.find_maturations(
-            stage=MemoryStage.SEMANTIC,
-        )
-        return len(semantic_records) / denom
 
     async def _compute_orphan_rate(
         self,

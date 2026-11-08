@@ -4871,6 +4871,37 @@ class SurrealDBStorage(
         )
         return int(rows[0]["cnt"]) if rows else 0
 
+    async def get_fiber_health_counts(self, brain_id: str, cutoff: datetime) -> dict[str, int]:
+        """Aggregate full-population health counts without loading memory content."""
+        lit = _brain_literal(brain_id)
+        organic = "'code_index' NOT IN auto_tags AND 'code_index' NOT IN agent_tags"
+        fiber = "type::record('fiber', string::replace(fiber_id, '-', '_'))"
+        organic_rows, fresh_rows, semantic_rows = await asyncio.gather(
+            self._query(
+                f"SELECT count() AS c FROM fiber WHERE brain_id = {lit} AND {organic} GROUP ALL"
+            ),
+            self._query(
+                f"SELECT count() AS c FROM fiber WHERE brain_id = {lit} AND {organic} "
+                "AND ((last_conducted != NONE AND last_conducted >= $cutoff) "
+                "OR (last_conducted = NONE AND created_at >= $cutoff)) GROUP ALL",
+                cutoff=cutoff,
+            ),
+            self._query(
+                f"SELECT count() AS c FROM maturation WHERE brain_id = {lit} "
+                f"AND stage = 'semantic' AND {fiber}.brain_id = {lit} "
+                f"AND 'code_index' NOT IN {fiber}.auto_tags "
+                f"AND 'code_index' NOT IN {fiber}.agent_tags GROUP ALL"
+            ),
+        )
+        return {
+            key: int(rows[0].get("c", 0)) if rows else 0
+            for key, rows in (
+                ("organic_fiber_count", organic_rows),
+                ("fresh_organic_fiber_count", fresh_rows),
+                ("semantic_organic_fiber_count", semantic_rows),
+            )
+        }
+
     async def get_fiber_stage_counts(self, brain_id: str) -> dict[str, int]:
         # Grouped by maturation stage, per the storage/base.py contract and to
         # match the SQLite and in-memory backends (whose `fibers` table carries a
@@ -4883,7 +4914,7 @@ class SurrealDBStorage(
         # `.get("semantic", 0)` was always 0 and the health pulse's consolidation
         # ratio was permanently degenerate -- and its LOW_CONSOLIDATION hint
         # permanently on. Reading `maturation` also makes this agree with
-        # DiagnosticsEngine._compute_consolidation_ratio, which has always
+        # the diagnostics health counts, which have always
         # counted SEMANTIC maturation records.
         rows = await self._query(
             "SELECT stage, count() AS c FROM maturation WHERE brain_id = $brain_id GROUP BY stage",

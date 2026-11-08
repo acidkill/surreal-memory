@@ -67,6 +67,9 @@ class TestBuildDynamicAction:
         action = _build_dynamic_action("consolidation_ratio", "fallback", metrics)
         assert "70%" in action
         assert "episodic" in action
+        assert "Consolidation applies eligible stage changes" in action
+        assert "rerunning it does not replace spaced recall" in action
+        assert "will not move this on its own" not in action
 
     def test_orphan_rate_action_includes_count(self) -> None:
         metrics: dict[str, Any] = {

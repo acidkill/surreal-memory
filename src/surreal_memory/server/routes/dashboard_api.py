@@ -205,6 +205,14 @@ class HealthReport(BaseModel):
     warnings: list[dict[str, Any]] = Field(default_factory=list)
     recommendations: list[str] = Field(default_factory=list)
     top_penalties: list[dict[str, Any]] = Field(default_factory=list)
+    structural_neuron_count: int = 0
+    connectivity_neuron_count: int = 0
+    organic_fiber_count: int = 0
+    fresh_organic_fiber_count: int = 0
+    semantic_organic_fiber_count: int = 0
+    orphan_rate_sampled: bool = False
+    stage_distribution: dict[str, int] | None = None
+    semantic_gate_blockers: dict[str, int] | None = None
 
 
 class SwitchBrainRequest(BaseModel):
@@ -575,6 +583,14 @@ async def get_health(
         fiber_count=report.fiber_count,
         contradiction_count=report.contradiction_count,
         conflict_rate=report.conflict_rate,
+        structural_neuron_count=report.structural_neuron_count,
+        connectivity_neuron_count=report.connectivity_neuron_count,
+        organic_fiber_count=report.organic_fiber_count,
+        fresh_organic_fiber_count=report.fresh_organic_fiber_count,
+        semantic_organic_fiber_count=report.semantic_organic_fiber_count,
+        orphan_rate_sampled=report.orphan_rate_sampled,
+        stage_distribution=report.stage_distribution,
+        semantic_gate_blockers=report.semantic_gate_blockers,
         warnings=[
             {
                 "severity": w.severity.value,

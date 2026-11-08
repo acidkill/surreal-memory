@@ -51,7 +51,7 @@ export default function HealthPage() {
 
   const radarData = health
     ? [
-        { metric: t("health.purity"), value: health.purity_score * 100 },
+        { metric: t("health.purity"), value: health.purity_score },
         { metric: t("health.freshness"), value: health.freshness * 100 },
         { metric: t("health.connectivity"), value: health.connectivity * 100 },
         { metric: t("health.diversity"), value: health.diversity * 100 },
@@ -149,6 +149,26 @@ export default function HealthPage() {
                   />
                 </RadarChart>
               </ResponsiveContainer>
+            )}
+            {health?.organic_fiber_count !== undefined && (
+              <p className="mt-3 text-xs text-muted-foreground">
+                {t("health.semanticCohort", {
+                  semantic: health.semantic_organic_fiber_count ?? 0,
+                  total: health.organic_fiber_count,
+                })}
+              </p>
+            )}
+            {health?.semantic_gate_blockers && (
+              <p className="mt-2 text-xs text-muted-foreground">
+                {t("health.maturationGates", {
+                  ready: health.semantic_gate_blockers.ready ?? 0,
+                  spacing: health.semantic_gate_blockers.spacing_gate ?? 0,
+                  time: health.semantic_gate_blockers.time_gate ?? 0,
+                })}
+              </p>
+            )}
+            {health?.orphan_rate_sampled && (
+              <p className="mt-2 text-xs text-muted-foreground">{t("health.orphanSampled")}</p>
             )}
           </CardContent>
         </Card>
