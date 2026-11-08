@@ -324,6 +324,72 @@ async def test_load_child_page_rejects_unpublished_root_and_stale_lease() -> Non
 
 
 @pytest.mark.asyncio
+async def test_recovery_reader_requires_exact_live_lease_and_published_old_owner() -> None:
+    storage, parent_ref = await _published_storage()
+    storage.lease = {"owner_token": "recovery-owner"}
+    recovery_owner = storage.lease["owner_token"]
+    assert await storage.load_semantic_discovery_state("validation-root", 1) is None
+    assert (
+        await storage.load_semantic_discovery_state(
+            "validation-root",
+            1,
+            recovery_owner_token=recovery_owner,
+            expected_progress_owner_token=_OWNER_TOKEN,
+        )
+        is not None
+    )
+    assert (
+        await storage._load_semantic_discovery_state_page(
+            "ids-page-1",
+            1,
+            parent_ref=parent_ref,
+            recovery_owner_token=recovery_owner,
+            expected_progress_owner_token=_OWNER_TOKEN,
+        )
+        is not None
+    )
+    for recovery_owner, old_owner, revision in [
+        ("wrong-lease", "owner-1", 1),
+        ("recovery-owner", "replaced-owner", 1),
+        ("recovery-owner", "owner-1", 2),
+    ]:
+        assert (
+            await storage.load_semantic_discovery_state(
+                "validation-root",
+                revision,
+                recovery_owner_token=recovery_owner,
+                expected_progress_owner_token=old_owner,
+            )
+            is None
+        )
+    storage.progress["strategy_states"] = {}
+    assert (
+        await storage.load_semantic_discovery_state(
+            "validation-root",
+            1,
+            recovery_owner_token=recovery_owner,
+            expected_progress_owner_token=_OWNER_TOKEN,
+        )
+        is None
+    )
+    storage.lease = {}
+    assert (
+        await storage.load_semantic_discovery_state(
+            "validation-root",
+            1,
+            recovery_owner_token=recovery_owner,
+            expected_progress_owner_token=_OWNER_TOKEN,
+        )
+        is None
+    )
+    assert all(
+        "expires_at > time::now()" in sql
+        for sql, _ in storage.queries
+        if sql.startswith("SELECT * FROM consolidation_lease")
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("tamper", "expected"),
     [

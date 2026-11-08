@@ -6,7 +6,7 @@ import asyncio
 import inspect
 import json
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import datetime
 from hashlib import sha256
 from typing import Any
@@ -52,6 +52,10 @@ class ConsolidationResumeMismatchError(ConsolidationProgressError):
 
 class ConsolidationLeaseLostError(ConsolidationProgressError):
     """The worker lost its lease and must stop before starting another work unit."""
+
+
+class ConsolidationCheckpointUnconfirmedError(ConsolidationLeaseLostError):
+    """An uncertain checkpoint publication fences this session against stale writes."""
 
 
 def options_fingerprint(options: Mapping[str, Any]) -> str:
@@ -474,6 +478,629 @@ async def recover_legacy_semantic_link_discovery(
             logger.warning("Could not release semantic recovery lease for brain %r", brain_id)
 
 
+def validate_semantic_source_generation_audit(
+    marker: Any,
+    *,
+    brain_id: str,
+    run_id: str,
+    options_fingerprint: str,
+    reference_time: Any,
+) -> bool:
+    """Recognize historical source failures only with their generation evidence."""
+    if not isinstance(marker, Mapping):
+        return False
+    expected_fields = {
+        "kind",
+        "version",
+        "brain_id",
+        "run_id",
+        "options_fingerprint",
+        "reference_time",
+        "expected_status",
+        "previous_phase",
+        "generation",
+        "semantics",
+        "source_changed_verified",
+        "source_change",
+        "prior_manifest",
+        "manifest_sha256",
+        "prior_counters",
+        "counters_sha256",
+        "retired_source_state_ref",
+        "retired_cursor",
+        "source_token_sha256",
+        "new_source_token_sha256",
+        "source_state_ref",
+        "bootstrap_sha256",
+        "resolved_error",
+        "resolved_nested_error",
+        "owner_token",
+        "recovered_at",
+    }
+    optional_fields = {"retired_cursor", "resolved_error", "resolved_nested_error"}
+    if set(marker) - expected_fields or expected_fields - optional_fields - set(marker):
+        return False
+
+    def digest(value: Any) -> str:
+        return sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+    def safe_metadata(value: Any, depth: int = 0) -> bool:
+        if depth > 64:
+            return False
+        if isinstance(value, Mapping):
+            return all(
+                (
+                    not any(word in str(key).lower() for word in ("error", "fail"))
+                    or (key == "semantic_link_failures" and item == 0)
+                )
+                and safe_metadata(item, depth + 1)
+                for key, item in value.items()
+            )
+        if isinstance(value, (list, tuple)):
+            return all(safe_metadata(item, depth + 1) for item in value)
+        return True
+
+    try:
+        prior = marker["prior_manifest"]
+        inner = prior["discovery"] if prior.get("stage") == "validation" else prior
+        old_ref, new_ref = marker["retired_source_state_ref"], marker["source_state_ref"]
+        old_token, new_token = old_ref["source_token"], new_ref["source_token"]
+        old_decoded, new_decoded = json.loads(old_token), json.loads(new_token)
+        bootstrap = {
+            "kind": "semantic_link_discovery",
+            "version": 5,
+            "stage": "neurons",
+            "cursor": None,
+            "source_state_ref": new_ref,
+        }
+        return (
+            marker.get("kind") == "stale_semantic_source_restart"
+            and marker.get("version") == 2
+            and marker.get("brain_id") == brain_id
+            and marker.get("run_id") == run_id
+            and marker.get("options_fingerprint") == options_fingerprint
+            and _parse_reference_time(marker.get("reference_time"))
+            == _parse_reference_time(reference_time)
+            and type(marker.get("generation")) is int
+            and marker["generation"] > 0
+            and marker.get("semantics") == "cumulative_write_events"
+            and marker.get("source_changed_verified") is True
+            and all(
+                safe_metadata(marker[key])
+                for key in (
+                    "prior_manifest",
+                    "prior_counters",
+                    "retired_source_state_ref",
+                    "source_state_ref",
+                )
+            )
+            and marker.get("expected_status") in {"running", "failed"}
+            and marker.get("previous_phase") == "semantic_link_discovery_" + str(prior.get("stage"))
+            and marker.get("retired_cursor") == prior.get("cursor")
+            and isinstance(marker.get("source_change"), str)
+            and 0 < len(marker["source_change"]) <= 2000
+            and _parse_reference_time(marker["recovered_at"])
+            >= _parse_reference_time(reference_time)
+            and new_ref["state_id"] != old_ref["state_id"]
+            and type(old_decoded.get("versionstamp")) is int
+            and old_decoded["versionstamp"] >= 0
+            and type(new_decoded.get("versionstamp")) is int
+            and new_decoded["versionstamp"] >= old_decoded["versionstamp"]
+            and all(
+                decoded.get("version") == 1
+                and decoded.get("created_at_readonly") is True
+                and _parse_reference_time(decoded["captured_at"]) is not None
+                for decoded in (old_decoded, new_decoded)
+            )
+            and inner.get("kind") == "semantic_link_discovery"
+            and inner.get("source_state_ref") == old_ref
+            and marker.get("manifest_sha256") == digest(prior)
+            and isinstance(marker.get("prior_counters"), Mapping)
+            and all(
+                type(value) is int and value >= 0 for value in marker["prior_counters"].values()
+            )
+            and marker["prior_counters"].get("semantic_link_failures", 0) == 0
+            and marker.get("counters_sha256") == digest(marker["prior_counters"])
+            and marker.get("source_token_sha256") == sha256(old_token.encode()).hexdigest()
+            and marker.get("new_source_token_sha256") == sha256(new_token.encode()).hexdigest()
+            and marker.get("bootstrap_sha256") == digest(bootstrap)
+            and all(
+                isinstance(ref.get("state_id"), str)
+                and bool(ref["state_id"])
+                and type(ref.get("revision")) is int
+                and ref["revision"] > 0
+                and ref.get("state_revision", ref["revision"]) == ref["revision"]
+                and ref.get("brain_id", brain_id) == brain_id
+                and ref.get("run_id", run_id) == run_id
+                and json.loads(ref["source_token"]).get("brain_id") == brain_id
+                for ref in (old_ref, new_ref)
+            )
+            and isinstance(marker.get("owner_token"), str)
+            and bool(marker["owner_token"])
+            and marker.get("recovered_at") is not None
+            and all(
+                _known_source_error(marker.get(key))
+                for key in ("resolved_error", "resolved_nested_error")
+            )
+        )
+    except (KeyError, AttributeError, TypeError, ValueError, ConsolidationProgressError):
+        return False
+
+
+def _known_source_error(value: Any) -> bool:
+    return value in (
+        None,
+        "",
+        "semantic_link (progress coordination: ConsolidationProgressError)",
+    ) or (
+        isinstance(value, str)
+        and value.startswith("semantic_link source changed; discovery checkpoint preserved:")
+    )
+
+
+async def _restart_semantic_source_generation(
+    storage: Any,
+    state: Mapping[str, Any],
+    owner_token: str,
+    *,
+    dry_run: bool = True,
+    source_changed: bool = False,
+    source_change_reason: str | None = None,
+    budget_check: Callable[[], Awaitable[None]] | None = None,
+    progress_session: ConsolidationProgressSession | None = None,
+) -> dict[str, Any]:
+    """Retire an unapplied proposal; committed counters remain write-event totals."""
+    from surreal_memory.engine.consolidation import ConsolidationConfig, ConsolidationStrategy
+    from surreal_memory.engine.semantic_discovery import _load_source_state
+    from surreal_memory.storage.surrealdb.semantic_source_revision import SemanticSourceChangedError
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + ConsolidationConfig().strategy_timeout_seconds
+    next_renewal = loop.time() + LEASE_SECONDS / 3
+
+    async def within_budget() -> bool:
+        nonlocal next_renewal
+        if budget_check is not None:
+            await budget_check()
+        if loop.time() >= deadline:
+            return False
+        if loop.time() >= next_renewal:
+            if not await storage.renew_consolidation_lease(
+                str(storage.current_brain_id), owner_token, lease_seconds=LEASE_SECONDS
+            ):
+                raise ConsolidationLeaseBusyError("recovery validation lease was lost")
+            next_renewal = loop.time() + LEASE_SECONDS / 3
+        return True
+
+    brain_id = str(storage.current_brain_id)
+    run_id = str(state["run_id"])
+    semantic = state.get("strategy_states", {}).get("semantic_link")
+    if not isinstance(semantic, Mapping):
+        raise ConsolidationResumeMismatchError("semantic discovery state is missing")
+    phase = state.get("phase")
+    counters = semantic.get("counters")
+    allowed_counters = {
+        "semantic_synapses_created",
+        "semantic_synapses_skipped",
+        "semantic_link_failures",
+        "eligible_neurons",
+        "existing_pairs",
+        "synapses_created",
+        "skipped_existing",
+        "pairs_evaluated",
+        "validation_database_events",
+        "validation_neuron_events",
+        "validation_synapse_events",
+        "validation_cursor",
+    }
+    strategies = {
+        item.value for item in ConsolidationStrategy if item is not ConsolidationStrategy.ALL
+    }
+    if (
+        state.get("brain_id") != brain_id
+        or state.get("current_strategy") != "semantic_link"
+        or state.get("status") not in {"running", "failed", "paused"}
+        or len(state.get("requested_strategies", [])) != len(strategies)
+        or set(state.get("requested_strategies", [])) != strategies
+        or len(state.get("completed_strategies", [])) != len(strategies) - 1
+        or set(state.get("completed_strategies", [])) != strategies - {"semantic_link"}
+        or not isinstance(counters, Mapping)
+        or dict(counters) != state.get("counters", {}).get("semantic_link")
+        or set(counters) - allowed_counters
+        or any(type(value) is not int or value < 0 for value in counters.values())
+        or counters.get("semantic_link_failures", 0) != 0
+        or semantic.get("phase") != phase
+        or semantic.get("cursor") != state.get("cursor")
+        or not _known_source_error(state.get("last_error"))
+        or not _known_source_error(semantic.get("last_error"))
+    ):
+        raise ConsolidationResumeMismatchError(
+            "source generation evidence or active error is unsafe"
+        )
+    reference_time = _parse_reference_time(state.get("reference_time"))
+    old_marker = semantic.get("recovery")
+    history_raw = semantic.get("recovery_history", [])
+    if (
+        not isinstance(history_raw, (list, tuple))
+        or any(not isinstance(item, Mapping) for item in history_raw)
+        or (old_marker is not None and not isinstance(old_marker, Mapping))
+        or (history_raw and history_raw[-1] != old_marker)
+        or (
+            isinstance(old_marker, Mapping)
+            and old_marker.get("version") == 2
+            and not validate_semantic_source_generation_audit(
+                old_marker,
+                brain_id=brain_id,
+                run_id=run_id,
+                options_fingerprint=str(state.get("options_fingerprint")),
+                reference_time=reference_time,
+            )
+        )
+    ):
+        raise ConsolidationResumeMismatchError("source generation history is malformed")
+    if phase == "semantic_link_restart_pending":
+        manifest, _ = _decode_legacy_discovery_pending(semantic.get("pending"))
+        if not isinstance(old_marker, Mapping):
+            raise ConsolidationResumeMismatchError("source generation audit is missing")
+        if (
+            not validate_semantic_source_generation_audit(
+                old_marker,
+                brain_id=brain_id,
+                run_id=run_id,
+                options_fingerprint=str(state.get("options_fingerprint")),
+                reference_time=reference_time,
+            )
+            or old_marker.get("bootstrap_sha256") != options_fingerprint(manifest)
+            or old_marker.get("prior_counters") != dict(counters)
+            or old_marker.get("owner_token") != state.get("owner_token")
+            or _parse_reference_time(old_marker.get("recovered_at"))
+            != _parse_reference_time(state.get("updated_at"))
+            or _parse_reference_time(old_marker.get("recovered_at"))
+            != _parse_reference_time(semantic.get("updated_at"))
+            or not semantic.get("recovery_history")
+            or semantic["recovery_history"][-1] != old_marker
+        ):
+            raise ConsolidationResumeMismatchError("source generation retry evidence changed")
+        return {
+            "run_id": run_id,
+            "reference_time": reference_time,
+            "already_recovered": True,
+            "dry_run": dry_run,
+            "previous_phase": old_marker["previous_phase"],
+        }
+
+    if state.get("status") == "paused":
+        raise ConsolidationResumeMismatchError(
+            "paused source generation recovery only verifies an exact restart"
+        )
+    wrapper, _ = _decode_legacy_discovery_pending(semantic.get("pending"))
+    wrapper = stored_form(wrapper)
+    canonical = json.dumps(wrapper, sort_keys=True, separators=(",", ":"))
+    manifest = wrapper
+    if wrapper.get("stage") == "validation":
+        inner = wrapper.get("discovery")
+        if (
+            phase != "semantic_link_discovery_validation"
+            or wrapper.get("kind") != "semantic_link_discovery"
+            or wrapper.get("version") != 5
+            or not isinstance(inner, Mapping)
+            or wrapper.get("cursor") != inner.get("cursor")
+            or not isinstance(wrapper.get("source_validation_ref"), Mapping)
+        ):
+            raise ConsolidationResumeMismatchError("invalid discovery validation wrapper")
+        manifest = dict(inner)
+    elif phase != "semantic_link_discovery_" + str(wrapper.get("stage")):
+        raise ConsolidationResumeMismatchError("source generation requires unapplied discovery")
+    if (
+        manifest.get("kind") != "semantic_link_discovery"
+        or manifest.get("version") not in {4, 5}
+        or manifest.get("stage") not in {"neurons", "synapses", "similarity"}
+        or wrapper.get("cursor") != state.get("cursor")
+    ):
+        raise ConsolidationResumeMismatchError("invalid source generation discovery manifest")
+    source_ref = manifest.get("source_state_ref")
+    try:
+        source, _, revision = await _load_source_state(
+            storage,
+            source_ref,
+            brain_id=brain_id,
+            run_id=run_id,
+            recovery_owner_token=owner_token,
+            expected_progress_owner_token=state["owner_token"],
+        )
+    except RuntimeError as exc:
+        raise ConsolidationResumeMismatchError(str(exc)) from exc
+    assert isinstance(source_ref, Mapping)
+    token = source.get("source_token")
+    batch_index = source.get("batch_index")
+    if (
+        source_ref.get("state_revision", revision) != revision
+        or source_ref.get("brain_id", brain_id) != brain_id
+        or source_ref.get("run_id", run_id) != run_id
+        or source.get("state_revision", revision) != revision
+        or not isinstance(token, str)
+        or source_ref.get("source_token") != token
+        or _parse_reference_time(source.get("reference_time")) != reference_time
+        or type(batch_index) is not int
+        or batch_index < 0
+        or (counters.get("semantic_synapses_created", 0) > 0 and batch_index < 1)
+    ):
+        raise ConsolidationResumeMismatchError("staged source generation scope changed")
+    decoded = json.loads(token)
+    if (
+        decoded.get("version") != 1
+        or decoded.get("brain_id") != brain_id
+        or decoded.get("created_at_readonly") is not True
+        or type(decoded.get("versionstamp")) is not int
+    ):
+        raise ConsolidationResumeMismatchError("source generation token is not readonly-attested")
+    proof_ref = wrapper.get("source_validation_ref", manifest.get("source_validation_ref"))
+    if proof_ref is not None:
+        if not isinstance(proof_ref, Mapping) or proof_ref.get("source_token") != token:
+            raise ConsolidationResumeMismatchError("source generation validation scope changed")
+        if callable(getattr(storage, "_create_semantic_source_fence_session", None)):
+            from surreal_memory.engine.semantic_validation import SemanticSourceValidation
+
+            validation = SemanticSourceValidation(
+                storage,
+                token,
+                reference_time=reference_time,
+                run_id=run_id,
+                owner_token=owner_token,
+                reference=proof_ref,
+                recovery_owner_token=owner_token,
+                expected_progress_owner_token=state["owner_token"],
+            )
+            try:
+                await validation.restore()
+            except RuntimeError as exc:
+                raise ConsolidationResumeMismatchError(str(exc)) from exc
+            if not source_changed:
+                while True:
+                    previous_watermark = validation.session.watermark
+                    previous_target = validation.session.target_token
+                    try:
+                        status = await validation.session.verify(budget_check=within_budget)
+                    except SemanticSourceChangedError as exc:
+                        source_changed = True
+                        source_change_reason = str(exc)
+                        break
+                    except RuntimeError as exc:
+                        raise ConsolidationPausedError(
+                            f"source generation validation unavailable; checkpoint unchanged: {exc}"
+                        ) from exc
+                    if status == "verified":
+                        raise ConsolidationResumeMismatchError(
+                            "semantic source change before reference_time was not proven"
+                        )
+                    if status != "pending" or (
+                        previous_target is not None
+                        and validation.session.target_token != previous_target
+                    ):
+                        raise ConsolidationResumeMismatchError("source validation target changed")
+                    if (
+                        validation.session.watermark <= previous_watermark
+                        or not await within_budget()
+                    ):
+                        raise ConsolidationPausedError(
+                            "source generation validation pending; checkpoint unchanged"
+                        )
+    if not source_changed:
+        try:
+            await storage.assert_semantic_source_unchanged(token, created_before=reference_time)
+        except SemanticSourceChangedError as exc:
+            source_changed = True
+            source_change_reason = str(exc)
+    if not source_changed:
+        raise ConsolidationResumeMismatchError(
+            "semantic source change before reference_time was not proven"
+        )
+    if dry_run:
+        return {
+            "run_id": run_id,
+            "reference_time": reference_time,
+            "already_recovered": False,
+            "dry_run": True,
+            "previous_phase": str(phase),
+        }
+
+    new_token = await storage.capture_semantic_source_token()
+    new_decoded = json.loads(new_token)
+    if (
+        new_decoded.get("brain_id") != brain_id
+        or new_decoded.get("version") != 1
+        or new_decoded.get("created_at_readonly") is not True
+        or type(new_decoded.get("versionstamp")) is not int
+        or new_decoded["versionstamp"] < decoded["versionstamp"]
+    ):
+        raise ConsolidationResumeMismatchError("new source generation token is invalid")
+    state_id = "generation-" + str(uuid4())
+    fresh = {
+        "state_id": state_id,
+        "revision": 1,
+        "state_revision": 1,
+        "brain_id": brain_id,
+        "run_id": run_id,
+        "owner_token": owner_token,
+        "source_token": new_token,
+        "reference_time": reference_time.isoformat(timespec="microseconds"),
+        "batch_index": max(1, batch_index),
+        "coverage_offset": 0,
+        "coverage_source_fingerprint": None,
+        "legacy_checkpoint": None,
+        "neuron_cursor": None,
+        "edge_cursor": None,
+        "neuron_complete": False,
+        "edge_complete": False,
+        "source_complete": False,
+        "similarity_rebuild": None,
+        "eligible_total": 0,
+        "type_ranks": {"concept": 0, "entity": 0},
+        "candidates": [],
+        "bounded": False,
+        "degree_mode": False,
+    }
+    await storage.save_semantic_discovery_state(state_id, 1, fresh)
+    new_ref = {"state_id": state_id, "revision": 1, "state_revision": 1, "source_token": new_token}
+    bootstrap = {
+        "kind": "semantic_link_discovery",
+        "version": 5,
+        "stage": "neurons",
+        "cursor": None,
+        "source_state_ref": new_ref,
+    }
+    updated_at = utcnow()
+    history = list(semantic.get("recovery_history", []))
+    if old_marker is not None and (not history or history[-1] != old_marker):
+        history.append(dict(old_marker))
+    marker = {
+        "kind": "stale_semantic_source_restart",
+        "version": 2,
+        "brain_id": brain_id,
+        "run_id": run_id,
+        "options_fingerprint": state["options_fingerprint"],
+        "reference_time": reference_time,
+        "expected_status": state["status"],
+        "previous_phase": phase,
+        "generation": 1 + max((item.get("generation", 0) for item in history), default=0),
+        "semantics": "cumulative_write_events",
+        "source_changed_verified": True,
+        "source_change": str(source_change_reason or "semantic source changed")[:2000],
+        "prior_manifest": wrapper,
+        "manifest_sha256": sha256(canonical.encode()).hexdigest(),
+        "prior_counters": dict(counters),
+        "counters_sha256": options_fingerprint(counters),
+        "retired_source_state_ref": dict(source_ref),
+        "retired_cursor": state.get("cursor"),
+        "source_token_sha256": sha256(token.encode()).hexdigest(),
+        "new_source_token_sha256": sha256(new_token.encode()).hexdigest(),
+        "source_state_ref": new_ref,
+        "bootstrap_sha256": options_fingerprint(bootstrap),
+        "resolved_error": state.get("last_error"),
+        "resolved_nested_error": semantic.get("last_error"),
+        "owner_token": owner_token,
+        "recovered_at": updated_at,
+    }
+    history.append(marker)
+    next_semantic = dict(semantic)
+    next_semantic.update(
+        phase="semantic_link_restart_pending",
+        cursor=None,
+        pending=[json.dumps(bootstrap, sort_keys=True, separators=(",", ":"))],
+        recovery=marker,
+        recovery_history=history,
+        updated_at=updated_at,
+    )
+    next_semantic.pop("last_error", None)
+    states = dict(state["strategy_states"])
+    states["semantic_link"] = next_semantic
+    if not await storage.renew_consolidation_lease(
+        brain_id, owner_token, lease_seconds=LEASE_SECONDS
+    ):
+        raise ConsolidationLeaseBusyError("brain lease was lost before generation commit")
+
+    def confirmed(candidate: Any) -> bool:
+        if not isinstance(candidate, Mapping):
+            return False
+        try:
+            current_semantic = candidate["strategy_states"]["semantic_link"]
+            current_marker = dict(current_semantic["recovery"])
+            intended_marker = dict(marker)
+            for key in ("reference_time", "recovered_at"):
+                current_marker[key] = _parse_reference_time(current_marker[key])
+                intended_marker[key] = _parse_reference_time(intended_marker[key])
+            pending_manifest, _ = _decode_legacy_discovery_pending(current_semantic.get("pending"))
+            return (
+                candidate.get("brain_id") == brain_id
+                and candidate.get("owner_token") == owner_token
+                and candidate.get("status")
+                == ("paused" if state["status"] == "failed" else state["status"])
+                and candidate.get("phase") == "semantic_link_restart_pending"
+                and candidate.get("current_strategy") == "semantic_link"
+                and candidate.get("cursor") is None
+                and candidate.get("last_error") in (None, "")
+                and _parse_reference_time(candidate.get("reference_time")) == reference_time
+                and _parse_reference_time(candidate.get("updated_at")) == updated_at
+                and all(
+                    candidate.get(key) == state.get(key)
+                    for key in (
+                        "run_id",
+                        "options_fingerprint",
+                        "requested_strategies",
+                        "completed_strategies",
+                        "counters",
+                    )
+                )
+                and stored_form(current_marker) == stored_form(intended_marker)
+                and current_semantic.get("phase") == "semantic_link_restart_pending"
+                and current_semantic.get("cursor") is None
+                and current_semantic.get("counters") == counters
+                and _parse_reference_time(current_semantic.get("updated_at")) == updated_at
+                and options_fingerprint(pending_manifest) == marker["bootstrap_sha256"]
+                and stored_form(current_semantic["recovery_history"][:-1])
+                == stored_form(history[:-1])
+                and current_semantic["recovery_history"][-1] == current_semantic["recovery"]
+                and all(
+                    stored_form(candidate["strategy_states"].get(key)) == stored_form(value)
+                    for key, value in state["strategy_states"].items()
+                    if key != "semantic_link"
+                )
+            )
+        except (KeyError, IndexError, TypeError, ValueError, ConsolidationProgressError):
+            return False
+
+    if progress_session is not None:
+        progress_session._checkpoint_unconfirmed = True
+    publication_error: BaseException | None = None
+    try:
+        saved = await storage.compare_and_swap_semantic_link_recovery(
+            brain_id=brain_id,
+            expected_run_id=run_id,
+            expected_owner_token=state["owner_token"],
+            expected_options_fingerprint=state["options_fingerprint"],
+            expected_status=state["status"],
+            expected_phase=str(phase),
+            expected_updated_at=state["updated_at"],
+            expected_reference_time=state["reference_time"],
+            lease_owner_token=owner_token,
+            new_owner_token=owner_token,
+            strategy_states=states,
+            counters=dict(state["counters"]),
+            updated_at=updated_at,
+            new_status="paused" if state["status"] == "failed" else state["status"],
+            resolved_source_error=state.get("last_error"),
+        )
+    except (Exception, asyncio.CancelledError) as exc:
+        publication_error = exc
+        saved = None
+    if not confirmed(saved):
+        try:
+            saved = await asyncio.wait_for(
+                asyncio.shield(storage.get_consolidation_progress(brain_id)), timeout=10.0
+            )
+        except (Exception, asyncio.CancelledError):
+            saved = None
+        if not confirmed(saved):
+            raise ConsolidationCheckpointUnconfirmedError(
+                "source generation publication is unconfirmed; no stale failure or pause checkpoint was written; "
+                "inspect the durable run before resuming"
+            ) from publication_error
+    if progress_session is not None:
+        progress_session.state = dict(saved)
+        progress_session._checkpoint_unconfirmed = False
+    if isinstance(publication_error, asyncio.CancelledError):
+        raise publication_error
+    return {
+        "run_id": run_id,
+        "reference_time": reference_time,
+        "already_recovered": False,
+        "dry_run": False,
+        "previous_phase": str(phase),
+        "generation": marker["generation"],
+        "state": saved,
+    }
+
+
 async def recover_stale_semantic_link_discovery(
     storage: Any,
     *,
@@ -539,6 +1166,15 @@ async def recover_stale_semantic_link_discovery(
         ):
             raise ConsolidationResumeMismatchError(
                 "run, status, owner, or options changed; recovery refused"
+            )
+
+        semantic = state.get("strategy_states", {}).get("semantic_link", {})
+        marker = semantic.get("recovery") if isinstance(semantic, Mapping) else None
+        if state.get("phase") == "semantic_link_discovery_validation" or (
+            isinstance(marker, Mapping) and marker.get("version") == 2
+        ):
+            return await _restart_semantic_source_generation(
+                storage, state, owner_token, dry_run=dry_run
             )
 
         from surreal_memory.engine.consolidation import ConsolidationStrategy
@@ -972,6 +1608,7 @@ class ConsolidationProgressSession:
         self.lease_seconds = lease_seconds
         self.resumed = False
         self._lease_lost = False
+        self._checkpoint_unconfirmed = False
         self._closed = False
         self._heartbeat_task: asyncio.Task[None] | None = None
 
@@ -1236,6 +1873,11 @@ class ConsolidationProgressSession:
             ) from exc
 
     async def _save(self) -> None:
+        if self._checkpoint_unconfirmed:
+            raise ConsolidationCheckpointUnconfirmedError(
+                "source generation publication is unconfirmed; stale checkpoint writes are fenced; "
+                "inspect the durable run before resuming"
+            )
         if self._lease_lost:
             raise ConsolidationLeaseLostError(
                 f"lease for brain {self.brain_id!r} was lost; checkpoint was not saved"

@@ -162,7 +162,12 @@ async def test_checkpoint_update_returns_none_after_lease_fence_changes() -> Non
 
 
 @pytest.mark.asyncio
-async def test_semantic_recovery_cas_transitions_failed_to_paused_atomically() -> None:
+@pytest.mark.parametrize(
+    "resolved_error", [None, "semantic_link (progress coordination: ConsolidationProgressError)"]
+)
+async def test_semantic_recovery_cas_transitions_failed_to_paused_atomically(
+    resolved_error: str | None,
+) -> None:
     storage = ScriptedStateStorage([{"id": "progress", "status": "paused"}])
     old_owner = "failed-owner-test"
     recovery_owner = "recovery-owner-test"
@@ -182,6 +187,7 @@ async def test_semantic_recovery_cas_transitions_failed_to_paused_atomically() -
         counters={"semantic_link": {}},
         updated_at="after-update",
         new_status="paused",
+        resolved_source_error=resolved_error,
     )
 
     assert saved is not None
@@ -192,6 +198,9 @@ async def test_semantic_recovery_cas_transitions_failed_to_paused_atomically() -
     assert params["expected_status"] == "failed"
     assert params["new_status"] == "paused"
     assert params["expected_reference_time"] == "original-reference"
+    assert ("last_error = NONE" in sql) is (resolved_error is not None)
+    assert ("last_error = $resolved_source_error" in sql) is (resolved_error is not None)
+    assert params["resolved_source_error"] == resolved_error
 
 
 @pytest.mark.asyncio

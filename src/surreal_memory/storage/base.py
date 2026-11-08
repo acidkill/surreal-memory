@@ -2709,7 +2709,12 @@ class NeuralStorage(ABC):
         raise NotImplementedError
 
     async def load_semantic_discovery_state(
-        self, state_id: str, revision: int
+        self,
+        state_id: str,
+        revision: int,
+        *,
+        recovery_owner_token: str | None = None,
+        expected_progress_owner_token: str | None = None,
     ) -> Mapping[str, Any] | None:
         """Load the exact semantic-discovery snapshot referenced by active progress."""
         raise NotImplementedError
@@ -2784,6 +2789,8 @@ class NeuralStorage(ABC):
         strategy_states: Mapping[str, Any],
         counters: Mapping[str, Any],
         updated_at: Any,
+        new_status: str | None = None,
+        resolved_source_error: str | None = None,
     ) -> dict[str, Any] | None:
         """Optional fenced operator recovery for an unapplied semantic discovery."""
         raise NotImplementedError

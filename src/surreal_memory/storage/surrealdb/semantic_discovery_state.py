@@ -199,9 +199,14 @@ class SurrealDBSemanticDiscoveryStateMixin:
             raise SemanticDiscoveryStateError("SurrealDB did not confirm the state snapshot write")
 
     async def load_semantic_discovery_state(
-        self, state_id: str, revision: int
+        self,
+        state_id: str,
+        revision: int,
+        *,
+        recovery_owner_token: str | None = None,
+        expected_progress_owner_token: str | None = None,
     ) -> Mapping[str, Any] | None:
-        """Load only the exact snapshot referenced by the active run manifest."""
+        """Load a published snapshot under its worker or exact recovery lease."""
         if not isinstance(state_id, str) or not state_id:
             raise ValueError("state_id must be a non-empty string")
         if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
@@ -239,8 +244,17 @@ class SurrealDBSemanticDiscoveryStateMixin:
             return None
         progress = progress_rows[0]
         lease = lease_rows[0]
+        recovery_read = (
+            isinstance(recovery_owner_token, str)
+            and bool(recovery_owner_token)
+            and lease.get("owner_token") == recovery_owner_token
+            and isinstance(expected_progress_owner_token, str)
+            and bool(expected_progress_owner_token)
+            and progress.get("owner_token") == expected_progress_owner_token
+        )
         if (
-            progress.get("owner_token") != lease.get("owner_token")
+            (progress.get("owner_token") != lease.get("owner_token") and not recovery_read)
+            or (recovery_owner_token is not None and not recovery_read)
             or progress.get("run_id") != row.get("run_id")
             or payload.get("run_id") != row.get("run_id")
         ):
@@ -263,6 +277,8 @@ class SurrealDBSemanticDiscoveryStateMixin:
         *,
         parent_ref: Mapping[str, Any],
         ancestor_refs: Sequence[Mapping[str, Any]] = (),
+        recovery_owner_token: str | None = None,
+        expected_progress_owner_token: str | None = None,
     ) -> Mapping[str, Any] | None:
         """Load a bounded classifier page through a verified proof-index path."""
         if not isinstance(state_id, str) or not state_id:
@@ -285,7 +301,15 @@ class SurrealDBSemanticDiscoveryStateMixin:
             return None
 
         # The root loader enforces the live run, manifest pointer, and lease.
-        root = await self.load_semantic_discovery_state(parent_state_id, parent_revision)
+        if recovery_owner_token is None:
+            root = await self.load_semantic_discovery_state(parent_state_id, parent_revision)
+        else:
+            root = await self.load_semantic_discovery_state(
+                parent_state_id,
+                parent_revision,
+                recovery_owner_token=recovery_owner_token,
+                expected_progress_owner_token=expected_progress_owner_token,
+            )
         if (
             root is None
             or root.get("kind") != "semantic_source_validation"

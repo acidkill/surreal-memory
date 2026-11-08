@@ -1136,8 +1136,9 @@ async def test_fence_session_preserves_legacy_readonly_and_feed_error_fences() -
     legacy_session = legacy_storage._create_semantic_source_fence_session(
         legacy_token, created_before=cutoff
     )
-    with pytest.raises(SemanticSourceChangedError, match="neuron changed"):
+    with pytest.raises(SemanticSourceChangedError, match="neuron changed") as caught:
         await legacy_session.assert_unchanged()
+    assert "record_id=neuron:old-row operation=update versionstamp=101" in str(caught.value)
 
     failing_storage = _DatabaseFeedSessionStorage(
         [_feed_event(100, {"create": {"id": "semantic_source_barrier:token"}})]

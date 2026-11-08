@@ -267,6 +267,19 @@ class TestCounterContract:
             "summary() or add them to _EXTRA_KEYS_NOT_RENDERED with a reason."
         )
 
+    def test_source_generation_reports_counter_semantics_and_trigger(self) -> None:
+        report = ConsolidationReport()
+        report.extra.update(
+            semantic_source_generation=2,
+            semantic_counter_semantics="cumulative_write_events",
+            semantic_validation_semantics="current_generation",
+            semantic_source_change="synapse changed; record_id=synapse:synthetic operation=delete versionstamp=123",
+        )
+        text = report.summary()
+        assert "source generation 2; cumulative write events" in text
+        assert "validation and coverage: current generation" in text
+        assert "record_id=synapse:synthetic operation=delete versionstamp=123" in text
+
     def test_semantic_link_stage_rebuild_is_reported(self) -> None:
         report = ConsolidationReport()
         report.extra["semantic_link_stage_rebuilt_for_reference_time"] = True

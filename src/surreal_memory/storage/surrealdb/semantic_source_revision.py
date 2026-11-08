@@ -713,14 +713,22 @@ class SurrealDBSemanticSourceRevisionMixin:
                     table = self._change_table(change)
                     if table not in _SOURCE_TABLES:
                         continue
-                    self._classify_source_change(
-                        table,
-                        change,
-                        brain_id=brain_id,
-                        created_before=session.created_before,
-                        created_at_readonly=created_at_readonly,
-                        post_reference_ids=post_reference_ids[table],
-                    )
+                    try:
+                        self._classify_source_change(
+                            table,
+                            change,
+                            brain_id=brain_id,
+                            created_before=session.created_before,
+                            created_at_readonly=created_at_readonly,
+                            post_reference_ids=post_reference_ids[table],
+                        )
+                    except SemanticSourceChangedError as exc:
+                        operation = "update" if "current" in change else next(iter(change))
+                        record = change.get("current", next(iter(change.values())))
+                        raise SemanticSourceChangedError(
+                            f"{exc}; record_id={record.get('id')} "
+                            f"operation={operation} versionstamp={stamp}"
+                        ) from exc
                 for table in tables_in_event:
                     scanned_source_rows[table] += 1
                     invocation_source_rows[table] += 1
