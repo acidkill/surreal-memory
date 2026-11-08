@@ -167,7 +167,7 @@ class TestSanitizerConsolidation:
             rid_calls.append((table, str(ident)))
             return f"{table}:{ident}"
 
-        monkeypatch.setattr(sys.modules["surrealdb"], "RecordID", _fake_rid)
+        monkeypatch.setitem(sys.modules, "surrealdb", MagicMock(RecordID=_fake_rid))
         migrations._to_relation_row(
             {
                 "id": "synapse:s1",
@@ -181,6 +181,17 @@ class TestSanitizerConsolidation:
         assert ("neuron", _to_surreal_id("a.b-c")) in rid_calls  # -> a_b_c
         assert ("neuron", "a_b_c") in rid_calls
         assert ("neuron", "x_y") in rid_calls
+
+    def test_relation_row_test_preserves_sdk_stub(self, monkeypatch):
+        import pytest
+
+        sdk = MagicMock()
+        monkeypatch.setitem(sys.modules, "surrealdb", sdk)
+        with pytest.MonkeyPatch.context() as isolated:
+            self.test_relation_row_folds_via_single_source(isolated)
+        from surrealdb import RecordID
+
+        assert RecordID is sdk.RecordID
 
     async def test_tool_events_id_routes_through_single_source(self, monkeypatch):
         st, conn = _store_with_mock_conn()

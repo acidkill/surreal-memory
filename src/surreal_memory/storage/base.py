@@ -1283,6 +1283,35 @@ class NeuralStorage(ABC):
         """
         raise NotImplementedError
 
+    async def get_fiber_health_counts(self, brain_id: str, cutoff: datetime) -> dict[str, int]:
+        """Count the complete organic cohort and its fresh/semantic members.
+
+        Backends override for large populations. The bounded fallback refuses
+        incomplete results instead of silently scoring a sample.
+        """
+        from surreal_memory.engine.memory_stages import MemoryStage
+
+        if self.brain_id != brain_id:
+            raise ValueError("Fiber health counts require the requested brain to be active")
+        stats = await self.get_stats(brain_id)
+        fiber_count = stats["fiber_count"]
+        if fiber_count > 10000:
+            raise NotImplementedError("Backend cannot provide complete fiber health counts")
+        fibers = await self.get_fibers(limit=fiber_count) if fiber_count else []
+        if len(fibers) != fiber_count:
+            raise ValueError("Backend returned an incomplete fiber population for health counts")
+        organic = {fiber.id: fiber for fiber in fibers if "code_index" not in fiber.tags}
+        semantic = await self.find_maturations(stage=MemoryStage.SEMANTIC)
+        return {
+            "organic_fiber_count": len(organic),
+            "fresh_organic_fiber_count": sum(
+                (fiber.last_conducted or fiber.created_at) >= cutoff for fiber in organic.values()
+            ),
+            "semantic_organic_fiber_count": len(
+                {record.fiber_id for record in semantic} & organic.keys()
+            ),
+        }
+
     async def get_fiber_stage_counts(self, brain_id: str) -> dict[str, int]:
         """Get count of fibers grouped by maturation stage.
 

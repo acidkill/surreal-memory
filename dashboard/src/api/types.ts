@@ -52,6 +52,14 @@ export interface HealthReport {
   warnings: HealthWarning[]
   recommendations: string[]
   top_penalties: PenaltyFactor[]
+  structural_neuron_count?: number
+  connectivity_neuron_count?: number
+  organic_fiber_count?: number
+  fresh_organic_fiber_count?: number
+  semantic_organic_fiber_count?: number
+  orphan_rate_sampled?: boolean
+  stage_distribution?: Record<string, number> | null
+  semantic_gate_blockers?: Record<string, number> | null
 }
 
 export interface HealthWarning {

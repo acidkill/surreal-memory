@@ -722,6 +722,28 @@ class InMemoryStorage(
                 count += 1
         return count
 
+    async def get_fiber_health_counts(self, brain_id: str, cutoff: datetime) -> dict[str, int]:
+        """Count existing in-memory fibers without sorting or copying their contents."""
+        from surreal_memory.engine.memory_stages import MemoryStage
+
+        if self.current_brain_id != brain_id:
+            raise ValueError("Fiber health counts require the requested brain to be active")
+        semantic = {
+            record.fiber_id for record in await self.find_maturations(stage=MemoryStage.SEMANTIC)
+        }
+        counts = dict.fromkeys(
+            ("organic_fiber_count", "fresh_organic_fiber_count", "semantic_organic_fiber_count"), 0
+        )
+        for fiber in self._fibers[brain_id].values():
+            if "code_index" in fiber.tags:
+                continue
+            counts["organic_fiber_count"] += 1
+            counts["fresh_organic_fiber_count"] += int(
+                (fiber.last_conducted or fiber.created_at) >= cutoff
+            )
+            counts["semantic_organic_fiber_count"] += int(fiber.id in semantic)
+        return counts
+
     async def get_fiber_stage_counts(self, brain_id: str) -> dict[str, int]:
         counts: dict[str, int] = {}
         for fiber in self._fibers[brain_id].values():
