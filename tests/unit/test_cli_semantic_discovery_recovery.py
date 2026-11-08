@@ -114,3 +114,31 @@ def test_stale_source_recovery_requires_explicit_flag_and_typed_run_id(
     assert stale_recovery.await_count == 2
     assert stale_recovery.await_args.kwargs["expected_status"] == "running"
     assert "completed strategies were preserved" in capsys.readouterr().out
+
+
+def test_stale_source_preview_reports_pending_without_success_or_traceback(
+    recovery_storage: MagicMock,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from surreal_memory.engine.consolidation_progress import ConsolidationPausedError
+
+    with (
+        patch.object(tools, "get_config", return_value=MagicMock()),
+        patch.object(tools, "resolve_brain", return_value="default"),
+        patch.object(tools, "get_storage", new_callable=AsyncMock, return_value=recovery_storage),
+        patch.object(tools, "run_async", side_effect=lambda awaitable: asyncio.run(awaitable)),
+        patch(
+            "surreal_memory.engine.consolidation_progress.recover_stale_semantic_link_discovery",
+            new_callable=AsyncMock,
+            side_effect=ConsolidationPausedError(
+                "source generation validation pending; checkpoint unchanged"
+            ),
+        ),
+        pytest.raises(typer.Exit) as caught,
+    ):
+        tools.recover_semantic_discovery(run_id="run-123", stale_source=True)
+    output = capsys.readouterr()
+    assert caught.value.exit_code == 1
+    assert "pending; checkpoint unchanged" in output.out
+    assert "preflight passed" not in output.out
+    assert "Traceback" not in output.out + output.err

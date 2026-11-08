@@ -962,6 +962,8 @@ async def _load_source_state(
     *,
     brain_id: str | None,
     run_id: str | None,
+    recovery_owner_token: str | None = None,
+    expected_progress_owner_token: str | None = None,
 ) -> tuple[dict[str, Any], str, int]:
     if not isinstance(state_ref, Mapping):
         raise RuntimeError("invalid semantic_link staged source-state reference")
@@ -972,7 +974,15 @@ async def _load_source_state(
     load = getattr(storage, "load_semantic_discovery_state", None)
     if not callable(load):
         raise RuntimeError("storage cannot load semantic_link staged source state")
-    payload = await load(state_id, revision)
+    if recovery_owner_token is None:
+        payload = await load(state_id, revision)
+    else:
+        payload = await load(
+            state_id,
+            revision,
+            recovery_owner_token=recovery_owner_token,
+            expected_progress_owner_token=expected_progress_owner_token,
+        )
     if not isinstance(payload, Mapping):
         raise RuntimeError("semantic_link staged source state is unavailable")
     if payload.get("brain_id") != brain_id or payload.get("state_id") != state_id:

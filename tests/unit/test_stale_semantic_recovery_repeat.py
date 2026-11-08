@@ -369,3 +369,139 @@ async def test_stale_discovery_error_points_to_read_only_recovery_preview(
     assert "--execute" not in message
     assert storage.added_synapses == []
     assert progress.writes == []
+
+
+@pytest.mark.asyncio
+async def test_automatic_source_generation_rebases_once_then_pauses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from surreal_memory.engine.consolidation_progress import ConsolidationPausedError
+    from tests.unit.test_consolidation_mid_strategies_resume import _engine, _Progress, _Storage
+
+    storage = _Storage()
+    progress = _Progress("semantic_link")
+    progress.state.update(phase="semantic_link_discovery_validation", status="running")
+    progress.strategy_state("semantic_link").update(
+        phase="semantic_link_discovery_validation",
+        pending=[json.dumps({"kind": "semantic_link_discovery", "version": 5})],
+        counters={"semantic_synapses_created": 7625},
+    )
+    attempts = 0
+    recoveries = 0
+
+    async def changed(*args: Any, **kwargs: Any) -> None:
+        nonlocal attempts
+        attempts += 1
+        raise SemanticSourceChangedError("synapse changed since capture")
+
+    async def rebase(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        nonlocal recoveries
+        recoveries += 1
+        assert kwargs["source_changed"] is True
+        return {"state": deepcopy(progress.state)}
+
+    monkeypatch.setattr(
+        "surreal_memory.engine.semantic_discovery.discover_semantic_synapses", changed
+    )
+    monkeypatch.setattr(
+        "surreal_memory.engine.consolidation_progress._restart_semantic_source_generation", rebase
+    )
+    engine = _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)
+    with pytest.raises(ConsolidationPausedError, match="changed again"):
+        await engine._run_strategy(
+            ConsolidationStrategy.SEMANTIC_LINK, ConsolidationReport(), REFERENCE_TIME, False
+        )
+    assert attempts == 2
+    assert recoveries == 1
+    assert progress.strategy_state("semantic_link")["counters"]["semantic_synapses_created"] == 7625
+    assert storage.added_synapses == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["runtime", "timeout", "cancel"])
+@pytest.mark.parametrize("readback_unavailable", [False, True])
+async def test_committed_generation_lost_ack_never_allows_stale_session_writes(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+    readback_unavailable: bool,
+) -> None:
+    import asyncio
+    from types import SimpleNamespace
+
+    from surreal_memory.engine.consolidation import ConsolidationEngine
+    from surreal_memory.engine.consolidation_progress import (
+        ConsolidationChunkCompleteError,
+        ConsolidationLeaseLostError,
+        ConsolidationProgressSession,
+    )
+    from tests.unit.test_stale_semantic_recovery_diagnostic_counters import PartialRecoveryStorage
+
+    class LostAckStorage(PartialRecoveryStorage):
+        committed = False
+
+        async def get_brain(self, brain_id: str) -> Any:
+            return SimpleNamespace(config=SimpleNamespace())
+
+        async def get_consolidation_progress(self, brain_id: str) -> dict[str, Any]:
+            if self.committed and readback_unavailable:
+                raise ConnectionError("synthetic readback unavailable")
+            return await super().get_consolidation_progress(brain_id)
+
+        async def compare_and_swap_semantic_link_recovery(self, **kwargs: Any) -> Any:
+            await super().compare_and_swap_semantic_link_recovery(**kwargs)
+            self.committed = True
+            if failure == "cancel":
+                await asyncio.Future()
+            raise (TimeoutError if failure == "timeout" else RuntimeError)(
+                "lost CAS acknowledgement"
+            )
+
+        async def save_consolidation_progress(
+            self,
+            brain_id: str,
+            owner_token: str,
+            state: dict[str, Any],
+        ) -> dict[str, Any]:
+            self.progress = deepcopy(state)
+            return deepcopy(self.progress)
+
+    storage = LostAckStorage()
+    storage.progress.update(status="running", last_error=None)
+    storage.progress["strategy_states"]["semantic_link"].pop("last_error", None)
+    owner = storage.progress["owner_token"]
+    storage.lease_owner = owner
+    session = ConsolidationProgressSession(
+        storage, storage.current_brain_id, owner, deepcopy(storage.progress)
+    )
+    engine = ConsolidationEngine(storage)
+    engine._progress_session = session
+    engine._active_strategy = ConsolidationStrategy.SEMANTIC_LINK
+
+    async def changed(*args: Any, **kwargs: Any) -> None:
+        raise SemanticSourceChangedError(
+            "synapse changed; record_id=synapse:deleted operation=delete versionstamp=17"
+        )
+
+    monkeypatch.setattr(
+        "surreal_memory.engine.semantic_discovery.discover_semantic_synapses", changed
+    )
+    expected = (
+        ConsolidationLeaseLostError
+        if readback_unavailable
+        else (TimeoutError if failure == "cancel" else ConsolidationChunkCompleteError)
+    )
+    with pytest.raises(expected):
+        await asyncio.wait_for(engine._semantic_link(ConsolidationReport(), False), timeout=0.02)
+    if readback_unavailable:
+        with pytest.raises(ConsolidationLeaseLostError, match="unconfirmed"):
+            await session.fail("stale error")
+        with pytest.raises(ConsolidationLeaseLostError, match="unconfirmed"):
+            await session.pause()
+        with pytest.raises(ConsolidationLeaseLostError, match="unconfirmed"):
+            await session.checkpoint("semantic_link", "stale phase")
+    else:
+        await session.pause()
+    assert storage.progress["phase"] == "semantic_link_restart_pending"
+    assert storage.progress["strategy_states"]["semantic_link"]["recovery"]["version"] == 2
+    assert storage.progress["counters"]["semantic_link"]["semantic_synapses_created"] == 7625
+    assert len(storage.cas_calls) == 1

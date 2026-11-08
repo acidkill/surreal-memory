@@ -133,6 +133,7 @@ class SurrealDBConsolidationStateMixin:
         counters: Mapping[str, Any],
         updated_at: Any,
         new_status: str | None = None,
+        resolved_source_error: str | None = None,
     ) -> dict[str, Any] | None:
         """Reset one unapplied semantic checkpoint under lease and CAS fences.
 
@@ -146,13 +147,26 @@ class SurrealDBConsolidationStateMixin:
             expected_status == "failed" and new_status == "paused"
         ):
             raise ValueError("semantic recovery may only transition failed status to paused")
+        if resolved_source_error is not None and not (
+            resolved_source_error
+            == "semantic_link (progress coordination: ConsolidationProgressError)"
+            or resolved_source_error.startswith(
+                "semantic_link source changed; discovery checkpoint preserved:"
+            )
+        ):
+            raise ValueError("only a verified semantic source coordination error may be resolved")
         record_id = self._consolidation_record_id(brain_id)
+        clear_error = ", last_error = NONE " if resolved_source_error is not None else " "
+        error_fence = (
+            "AND last_error = $resolved_source_error " if resolved_source_error is not None else ""
+        )
         rows = await self._query(
             "UPDATE type::record('consolidation_progress', $record_id) "
             "SET status = $new_status, strategy_states = $strategy_states, counters = $counters, "
             "phase = $new_phase, cursor = NONE, owner_token = $new_owner_token, "
-            "updated_at = $updated_at "
+            f"updated_at = $updated_at{clear_error}"
             "WHERE brain_id = $brain_id AND run_id = $expected_run_id "
+            f"{error_fence}"
             "AND owner_token = $expected_owner_token "
             "AND options_fingerprint = $expected_options_fingerprint "
             "AND status = $expected_status AND current_strategy = 'semantic_link' "
@@ -177,6 +191,7 @@ class SurrealDBConsolidationStateMixin:
             counters=dict(counters),
             new_phase="semantic_link_restart_pending",
             updated_at=updated_at,
+            resolved_source_error=resolved_source_error,
         )
         return dict(rows[0]) if rows else None
 

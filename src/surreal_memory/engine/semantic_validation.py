@@ -44,8 +44,18 @@ class SemanticSourceValidation:
         owner_token: str,
         reference: Mapping[str, Any] | None = None,
         budget_check: Callable[[], Awaitable[None]] | None = None,
+        recovery_owner_token: str | None = None,
+        expected_progress_owner_token: str | None = None,
     ) -> None:
         self.storage = storage
+        self._recovery_read_context = (
+            {
+                "recovery_owner_token": recovery_owner_token,
+                "expected_progress_owner_token": expected_progress_owner_token,
+            }
+            if recovery_owner_token is not None
+            else {}
+        )
         self.token = token
         if reference_time.tzinfo is not None:
             reference_time = reference_time.astimezone(UTC).replace(tzinfo=None)
@@ -83,7 +93,7 @@ class SemanticSourceValidation:
             ):
                 raise RuntimeError("invalid semantic source validation reference")
             root = await self.storage.load_semantic_discovery_state(
-                ref["state_id"], ref["revision"]
+                ref["state_id"], ref["revision"], **self._recovery_read_context
             )
             if not isinstance(root, Mapping) or len(_encoded(root)) > _MAX_PAGE_BYTES:
                 raise RuntimeError("semantic source validation snapshot unavailable")
@@ -137,7 +147,10 @@ class SemanticSourceValidation:
                     raise RuntimeError("invalid semantic source validation page reference")
                 seen_pages.add((str(page_key[0]), int(page_key[1])))
                 page = await self.storage._load_semantic_discovery_state_page(
-                    *page_key, parent_ref=ref, ancestor_refs=ancestors
+                    *page_key,
+                    parent_ref=ref,
+                    ancestor_refs=ancestors,
+                    **self._recovery_read_context,
                 )
                 if not isinstance(page, Mapping) or page_ref.get("sha256") != _digest(page):
                     raise RuntimeError("semantic source validation page hash mismatch")

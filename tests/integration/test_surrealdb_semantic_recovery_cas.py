@@ -7,6 +7,7 @@ import json
 import os
 import uuid
 from datetime import timedelta
+from typing import Any
 from urllib.parse import urlparse
 
 import pytest
@@ -18,8 +19,10 @@ from surreal_memory.engine.consolidation import ConsolidationStrategy
 from surreal_memory.engine.consolidation_progress import (
     ConsolidationProgressSession,
     ConsolidationResumeMismatchError,
+    options_fingerprint,
     recover_legacy_semantic_link_discovery,
     recover_stale_semantic_link_discovery,
+    validate_semantic_source_generation_audit,
 )
 from surreal_memory.storage.surrealdb.store import SurrealDBStorage
 from surreal_memory.utils.timeutils import utcnow
@@ -543,3 +546,256 @@ async def test_stale_recovery_repeats_from_failed_checkpoint_and_preserves_audit
         store, **{**args, "expected_status": "paused"}, dry_run=False
     )
     assert cli_retried["already_recovered"] is True
+
+
+async def _publish_generation_fixture(
+    store: SurrealDBStorage,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], str]:
+    brain_id = store._get_brain_id()
+    owner = "generation-fixture-owner"
+    run_id = "generation-fixture-run"
+    neuron = Neuron.create(NeuronType.CONCEPT, "disposable generation fixture")
+    await store.add_neuron(neuron)
+    reference_time = utcnow()
+    token = await store.capture_semantic_source_token()
+    scope = {
+        "brain_id": brain_id,
+        "run_id": run_id,
+        "owner_token": owner,
+        "source_token": token,
+        "reference_time": reference_time.isoformat(timespec="microseconds"),
+    }
+    source = {
+        **scope,
+        "state_id": "generation-old-source",
+        "revision": 1,
+        "state_revision": 1,
+        "batch_index": 4,
+        "coverage_offset": 40,
+        "source_complete": True,
+        "candidates": [],
+    }
+    await store.save_semantic_discovery_state("generation-old-source", 1, source)
+    source_ref = {
+        "state_id": "generation-old-source",
+        "revision": 1,
+        "state_revision": 1,
+        "source_token": token,
+    }
+    child = {
+        **scope,
+        "kind": "semantic_source_validation_ids",
+        "version": 1,
+        "records": [["synapse", "synapse:retired-derived"]],
+    }
+    await store.save_semantic_discovery_state("generation-proof-ids", 1, child)
+    child_ref = {
+        "state_id": "generation-proof-ids",
+        "revision": 1,
+        "state_revision": 1,
+        "source_token": token,
+        "sha256": options_fingerprint(child),
+    }
+    root = {
+        **scope,
+        "kind": "semantic_source_validation",
+        "version": 1,
+        "watermark": json.loads(token)["versionstamp"],
+        "validation_token": token,
+        "scanned_database_rows": 0,
+        "scanned_source_rows": {"neuron": 0, "synapse": 0},
+        "classifier_pages": [child_ref],
+    }
+    await store.save_semantic_discovery_state("generation-proof-root", 1, root)
+    root_ref = {
+        "state_id": "generation-proof-root",
+        "revision": 1,
+        "state_revision": 1,
+        "source_token": token,
+        "sha256": options_fingerprint(root),
+    }
+    inner = {
+        "kind": "semantic_link_discovery",
+        "version": 5,
+        "stage": "similarity",
+        "cursor": "4",
+        "source_state_ref": source_ref,
+    }
+    wrapper = {
+        "kind": "semantic_link_discovery",
+        "version": 5,
+        "stage": "validation",
+        "cursor": "4",
+        "discovery": inner,
+        "source_validation_ref": root_ref,
+    }
+    counters = {
+        "semantic_synapses_created": 2,
+        "semantic_synapses_skipped": 3,
+        "semantic_link_failures": 0,
+        "validation_cursor": root["watermark"],
+    }
+    nested = {
+        "phase": "semantic_link_discovery_validation",
+        "cursor": "4",
+        "pending": [json.dumps(wrapper)],
+        "counters": counters,
+    }
+    strategies = {
+        item.value for item in ConsolidationStrategy if item is not ConsolidationStrategy.ALL
+    }
+    assert await store.acquire_consolidation_lease(brain_id, owner, lease_seconds=30)
+    before = await store.create_consolidation_progress(
+        {
+            "brain_id": brain_id,
+            "run_id": run_id,
+            "schema_version": 12,
+            "engine_version": "3.11.0:checkpoint-v1",
+            "format_version": 1,
+            "requested_strategies": sorted(strategies),
+            "completed_strategies": sorted(strategies - {"semantic_link"}),
+            "options_fingerprint": "generation-fixture-options",
+            "reference_time": reference_time,
+            "owner_token": owner,
+            "status": "failed",
+            "current_strategy": "semantic_link",
+            "phase": nested["phase"],
+            "cursor": nested["cursor"],
+            "strategy_states": {"prune": {"phase": "completed"}, "semantic_link": nested},
+            "counters": {"prune": {"synapses_pruned": 4}, "semantic_link": counters},
+            "started_at": reference_time,
+            "updated_at": utcnow(),
+            "last_error": "semantic_link (progress coordination: ConsolidationProgressError)",
+        }
+    )
+    assert await store.load_semantic_discovery_state(source_ref["state_id"], 1) is not None
+    assert await store.release_consolidation_lease(brain_id, owner)
+    return before, source_ref, root_ref, neuron.id
+
+
+@pytest.mark.asyncio
+async def test_generation_recovery_reader_requires_live_new_lease_and_published_old_owner(
+    store: SurrealDBStorage,
+) -> None:
+    before, source_ref, root_ref, _ = await _publish_generation_fixture(store)
+    brain_id = store._get_brain_id()
+    recovery_owner = "generation-recovery-owner"
+    context = {
+        "recovery_owner_token": recovery_owner,
+        "expected_progress_owner_token": before["owner_token"],
+    }
+    assert await store.acquire_consolidation_lease(brain_id, recovery_owner, lease_seconds=30)
+    try:
+        assert await store.load_semantic_discovery_state(source_ref["state_id"], 1) is None
+        assert (
+            await store.load_semantic_discovery_state(source_ref["state_id"], 1, **context)
+            is not None
+        )
+        assert (
+            await store.load_semantic_discovery_state(root_ref["state_id"], 1, **context)
+            is not None
+        )
+        assert (
+            await store._load_semantic_discovery_state_page(
+                "generation-proof-ids",
+                1,
+                parent_ref=root_ref,
+                **context,
+            )
+            is not None
+        )
+        for changed in (
+            {"recovery_owner_token": "wrong-live-owner"},
+            {"expected_progress_owner_token": "replaced-old-owner"},
+        ):
+            assert (
+                await store.load_semantic_discovery_state(
+                    source_ref["state_id"],
+                    1,
+                    **{**context, **changed},
+                )
+                is None
+            )
+        assert (
+            await store.load_semantic_discovery_state(source_ref["state_id"], 2, **context) is None
+        )
+        # Child pages cannot bypass the published proof root.
+        assert (
+            await store.load_semantic_discovery_state("generation-proof-ids", 1, **context) is None
+        )
+        record_id = store._consolidation_record_id(brain_id)
+        await store._query(
+            "UPDATE type::record('consolidation_progress', $record_id) SET owner_token = $owner",
+            record_id=record_id,
+            owner="replacement-owner",
+        )
+        assert (
+            await store.load_semantic_discovery_state(source_ref["state_id"], 1, **context) is None
+        )
+        await store._query(
+            "UPDATE type::record('consolidation_progress', $record_id) SET owner_token = $owner",
+            record_id=record_id,
+            owner=before["owner_token"],
+        )
+        await store._query(
+            "UPDATE consolidation_lease SET expires_at = $expired WHERE brain_id = $brain_id",
+            expired=utcnow() - timedelta(seconds=1),
+            brain_id=brain_id,
+        )
+        assert (
+            await store.load_semantic_discovery_state(source_ref["state_id"], 1, **context) is None
+        )
+    finally:
+        await store.release_consolidation_lease(brain_id, recovery_owner)
+
+
+@pytest.mark.asyncio
+async def test_generation_recovery_reconciles_real_cas_lost_ack_and_clears_only_known_error(
+    store: SurrealDBStorage,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    before, _, _, neuron_id = await _publish_generation_fixture(store)
+    assert await store.delete_neuron(neuron_id)
+    original_cas = store.compare_and_swap_semantic_link_recovery
+    calls = 0
+
+    async def committed_but_lost(**kwargs: Any) -> dict[str, Any] | None:
+        nonlocal calls
+        calls += 1
+        committed = await original_cas(**kwargs)
+        assert committed is not None
+        raise TimeoutError("synthetic acknowledgement lost after real SurrealDB commit")
+
+    monkeypatch.setattr(store, "compare_and_swap_semantic_link_recovery", committed_but_lost)
+    result = await recover_stale_semantic_link_discovery(
+        store,
+        run_id=before["run_id"],
+        expected_options_fingerprint=before["options_fingerprint"],
+        expected_status="failed",
+        confirmation_run_id=before["run_id"],
+        dry_run=False,
+    )
+    after = await store.get_consolidation_progress()
+    assert after is not None and result["generation"] == 1
+    assert calls == 1
+    assert after["phase"] == "semantic_link_restart_pending" and after["status"] == "paused"
+    assert after.get("last_error") is None
+    for field in (
+        "run_id",
+        "reference_time",
+        "completed_strategies",
+        "counters",
+        "options_fingerprint",
+    ):
+        assert after[field] == before[field]
+    marker = after["strategy_states"]["semantic_link"]["recovery"]
+    assert marker["resolved_error"] == before["last_error"]
+    assert validate_semantic_source_generation_audit(
+        marker,
+        brain_id=before["brain_id"],
+        run_id=before["run_id"],
+        options_fingerprint=before["options_fingerprint"],
+        reference_time=before["reference_time"],
+    )
+    assert "operation=delete" in marker["source_change"]
+    assert await store.get_neuron(neuron_id) is None

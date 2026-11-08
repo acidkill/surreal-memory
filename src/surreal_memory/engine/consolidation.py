@@ -434,6 +434,21 @@ class ConsolidationReport:
             )
         if self.extra.get("semantic_coverage_complete"):
             line += " [frozen candidate coverage complete]"
+        generation = self.extra.get("semantic_source_generation")
+        if generation:
+            counter_semantics = self.extra.get(
+                "semantic_counter_semantics", "cumulative_write_events"
+            )
+            validation_semantics = self.extra.get(
+                "semantic_validation_semantics", "current_generation"
+            )
+            line += (
+                f" [source generation {generation}; {str(counter_semantics).replace('_', ' ')}; "
+                f"validation and coverage: {str(validation_semantics).replace('_', ' ')}]"
+            )
+            source_change = self.extra.get("semantic_source_change")
+            if source_change:
+                line += f" [source change: {source_change}]"
         return line
 
     def _stage_transitions_suffix(self) -> str:
@@ -849,6 +864,7 @@ class ConsolidationEngine:
         self._active_strategy: ConsolidationStrategy | None = None
         self._strategy_deadline: float | None = None
         self._total_deadline: float | None = None
+        self._semantic_source_rebased = False
 
     def _strategy_progress_state(self) -> dict[str, Any]:
         """Return this strategy's persisted state, if a SurrealDB run is active."""
@@ -964,6 +980,7 @@ class ConsolidationEngine:
         resume_run_id: str | None = None,
     ) -> ConsolidationReport:
         """Run consolidation, resuming a compatible durable run when available."""
+        self._semantic_source_rebased = False
         if dry_run and resume_run_id is not None:
             raise ValueError("explicit resume cannot be combined with dry_run")
         if strategies is None:
@@ -10769,6 +10786,26 @@ class ConsolidationEngine:
         # Only restore the latter from a pending manifest; discovery checkpoints
         # are replayed by semantic_discovery itself.
         cursor: str | None = None
+        recovery = state.get("recovery")
+        if isinstance(recovery, dict) and recovery.get("version") == 2:
+            if report.extra.get("semantic_source_generation") != recovery["generation"]:
+                for key in (
+                    "semantic_coverage_complete",
+                    "semantic_coverage_offset",
+                    "semantic_candidates_total",
+                    "semantic_candidates_scanned",
+                    "semantic_link_truncated",
+                    "semantic_pairs_seen_twice",
+                    "validation_database_events",
+                    "validation_neuron_events",
+                    "validation_synapse_events",
+                    "validation_cursor",
+                ):
+                    report.extra.pop(key, None)
+            report.extra["semantic_source_generation"] = recovery["generation"]
+            report.extra["semantic_counter_semantics"] = "cumulative_write_events"
+            report.extra["semantic_validation_semantics"] = "current_generation"
+            report.extra["semantic_source_change"] = recovery.get("source_change")
         pending = state.get("pending")
         resume_discovery: dict[str, Any] | None = None
         manifest: dict[str, Any] | None = None
@@ -10969,6 +11006,37 @@ class ConsolidationEngine:
             except ConsolidationProgressError:
                 raise
             except SemanticSourceChangedError as exc:
+                if self._semantic_source_rebased:
+                    raise ConsolidationPausedError(
+                        "semantic_link source changed again in this invocation; "
+                        "the current generation checkpoint was preserved"
+                    ) from exc
+                current = self._progress_session.state
+                if str(current.get("phase", "")).startswith("semantic_link_discovery_") and (
+                    callable(getattr(self._storage, "load_semantic_discovery_state", None))
+                    and callable(getattr(self._storage, "save_semantic_discovery_state", None))
+                ):
+                    from surreal_memory.engine.consolidation_progress import (
+                        _restart_semantic_source_generation,
+                    )
+
+                    await self._check_progress_budget()
+                    recovered = await _restart_semantic_source_generation(
+                        self._storage,
+                        current,
+                        self._progress_session.owner_token,
+                        dry_run=False,
+                        source_changed=True,
+                        source_change_reason=str(exc),
+                        budget_check=self._check_progress_budget,
+                        progress_session=self._progress_session,
+                    )
+                    self._semantic_source_rebased = True
+                    self._progress_session.state = dict(recovered["state"])
+                    raise ConsolidationChunkCompleteError(
+                        "semantic_link started an audited live source generation; "
+                        "committed write-event counters were preserved"
+                    ) from exc
                 preview = shlex.join(
                     [
                         "smem",
