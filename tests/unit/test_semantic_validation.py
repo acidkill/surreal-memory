@@ -89,6 +89,8 @@ async def test_pending_publishes_complete_proof_before_normal_pause_and_restores
     async def publish(ref: dict[str, Any], counters: dict[str, int]) -> None:
         storage.published = ref
         assert counters["validation_database_events"] == 1
+        scope, before, after = ref["work_progress"]["validation"]
+        assert scope and before == 100 and after == 101
 
     with pytest.raises(ConsolidationPausedError, match="source validation"):
         await proof.assert_unchanged(publish)

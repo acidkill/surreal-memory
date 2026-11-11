@@ -31,7 +31,10 @@ from surreal_memory.core.constants import GRAPH_ONLY_PLACEHOLDER
 from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.core.synapse import Synapse, SynapseType
 from surreal_memory.engine._sha256_native import compress_sha256_blocks
-from surreal_memory.engine.consolidation_progress import ConsolidationPausedError
+from surreal_memory.engine.consolidation_progress import (
+    ConsolidationPausedError,
+    options_fingerprint,
+)
 from surreal_memory.engine.edge_identity import deterministic_edge_id
 from surreal_memory.engine.semantic_validation import SemanticSourceValidation
 
@@ -1107,6 +1110,7 @@ async def _discover_semantic_synapses_resumable(
                 "cursor": published_manifest.get("cursor"),
                 "discovery": published_manifest,
                 "source_validation_ref": ref,
+                "work_progress": ref.get("work_progress", {}),
                 **counters,
             },
         )
@@ -1531,10 +1535,23 @@ async def _discover_semantic_synapses_resumable(
             "degree_mode": bool(degree_by_id),
         }
 
+    published_counts = fingerprint.export_state()
+    published_row = max(
+        int(str(saved_cursor)) + 1
+        if saved_stage == "similarity" and str(saved_cursor).isdigit()
+        else 0,
+        batch_resume_row + 1 if batch_resume_row is not None else 0,
+    )
+    published_verified = {
+        "neuron_count": bool(source_rebuild.get("legacy_neuron_verified", True)),
+        "edge_count": bool(source_rebuild.get("legacy_edge_verified", True)),
+    }
+    work_scope = options_fingerprint({"source": token, "reference": str(reference_time)})
+
     async def write_source_checkpoint(
         stage: str, cursor: str | None, *, preserve_legacy_cursor: bool = False
     ) -> None:
-        nonlocal state_revision, published_manifest
+        nonlocal state_revision, published_manifest, published_counts, published_row
         save = getattr(storage, "save_semantic_discovery_state", None)
         if not callable(save):
             raise RuntimeError("storage cannot save semantic_link staged source state")
@@ -1567,6 +1584,32 @@ async def _discover_semantic_synapses_resumable(
                 "source_token": token,
             },
         }
+        counts = source_snapshot["fingerprint"]
+        work = {}
+        for key, verified in (
+            ("neuron_count", source_rebuild.get("legacy_neuron_verified", True)),
+            ("edge_count", source_rebuild.get("legacy_edge_verified", True)),
+        ):
+            replay = expected_source_fingerprint is not None or (
+                saved_stage in {"selection", "synapses", "similarity"}
+                if key == "neuron_count"
+                else saved_stage == "similarity"
+            )
+            if verified and published_verified[key] and not replay:
+                work[key] = (work_scope, published_counts[key], counts[key])
+            published_verified[key] = bool(verified)
+        row = source_rebuild.get("legacy_checkpoint") or {}
+        if stage == "similarity" and row.get("version") == 2:
+            position = int(row["cursor"]) + 1
+            offset = coverage_offset or 0
+            work["similarity"] = (
+                str(row["source_fingerprint"]),
+                offset + published_row,
+                offset + position,
+            )
+            published_row = position
+        details["work_progress"] = work
+        published_counts = counts
         if validation is not None:
             proof_ref = await validation.snapshot()
             if proof_ref is not None:

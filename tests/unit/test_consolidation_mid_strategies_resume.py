@@ -65,6 +65,7 @@ class _Progress:
         cursor: str | None = None,
         pending: list[str] | None = None,
         counters: dict[str, int | float] | None = None,
+        work: dict[str, tuple[str, int | str, int | str]] | None = None,
     ) -> None:
         state = self.strategy_state(strategy)
         state.update(
@@ -1940,6 +1941,7 @@ async def test_semantic_v1_similarity_rebuild_advances_without_replacing_legacy_
     assert replay_state["similarity_rebuild"]["next_row"] == 1
     assert replay_state["similarity_rebuild"]["cursor_verified"] is False
     assert replay_state["similarity_rebuild"]["results"]
+    assert after_first_replay["work_progress"] == {}
 
     budget_calls = 0
 
@@ -1964,6 +1966,8 @@ async def test_semantic_v1_similarity_rebuild_advances_without_replacing_legacy_
     assert promoted_state["legacy_checkpoint"]["version"] == 2
     assert promoted_state["legacy_checkpoint"]["cursor"] == "1"
     assert promoted_state["similarity_rebuild"] is None
+    _scope, before, after = promoted["work_progress"]["similarity"]
+    assert before == after == 2
 
     expected = await discover_semantic_synapses(_Storage(neurons=neurons), config)
     resumed = await discover_semantic_synapses(
@@ -2045,6 +2049,7 @@ async def test_semantic_v1_synapse_prefix_rebuild_advances_across_budgeted_calls
     _manifest, first_rebuild = _staged_semantic_state(storage, [json.dumps(durable)])
     assert first_rebuild["legacy_edge_cursor"] == edges[1].id
     assert first_rebuild["legacy_edge_verified"] is True
+    assert durable["work_progress"] == {}  # The old prefix was only replayed.
 
     edge_page_budget_checks = 0
 
@@ -2068,6 +2073,8 @@ async def test_semantic_v1_synapse_prefix_rebuild_advances_across_budgeted_calls
     _manifest, second_rebuild = _staged_semantic_state(storage, [json.dumps(durable)])
     assert second_rebuild["edge_cursor"] == edges[3].id
     assert second_rebuild["legacy_edge_verified"] is True
+    _scope, before, after = durable["work_progress"]["edge_count"]
+    assert before == 2 and after == 4
 
     result = await semantic_discovery_module._discover_semantic_synapses_resumable(
         storage,

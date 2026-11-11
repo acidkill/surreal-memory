@@ -642,6 +642,9 @@ DEFINE FIELD counters                 ON consolidation_progress TYPE object FLEX
 DEFINE FIELD owner_token              ON consolidation_progress TYPE string;
 DEFINE FIELD started_at               ON consolidation_progress TYPE datetime;
 DEFINE FIELD updated_at               ON consolidation_progress TYPE datetime;
+-- Optional work evidence preserves old checkpoints and their compatibility epoch.
+DEFINE FIELD work_progress_seq        ON consolidation_progress TYPE option<int>;
+DEFINE FIELD last_work_progress_at    ON consolidation_progress TYPE option<datetime>;
 DEFINE FIELD last_error               ON consolidation_progress TYPE option<string>;
 DEFINE INDEX idx_cprog_brain_status   ON consolidation_progress FIELDS brain_id, status;
 DEFINE INDEX idx_cprog_brain_run      ON consolidation_progress FIELDS brain_id, run_id;
