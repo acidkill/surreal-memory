@@ -3,6 +3,7 @@ import { api } from "@/api/client"
 import type {
   DashboardStats,
   BrainSummary,
+  BrainDeleteResponse,
   BrainSwitchResponse,
   HealthReport,
   HealthCheckResponse,
@@ -174,8 +175,16 @@ export function useGraph(limit = 500) {
 export function useDeleteBrain() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (brainId: string) =>
-      api.delete<{ status: string; brain_id: string }>(`/brain/${brainId}`),
+    mutationFn: async (brainId: string) => {
+      const receipt = await api.delete<BrainDeleteResponse>(`/brain/${brainId}`, {
+        body: JSON.stringify({ confirm_brain_id: brainId }),
+      })
+      if (receipt?.status !== "deleted" || receipt.brain_id !== brainId || receipt.full_delete_confirmed !== true) {
+        throw new Error("Full brain deletion could not be confirmed. Upgrade the server before retrying.")
+      }
+      return receipt
+    },
+    retry: false,
     onSuccess: () => {
       queryClient.invalidateQueries()
     },

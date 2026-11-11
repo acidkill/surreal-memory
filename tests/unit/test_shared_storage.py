@@ -623,7 +623,7 @@ class TestSharedStorageStats:
 
         await storage.clear("brain-1")
 
-        storage._request.assert_awaited_once_with("DELETE", "/brain/brain-1")
+        storage._request.assert_awaited_once_with("POST", "/brain/brain-1/clear")
 
 
 # ─────────── SharedStorageError ───────────

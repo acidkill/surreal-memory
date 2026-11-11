@@ -44,11 +44,14 @@ SOURCE_REVISION_DDL: tuple[str, ...] = (
     # Immutable run-scoped source pages for resumable consolidation census.
     "DEFINE TABLE IF NOT EXISTS consolidation_fiber_census SCHEMALESS",
     "DEFINE INDEX idx_census_run_page ON consolidation_fiber_census FIELDS run_id, strategy, filter_fingerprint, page_index UNIQUE",
+    "DEFINE INDEX IF NOT EXISTS idx_census_brain ON consolidation_fiber_census FIELDS brain_id",
     # Immutable anchor projections for resumable dedup pair comparison.
     "DEFINE TABLE IF NOT EXISTS consolidation_dedup_census SCHEMALESS",
     "DEFINE INDEX idx_dedup_census_run_page ON consolidation_dedup_census FIELDS run_id, brain_id, strategy, filter_fingerprint, page_index UNIQUE",
+    "DEFINE INDEX IF NOT EXISTS idx_dedup_census_brain ON consolidation_dedup_census FIELDS brain_id",
     # Append-only external candidate graph for bounded consolidation grouping.
     "DEFINE TABLE IF NOT EXISTS consolidation_group_plan SCHEMALESS",
+    "DEFINE INDEX IF NOT EXISTS idx_cgroup_brain ON consolidation_group_plan FIELDS brain_id",
     "DEFINE INDEX idx_cgroup_plan_item ON consolidation_group_plan FIELDS plan_id, kind, item_key UNIQUE",
     "DEFINE INDEX idx_cgroup_plan_candidate ON consolidation_group_plan FIELDS plan_id, kind, candidate_id",
     "DEFINE INDEX idx_cgroup_plan_posting ON consolidation_group_plan FIELDS plan_id, kind, feature, candidate_id",

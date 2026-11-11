@@ -138,7 +138,9 @@ class TestBrainEndpoints:
         brain_id = create_response.json()["id"]
 
         # Delete brain
-        response = client.delete(f"/brain/{brain_id}")
+        response = client.request(
+            "DELETE", f"/brain/{brain_id}", json={"confirm_brain_id": brain_id}
+        )
 
         assert response.status_code == 200
         assert response.json()["status"] == "deleted"

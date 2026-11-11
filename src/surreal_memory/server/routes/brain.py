@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 
 from surreal_memory.core.brain import Brain, BrainConfig
 from surreal_memory.server.dependencies import get_storage, require_local_request
@@ -12,13 +12,14 @@ from surreal_memory.server.models import (
     BrainResponse,
     ConflictItemResponse,
     CreateBrainRequest,
+    DeleteBrainResponse,
     ErrorResponse,
     ImportBrainRequest,
     MergeBrainRequest,
     MergeReportResponse,
     StatsResponse,
 )
-from surreal_memory.storage.base import NeuralStorage
+from surreal_memory.storage.base import BrainDeletionConflictError, NeuralStorage
 
 router = APIRouter(
     prefix="/brain",
@@ -316,21 +317,69 @@ async def merge_brain(
     )
 
 
-@router.delete(
-    "/{brain_id}",
-    responses={404: {"model": ErrorResponse}},
-    summary="Delete brain",
-    description="Delete a brain and all its data.",
-)
-async def delete_brain(
+@router.post("/{brain_id}/clear", summary="Clear brain data")
+async def clear_brain(
     brain_id: str,
     storage: Annotated[NeuralStorage, Depends(get_storage)],
 ) -> dict[str, str]:
-    """Delete a brain."""
-    brain = await storage.get_brain(brain_id)
-    if brain is None:
+    """Preserve the data-reset operation separately from full deletion."""
+    from surreal_memory.server.routes.dashboard_api import invalidate_brain_caches
+
+    if await storage.get_brain(brain_id) is None:
         raise HTTPException(status_code=404, detail="Brain not found")
+    try:
+        await storage.clear(brain_id)
+    finally:
+        await invalidate_brain_caches()
+    return {"status": "cleared", "brain_id": brain_id}
 
-    await storage.clear(brain_id)
 
-    return {"status": "deleted", "brain_id": brain_id}
+@router.delete(
+    "/{brain_id}",
+    response_model=DeleteBrainResponse,
+    responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
+    summary="Delete brain (requires confirm_brain_id equal to path ID)",
+    description=(
+        "Delete an exact brain ID and all its data. Requires a JSON body with "
+        "confirm_brain_id equal to the path ID. Unmarked legacy DELETE requests "
+        "are rejected without mutation; use POST /brain/{brain_id}/clear for data reset. "
+        "The default brain is protected. A successful response includes "
+        "full_delete_confirmed=true only after scoped data and registry deletion are verified."
+    ),
+)
+async def delete_brain(
+    brain_id: str,
+    request: Request,
+    confirm_brain_id: Annotated[
+        str | None,
+        Body(embed=True, description="Must equal the exact path brain ID for full deletion"),
+    ] = None,
+) -> DeleteBrainResponse:
+    """Delete only an explicitly confirmed canonical ID, including its registry."""
+    if confirm_brain_id != brain_id:
+        raise HTTPException(
+            status_code=409,
+            detail="Full deletion requires confirm_brain_id equal to the exact brain ID; "
+            "use POST /brain/{brain_id}/clear for data reset",
+        )
+    # Brain-specific dependency resolution may initialize an unknown header scope.
+    storage: NeuralStorage | None = getattr(request.app.state, "storage", None)
+    if storage is None:
+        raise HTTPException(status_code=503, detail="Storage is not ready")
+    from surreal_memory.server.routes.dashboard_api import invalidate_brain_caches
+
+    try:
+        deleted = await storage.delete_brain(brain_id)
+    except BrainDeletionConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except TimeoutError as exc:
+        raise HTTPException(
+            status_code=503, detail="Brain deletion incomplete; retry the exact ID"
+        ) from exc
+    finally:
+        await invalidate_brain_caches()
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Brain not found")
+    return DeleteBrainResponse(status="deleted", brain_id=brain_id, full_delete_confirmed=True)

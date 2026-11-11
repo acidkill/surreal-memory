@@ -27,6 +27,13 @@ export interface BrainSummary {
   is_active: boolean
 }
 
+// DELETE /brain/{id}
+export interface BrainDeleteResponse {
+  status: string
+  brain_id: string
+  full_delete_confirmed: boolean
+}
+
 // POST /api/dashboard/brains/switch
 export interface BrainSwitchResponse {
   status: string
