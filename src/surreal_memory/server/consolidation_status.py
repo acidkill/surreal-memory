@@ -281,7 +281,7 @@ def read_scheduler_configmap() -> dict[str, Any] | None:
     url = f"https://{host}:{port}/api/v1/namespaces/{namespace}/configmaps/{STATE}"
     token = (root / "token").read_text().strip()
     context = ssl.create_default_context(cafile=str(root / "ca.crt"))
-    request = urllib.request.Request(url, headers={"Authorization": "Bearer " + token})  # noqa: S310 - fixed HTTPS API path.
+    request = urllib.request.Request(url, headers={"Authorization": "Bearer " + token})
     # Service-account credentials must never follow redirects or inherited proxies.
     opener = urllib.request.build_opener(
         urllib.request.ProxyHandler({}),
