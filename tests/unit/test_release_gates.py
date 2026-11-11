@@ -285,6 +285,53 @@ class TestScannerStaysInsideTheRepo:
         assert sync_refs._should_skip(sync_refs.ROOT / "CHANGELOG.md") is True
 
 
+class TestVerificationProfiles:
+    def test_profile_commands_and_failure_propagation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from types import SimpleNamespace
+
+        calls: list[list[str]] = []
+
+        def fake_run(cmd: list[str], **kwargs: object) -> SimpleNamespace:
+            calls.append(cmd)
+            return SimpleNamespace(returncode=1 if len(calls) == 2 else 0)
+
+        monkeypatch.setattr(pre_ship.subprocess, "run", fake_run)
+        assert pre_ship.run_profile("full") == 1
+        assert calls[-1][3:] == ["tests/", "-m", "not stress", "-n", "auto"]
+        assert len(calls) == 4
+
+    def test_unit_profile_is_unit_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from types import SimpleNamespace
+
+        calls: list[list[str]] = []
+
+        def fake_run(cmd: list[str], **kwargs: object) -> SimpleNamespace:
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0)
+
+        monkeypatch.setattr(pre_ship.subprocess, "run", fake_run)
+        assert pre_ship.run_profile("unit") == 0
+        assert calls == [[sys.executable, "-m", "pytest", "tests/unit/", "-m", "not stress"]]
+
+    def test_dashboard_build_uses_temporary_output(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from types import SimpleNamespace
+
+        calls: list[list[str]] = []
+
+        def fake_run(cmd: list[str], **kwargs: object) -> SimpleNamespace:
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0)
+
+        monkeypatch.setattr(pre_ship.subprocess, "run", fake_run)
+        assert pre_ship.run_profile("dashboard") == 0
+        assert [cmd[4] for cmd in calls[:2]] == ["lint", "test"]
+        assert calls[-1][-2] == "--outDir"
+        assert not Path(calls[-1][-1]).exists()
+        assert "static/dist" not in calls[-1][-1]
+
+
 @pytest.mark.parametrize(
     ("case", "message"),
     [

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useState } from "react"
 import {
   useEmbeddingConfig,
   useUpdateConfig,
@@ -36,31 +36,22 @@ interface FormState {
 }
 
 export default function EmbeddingConfig() {
-  const { t } = useTranslation()
   const { data: serverData } = useEmbeddingConfig()
+  return <EmbeddingForm key={JSON.stringify(serverData)} serverData={serverData} />
+}
+
+function EmbeddingForm({ serverData }: { serverData: ReturnType<typeof useEmbeddingConfig>["data"] }) {
+  const { t } = useTranslation()
   const updateConfig = useUpdateConfig()
   const testEmbedding = useTestEmbedding()
 
-  const [form, setForm] = useState<FormState>({
-    enabled: false,
-    provider: "sentence_transformer",
-    model: DEFAULT_MODELS.sentence_transformer,
-    similarity_threshold: 0.7,
-  })
-
+  const [form, setForm] = useState<FormState>(() => ({
+    enabled: serverData?.enabled ?? false,
+    provider: (serverData?.provider as ProviderValue) ?? "sentence_transformer",
+    model: serverData?.model ?? DEFAULT_MODELS.sentence_transformer,
+    similarity_threshold: serverData?.similarity_threshold ?? 0.7,
+  }))
   const [dirty, setDirty] = useState(false)
-
-  useEffect(() => {
-    if (!serverData) return
-    const next: FormState = {
-      enabled: serverData.enabled,
-      provider: (serverData.provider as ProviderValue) ?? "sentence_transformer",
-      model: serverData.model,
-      similarity_threshold: serverData.similarity_threshold,
-    }
-    setForm(next)
-    setDirty(false)
-  }, [serverData])
 
   function updateField<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((prev) => {

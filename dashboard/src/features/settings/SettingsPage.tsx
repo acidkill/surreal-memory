@@ -9,7 +9,7 @@ import { useTranslation } from "react-i18next"
 import ConfigStatusCards from "./ConfigStatusCards"
 import EmbeddingConfig from "./EmbeddingConfig"
 import WatcherCard from "./WatcherCard"
-import { openUpgradeModal } from "@/components/common/UpgradeModal"
+import { openUpgradeModal } from "@/components/common/upgradeModalState"
 
 const FEEDBACK_ICONS = [Bug, ChatText, GithubLogo] as const
 const FEEDBACK_COLORS = ["#ef4444", "#6366f1", "#a8a29e"] as const
