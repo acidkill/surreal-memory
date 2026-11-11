@@ -57,7 +57,7 @@ async def store():
         url=TEST_SURREALDB_URL,
         user=TEST_AUTH[0],
         password=TEST_AUTH[1],
-        namespace="smem_ci",
+        namespace=os.environ["SURREALDB_NS"],
         database="it_" + uuid.uuid4().hex[:12],
     )
     await storage.initialize()

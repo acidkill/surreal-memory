@@ -53,7 +53,7 @@ async def store():
         url=os.environ["SURREALDB_URL"],
         user=os.getenv("SURREALDB_USER", "root"),
         password=os.getenv("SURREALDB_PASS", "root"),
-        namespace="smem_recovery_it",
+        namespace=os.environ["SURREALDB_NS"],
         database="recovery_" + uuid.uuid4().hex[:12],
     )
     await storage.initialize()

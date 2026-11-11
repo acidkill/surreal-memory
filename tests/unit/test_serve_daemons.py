@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from surreal_memory.unified_config import MaintenanceConfig
+from tests._disposable_surrealdb import allow_test_listener
 
 # ── Config tests ───────────────────────────────────────────
 
@@ -308,11 +309,12 @@ class TestNotificationLoop:
         thread.start()
 
         logger = MagicMock()
-        await _send_webhook(
-            f"http://127.0.0.1:{port}/hook",
-            {"brain_id": "test", "alerts": [{"type": "health_alert"}]},
-            logger,
-        )
+        with allow_test_listener(server.socket):
+            await _send_webhook(
+                f"http://127.0.0.1:{port}/hook",
+                {"brain_id": "test", "alerts": [{"type": "health_alert"}]},
+                logger,
+            )
 
         thread.join(timeout=5)
         server.server_close()

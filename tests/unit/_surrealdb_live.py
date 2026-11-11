@@ -31,6 +31,8 @@ from typing import Any
 
 import pytest
 
+from tests._disposable_surrealdb import load_target
+
 #: Exact names of the throwaway brains the live unit tests create. Cleanup is
 #: strictly limited to these names; anything else on the server is left alone.
 LIVE_TEST_BRAIN_NAMES = frozenset(
@@ -76,6 +78,8 @@ def ensure_real_surrealdb_sdk() -> None:
     the store's lazy ``from surrealdb import AsyncSurreal`` resolves to a
     working client. Skips the test when the SDK is genuinely not installed.
     """
+    if load_target() is None:
+        pytest.skip("requires a registered disposable SurrealDB container")
     mod = sys.modules.get("surrealdb")
     if isinstance(mod, types.ModuleType) and getattr(mod, "__spec__", None) is not None:
         return  # real SDK already loaded
@@ -125,6 +129,8 @@ async def cleanup_live_brains(storage: Any, own_brain_id: str | None = None) -> 
 
     Returns the number of brain rows deleted.
     """
+    if load_target() is None:
+        raise RuntimeError("cleanup requires a registered disposable SurrealDB container")
     rows = await storage._query("SELECT id, name, created_at FROM brain")
     deleted = 0
     for row in rows:
