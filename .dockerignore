@@ -46,3 +46,9 @@ config.toml
 .rune/
 MagicMock/
 .tmp*/
+
+# Rebuild UI from source; never send local dependency trees or stale bundles.
+**/node_modules/
+**/.venv/
+**/__pycache__/
+src/surreal_memory/server/static/dist/

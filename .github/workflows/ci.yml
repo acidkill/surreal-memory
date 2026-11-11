@@ -5,6 +5,7 @@ on:
     branches: [main, master]
   pull_request:
     branches: [main, master]
+  workflow_dispatch: {}
 
 jobs:
   # Release 3.3.1 bumped pyproject.toml alone. Nothing here compared it to the
@@ -304,3 +305,93 @@ jobs:
         with:
           name: dist
           path: dist/
+
+  image:
+    name: Production Image Smoke
+    runs-on: ubuntu-latest
+    needs: [versions, lint, typecheck, test, docs, security, integration, build]
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v4
+      - name: Build image from this revision
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          tags: surreal-memory:ci
+          build-args: VCS_REF=${{ github.sha }}
+          outputs: type=docker,dest=${{ runner.temp }}/production-image.tar
+      - name: Load and smoke test without database or network access
+        run: |
+          set -euo pipefail
+          docker load --input "${{ runner.temp }}/production-image.tar"
+          revision="$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' surreal-memory:ci)"
+          test "$revision" = "$GITHUB_SHA"
+          docker run --rm --network none --read-only --tmpfs /tmp \
+            -e HOME=/tmp -e SURREAL_MEMORY_DIR=/tmp/smem -e NO_UPDATE_CHECK=1 \
+            --mount "type=bind,src=$PWD/scripts/smoke_production_image.py,dst=/smoke.py,readonly" \
+            surreal-memory:ci python /smoke.py
+      - name: Retain tested image for publication
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-image
+          path: ${{ runner.temp }}/production-image.tar
+          if-no-files-found: error
+          retention-days: 3
+
+  publish-image:
+    name: Publish Production Image
+    runs-on: ubuntu-latest
+    needs: image
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: production-image
+          path: ${{ runner.temp }}
+      - name: Authenticate to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish the tested image and record its digest
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          docker load --input "${{ runner.temp }}/production-image.tar"
+          repository="ghcr.io/${REPOSITORY,,}"
+          export IMAGE_TAG="$repository:sha-$GITHUB_SHA-run-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          docker tag surreal-memory:ci "$IMAGE_TAG"
+          docker push "$IMAGE_TAG"
+          export IMAGE_DIGEST="$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE_TAG")"
+          export IMAGE_ID="$(docker inspect --format '{{.Id}}' "$IMAGE_TAG")"
+          [[ "$IMAGE_DIGEST" == "$repository@sha256:"* ]]
+          python - <<'PY_RECEIPT'
+          import json, os
+          receipt = {
+              "source_sha": os.environ["GITHUB_SHA"],
+              "image_tag": os.environ["IMAGE_TAG"],
+              "image_digest": os.environ["IMAGE_DIGEST"],
+              "image_id": os.environ["IMAGE_ID"],
+              "run_url": f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
+          }
+          with open("production-image-receipt.json", "w") as stream:
+              json.dump(receipt, stream, indent=2)
+              stream.write("\n")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as stream:
+              stream.write(f"Source: `{receipt['source_sha']}`\n\nImage: `{receipt['image_digest']}`\n")
+          PY_RECEIPT
+      - name: Upload publication receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-image-receipt
+          path: production-image-receipt.json
+          if-no-files-found: error
