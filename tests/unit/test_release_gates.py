@@ -330,3 +330,73 @@ class TestVerificationProfiles:
         assert calls[-1][-2] == "--outDir"
         assert not Path(calls[-1][-1]).exists()
         assert "static/dist" not in calls[-1][-1]
+
+
+@pytest.mark.parametrize(
+    ("case", "message"),
+    [
+        ("success", ""),
+        ("invalid", "did not return exactly one valid SHA-256 digest"),
+        ("pushfail", "Image push failed"),
+        ("inspectfail", "Image inspection failed"),
+    ],
+)
+def test_production_image_receipt(tmp_path: Path, case: str, message: str) -> None:
+    """Exercise the actual publish step without a registry or Docker daemon."""
+    import os
+    import subprocess
+    import textwrap
+
+    workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text()
+    step = workflow.split("      - name: Publish the tested image and record its digest\n", 1)[1]
+    script = step.split("        run: |\n", 1)[1].split(
+        "      - name: Upload publication receipt\n", 1
+    )[0]
+    script = textwrap.dedent(script).replace("${{ runner.temp }}", "$RUNNER_TEMP")
+    stub = """docker() {
+      case "$1" in
+        load|tag) return 0 ;;
+        push)
+          [[ "$CASE" != pushfail ]] || return 23
+          if [[ "$CASE" == invalid ]]; then
+            echo 'tag: digest: sha256:bad size: 1'
+          else
+            echo "tag: digest: sha256:$DIGEST size: 1624"
+          fi ;;
+        inspect) [[ "$CASE" != inspectfail ]] || return 12; echo sha256:imageid ;;
+      esac
+    }
+    """
+    digest = "a" * 64
+    env = {
+        "PATH": os.environ["PATH"],
+        "RUNNER_TEMP": str(tmp_path),
+        "REPOSITORY": "Example/Repo",
+        "GITHUB_SHA": "abc",
+        "GITHUB_RUN_ID": "123",
+        "GITHUB_RUN_ATTEMPT": "1",
+        "GITHUB_SERVER_URL": "https://example.test",
+        "GITHUB_REPOSITORY": "Example/Repo",
+        "GITHUB_STEP_SUMMARY": str(tmp_path / "summary"),
+        "CASE": case,
+        "DIGEST": digest,
+    }
+    result = subprocess.run(  # noqa: S603 — script is read from this repository
+        ["/bin/bash", "-c", stub + script],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    receipt = tmp_path / "production-image-receipt.json"
+    if case == "success":
+        assert result.returncode == 0, result.stderr
+        data = json.loads(receipt.read_text())
+        assert data["image_digest"] == f"ghcr.io/example/repo@sha256:{digest}"
+        assert data["source_sha"] == "abc"
+        assert data["image_id"] == "sha256:imageid"
+    else:
+        assert result.returncode != 0
+        assert message in result.stderr
+        assert not receipt.exists()
