@@ -16,9 +16,9 @@ from surreal_memory.core.brain import Brain
 from surreal_memory.engine.consolidation import ConsolidationEngine, ConsolidationReport
 from surreal_memory.storage.surrealdb.store import SurrealDBStorage
 from surreal_memory.unified_config import ToolMemoryConfig, UnifiedConfig
+from tests._disposable_surrealdb import TARGET_ENV, load_target
 
 SURREALDB_TEST_URL = os.getenv("SURREALDB_TEST_URL")
-TEST_AUTH = ("root", "root")
 
 
 def _is_loopback_test_url(url: str | None) -> bool:
@@ -47,13 +47,9 @@ pytestmark = [
 
 
 def _new_store(database: str) -> SurrealDBStorage:
-    return SurrealDBStorage(
-        url=SURREALDB_TEST_URL,
-        user=TEST_AUTH[0],
-        password=TEST_AUTH[1],
-        namespace=os.environ["SURREALDB_NS"],
-        database=database,
-    )
+    target = load_target()
+    assert target is not None
+    return SurrealDBStorage(**target.storage_kwargs(), database=database)
 
 
 async def _snapshot(store: SurrealDBStorage, brain_id: str) -> dict[str, list[dict[str, Any]]]:
@@ -78,10 +74,12 @@ async def _snapshot(store: SurrealDBStorage, brain_id: str) -> dict[str, list[di
 async def test_process_tool_events_replays_after_restart_without_duplicate_graph_writes(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # Only the explicit loopback test URL is honored. No inherited production
-    # endpoint, credentials, or application configuration participates in this test.
+    # Clear app configuration while retaining the verified disposable-instance proof.
     for name in tuple(os.environ):
-        if name.startswith(("SURREALDB_", "SMEM_")) and name != "SURREALDB_TEST_URL":
+        if name.startswith(("SURREALDB_", "SMEM_")) and name not in {
+            "SURREALDB_TEST_URL",
+            TARGET_ENV,
+        }:
             monkeypatch.delenv(name, raising=False)
 
     database = "it_" + uuid.uuid4().hex[:12]
