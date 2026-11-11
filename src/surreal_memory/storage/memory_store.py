@@ -31,7 +31,7 @@ from surreal_memory.core.synapse import Synapse, SynapseType
 from surreal_memory.core.sync_records import ChangeEntry, DeviceRecord
 from surreal_memory.engine.brain_versioning import BrainVersion
 from surreal_memory.engine.depth_prior import DepthPrior
-from surreal_memory.storage.base import NeuralStorage
+from surreal_memory.storage.base import BrainDeletionConflictError, NeuralStorage
 from surreal_memory.storage.memory_brain_ops import InMemoryBrainMixin
 from surreal_memory.storage.memory_collections import InMemoryCollectionsMixin
 from surreal_memory.storage.memory_drift import InMemoryDriftMixin
@@ -1366,6 +1366,57 @@ class InMemoryStorage(
         return deleted
 
     # ========== Cleanup ==========
+
+    async def delete_brain(self, brain_id: str) -> bool:
+        brain = self._brains.get(brain_id)
+        if brain_id.casefold() == "default" or (
+            brain is not None and brain.name.casefold() == "default"
+        ):
+            raise BrainDeletionConflictError("The default brain cannot be deleted")
+        if brain is None:
+            return False
+        nodes = [n for n in self._graph.nodes() if self._graph.nodes[n].get("brain_id") == brain_id]
+        self._graph.remove_nodes_from(nodes)
+        for scoped in (
+            self._neurons,
+            self._synapses,
+            self._fibers,
+            self._fiber_vecs,
+            self._states,
+            self._decay_passes,
+            self._typed_memories,
+            self._projects,
+            self._training_files,
+            self._watch_files,
+            self._co_activations,
+            self._action_events,
+            self._reasoning_traces,
+            self._reasoning_trace_seq,
+            self._retrieval_traces,
+            self._versions,
+            self._review_schedules,
+            self._keyword_df,
+            self._entity_refs,
+            self._sources,
+            self._alerts,
+            self._cognitive_states,
+            self._knowledge_gaps,
+            self._devices,
+            self._change_log,
+            self._change_log_seq,
+            self._merkle_hashes,
+            self._depth_priors,
+            self._compression_backups,
+            self._neuron_snapshots,
+            self._hot_index,
+            self._tag_cooccurrence,
+            self._drift_clusters,
+        ):
+            scoped.pop(brain_id, None)
+        self._brains.pop(brain_id)
+        if self._current_brain_id == brain_id:
+            self._current_brain_id = None
+        return True
 
     async def clear(self, brain_id: str) -> None:
         nodes_to_remove = [

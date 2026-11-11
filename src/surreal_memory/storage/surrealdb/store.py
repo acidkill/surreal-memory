@@ -28,7 +28,7 @@ from surreal_memory.core.neuron import Neuron, NeuronState, NeuronType
 from surreal_memory.core.project import Project
 from surreal_memory.core.synapse import Direction, Synapse, SynapseType
 from surreal_memory.core.sync_records import ChangeEntry, DeviceRecord
-from surreal_memory.storage.base import NeuralStorage
+from surreal_memory.storage.base import BrainDeletionConflictError, NeuralStorage
 from surreal_memory.storage.surrealdb._ids import (
     _record_id_part,
     _safe_brain_id,
@@ -139,6 +139,13 @@ _BRAIN_SCOPED_TABLES: tuple[str, ...] = (
     "training_files",
     "typed_memory",
     "watch_state",
+)
+
+# Run-scoped staging tables carry brain_id in their SCHEMALESS payloads.
+_BRAIN_DELETE_TABLES = _BRAIN_SCOPED_TABLES + (
+    "consolidation_fiber_census",
+    "consolidation_dedup_census",
+    "consolidation_group_plan",
 )
 
 
@@ -3258,11 +3265,7 @@ class SurrealDBStorage(
                     # brain whose record id is a random UUID, so the bootstrap
                     # re-creates a fresh brain on every start (orphan-row leak).
                     if name == brain_id or brain_id in rid_str or rid_str.endswith(f":{brain_id}"):
-                        bid_str = (
-                            str(rid.id).replace("_", "-")
-                            if hasattr(rid, "id")
-                            else str(rid).split(":")[-1].replace("_", "-")
-                        )
+                        bid_str = str(rid.id) if hasattr(rid, "id") else _record_id_part(str(rid))
                         return Brain(
                             id=bid_str,
                             name=name,
@@ -3739,6 +3742,138 @@ class SurrealDBStorage(
     # ================================================================
     # Clear
     # ================================================================
+
+    async def delete_brain(self, brain_id: str) -> bool:
+        """Delete bounded batches under the consolidation lease; registry last."""
+        _safe_brain_id(brain_id)
+        if brain_id.casefold() == "default":
+            raise BrainDeletionConflictError("The default brain cannot be deleted")
+        rows = await self._query(
+            "SELECT * FROM type::record('brain', $brain_id)", brain_id=brain_id
+        )
+        if not rows:
+            return False
+        name = str(rows[0].get("name") or brain_id)
+        if name.casefold() == "default":
+            raise BrainDeletionConflictError("The default brain cannot be deleted")
+        # Legacy registries have UUID IDs but use their name for row scopes.
+        scopes = sorted({brain_id, name})
+        aliases = await self._query(
+            "SELECT id FROM brain WHERE id != type::record('brain', $brain_id) "
+            "AND (name IN $scopes OR meta::id(id) IN $scopes) LIMIT 1",
+            brain_id=brain_id,
+            scopes=scopes,
+        )
+        if aliases:
+            raise BrainDeletionConflictError("Brain scope is shared by another registry record")
+        owner = str(uuid4())
+        acquired: list[str] = []
+        tables = [table for table in _BRAIN_DELETE_TABLES if table != "consolidation_lease"]
+        predicate = " OR ".join(f"brain_id = {_brain_literal(scope)}" for scope in scopes)
+        fence = (
+            "FOR $scope IN $scopes { "
+            "LET $lease = (UPDATE type::record('consolidation_lease', "
+            "crypto::sha256($scope)) SET expires_at = time::now() + 120s "
+            "WHERE brain_id = $scope AND owner_token = $owner "
+            "AND expires_at > time::now() RETURN AFTER); "
+            "IF array::len($lease) != 1 { THROW 'brain deletion lease lost'; }; }; "
+        )
+        fence += (
+            "LET $brain = (UPDATE type::record('brain', $brain_id) "
+            "SET updated_at = updated_at WHERE name = $name RETURN AFTER); "
+            "IF array::len($brain) != 1 { THROW 'brain registry changed'; }; "
+            "IF array::len((SELECT id FROM brain "
+            "WHERE id != type::record('brain', $brain_id) "
+            "AND (name IN $scopes OR meta::id(id) IN $scopes) LIMIT 1)) != 0 "
+            "{ THROW 'brain scope became shared'; }; "
+        )
+        params = {"brain_id": brain_id, "scopes": scopes, "owner": owner, "name": name}
+        try:
+            for scope in scopes:
+                if not await self.acquire_consolidation_lease(scope, owner):
+                    raise BrainDeletionConflictError(
+                        "Brain has an active consolidation or deletion lease"
+                    )
+                acquired.append(scope)
+            async with asyncio.timeout(60):
+                batches = 0
+                for table in tables:
+                    # Snapshots and versions can each carry a whole brain.
+                    limit = (
+                        8
+                        if table
+                        in {
+                            "semantic_discovery_state",
+                            "compression_backups",
+                            "neuron_snapshots",
+                            "brain_versions",
+                            "consolidation_fiber_census",
+                            "consolidation_dedup_census",
+                            "consolidation_group_plan",
+                        }
+                        else 500
+                    )
+                    while True:
+                        if batches >= 1000:
+                            raise TimeoutError(
+                                "Brain deletion batch limit reached; retry to continue"
+                            )
+                        result = await self._query(
+                            "RETURN { " + fence + f"LET $ids = (SELECT VALUE id FROM {table} "
+                            f"WHERE {predicate} LIMIT {limit}); "
+                            "LET $removed = (DELETE $ids WHERE brain_id IN $scopes "
+                            "RETURN VALUE $before.id); "
+                            "RETURN [{deleted: array::len($removed)}]; };",
+                            **params,
+                        )
+                        count = result[0].get("deleted") if len(result) == 1 else None
+                        if type(count) is not int or not 0 <= count <= limit:
+                            raise RuntimeError("Invalid brain deletion batch acknowledgement")
+                        batches += 1
+                        if count == 0:
+                            break
+                verify = "".join(
+                    f"IF array::len((SELECT id FROM {table} WHERE {predicate} "
+                    "LIMIT 1)) != 0 { THROW 'brain deletion has remaining rows'; }; "
+                    for table in tables
+                )
+                try:
+                    result = await self._query(
+                        "RETURN { "
+                        + fence
+                        + verify
+                        + "LET $removed = (DELETE type::record('brain', $brain_id) "
+                        "WHERE name = $name RETURN BEFORE); "
+                        "IF array::len($removed) != 1 { THROW 'brain registry changed'; }; "
+                        "DELETE consolidation_lease WHERE brain_id IN $scopes "
+                        "AND owner_token = $owner RETURN NONE; "
+                        "RETURN [{deleted: true}]; };",
+                        **params,
+                    )
+                    if result != [{"deleted": True}]:
+                        raise RuntimeError("Invalid brain deletion acknowledgement")
+                except Exception:
+                    # A committed final transaction may lose its response. Read
+                    # both postconditions before acknowledging success.
+                    if await self._query(
+                        "SELECT id FROM type::record('brain', $brain_id)", brain_id=brain_id
+                    ):
+                        raise
+                    for table in _BRAIN_DELETE_TABLES:
+                        if await self._query(
+                            f"SELECT id FROM {table} WHERE {predicate} LIMIT 1",
+                            scopes=scopes,
+                        ):
+                            raise RuntimeError("Brain deletion could not be confirmed") from None
+            return True
+        finally:
+            for scope in acquired:
+                try:
+                    await self.release_consolidation_lease(scope, owner)
+                except Exception:
+                    logger.warning(
+                        "Could not release brain deletion lease for %s", scope, exc_info=True
+                    )
 
     async def clear(self, brain_id: str) -> None:
         for table in _BRAIN_SCOPED_TABLES:
@@ -4637,11 +4772,7 @@ class SurrealDBStorage(
             return None
         r = rows[0]
         rid = r.get("id", "")
-        bid = (
-            str(rid.id).replace("_", "-")
-            if hasattr(rid, "id")
-            else str(rid).split(":")[-1].replace("_", "-")
-        )
+        bid = str(rid.id) if hasattr(rid, "id") else _record_id_part(str(rid))
         return Brain(
             id=bid,
             name=str(r.get("name", "")),

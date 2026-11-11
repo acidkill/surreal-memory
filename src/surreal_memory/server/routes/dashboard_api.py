@@ -10,6 +10,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+from surreal_memory.core.brain import Brain
 from surreal_memory.server.dashboard_cache import TTLCache
 from surreal_memory.server.dependencies import get_storage, require_local_request, storage_for_scope
 from surreal_memory.storage.base import NeuralStorage
@@ -40,6 +41,7 @@ _GRADE_CACHE = TTLCache(ttl=_HEALTH_TTL_SECONDS)
 _GRADE_LAST_GOOD: dict[str, Any] = {}
 _GRADE_REFRESH_KEYS: set[str] = set()
 _BRAINS_LAST_GOOD: list[BrainSummary] | None = None
+_BRAINS_CACHE_GENERATION = 0
 _BRAINS_REFRESHING = False
 _BRAINS_REFRESH_TASKS: set[asyncio.Task[None]] = set()
 _GRADE_REFRESH_TASKS: set[asyncio.Task[Any]] = set()
@@ -54,6 +56,22 @@ _UNCERTAINTY_CACHE = TTLCache()
 # the same order of cost, and the metrics it reports (semantic ratio, topology
 # coherence, proficiency) move on a scale of hours.
 _EVOLUTION_CACHE = TTLCache(ttl=_HEALTH_TTL_SECONDS)
+
+
+async def invalidate_brain_caches() -> None:
+    """Discard deleted scopes and stop refresh tasks from republishing them."""
+    global _BRAINS_LAST_GOOD, _BRAINS_CACHE_GENERATION
+    _BRAINS_CACHE_GENERATION += 1
+    tasks = [*_BRAINS_REFRESH_TASKS, *_GRADE_REFRESH_TASKS]
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    _BRAINS_LAST_GOOD = None
+    _GRADE_LAST_GOOD.clear()
+    _GRADE_CACHE.clear()
+    _EVOLUTION_CACHE.clear()
+    _UNCERTAINTY_CACHE.clear()
 
 
 async def _cached_health_report(storage: NeuralStorage, brain_name: str) -> Any:
@@ -412,6 +430,7 @@ async def list_brains_api(
     """
     from surreal_memory.unified_config import get_config, list_available_brains
 
+    generation = _BRAINS_CACHE_GENERATION
     cfg = get_config()
     brain_names = await list_available_brains()
     active_name = cfg.current_brain
@@ -480,12 +499,13 @@ async def list_brains_api(
         try:
             async with storage_for_scope(storage, name) as brain_storage:
                 stats = await brain_storage.get_stats(name)
+                brain = await brain_storage.get_brain(name)
             # Diagnostics is the expensive part (~100 s cold over a remote
             # link): never in the request path. The background pass fills the
             # grades in; until then the model defaults (F / 0.0) render.
             results.append(
                 BrainSummary(
-                    id=name,
+                    id=brain.id if isinstance(brain, Brain) else name,
                     name=name,
                     neuron_count=stats.get("neuron_count", 0),
                     synapse_count=stats.get("synapse_count", 0),
@@ -499,8 +519,9 @@ async def list_brains_api(
             logger.warning("Brain summary failed for %s", name, exc_info=True)
             results.append(BrainSummary(id=name, name=name, is_active=name == active_name))
 
-    _BRAINS_LAST_GOOD = results
-    _refresh_in_background(brain_names)
+    if generation == _BRAINS_CACHE_GENERATION:
+        _BRAINS_LAST_GOOD = results
+        _refresh_in_background(brain_names)
     return results
 
 

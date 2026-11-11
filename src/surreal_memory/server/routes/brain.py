@@ -18,7 +18,7 @@ from surreal_memory.server.models import (
     MergeReportResponse,
     StatsResponse,
 )
-from surreal_memory.storage.base import NeuralStorage
+from surreal_memory.storage.base import BrainDeletionConflictError, NeuralStorage
 
 router = APIRouter(
     prefix="/brain",
@@ -316,21 +316,48 @@ async def merge_brain(
     )
 
 
+@router.post("/{brain_id}/clear", summary="Clear brain data")
+async def clear_brain(
+    brain_id: str,
+    storage: Annotated[NeuralStorage, Depends(get_storage)],
+) -> dict[str, str]:
+    """Preserve the data-reset operation separately from full deletion."""
+    from surreal_memory.server.routes.dashboard_api import invalidate_brain_caches
+
+    if await storage.get_brain(brain_id) is None:
+        raise HTTPException(status_code=404, detail="Brain not found")
+    try:
+        await storage.clear(brain_id)
+    finally:
+        await invalidate_brain_caches()
+    return {"status": "cleared", "brain_id": brain_id}
+
+
 @router.delete(
     "/{brain_id}",
-    responses={404: {"model": ErrorResponse}},
+    responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
     summary="Delete brain",
-    description="Delete a brain and all its data.",
+    description="Delete an exact brain ID and all its data. The default brain is protected.",
 )
 async def delete_brain(
     brain_id: str,
     storage: Annotated[NeuralStorage, Depends(get_storage)],
 ) -> dict[str, str]:
-    """Delete a brain."""
-    brain = await storage.get_brain(brain_id)
-    if brain is None:
+    """Delete only the exact canonical ID, including its registry."""
+    from surreal_memory.server.routes.dashboard_api import invalidate_brain_caches
+
+    try:
+        deleted = await storage.delete_brain(brain_id)
+    except BrainDeletionConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except TimeoutError as exc:
+        raise HTTPException(
+            status_code=503, detail="Brain deletion incomplete; retry the exact ID"
+        ) from exc
+    finally:
+        await invalidate_brain_caches()
+    if not deleted:
         raise HTTPException(status_code=404, detail="Brain not found")
-
-    await storage.clear(brain_id)
-
     return {"status": "deleted", "brain_id": brain_id}
