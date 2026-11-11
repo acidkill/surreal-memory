@@ -1,5 +1,6 @@
 import { useState } from "react"
-import { useHealth } from "@/api/hooks/useDashboard"
+import { useHealth, useConsolidationStatus } from "@/api/hooks/useDashboard"
+import ConsolidationWorkPanel from "./ConsolidationWorkPanel"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -45,6 +46,7 @@ function getGradeConfig(grade: string) {
 
 export default function HealthPage() {
   const { data: health, isLoading } = useHealth()
+  const { data: workStatus, isLoading: workLoading, isError: workUnavailable } = useConsolidationStatus()
   const { t } = useTranslation()
 
   const gradeConfig = health ? getGradeConfig(health.grade) : GRADE_CONFIG.F
@@ -75,6 +77,8 @@ export default function HealthPage() {
           </Badge>
         )}
       </div>
+
+      <ConsolidationWorkPanel status={workStatus} loading={workLoading} unavailable={workUnavailable} />
 
       {/* Conflict tiles */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">

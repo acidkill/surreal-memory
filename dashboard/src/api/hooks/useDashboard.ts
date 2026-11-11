@@ -5,6 +5,7 @@ import type {
   BrainSummary,
   BrainSwitchResponse,
   HealthReport,
+  ConsolidationStatus,
   HealthCheckResponse,
   TimelineResponse,
   DailyStats,
@@ -31,6 +32,7 @@ const keys = {
   stats: ["dashboard", "stats"] as const,
   brains: ["dashboard", "brains"] as const,
   health: ["dashboard", "health"] as const,
+  consolidationStatus: ["dashboard", "consolidation-status"] as const,
   healthCheck: ["health"] as const,
   toolStats: (days: number) => ["dashboard", "tool-stats", days] as const,
   timeline: (limit: number, offset: number) =>
@@ -93,6 +95,17 @@ export function useHealth() {
   return useQuery({
     queryKey: keys.health,
     queryFn: () => api.get<HealthReport>("/api/dashboard/health"),
+  })
+}
+
+// Saved consolidation status is independent of the full diagnostics query.
+export function useConsolidationStatus() {
+  return useQuery({
+    queryKey: keys.consolidationStatus,
+    queryFn: () => api.get<ConsolidationStatus>("/api/dashboard/consolidation-status"),
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+    retry: false,
   })
 }
 

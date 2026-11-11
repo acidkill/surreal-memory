@@ -33,6 +33,32 @@ export interface BrainSwitchResponse {
   active_brain: string
 }
 
+// GET /api/dashboard/consolidation-status
+export type ConsolidationState =
+  | "blocked" | "failed" | "running" | "paused" | "completed"
+  | "deferred_resource" | "deferred_lease" | "unknown" | "idle"
+
+export interface ConsolidationStatus {
+  brain: "default"
+  state: ConsolidationState
+  checkpoint_available: boolean
+  observation_available: boolean
+  observation_stale: boolean | null
+  run_id: string | null
+  checkpoint_status: string | null
+  current_strategy: string | null
+  phase: string | null
+  completed_strategies: number | null
+  requested_strategies: number | null
+  progress_known: boolean
+  work_progress_seq: number | null
+  last_work_progress_at: string | null
+  last_observed_at: string | null
+  last_confirmed_success_at: string | null
+  eligible_work: boolean | null
+  reason: string | null
+}
+
 // GET /api/dashboard/health
 export interface HealthReport {
   grade: string
