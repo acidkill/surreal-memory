@@ -26,6 +26,10 @@ if TYPE_CHECKING:
     from surreal_memory.utils.geo import GeoFilter
 
 
+class BrainDeletionConflictError(RuntimeError):
+    """Full deletion is unsafe while a protected brain or active lease exists."""
+
+
 class NeuralStorage(ABC):
     """
     Abstract interface for neural graph storage.
@@ -2370,6 +2374,15 @@ class NeuralStorage(ABC):
         raise NotImplementedError
 
     # ========== Cleanup ==========
+
+    async def delete_brain(self, brain_id: str) -> bool:
+        """Delete an exact brain ID and all scoped data, including its registry.
+
+        Return False when absent. Protect default by ID and name and reject
+        active consolidation. A partial failure must retain the registry for
+        retry; clear() remains the separate data-reset operation.
+        """
+        raise NotImplementedError
 
     @abstractmethod
     async def clear(self, brain_id: str) -> None:

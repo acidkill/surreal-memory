@@ -445,9 +445,32 @@ class SharedStorage(SharedFiberBrainMixin, NeuralStorage):
 
     # ========== Cleanup ==========
 
+    async def delete_brain(self, brain_id: str) -> bool:
+        """Delete the exact remote brain, preserving clear as a separate action."""
+        from surreal_memory.storage.shared_store_collections import SharedStorageError
+
+        try:
+            result = await self._request(
+                "DELETE", f"/brain/{brain_id}", json_data={"confirm_brain_id": brain_id}
+            )
+        except SharedStorageError as exc:
+            if exc.status_code == 404:
+                return False
+            raise
+        if (
+            not isinstance(result, dict)
+            or result.get("status") != "deleted"
+            or result.get("brain_id") != brain_id
+            or result.get("full_delete_confirmed") is not True
+        ):
+            raise SharedStorageError(
+                "Unconfirmed full brain deletion acknowledgement; upgrade the server before retrying"
+            )
+        return True
+
     async def clear(self, brain_id: str) -> None:
         """Clear all data for a brain."""
-        await self._request("DELETE", f"/brain/{brain_id}")
+        await self._request("POST", f"/brain/{brain_id}/clear")
 
     # ========== Local-Only Methods (no-op for remote storage) ==========
 
