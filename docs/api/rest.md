@@ -15,7 +15,7 @@ A running server serves the same schema interactively at `/docs` (Swagger) and
 | Method | Path | Summary |
 |---|---|---|
 | `POST` | `/api/v1/brain/create` | Create a new brain |
-| `DELETE` | `/api/v1/brain/{brain_id}` | Delete brain |
+| `DELETE` | `/api/v1/brain/{brain_id}` | Delete brain (requires confirm_brain_id equal to path ID) |
 | `GET` | `/api/v1/brain/{brain_id}` | Get brain details |
 | `POST` | `/api/v1/brain/{brain_id}/clear` | Clear brain data |
 | `GET` | `/api/v1/brain/{brain_id}/export` | Export brain |
@@ -23,7 +23,7 @@ A running server serves the same schema interactively at `/docs` (Swagger) and
 | `POST` | `/api/v1/brain/{brain_id}/merge` | Merge snapshot into brain |
 | `GET` | `/api/v1/brain/{brain_id}/stats` | Get brain statistics |
 | `POST` | `/brain/create` | Create a new brain |
-| `DELETE` | `/brain/{brain_id}` | Delete brain |
+| `DELETE` | `/brain/{brain_id}` | Delete brain (requires confirm_brain_id equal to path ID) |
 | `GET` | `/brain/{brain_id}` | Get brain details |
 | `POST` | `/brain/{brain_id}/clear` | Clear brain data |
 | `GET` | `/brain/{brain_id}/export` | Export brain |

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 
 from surreal_memory.core.brain import Brain, BrainConfig
 from surreal_memory.server.dependencies import get_storage, require_local_request
@@ -336,14 +336,33 @@ async def clear_brain(
 @router.delete(
     "/{brain_id}",
     responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
-    summary="Delete brain",
-    description="Delete an exact brain ID and all its data. The default brain is protected.",
+    summary="Delete brain (requires confirm_brain_id equal to path ID)",
+    description=(
+        "Delete an exact brain ID and all its data. Requires a JSON body with "
+        "confirm_brain_id equal to the path ID. Unmarked legacy DELETE requests "
+        "are rejected without mutation; use POST /brain/{brain_id}/clear for data reset. "
+        "The default brain is protected."
+    ),
 )
 async def delete_brain(
     brain_id: str,
-    storage: Annotated[NeuralStorage, Depends(get_storage)],
+    request: Request,
+    confirm_brain_id: Annotated[
+        str | None,
+        Body(embed=True, description="Must equal the exact path brain ID for full deletion"),
+    ] = None,
 ) -> dict[str, str]:
-    """Delete only the exact canonical ID, including its registry."""
+    """Delete only an explicitly confirmed canonical ID, including its registry."""
+    if confirm_brain_id != brain_id:
+        raise HTTPException(
+            status_code=409,
+            detail="Full deletion requires confirm_brain_id equal to the exact brain ID; "
+            "use POST /brain/{brain_id}/clear for data reset",
+        )
+    # Brain-specific dependency resolution may initialize an unknown header scope.
+    storage: NeuralStorage | None = getattr(request.app.state, "storage", None)
+    if storage is None:
+        raise HTTPException(status_code=503, detail="Storage is not ready")
     from surreal_memory.server.routes.dashboard_api import invalidate_brain_caches
 
     try:

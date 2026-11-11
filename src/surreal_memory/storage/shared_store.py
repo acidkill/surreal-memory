@@ -450,7 +450,9 @@ class SharedStorage(SharedFiberBrainMixin, NeuralStorage):
         from surreal_memory.storage.shared_store_collections import SharedStorageError
 
         try:
-            result = await self._request("DELETE", f"/brain/{brain_id}")
+            result = await self._request(
+                "DELETE", f"/brain/{brain_id}", json_data={"confirm_brain_id": brain_id}
+            )
         except SharedStorageError as exc:
             if exc.status_code == 404:
                 return False

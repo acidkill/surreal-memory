@@ -175,7 +175,9 @@ export function useDeleteBrain() {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: (brainId: string) =>
-      api.delete<{ status: string; brain_id: string }>(`/brain/${brainId}`),
+      api.delete<{ status: string; brain_id: string }>(`/brain/${brainId}`, {
+        body: JSON.stringify({ confirm_brain_id: brainId }),
+      }),
     onSuccess: () => {
       queryClient.invalidateQueries()
     },

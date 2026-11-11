@@ -3788,6 +3788,32 @@ class SurrealDBStorage(
             "{ THROW 'brain scope became shared'; }; "
         )
         params = {"brain_id": brain_id, "scopes": scopes, "owner": owner, "name": name}
+        batches = 0
+
+        async def delete_query(sql: str) -> list[dict[str, Any]]:
+            nonlocal batches
+            attempt = 0
+            while True:
+                if batches >= 1000:
+                    raise TimeoutError("Brain deletion batch limit reached; retry to continue")
+                batches += 1
+                try:
+                    return await self._query(sql, **params)
+                except Exception as exc:
+                    attempt += 1
+                    message = str(exc).lower()
+                    # Only an explicit aborted write conflict is safe to replay.
+                    if (
+                        attempt >= 3
+                        or getattr(exc, "kind", None) != "Query"
+                        or getattr(exc, "is_timed_out", False)
+                        or getattr(exc, "is_cancelled", False)
+                        or "transaction conflict" not in message
+                        or "write conflict" not in message
+                    ):
+                        raise
+                    await asyncio.sleep(0.05 * attempt)
+
         try:
             for scope in scopes:
                 if not await self.acquire_consolidation_lease(scope, owner):
@@ -3796,7 +3822,6 @@ class SurrealDBStorage(
                     )
                 acquired.append(scope)
             async with asyncio.timeout(60):
-                batches = 0
                 for table in tables:
                     # Snapshots and versions can each carry a whole brain.
                     limit = (
@@ -3814,22 +3839,16 @@ class SurrealDBStorage(
                         else 500
                     )
                     while True:
-                        if batches >= 1000:
-                            raise TimeoutError(
-                                "Brain deletion batch limit reached; retry to continue"
-                            )
-                        result = await self._query(
+                        result = await delete_query(
                             "RETURN { " + fence + f"LET $ids = (SELECT VALUE id FROM {table} "
                             f"WHERE {predicate} LIMIT {limit}); "
                             "LET $removed = (DELETE $ids WHERE brain_id IN $scopes "
                             "RETURN VALUE $before.id); "
-                            "RETURN [{deleted: array::len($removed)}]; };",
-                            **params,
+                            "RETURN [{deleted: array::len($removed)}]; };"
                         )
                         count = result[0].get("deleted") if len(result) == 1 else None
                         if type(count) is not int or not 0 <= count <= limit:
                             raise RuntimeError("Invalid brain deletion batch acknowledgement")
-                        batches += 1
                         if count == 0:
                             break
                 verify = "".join(
@@ -3838,7 +3857,7 @@ class SurrealDBStorage(
                     for table in tables
                 )
                 try:
-                    result = await self._query(
+                    result = await delete_query(
                         "RETURN { "
                         + fence
                         + verify
@@ -3847,8 +3866,7 @@ class SurrealDBStorage(
                         "IF array::len($removed) != 1 { THROW 'brain registry changed'; }; "
                         "DELETE consolidation_lease WHERE brain_id IN $scopes "
                         "AND owner_token = $owner RETURN NONE; "
-                        "RETURN [{deleted: true}]; };",
-                        **params,
+                        "RETURN [{deleted: true}]; };"
                     )
                     if result != [{"deleted": True}]:
                         raise RuntimeError("Invalid brain deletion acknowledgement")
