@@ -24,7 +24,7 @@ pytestmark = pytest.mark.skipif(
     reason="requires SURREALDB_URL and SURREALDB_PASS for a running SurrealDB",
 )
 
-_NS = "auth_level_live"
+_NS = os.getenv("SURREALDB_NS", "auth_level_live")
 _DB = "auth_level_live"
 _SCOPED_USER = "auth_level_app_user"
 _SCOPED_PASS = "auth-level-live-secret"  # noqa: S105  # throwaway, created and dropped here

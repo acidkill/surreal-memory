@@ -15,6 +15,24 @@ from surreal_memory.core.fiber import Fiber
 from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.core.synapse import Synapse, SynapseType
 from surreal_memory.storage.memory_store import InMemoryStorage
+from tests._disposable_surrealdb import (
+    UnsafeTestTargetError,
+    install_network_guard,
+    load_target,
+)
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Validate inherited connection settings before test-module collection."""
+    import os
+
+    try:
+        target = load_target()
+    except UnsafeTestTargetError as exc:
+        raise pytest.UsageError(str(exc)) from None
+    if target is not None:
+        os.environ.update(target.child().environment())
+    install_network_guard(target)
 
 
 @pytest.fixture
@@ -273,6 +291,10 @@ def _isolated_home_dir(tmp_path_factory: pytest.TempPathFactory) -> Generator[No
     (surrealmemory_dir / "config.toml").touch()
     mp = pytest.MonkeyPatch()
     mp.setenv("HOME", str(fake_home))
+    for key in ("SURREAL_MEMORY_DIR", "SURREAL_MEMORY_BRAIN"):
+        mp.delenv(key, raising=False)
+    for key in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"):
+        mp.setenv(key, str(fake_home / key.lower()))
     # Companion to the $HOME redirect: `run_update_check_background()` in
     # `cli/update_check.py` short-circuits on this env var, so the suite makes
     # no PyPI calls even on a runner with egress. `#110`/`#121` closed the

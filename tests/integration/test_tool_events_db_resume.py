@@ -51,7 +51,7 @@ def _new_store(database: str) -> SurrealDBStorage:
         url=SURREALDB_TEST_URL,
         user=TEST_AUTH[0],
         password=TEST_AUTH[1],
-        namespace="smem_tool_resume_it",
+        namespace=os.environ["SURREALDB_NS"],
         database=database,
     )
 

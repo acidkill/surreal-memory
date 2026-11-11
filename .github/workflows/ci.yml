@@ -177,8 +177,8 @@ jobs:
       SMEM_TEST_SURREALDB_URL: http://127.0.0.1:8001
       SURREALDB_USER: root
       SURREALDB_PASS: root
-      SURREALDB_NS: smem_ci
-      SURREALDB_DB: smem_ci
+      SMEM_TEST_SURREALDB_TARGET_FILE: ${{ runner.temp }}/smem-disposable.json
+      SURREALDB_AUTH_LEVEL: root
     steps:
       - uses: actions/checkout@v4
 
@@ -196,7 +196,8 @@ jobs:
       # thrown away afterward and needs no root-owned named volume.
       - name: Start SurrealDB
         run: |
-          docker run -d --name surrealdb-ci -p 8001:8001 --cpus=2 --memory=1g --memory-swap=1g \
+          docker run -d --name surrealdb-ci -p 127.0.0.1:8001:8001 --cpus=2 --memory=1g --memory-swap=1g --tmpfs /data --tmpfs /logs \
+            --label "io.surreal-memory.test-run=$(python -c 'import uuid; print(uuid.uuid4().hex)')" \
             surrealdb/surrealdb:v${{ matrix.surrealdb }} \
             start memory --user root --pass root --bind 0.0.0.0:8001 \
             --allow-experimental gql --allow-eval-query
@@ -215,6 +216,9 @@ jobs:
 
       - name: Install dependencies
         run: pip install -e ".[dev,server,surrealdb]"
+
+      - name: Register disposable database identity
+        run: python -m tests._disposable_surrealdb register surrealdb-ci "$SMEM_TEST_SURREALDB_TARGET_FILE"
 
       # No -n auto here: parallel workers hammering one shared SurrealDB
       # connection produce connection resets under load unrelated to any real
