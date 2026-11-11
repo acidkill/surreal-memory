@@ -1685,6 +1685,9 @@ _WORK_COUNTERS = frozenset(
         "files_scanned",
         "traces_scanned",
         "traces_ingested",
+        "models_done",
+        "traces_processed",
+        "patterns_learned",
     ]
 )
 
@@ -2075,6 +2078,9 @@ class ConsolidationProgressSession:
             saved = await self.storage.save_consolidation_progress(
                 self.brain_id, self.owner_token, self.state
             )
+        except ConsolidationPausedError:
+            # Budget pauses signal a committed boundary, not a transport failure.
+            raise
         except BaseException:
             # A committed write may have lost its acknowledgement; only a new owner may retry.
             self._checkpoint_unconfirmed = True
