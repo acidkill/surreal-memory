@@ -28,6 +28,7 @@ from surreal_memory.server.routes import (
     reasoning_training_router,
     sync_router,
 )
+from surreal_memory.server.routes.consolidation_status import router as consolidation_status_router
 from surreal_memory.storage.base import NeuralStorage
 
 # Static files directory
@@ -555,6 +556,7 @@ def create_app(
 
     # Dashboard API routes (unversioned — dashboard-specific)
     app.include_router(dashboard_router)
+    app.include_router(consolidation_status_router)
     app.include_router(integration_status_router)
     app.include_router(oauth_router)
     app.include_router(openclaw_router)

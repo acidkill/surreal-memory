@@ -539,7 +539,7 @@ with `RunnableWithMessageHistory`.
 git clone https://github.com/acidkill/surreal-memory
 cd surreal-memory && pip install -e ".[dev]"
 smem doctor --dev        # Verify contributor setup
-pytest tests/ -v          # 8500+ tests
+pytest tests/ -v          # 8600+ tests
 ruff check src/ tests/    # Lint
 make verify               # Full CI gate
 ```

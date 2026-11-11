@@ -908,6 +908,7 @@ class ConsolidationEngine:
         cursor: str | None = None,
         pending: Sequence[str] | None = None,
         counters: dict[str, int | float] | None = None,
+        work: dict[str, tuple[str, int | str, int | str]] | None = None,
     ) -> None:
         """Persist one committed unit boundary for the active strategy."""
         if self._progress_session is None or self._active_strategy is None:
@@ -918,6 +919,7 @@ class ConsolidationEngine:
             cursor=cursor,
             pending=pending,
             counters=counters,
+            **({"work": work} if work is not None else {}),
         )
         await self._check_progress_budget()
 
@@ -10869,6 +10871,7 @@ class ConsolidationEngine:
                     cursor=current.get("cursor"),
                     pending=[serialized],
                     counters={**current_counters, **counters},
+                    work=ref.get("work_progress", {}),
                 )
 
             await validation.assert_unchanged(checkpoint_validation)
@@ -10961,6 +10964,7 @@ class ConsolidationEngine:
                 )
                 await self._checkpoint_progress(
                     f"semantic_link_discovery_{phase}",
+                    work=details.get("work_progress", {}),
                     cursor=phase_cursor,
                     pending=[discovery_snapshot],
                     counters={
@@ -11145,6 +11149,20 @@ class ConsolidationEngine:
                     )
             await self._checkpoint_progress(
                 "semantic_link_apply",
+                work={
+                    "apply": (
+                        options_fingerprint(
+                            {
+                                "source": manifest.get("source_fingerprint"),
+                                "synapses": manifest["synapses"],
+                            }
+                        ),
+                        str(self._strategy_progress_state().get("cursor") or "")
+                        if self._strategy_progress_state().get("phase") == "semantic_link_apply"
+                        else "",
+                        cursor or "",
+                    )
+                },
                 cursor=cursor,
                 pending=[serialized],
                 counters={

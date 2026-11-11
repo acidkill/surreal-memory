@@ -848,3 +848,225 @@ async def test_cancellation_after_terminal_commit_does_not_pause_run(
         await engine.run([ConsolidationStrategy.SEMANTIC_LINK], reference_time=REFERENCE_TIME)
     assert storage.progress is not None
     assert storage.progress["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_useful_work_marker_survives_resume_without_counting_coordination() -> None:
+    storage = FakeProgressStorage()
+    session = await ConsolidationProgressSession.open(storage, ["prune"], "same", REFERENCE_TIME)
+    assert session is not None
+    assert "work_progress_seq" not in session.state
+    await session.checkpoint("prune", "starting")
+    await session.pause()
+    await session.close()
+    resumed = await ConsolidationProgressSession.open(storage, ["prune"], "same", REFERENCE_TIME)
+    assert resumed is not None
+    assert "work_progress_seq" not in resumed.state
+    await resumed.checkpoint("prune", "synapse_scan", cursor="synapse:9")
+    assert resumed.state["work_progress_seq"] == 1
+    timestamp = resumed.state["last_work_progress_at"]
+    await resumed.checkpoint("prune", "synapse_scan", cursor="synapse:9")
+    await resumed.finalization_checkpoint("report")
+    await resumed.pause()
+    assert resumed.state["work_progress_seq"] == 1
+    assert resumed.state["last_work_progress_at"] == timestamp
+    await resumed.close()
+    restarted = await ConsolidationProgressSession.open(storage, ["prune"], "same", REFERENCE_TIME)
+    assert restarted is not None
+    await restarted.checkpoint("prune", "synapse_scan", cursor="synapse:10")
+    assert restarted.state["work_progress_seq"] == 2
+    await restarted.complete_strategy("prune")
+    await restarted.complete_strategy("prune")
+    assert restarted.state["work_progress_seq"] == 3
+    await restarted.close()
+
+
+@pytest.mark.asyncio
+async def test_legacy_work_checkpoint_stays_unknown_until_new_committed_unit() -> None:
+    storage = FakeProgressStorage()
+    first = await ConsolidationProgressSession.open(storage, ["prune"], "same", REFERENCE_TIME)
+    assert first is not None
+    await first.checkpoint("prune", "synapse_scan", cursor="synapse:10", counters={"deleted": 5})
+    await first.close()
+    assert storage.progress is not None
+    storage.progress.pop("work_progress_seq")
+    storage.progress.pop("last_work_progress_at")
+    storage.progress["strategy_states"]["prune"].pop("work_progress")
+    legacy = deepcopy(storage.progress)
+    resumed = await ConsolidationProgressSession.open(storage, ["prune"], "same", REFERENCE_TIME)
+    assert resumed is not None
+    for key in (
+        "run_id",
+        "reference_time",
+        "engine_version",
+        "schema_version",
+        "options_fingerprint",
+        "completed_strategies",
+        "counters",
+        "strategy_states",
+    ):
+        assert resumed.state[key] == legacy[key]
+    await resumed.checkpoint("prune", "synapse_scan", cursor="synapse:10", counters={"deleted": 5})
+    assert "work_progress_seq" not in resumed.state
+    await resumed.checkpoint("prune", "synapse_scan", cursor="synapse:11", counters={"deleted": 6})
+    assert resumed.state["work_progress_seq"] == 1
+    await resumed.close()
+
+
+@pytest.mark.asyncio
+async def test_scoped_semantic_work_does_not_count_replay_revision_or_generation_reset() -> None:
+    storage = FakeProgressStorage()
+    session = await ConsolidationProgressSession.open(
+        storage, ["semantic_link"], "same", REFERENCE_TIME
+    )
+    assert session is not None
+    await session.checkpoint(
+        "semantic_link",
+        "semantic_link_discovery_neurons",
+        cursor="changed",
+        pending=['{"source_state_ref":{"revision":999}}'],
+        counters={"validation_cursor": 999, "state_revision": 999},
+    )
+    assert "work_progress_seq" not in session.state
+    for axis, scope, before, after in (
+        ("validation", "target-a", 10, 20),
+        ("neuron_count", "source-a", 0, 100),
+        ("similarity", "fingerprint-a", 0, 9),
+        ("apply", "batch-a", "", "synapse:2"),
+    ):
+        await session.checkpoint("semantic_link", "work", work={axis: (scope, before, after)})
+    assert session.state["work_progress_seq"] == 4
+    timestamp = session.state["last_work_progress_at"]
+    await session.close()
+    resumed = await ConsolidationProgressSession.open(
+        storage, ["semantic_link"], "same", REFERENCE_TIME
+    )
+    assert resumed is not None
+    for work in (
+        {"validation": ("target-a", 10, 20)},
+        {"neuron_count": ("source-a", 0, 100)},
+        {"similarity": ("fingerprint-a", 0, 9)},
+        {"apply": ("batch-a", "", "synapse:2")},
+        {"neuron_count": ("source-b", 0, 0)},
+        {"similarity": ("fingerprint-b", 0, 0)},
+        {"apply": ("batch-b", "", "")},
+    ):
+        await resumed.checkpoint("semantic_link", "work", work=work)
+    assert resumed.state["work_progress_seq"] == 4
+    assert resumed.state["last_work_progress_at"] == timestamp
+    await resumed.checkpoint("semantic_link", "work", work={"neuron_count": ("source-b", 0, 1)})
+    assert resumed.state["work_progress_seq"] == 5
+    await resumed.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("committed", [False, True])
+async def test_uncertain_work_save_fences_retry_and_restart_does_not_double_count(
+    committed: bool,
+) -> None:
+    storage = FakeProgressStorage()
+    first = await ConsolidationProgressSession.open(storage, ["prune"], "same", REFERENCE_TIME)
+    assert first is not None
+    original = storage.save_consolidation_progress
+
+    async def uncertain(*args: Any, **kwargs: Any) -> Any:
+        if committed:
+            await original(*args, **kwargs)
+        raise OSError("lost acknowledgement")
+
+    storage.save_consolidation_progress = uncertain  # type: ignore[method-assign]
+    with pytest.raises(OSError, match="acknowledgement"):
+        await first.checkpoint("prune", "synapse_scan", cursor="synapse:1")
+    with pytest.raises(progress_module.ConsolidationCheckpointUnconfirmedError):
+        await first.pause()
+    storage.save_consolidation_progress = original  # type: ignore[method-assign]
+    await first.close()
+    resumed = await ConsolidationProgressSession.open(storage, ["prune"], "same", REFERENCE_TIME)
+    assert resumed is not None
+    assert resumed.state.get("work_progress_seq") == (1 if committed else None)
+    await resumed.checkpoint("prune", "synapse_scan", cursor="synapse:1")
+    assert resumed.state["work_progress_seq"] == 1
+    before = deepcopy(storage.progress)
+    storage.reject_saves = True
+    with pytest.raises(ConsolidationLeaseLostError):
+        await resumed.checkpoint("prune", "synapse_scan", cursor="synapse:2")
+    assert storage.progress == before
+    await resumed.close()
+
+
+@pytest.mark.asyncio
+async def test_semantic_engine_publishes_real_coverage_and_apply_work_across_restarts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.unit.test_consolidation_mid_strategies_resume import _engine
+    from tests.unit.test_semantic_discovery_cap_continuation import _semantic_link_fixture
+
+    graph, fixture_progress, reference = _semantic_link_fixture(monkeypatch)
+    storage = FakeProgressStorage()
+    storage.current_brain_id = graph.current_brain_id
+    checkpoints: list[dict[str, Any]] = []
+    save = storage.save_consolidation_progress
+
+    async def capture(*args: Any, **kwargs: Any) -> Any:
+        saved = await save(*args, **kwargs)
+        checkpoints.append(deepcopy(saved))
+        return saved
+
+    monkeypatch.setattr(storage, "save_consolidation_progress", capture)
+    for _ in range(15):
+        session = await ConsolidationProgressSession.open(
+            storage, ["semantic_link"], "same", reference
+        )
+        assert session is not None
+        engine = _engine(graph, ConsolidationStrategy.SEMANTIC_LINK, fixture_progress)
+        engine._progress_session = session
+        try:
+            await engine._semantic_link(ConsolidationReport(), dry_run=False)
+        except progress_module.ConsolidationPausedError:
+            pass
+        finally:
+            await session.close()
+        if session.strategy_state("semantic_link").get("phase") == "semantic_link_complete":
+            break
+    else:
+        pytest.fail("capped semantic work did not finish")
+    assert graph.added_synapses
+    assert storage.progress is not None
+    assert storage.progress["work_progress_seq"] > 1
+    assert isinstance(storage.progress["last_work_progress_at"], datetime)
+    previous_seq = 0
+    progressed_phases = set()
+    for checkpoint in checkpoints:
+        seq = checkpoint.get("work_progress_seq", 0)
+        assert seq >= previous_seq
+        if seq > previous_seq:
+            progressed_phases.add(checkpoint["phase"])
+        previous_seq = seq
+    assert "semantic_link_discovery_neurons" in progressed_phases
+    assert "semantic_link_discovery_similarity" in progressed_phases
+    assert "semantic_link_apply" in progressed_phases
+
+
+@pytest.mark.asyncio
+async def test_structural_metadata_and_phase_changes_are_not_work() -> None:
+    storage = FakeProgressStorage()
+    session = await ConsolidationProgressSession.open(storage, ["prune"], "same", REFERENCE_TIME)
+    assert session is not None
+    await session.checkpoint(
+        "prune",
+        "report",
+        cursor='{"hash":"a","state_revision":1}',
+        counters={"state_revision": 1, "heartbeat": 1, "generation": 1},
+    )
+    await session.checkpoint(
+        "prune",
+        "another_report",
+        cursor='{"hash":"b","state_revision":2}',
+        counters={"state_revision": 2, "heartbeat": 2, "generation": 2},
+    )
+    assert "work_progress_seq" not in session.state
+    await session.checkpoint("prune", "synapse_scan", cursor="synapse:10")
+    seq = session.state["work_progress_seq"]
+    await session.checkpoint("prune", "neuron_scan", cursor="synapse:10")
+    assert session.state["work_progress_seq"] == seq
+    await session.close()

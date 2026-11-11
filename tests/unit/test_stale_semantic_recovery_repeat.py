@@ -466,7 +466,12 @@ async def test_committed_generation_lost_ack_never_allows_stale_session_writes(
             return deepcopy(self.progress)
 
     storage = LostAckStorage()
-    storage.progress.update(status="running", last_error=None)
+    storage.progress.update(
+        status="running",
+        last_error=None,
+        work_progress_seq=37,
+        last_work_progress_at=REFERENCE_TIME,
+    )
     storage.progress["strategy_states"]["semantic_link"].pop("last_error", None)
     owner = storage.progress["owner_token"]
     storage.lease_owner = owner
@@ -504,4 +509,6 @@ async def test_committed_generation_lost_ack_never_allows_stale_session_writes(
     assert storage.progress["phase"] == "semantic_link_restart_pending"
     assert storage.progress["strategy_states"]["semantic_link"]["recovery"]["version"] == 2
     assert storage.progress["counters"]["semantic_link"]["semantic_synapses_created"] == 7625
+    assert storage.progress["work_progress_seq"] == 37
+    assert storage.progress["last_work_progress_at"] == REFERENCE_TIME
     assert len(storage.cas_calls) == 1

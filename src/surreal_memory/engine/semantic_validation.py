@@ -11,6 +11,7 @@ from typing import Any
 from surreal_memory.engine.consolidation_progress import (
     ConsolidationChunkCompleteError,
     ConsolidationPausedError,
+    options_fingerprint,
 )
 
 _IDS_PER_PAGE = 4096
@@ -291,6 +292,7 @@ class SemanticSourceValidation:
                     return False
             return True
 
+        previous_watermark = self.session.watermark
         status = await verify(**({"budget_check": within_budget} if self.budget_check else {}))
         if status == "verified":
             return
@@ -304,6 +306,18 @@ class SemanticSourceValidation:
             "validation_neuron_events": self.session.scanned_source_rows["neuron"],
             "validation_synapse_events": self.session.scanned_source_rows["synapse"],
             "validation_cursor": self.session.watermark,
+        }
+        reference = {
+            **reference,
+            "work_progress": {
+                "validation": (
+                    options_fingerprint(
+                        {"source": self.token, "target": self.session.target_token}
+                    ),
+                    previous_watermark,
+                    self.session.watermark,
+                )
+            },
         }
         await checkpoint(reference, counters)
         raise ConsolidationChunkCompleteError(

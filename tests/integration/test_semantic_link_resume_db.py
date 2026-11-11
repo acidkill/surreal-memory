@@ -77,6 +77,7 @@ class _Progress:
         cursor: str | None = None,
         pending: list[str] | None = None,
         counters: dict[str, int | float] | None = None,
+        work: dict[str, tuple[str, int | str, int | str]] | None = None,
     ) -> None:
         if phase == "semantic_link_apply" and self.fail_before_apply_checkpoint:
             self.fail_before_apply_checkpoint = False

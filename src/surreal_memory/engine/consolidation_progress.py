@@ -1589,6 +1589,151 @@ def supports_storage_methods(storage: Any, method_names: Sequence[str]) -> bool:
     return True
 
 
+# Only these existing committed unit contracts can establish work from ordinary checkpoints.
+_WORK_CURSOR_PHASES = frozenset(
+    [
+        "synapse_scan",
+        "neuron_scan",
+        "retention_change_log",
+        "fiber_census",
+        "dedup_census",
+        "dedup_pairs",
+        "merge_plan_stage",
+        "merge_plan_pairs",
+        "merge_plan_members",
+        "merge_plan_units",
+        "summarize_plan_stage",
+        "summarize_plan_pairs",
+        "summarize_plan_members",
+        "summarize_plan_units",
+        "summarize_pairs",
+        "summarize_cluster",
+        "mature_promotion",
+        "mature_stage",
+        "mature_pattern",
+        "essence_scan",
+        "enrich_apply",
+        "dream_plan",
+        "dream_apply",
+        "replay_apply",
+        "schema_apply",
+        "interference_scan",
+        "interference_aggregate",
+        "drift_clusters",
+        "scan",
+        "batch_committed",
+        "reasoning_ingest",
+        "reasoning_distill",
+        "infer_prune",
+        "infer_add",
+        "infer_reinforce",
+        "infer_counts",
+        "infer_classify",
+        "infer_select",
+        "infer_tags_existing_scan",
+        "infer_tags",
+    ]
+)
+_WORK_COUNTERS = frozenset(
+    [
+        "synapses_pruned",
+        "neurons_pruned",
+        "synapse_pages",
+        "neuron_pages",
+        "action_events_pruned",
+        "change_log_collapsed",
+        "co_activations_pruned",
+        "decay_passes_pruned",
+        "retrieval_traces_pruned",
+        "pages",
+        "fibers",
+        "neurons",
+        "anchors",
+        "merge_plan_candidates",
+        "merge_pairs_examined",
+        "merge_plan_members",
+        "summarize_plan_candidates",
+        "summarize_pairs_examined",
+        "summarize_plan_members",
+        "summaries_created",
+        "summaries_skipped_existing",
+        "memories_promoted",
+        "patterns_extracted",
+        "essences_generated",
+        "synapses_enriched",
+        "synapses_inferred",
+        "dream_synapses_created",
+        "replay_episodes",
+        "replay_ltd",
+        "replay_ltp",
+        "schemas_created",
+        "interference_fan_effects",
+        "habits_learned",
+        "action_habits_learned",
+        "tool_habits_learned",
+        "query_patterns_learned",
+        "duplicates_found",
+        "new_alias_links",
+        "alias_links_existing",
+        "fibers_compressed",
+        "fibers_preserved",
+        "tokens_saved",
+        "persisted",
+        "lifecycle_states_updated",
+        "events_processed",
+        "events_ingested",
+        "files_scanned",
+        "traces_scanned",
+        "traces_ingested",
+        "models_done",
+        "traces_processed",
+        "patterns_learned",
+    ]
+)
+
+
+def _cursor_work_units(cursor: str | None) -> tuple[str, dict[str, int | str]]:
+    """Extract ordered unit positions, never treating a serialized hash as work."""
+    if not cursor or cursor == "completed":
+        return "", {}
+    try:
+        decoded = json.loads(cursor)
+    except (ValueError, TypeError):
+        prefix, separator, suffix = cursor.rpartition(":")
+        if separator and suffix.isdigit():
+            return prefix, {"cursor": int(suffix)}
+        return "", {"cursor": cursor}
+    if type(decoded) is int:
+        return "", {"cursor": decoded}
+    if not isinstance(decoded, dict):
+        return "", {}
+    scope = options_fingerprint(
+        {key: decoded[key] for key in ("kind", "plan_id", "fingerprint") if key in decoded}
+    )
+    if type(decoded.get("window_start")) is int and type(decoded.get("next_i")) is int:
+        return scope, {"cursor": decoded["window_start"] + decoded["next_i"]}
+    return scope, {
+        key: value
+        for key, value in decoded.items()
+        if (key.startswith("after_") or key in {"next_sequence", "next_i", "window_start"})
+        and (type(value) is int or isinstance(value, str))
+    }
+
+
+def _checkpoint_work_units(
+    strategy: str, phase: str, cursor: str | None, counters: Mapping[str, Any]
+) -> dict[str, tuple[str, int | str]]:
+    """Read committed coverage/effects, excluding failure and coordination counters."""
+    if strategy == "semantic_link":
+        return {}
+    scope, positions = _cursor_work_units(cursor) if phase in _WORK_CURSOR_PHASES else ("", {})
+    units = {f"{phase}:{key}": (scope, value) for key, value in positions.items()}
+    for key, value in counters.items():
+        if key in _WORK_COUNTERS and type(value) is int and value >= 0:
+            units[f"counter:{key}"] = ("", value)
+    return units
+
+
 class ConsolidationProgressSession:
     """Own a distributed lease and persist committed strategy checkpoints."""
 
@@ -1772,12 +1917,34 @@ class ConsolidationProgressSession:
         cursor: str | None = None,
         pending: Sequence[str] | None = None,
         counters: Mapping[str, int | float] | None = None,
+        work: Mapping[str, tuple[str, int | str, int | str]] | None = None,
     ) -> None:
         """Persist the latest committed unit boundary for one strategy."""
         if self._lease_lost:
             raise ConsolidationLeaseLostError(
                 f"lease for brain {self.brain_id!r} was lost; stopping before more work"
             )
+        previous = self.strategy_state(strategy)
+        if work is None:
+            prior_units = _checkpoint_work_units(
+                strategy,
+                str(previous.get("phase") or ""),
+                previous.get("cursor"),
+                previous.get("counters") or {},
+            )
+            next_units = _checkpoint_work_units(strategy, phase, cursor, counters or {})
+            work = {}
+            for key, (scope, position) in next_units.items():
+                old_scope, old_position = prior_units.get(
+                    key, (scope, 0 if type(position) is int else "")
+                )
+                if (
+                    old_scope != scope
+                    or (key.startswith(f"{phase}:") and cursor == previous.get("cursor"))
+                    or (key.startswith(f"{phase}:") and phase.endswith("_pending"))
+                ):
+                    old_position = position
+                work[key] = (scope, old_position, position)
         self.state["status"] = "running"
         self.state["current_strategy"] = strategy
         self.state["phase"] = phase
@@ -1794,14 +1961,35 @@ class ConsolidationProgressSession:
             all_counters = dict(self.state.get("counters") or {})
             all_counters[strategy] = dict(counters)
             self.state["counters"] = all_counters
+        watermarks = dict(strategy_state.get("work_progress") or {})
+        advanced = False
+        for key, (scope, before, after) in work.items():
+            saved = watermarks.get(key, {})
+            saved_position = saved.get("position") if saved.get("scope") == scope else None
+            if isinstance(after, int) and isinstance(before, int):
+                before = max(before, saved_position) if type(saved_position) is int else before
+                advanced |= after > before
+                watermark: int | str = max(before, after)
+            elif isinstance(after, str) and isinstance(before, str):
+                before = max(before, saved_position) if isinstance(saved_position, str) else before
+                advanced |= after > before
+                watermark = max(before, after)
+            else:
+                raise ValueError("work positions must have matching ordered types")
+            watermarks[key] = {"scope": scope, "position": watermark}
+        if watermarks:
+            strategy_state["work_progress"] = watermarks
         states[strategy] = strategy_state
         self.state["strategy_states"] = states
+        if advanced:
+            self._advance_work_marker()
         await self._save()
 
     async def complete_strategy(self, strategy: str) -> None:
         completed = list(self.state.get("completed_strategies") or [])
         if strategy not in completed:
             completed.append(strategy)
+            self._advance_work_marker()
         self.state["completed_strategies"] = completed
         self.state["current_strategy"] = None
         self.state["phase"] = "strategy_completed"
@@ -1813,6 +2001,10 @@ class ConsolidationProgressSession:
         states[strategy] = current
         self.state["strategy_states"] = states
         await self._save()
+
+    def _advance_work_marker(self) -> None:
+        self.state["work_progress_seq"] = int(self.state.get("work_progress_seq") or 0) + 1
+        self.state["last_work_progress_at"] = utcnow()
 
     async def pause(self) -> None:
         self.state["status"] = "paused"
@@ -1875,16 +2067,24 @@ class ConsolidationProgressSession:
     async def _save(self) -> None:
         if self._checkpoint_unconfirmed:
             raise ConsolidationCheckpointUnconfirmedError(
-                "source generation publication is unconfirmed; stale checkpoint writes are fenced; "
+                "checkpoint publication is unconfirmed; stale checkpoint writes are fenced; "
                 "inspect the durable run before resuming"
             )
         if self._lease_lost:
             raise ConsolidationLeaseLostError(
                 f"lease for brain {self.brain_id!r} was lost; checkpoint was not saved"
             )
-        saved = await self.storage.save_consolidation_progress(
-            self.brain_id, self.owner_token, self.state
-        )
+        try:
+            saved = await self.storage.save_consolidation_progress(
+                self.brain_id, self.owner_token, self.state
+            )
+        except ConsolidationPausedError:
+            # Budget pauses signal a committed boundary, not a transport failure.
+            raise
+        except BaseException:
+            # A committed write may have lost its acknowledgement; only a new owner may retry.
+            self._checkpoint_unconfirmed = True
+            raise
         if saved is None:
             self._lease_lost = True
             raise ConsolidationLeaseLostError(

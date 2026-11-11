@@ -172,6 +172,7 @@ async def test_learn_reasoning_resumes_durable_pending_pattern_without_duplicate
     assert first.extra["consolidation_status"] == "paused"
     assert first.reasoning_traces_ingested == 0
     assert storage.progress is not None
+    assert storage.progress["work_progress_seq"] == 1
     run_id = storage.progress["run_id"]
     checkpoint = storage.progress["strategy_states"]["learn_reasoning"]
     assert checkpoint["phase"] == "reasoning_pattern_pending"
@@ -191,6 +192,7 @@ async def test_learn_reasoning_resumes_durable_pending_pattern_without_duplicate
     assert resumed.extra["consolidation_status"] == "completed"
     assert resumed.reasoning_traces_ingested == 0
     assert storage.progress["status"] == "completed"
+    assert storage.progress["work_progress_seq"] > 1
     assert storage.progress["strategy_states"]["learn_reasoning"]["counters"] == {
         "models_done": 1,
         "models_total": 1,
