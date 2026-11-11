@@ -499,7 +499,7 @@ async def list_brains_api(
         try:
             async with storage_for_scope(storage, name) as brain_storage:
                 stats = await brain_storage.get_stats(name)
-                brain = await brain_storage.get_brain(name)
+                brain = await brain_storage.find_brain_by_name(name)
             # Diagnostics is the expensive part (~100 s cold over a remote
             # link): never in the request path. The background pass fills the
             # grades in; until then the model defaults (F / 0.0) render.

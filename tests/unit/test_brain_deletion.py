@@ -226,7 +226,9 @@ async def test_dashboard_lists_canonical_id_and_does_not_recache_deleted_scope(
     store = InMemoryStorage()
     await store.save_brain(Brain.create("legacy-name", brain_id="legacy-full-id"))
     store.set_brain("legacy-name")
-    store.get_brain = AsyncMock(return_value=store._brains["legacy-full-id"])
+    store.get_brain = AsyncMock(
+        return_value=Brain.create("legacy-name-longer", brain_id="wrong-brain")
+    )
 
     async def stats(*args: Any) -> dict[str, int]:
         if invalidate_during_read:
