@@ -374,10 +374,21 @@ jobs:
           repository="ghcr.io/${REPOSITORY,,}"
           export IMAGE_TAG="$repository:sha-$GITHUB_SHA-run-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           docker tag surreal-memory:ci "$IMAGE_TAG"
-          docker push "$IMAGE_TAG"
-          export IMAGE_DIGEST="$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE_TAG")"
-          export IMAGE_ID="$(docker inspect --format '{{.Id}}' "$IMAGE_TAG")"
-          [[ "$IMAGE_DIGEST" == "$repository@sha256:"* ]]
+          if ! docker push "$IMAGE_TAG" | tee "$RUNNER_TEMP/production-image-push.log"; then
+            echo 'Image push failed; no receipt was written.' >&2
+            exit 1
+          fi
+          digest="$(sed -nE 's/^.*: digest: (sha256:[0-9a-f]{64}) size: [0-9]+$/\1/p' "$RUNNER_TEMP/production-image-push.log")"
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo 'Image push did not return exactly one valid SHA-256 digest; no receipt was written.' >&2
+            exit 1
+          fi
+          export IMAGE_DIGEST="$repository@$digest"
+          if ! IMAGE_ID="$(docker inspect --format '{{.Id}}' "$IMAGE_TAG")"; then
+            echo 'Image inspection failed; no receipt was written.' >&2
+            exit 1
+          fi
+          export IMAGE_ID
           python - <<'PY_RECEIPT'
           import json, os
           receipt = {
