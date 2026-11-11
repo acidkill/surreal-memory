@@ -13,7 +13,7 @@ interface FlipCardProps {
 export function FlipCard({ card, autoFlipDelay, onFlip, className = "" }: FlipCardProps) {
   const [isFlipped, setIsFlipped] = useState(false)
   const onFlipRef = useRef(onFlip)
-  onFlipRef.current = onFlip
+  useEffect(() => { onFlipRef.current = onFlip }, [onFlip])
 
   useEffect(() => {
     if (autoFlipDelay !== undefined && autoFlipDelay >= 0) {
