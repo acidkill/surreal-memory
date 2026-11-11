@@ -260,8 +260,13 @@ async def test_get_brain_preserves_exact_record_id_representations(
     bare_id: str, quoting: str
 ) -> None:
     if quoting == "sdk":
-        # The optional SDK constructs values locally; no connection or fixture brain.
-        rid = pytest.importorskip("surrealdb").RecordID("brain", bare_id)
+        # Import the concrete datatype, as in test_semantic_source_revision:
+        # SDK-free suites may legitimately stub the root module with MagicMock.
+        try:
+            from surrealdb.data.types.record_id import RecordID
+        except ImportError:
+            pytest.skip("requires the optional SurrealDB Python SDK")
+        rid = RecordID("brain", bare_id)
     else:
         wrappers = {"plain": ("", ""), "angle": ("⟨", "⟩"), "backtick": ("`", "`")}
         left, right = wrappers[quoting]
