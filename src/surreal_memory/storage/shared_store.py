@@ -457,8 +457,15 @@ class SharedStorage(SharedFiberBrainMixin, NeuralStorage):
             if exc.status_code == 404:
                 return False
             raise
-        if result.get("status") != "deleted" or result.get("brain_id") != brain_id:
-            raise SharedStorageError("Invalid brain deletion acknowledgement")
+        if (
+            not isinstance(result, dict)
+            or result.get("status") != "deleted"
+            or result.get("brain_id") != brain_id
+            or result.get("full_delete_confirmed") is not True
+        ):
+            raise SharedStorageError(
+                "Unconfirmed full brain deletion acknowledgement; upgrade the server before retrying"
+            )
         return True
 
     async def clear(self, brain_id: str) -> None:

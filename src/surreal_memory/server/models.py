@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -117,6 +117,14 @@ class BrainResponse(BaseModel):
     fiber_count: int
     created_at: datetime
     updated_at: datetime
+
+
+class DeleteBrainResponse(BaseModel):
+    """Receipt emitted only after verified full brain deletion."""
+
+    status: Literal["deleted"]
+    brain_id: str
+    full_delete_confirmed: Literal[True]
 
 
 class BrainListResponse(BaseModel):

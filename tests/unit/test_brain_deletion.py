@@ -153,7 +153,13 @@ async def test_surreal_protects_default_and_ambiguous_scope(name: str, aliases: 
 
 async def test_remote_clear_and_delete_are_separate() -> None:
     store = SharedStorage("http://127.0.0.1:8000", "target_full_id")
-    store._request = AsyncMock(return_value={"status": "deleted", "brain_id": "target_full_id"})
+    store._request = AsyncMock(
+        return_value={
+            "status": "deleted",
+            "brain_id": "target_full_id",
+            "full_delete_confirmed": True,
+        }
+    )
     await store.clear("target_full_id")
     store._request.assert_awaited_with("POST", "/brain/target_full_id/clear")
     assert await store.delete_brain("target_full_id")
@@ -192,6 +198,11 @@ async def test_api_exact_delete_default_cache_and_clear(prefix: str) -> None:
             "DELETE", f"{prefix}/brain/target_full_id", json={"confirm_brain_id": "target_full_id"}
         )
         assert result.status_code == 200
+        assert result.json()["full_delete_confirmed"] is True
+        assert result.json()["brain_id"] == "target_full_id"
+        receipt_schema = app.openapi()["components"]["schemas"]["DeleteBrainResponse"]
+        assert "full_delete_confirmed" in receipt_schema["required"]
+        assert receipt_schema["properties"]["full_delete_confirmed"]["const"] is True
         assert (
             await client.request(
                 "DELETE",
@@ -234,6 +245,7 @@ async def test_api_timeout_is_incomplete_not_success() -> None:
             "DELETE", "/brain/target_full_id", json={"confirm_brain_id": "target_full_id"}
         )
     assert response.status_code == 503
+    assert "full_delete_confirmed" not in response.json()
     assert "incomplete" in response.json()["detail"]
 
 
@@ -274,11 +286,26 @@ async def test_dashboard_lists_canonical_id_and_does_not_recache_deleted_scope(
         await dashboard.invalidate_brain_caches()
 
 
-async def test_remote_rejects_malformed_delete_acknowledgement() -> None:
+@pytest.mark.parametrize(
+    "reply",
+    [
+        {"status": "deleted", "brain_id": "target_full_id"},
+        {"status": "deleted", "brain_id": "target_full_id", "full_delete_confirmed": False},
+        {"status": "deleted", "brain_id": "target_full_id", "full_delete_confirmed": "true"},
+        {"status": "deleted", "brain_id": "target_full_id", "full_delete_confirmed": 1},
+        {"status": "deleted", "brain_id": "other", "full_delete_confirmed": True},
+        {"status": "cleared", "brain_id": "target_full_id", "full_delete_confirmed": True},
+        {"status": "deleted", "full_delete_confirmed": True},
+        {"brain_id": "target_full_id", "full_delete_confirmed": True},
+        None,
+    ],
+)
+async def test_remote_rejects_malformed_delete_acknowledgement(reply: Any) -> None:
     store = SharedStorage("http://127.0.0.1:8000", "target_full_id")
-    store._request = AsyncMock(return_value={"status": "deleted", "brain_id": "other"})
-    with pytest.raises(SharedStorageError, match="acknowledgement"):
+    store._request = AsyncMock(return_value=reply)
+    with pytest.raises(SharedStorageError, match=r"Unconfirmed.*upgrade"):
         await store.delete_brain("target_full_id")
+    store._request.assert_awaited_once()
 
 
 @pytest.mark.parametrize("prefix", ["", "/api/v1"])
@@ -312,6 +339,7 @@ async def test_legacy_clear_delete_and_wrong_intent_leave_all_data_untouched(
                 "DELETE", f"{prefix}/brain/{brain.id}", json={"confirm_brain_id": confirmation}
             )
     assert response.status_code == 409
+    assert "full_delete_confirmed" not in response.json()
     store.delete_brain.assert_not_awaited()
     assert await store.get_brain(brain.id) == brain
     assert await store.get_neuron(neuron.id) == neuron

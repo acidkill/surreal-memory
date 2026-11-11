@@ -12,6 +12,7 @@ from surreal_memory.server.models import (
     BrainResponse,
     ConflictItemResponse,
     CreateBrainRequest,
+    DeleteBrainResponse,
     ErrorResponse,
     ImportBrainRequest,
     MergeBrainRequest,
@@ -335,13 +336,15 @@ async def clear_brain(
 
 @router.delete(
     "/{brain_id}",
+    response_model=DeleteBrainResponse,
     responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
     summary="Delete brain (requires confirm_brain_id equal to path ID)",
     description=(
         "Delete an exact brain ID and all its data. Requires a JSON body with "
         "confirm_brain_id equal to the path ID. Unmarked legacy DELETE requests "
         "are rejected without mutation; use POST /brain/{brain_id}/clear for data reset. "
-        "The default brain is protected."
+        "The default brain is protected. A successful response includes "
+        "full_delete_confirmed=true only after scoped data and registry deletion are verified."
     ),
 )
 async def delete_brain(
@@ -351,7 +354,7 @@ async def delete_brain(
         str | None,
         Body(embed=True, description="Must equal the exact path brain ID for full deletion"),
     ] = None,
-) -> dict[str, str]:
+) -> DeleteBrainResponse:
     """Delete only an explicitly confirmed canonical ID, including its registry."""
     if confirm_brain_id != brain_id:
         raise HTTPException(
@@ -379,4 +382,4 @@ async def delete_brain(
         await invalidate_brain_caches()
     if not deleted:
         raise HTTPException(status_code=404, detail="Brain not found")
-    return {"status": "deleted", "brain_id": brain_id}
+    return DeleteBrainResponse(status="deleted", brain_id=brain_id, full_delete_confirmed=True)
