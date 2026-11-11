@@ -154,7 +154,7 @@ def load_target(env: Mapping[str, str] | None = None) -> DisposableTarget | None
         expected = target.environment()
         for key in connection_keys:
             value = env.get(key)
-            if not value:
+            if value is None:
                 continue
             if key == "SURREALDB_NS":
                 if re.fullmatch(rf"smem_test_{run_id}_[0-9a-f]{{32}}", value):
@@ -256,6 +256,7 @@ def main() -> None:
     target = load_target()
     if target is None:
         raise UnsafeTestTargetError("acceptance child requires a registered disposable container")
+    os.environ.update(target.environment())
     install_network_guard(target)
     module = "surreal_memory." + sys.argv[1]
     sys.argv = [module, *sys.argv[2:]]

@@ -82,9 +82,12 @@ def test_inherited_connection_without_proof_fails_before_inspect(
         "SURREALDB_AUTH_LEVEL",
     ],
 )
-def test_inherited_mismatch_fails_before_inspect(field: str, registered: dict[str, str]) -> None:
+@pytest.mark.parametrize("value", ["synthetic-production-setting", ""])
+def test_inherited_mismatch_fails_before_inspect(
+    field: str, value: str, registered: dict[str, str]
+) -> None:
     with pytest.raises(isolation.UnsafeTestTargetError, match=field):
-        isolation.load_target({**registered, field: "synthetic-production-setting"})
+        isolation.load_target({**registered, field: value})
     isolation._inspect.assert_not_called()
 
 
