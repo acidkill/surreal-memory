@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next"
 import { useIsPro } from "@/api/hooks/useDashboard"
 import { api } from "@/api/client"
 import { X, CaretRight, Key, Check, SpinnerGap } from "@phosphor-icons/react"
+import { setUpgradeModalOpener } from "./upgradeModalState"
 
 /* ------------------------------------------------------------------ */
 /*  Pricing config                                                     */
@@ -32,12 +33,6 @@ const PRICING = {
 /*  Context: shared open state                                         */
 /* ------------------------------------------------------------------ */
 
-let _openModal: (() => void) | null = null
-
-/** Imperatively open the upgrade modal from anywhere */
-export function openUpgradeModal() {
-  _openModal?.()
-}
 
 /* ------------------------------------------------------------------ */
 /*  Component                                                          */
@@ -55,8 +50,8 @@ export function UpgradeModal() {
 
   // Register global opener
   useEffect(() => {
-    _openModal = () => setOpen(true)
-    return () => { _openModal = null }
+    setUpgradeModalOpener(() => setOpen(true))
+    return () => { setUpgradeModalOpener(null) }
   }, [])
 
   // Reset on close

@@ -262,8 +262,11 @@ def check_tests() -> None:
     with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as tmp:
         try:
             result = subprocess.run(
-                cmd, stdout=tmp, stderr=subprocess.STDOUT,
-                cwd=str(ROOT), timeout=600,
+                cmd,
+                stdout=tmp,
+                stderr=subprocess.STDOUT,
+                cwd=str(ROOT),
+                timeout=600,
             )
         except subprocess.TimeoutExpired:
             check("pytest tests/unit/", False, "timed out after 600s")
@@ -497,6 +500,43 @@ def run_version_gate(expected: str | None = None) -> int:
     return 1
 
 
+def run_profile(profile: str) -> int:
+    """Run the named verification scope and propagate every command failure."""
+    import tempfile
+
+    commands = {
+        "unit": [[sys.executable, "-m", "pytest", "tests/unit/", "-m", "not stress"]],
+        "full": [
+            ["ruff", "check", "src/", "tests/"],
+            ["ruff", "format", "--check", "src/", "tests/"],
+            ["mypy", "src/", "--ignore-missing-imports"],
+            [sys.executable, "-m", "pytest", "tests/", "-m", "not stress", "-n", "auto"],
+        ],
+        "dashboard": [
+            ["npm", "--prefix", "dashboard", "run", "lint"],
+            ["npm", "--prefix", "dashboard", "run", "test"],
+        ],
+    }
+    print(f"Verification profile: {profile}", flush=True)
+    failed = False
+    with tempfile.TemporaryDirectory(prefix="smem-dashboard-build-") as output:
+        if profile == "dashboard":
+            commands[profile].append(
+                ["npm", "--prefix", "dashboard", "run", "build", "--", "--outDir", output]
+            )
+        for cmd in commands[profile]:
+            print(f"  Running: {' '.join(cmd)}", flush=True)
+            try:
+                result = subprocess.run(cmd, cwd=str(ROOT), check=False)
+                code = result.returncode
+            except OSError as exc:
+                print(f"  Could not run command: {exc}", flush=True)
+                code = 1
+            print(f"  Exit code: {code}", flush=True)
+            failed |= code != 0
+    return int(failed)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Pre-ship verification for surreal-memory.",
@@ -522,13 +562,25 @@ def main() -> int:
             "A leading 'v' is stripped, so both v3.3.1 and 3.3.1 work."
         ),
     )
+    parser.add_argument(
+        "--profile",
+        choices=["unit", "full", "dashboard"],
+        help="Run a named scope: unit tests, full Python gate, or dashboard checks.",
+    )
     args = parser.parse_args()
 
+    if args.profile and (args.only or args.fix or args.expect):
+        parser.error("--profile cannot be combined with --only, --fix, or --expect")
+    if args.profile:
+        return run_profile(args.profile)
     if args.only == "versions":
         return run_version_gate(args.expect)
 
     print("=" * 60)
-    print("  Surreal-Memory — Pre-Ship Verification")
+    print("  Surreal-Memory — Pre-Ship Verification (legacy fast checks)")
+    print(
+        "  Unit tests exclude test_consolidation.py; use --profile full for the full Python gate."
+    )
     print("=" * 60)
 
     check_versions()

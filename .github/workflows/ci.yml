@@ -285,9 +285,17 @@ jobs:
           cache: "npm"
           cache-dependency-path: dashboard/package-lock.json
 
+      - name: Install dashboard dependencies
+        working-directory: dashboard
+        run: npm ci
+
+      - name: Lint dashboard
+        working-directory: dashboard
+        run: npm run lint
+
       - name: Test dashboard
         working-directory: dashboard
-        run: npm ci && npm run test
+        run: npm run test
 
       - name: Build dashboard
         working-directory: dashboard

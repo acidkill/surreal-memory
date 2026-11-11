@@ -2,7 +2,7 @@ import type { ReactNode } from "react"
 import { useIsPro } from "@/api/hooks/useDashboard"
 import { Badge } from "@/components/ui/badge"
 import { useTranslation } from "react-i18next"
-import { openUpgradeModal } from "@/components/common/UpgradeModal"
+import { openUpgradeModal } from "@/components/common/upgradeModalState"
 
 interface ProGateProps {
   children: ReactNode

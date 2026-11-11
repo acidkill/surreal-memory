@@ -22,7 +22,7 @@ import {
   Lock,
   Command as CommandIcon,
 } from "@phosphor-icons/react"
-import { openUpgradeModal } from "@/components/common/UpgradeModal"
+import { openUpgradeModal } from "@/components/common/upgradeModalState"
 import { matchesQuery } from "@/components/common/commandPaletteFilter"
 
 /* ------------------------------------------------------------------ */

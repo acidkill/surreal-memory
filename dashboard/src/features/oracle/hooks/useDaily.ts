@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react"
+import { useMemo, useEffect } from "react"
 import { generateDailyReading } from "../engine/reading-engine"
 import type { OracleCard, DailyReading } from "../engine/types"
 
@@ -41,28 +41,14 @@ export function useDaily(
   cards: readonly OracleCard[],
   brainName: string,
 ): DailyReading | null {
-  const [reading, setReading] = useState<DailyReading | null>(null)
+  const reading = useMemo(() => {
+    if (cards.length < 3) return null
+    return loadCached(brainName) ?? generateDailyReading(cards, brainName)
+  }, [cards, brainName])
 
   useEffect(() => {
-    if (cards.length < 3) {
-      setReading(null)
-      return
-    }
-
-    // Check cache first
-    const cached = loadCached(brainName)
-    if (cached) {
-      setReading(cached)
-      return
-    }
-
-    // Generate new reading
-    const newReading = generateDailyReading(cards, brainName)
-    if (newReading) {
-      saveToCache(newReading)
-      setReading(newReading)
-    }
-  }, [cards, brainName])
+    if (reading) saveToCache(reading)
+  }, [reading])
 
   return reading
 }
