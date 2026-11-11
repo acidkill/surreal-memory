@@ -4,7 +4,7 @@ on:
   push:
     branches: [main, master]
   pull_request:
-    branches: [main, master]
+    branches: [main, master, "grit/**"]
   workflow_dispatch: {}
 
 jobs:
@@ -177,7 +177,6 @@ jobs:
       SMEM_TEST_SURREALDB_URL: http://127.0.0.1:8001
       SURREALDB_USER: root
       SURREALDB_PASS: root
-      SMEM_TEST_SURREALDB_TARGET_FILE: ${{ runner.temp }}/smem-disposable.json
       SURREALDB_AUTH_LEVEL: root
     steps:
       - uses: actions/checkout@v4
@@ -218,7 +217,10 @@ jobs:
         run: pip install -e ".[dev,server,surrealdb]"
 
       - name: Register disposable database identity
-        run: python -m tests._disposable_surrealdb register surrealdb-ci "$SMEM_TEST_SURREALDB_TARGET_FILE"
+        run: |
+          target_file="$RUNNER_TEMP/smem-disposable.json"
+          python -m tests._disposable_surrealdb register surrealdb-ci "$target_file"
+          echo "SMEM_TEST_SURREALDB_TARGET_FILE=$target_file" >> "$GITHUB_ENV"
 
       # No -n auto here: parallel workers hammering one shared SurrealDB
       # connection produce connection resets under load unrelated to any real
