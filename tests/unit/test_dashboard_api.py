@@ -581,6 +581,7 @@ class TestBrainsServeStale:
 
         async def _scenario() -> tuple[object, int, object]:
             storage = AsyncMock()
+            storage.brain_id = "default"
             first = await dashboard_api._cached_health_report(storage, "default")
             pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
             await asyncio.gather(*pending, return_exceptions=True)

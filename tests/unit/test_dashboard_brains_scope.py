@@ -288,13 +288,10 @@ class TestGetStatsDoesNotLeakBrainState:
             "surreal_memory.unified_config.list_available_brains",
             AsyncMock(return_value=[BOUND_BRAIN, OTHER_BRAIN]),
         )
-        # get_stats reaches diagnostics through _cached_grade_purity (a TTL
-        # cache wrapping DiagnosticsEngine), not DiagnosticsEngine directly —
-        # bypass the cache entirely so this test exercises the scope-leak fix,
-        # not cache timing.
+        # Bypass diagnostics timing; this suite checks storage scope isolation.
         monkeypatch.setattr(
-            "surreal_memory.server.routes.dashboard_api._cached_grade_purity",
-            AsyncMock(return_value=("B", 0.8)),
+            "surreal_memory.server.routes.dashboard_api._cached_health_report",
+            AsyncMock(return_value=MagicMock(grade="B", purity_score=0.8)),
         )
 
     async def test_stats_does_not_call_set_brain_on_shared_storage(

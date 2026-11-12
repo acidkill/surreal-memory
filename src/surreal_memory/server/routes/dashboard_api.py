@@ -5,9 +5,9 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
 from surreal_memory.core.brain import Brain
@@ -45,6 +45,8 @@ _BRAINS_CACHE_GENERATION = 0
 _BRAINS_REFRESHING = False
 _BRAINS_REFRESH_TASKS: set[asyncio.Task[None]] = set()
 _GRADE_REFRESH_TASKS: set[asyncio.Task[Any]] = set()
+_GRADE_INFLIGHT: dict[str, asyncio.Task[Any]] = {}
+_GRADE_ERRORS: set[str] = set()
 
 # Brain-wide uncertainty overview is bounded/cheap, but cached per brain for a short
 # window anyway to keep the dashboard's polling off the storage hot path (same
@@ -69,76 +71,70 @@ async def invalidate_brain_caches() -> None:
         await asyncio.gather(*tasks, return_exceptions=True)
     _BRAINS_LAST_GOOD = None
     _GRADE_LAST_GOOD.clear()
+    _GRADE_INFLIGHT.clear()
+    _GRADE_ERRORS.clear()
+    _GRADE_REFRESH_KEYS.clear()
     _GRADE_CACHE.clear()
     _EVOLUTION_CACHE.clear()
     _UNCERTAINTY_CACHE.clear()
 
 
-async def _cached_health_report(storage: NeuralStorage, brain_name: str) -> Any:
-    """Return the full diagnostics report for a brain, cached per brain.
-
-    The whole report is cached, not just the grade: ``/health`` used to call
-    ``DiagnosticsEngine.analyze`` directly on every request while ``/stats``
-    served the same computation from cache. On a large brain that cost a multi-second analyze
-    per health load — and not only when cold, since nothing was memoised. Two
-    endpoints independently recomputing one analysis can also disagree with each
-    other; sharing the entry removes that possibility as well as the cost.
-    """
+async def _cached_health_report(
+    storage: NeuralStorage, brain_name: str, *, wait: bool = True
+) -> Any:
+    """Share one analysis across callers; dashboard reads never wait when cold."""
     key = f"health:{brain_name}"
     cached = _GRADE_CACHE.get(key)
     if cached is not None:
         return cached
     stale = _GRADE_LAST_GOOD.get(key)
+    failed = key in _GRADE_ERRORS
+    task = _schedule_grade_refresh(storage, brain_name, key)
     if stale is not None:
-        # Serve the last computed report at once and recompute in the
-        # background; on a remote database a cold analyze runs ~100 s — no
-        # browser waits that long, and serving nothing is what rendered the
-        # overview as "No brains found".
-        _schedule_grade_refresh(storage, brain_name, key)
         return stale
-    from surreal_memory.engine.diagnostics import DiagnosticsEngine
+    if not wait:
+        if failed:
+            raise HTTPException(status_code=503, detail="Health diagnostics unavailable")
+        return None
+    # A disconnected caller must not cancel work shared with other readers.
+    return await asyncio.shield(task)
 
-    report = await DiagnosticsEngine(storage).analyze(brain_name)
-    _GRADE_CACHE.set(key, report)
-    _GRADE_LAST_GOOD[key] = report
-    return report
 
-
-def _schedule_grade_refresh(storage: NeuralStorage, brain_name: str, key: str) -> None:
-    """Recompute one diagnostics report in the background, at most once per key.
-
-    A strong reference to the task is kept until it finishes (asyncio discards
-    tasks that only the event loop holds). A failure is logged, never raised —
-    the caller has already been served the stale report.
-    """
-
-    def _done(task: asyncio.Task[Any]) -> None:
-        _GRADE_REFRESH_KEYS.discard(key)
-        if not task.cancelled() and task.exception() is not None:
-            logger.warning(
-                "Background diagnostics refresh failed for brain %s",
-                brain_name,
-                exc_info=task.exception(),
-            )
-
-    if key in _GRADE_REFRESH_KEYS:
-        return
-    _GRADE_REFRESH_KEYS.add(key)
+def _schedule_grade_refresh(storage: NeuralStorage, brain_name: str, key: str) -> asyncio.Task[Any]:
+    """Keep one scoped analysis alive until it finishes or its scope is invalidated."""
+    existing = _GRADE_INFLIGHT.get(key)
+    if existing is not None and not existing.done():
+        return existing
+    generation = _BRAINS_CACHE_GENERATION
+    _GRADE_ERRORS.discard(key)
 
     async def _refresh() -> Any:
         from surreal_memory.engine.diagnostics import DiagnosticsEngine
 
-        report = await DiagnosticsEngine(storage).analyze(brain_name)
-        _GRADE_CACHE.set(key, report)
-        _GRADE_LAST_GOOD[key] = report
+        async with storage_for_scope(storage, brain_name) as scoped:
+            report = await DiagnosticsEngine(scoped).analyze(brain_name)
+        if generation == _BRAINS_CACHE_GENERATION:
+            _GRADE_CACHE.set(key, report)
+            _GRADE_LAST_GOOD[key] = report
+            _GRADE_ERRORS.discard(key)
         return report
 
+    def _done(task: asyncio.Task[Any]) -> None:
+        _GRADE_REFRESH_TASKS.discard(task)
+        if _GRADE_INFLIGHT.get(key) is task:
+            _GRADE_INFLIGHT.pop(key, None)
+            _GRADE_REFRESH_KEYS.discard(key)
+        if not task.cancelled() and task.exception() is not None:
+            if generation == _BRAINS_CACHE_GENERATION:
+                _GRADE_ERRORS.add(key)
+            logger.warning("Background diagnostics refresh failed for brain %s", brain_name)
+
     task = asyncio.get_running_loop().create_task(_refresh())
-    # Strong reference: the event loop discards tasks nobody holds, exactly as
-    # the brain refresh above already guards against.
+    _GRADE_INFLIGHT[key] = task
+    _GRADE_REFRESH_KEYS.add(key)
     _GRADE_REFRESH_TASKS.add(task)
-    task.add_done_callback(_GRADE_REFRESH_TASKS.discard)
     task.add_done_callback(_done)
+    return task
 
 
 async def _cached_evolution(storage: NeuralStorage, brain_name: str) -> Any:
@@ -185,8 +181,9 @@ class BrainSummary(BaseModel):
     neuron_count: int = 0
     synapse_count: int = 0
     fiber_count: int = 0
-    grade: str = "F"
-    purity_score: float = 0.0
+    grade: str = "—"
+    purity_score: float | None = None
+    diagnostic_status: Literal["pending", "ready", "unavailable"] = "pending"
     is_active: bool = False
 
 
@@ -198,9 +195,16 @@ class DashboardStats(BaseModel):
     total_neurons: int = 0
     total_synapses: int = 0
     total_fibers: int = 0
-    health_grade: str = "F"
-    purity_score: float = 0.0
+    health_grade: str = "—"
+    purity_score: float | None = None
+    diagnostic_status: Literal["pending", "ready", "unavailable"] = "pending"
     brains: list[BrainSummary] = Field(default_factory=list)
+
+
+class PendingHealth(BaseModel):
+    """No diagnostic measurements exist yet."""
+
+    status: Literal["pending"] = "pending"
 
 
 class HealthReport(BaseModel):
@@ -279,16 +283,18 @@ async def get_stats(
                 # Counts are cheap (indexed count()) — always compute them live so
                 # the neuron/synapse/fiber numbers are never stale.
                 stats = await brain_storage.get_stats(name)
-                grade = "—"
-                purity = 0.0
-                if is_active:
-                    # Grade/purity is the multi-second part — served from the
-                    # per-brain TTL cache (recomputed at most once per window).
-                    try:
-                        grade, purity = await _cached_grade_purity(brain_storage, name)
-                    except Exception:
-                        logger.debug("Diagnostics failed for active brain %s", name, exc_info=True)
-                        grade = "F"
+            grade = "—"
+            purity = None
+            diagnostic_status = "pending"
+            if is_active:
+                try:
+                    report = await _cached_health_report(storage, name, wait=False)
+                    if report is not None:
+                        grade, purity = report.grade, report.purity_score
+                        diagnostic_status = "ready"
+                except Exception:
+                    logger.warning("Diagnostics unavailable for active brain %s", name)
+                    diagnostic_status = "unavailable"
             return BrainSummary(
                 id=name,
                 name=name,
@@ -297,6 +303,7 @@ async def get_stats(
                 fiber_count=stats.get("fiber_count", 0),
                 grade=grade,
                 purity_score=purity,
+                diagnostic_status=diagnostic_status,
                 is_active=is_active,
             )
         except Exception:
@@ -316,12 +323,14 @@ async def get_stats(
     total_n = sum(b.neuron_count for b in brains)
     total_s = sum(b.synapse_count for b in brains)
     total_f = sum(b.fiber_count for b in brains)
-    active_grade = "F"
-    active_purity = 0.0
+    active_grade = "—"
+    active_purity = None
+    diagnostic_status = "pending"
     for b in brains:
         if b.is_active:
             active_grade = b.grade
             active_purity = b.purity_score
+            diagnostic_status = b.diagnostic_status
             break
 
     return DashboardStats(
@@ -332,6 +341,7 @@ async def get_stats(
         total_fibers=total_f,
         health_grade=active_grade,
         purity_score=active_purity,
+        diagnostic_status=diagnostic_status,
         brains=brains,
     )
 
@@ -444,10 +454,14 @@ async def list_brains_api(
             global _BRAINS_LAST_GOOD
             for name in names:
                 try:
-                    async with storage_for_scope(storage, name) as brain_storage:
-                        report = await _cached_health_report(brain_storage, name)
+                    report = await _cached_health_report(storage, name)
                 except Exception:
-                    logger.debug("Background diagnostics failed for brain %s", name, exc_info=True)
+                    logger.warning("Background diagnostics failed for brain %s", name)
+                    current = _BRAINS_LAST_GOOD
+                    if current is not None:
+                        for brain in current:
+                            if brain.name == name and brain.purity_score is None:
+                                brain.diagnostic_status = "unavailable"
                     continue
                 current = _BRAINS_LAST_GOOD
                 if current is None:
@@ -462,6 +476,7 @@ async def list_brains_api(
                             fiber_count=b.fiber_count,
                             grade=report.grade,
                             purity_score=report.purity_score,
+                            diagnostic_status="ready",
                             is_active=b.is_active,
                         )
                         if b.name == name
@@ -502,7 +517,7 @@ async def list_brains_api(
                 brain = await brain_storage.find_brain_by_name(name)
             # Diagnostics is the expensive part (~100 s cold over a remote
             # link): never in the request path. The background pass fills the
-            # grades in; until then the model defaults (F / 0.0) render.
+            # grades in; until then the grade and purity remain unknown.
             results.append(
                 BrainSummary(
                     id=brain.id if isinstance(brain, Brain) else name,
@@ -510,8 +525,8 @@ async def list_brains_api(
                     neuron_count=stats.get("neuron_count", 0),
                     synapse_count=stats.get("synapse_count", 0),
                     fiber_count=stats.get("fiber_count", 0),
-                    grade="F",
-                    purity_score=0.0,
+                    grade="—",
+                    purity_score=None,
                     is_active=name == active_name,
                 )
             )
@@ -567,12 +582,13 @@ async def switch_brain(
 
 @router.get(
     "/health",
-    response_model=HealthReport,
+    response_model=HealthReport | PendingHealth,
     summary="Get active brain health report",
 )
 async def get_health(
     storage: Annotated[NeuralStorage, Depends(get_storage)],
-) -> HealthReport:
+    response: Response,
+) -> HealthReport | PendingHealth:
     """Run full diagnostics on the active brain (served from the TTL cache).
 
     Shares the cached report with the overview's grade/purity, so the health
@@ -584,10 +600,12 @@ async def get_health(
     brain_name = get_config().current_brain
 
     try:
-        report = await _cached_health_report(storage, brain_name)
+        report = await _cached_health_report(storage, brain_name, wait=False)
     except Exception as exc:
-        logger.warning("Diagnostics failed for brain %s: %s", brain_name, exc)
-        return HealthReport(grade="F", purity_score=0.0)
+        raise HTTPException(status_code=503, detail="Health diagnostics unavailable") from exc
+    if report is None:
+        response.status_code = 202
+        return PendingHealth()
 
     return HealthReport(
         grade=report.grade,
