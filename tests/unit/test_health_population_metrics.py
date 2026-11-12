@@ -156,7 +156,9 @@ async def test_dashboard_health_exposes_existing_gate_and_cohort_explanations(
         **components,
     )
     monkeypatch.setattr(dashboard_api, "_cached_health_report", AsyncMock(return_value=report))
-    response = await dashboard_api.get_health(SimpleNamespace())
+    from fastapi import Response
+
+    response = await dashboard_api.get_health(SimpleNamespace(), Response())
     payload = response.model_dump()
     assert payload["stage_distribution"] == report.stage_distribution
     assert payload["semantic_gate_blockers"] == report.semantic_gate_blockers

@@ -42,6 +42,18 @@ A running server serves the same schema interactively at `/docs` (Swagger) and
 
 ## Dashboard
 
+Dashboard counts return independently of diagnostics. Until a report exists,
+`/api/dashboard/stats` and `/api/dashboard/brains` use grade `—`,
+`purity_score: null`, and `diagnostic_status: pending` (or `unavailable` after a
+failure). A computed report has `diagnostic_status: ready`; an expired valid
+report remains available during refresh.
+
+`GET /api/dashboard/health` returns HTTP 202 with `{"status":"pending"}`
+while its first report is calculated, HTTP 200 with the existing report schema
+when ready, or HTTP 503 with an error detail if diagnostics failed. Clients can
+retry; pending dashboard queries poll every two seconds. Counts and reports
+are read only, and concurrent readers share one analysis per brain.
+
 | Method | Path | Summary |
 |---|---|---|
 | `GET` | `/` | Root |

@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest"
-import { useMutation } from "@tanstack/react-query"
+import { useMutation, useQuery } from "@tanstack/react-query"
 import * as hooks from "./useDashboard"
 
 vi.mock("@tanstack/react-query", () => ({
@@ -50,4 +50,41 @@ it.each([
   )
   expect(request).toHaveBeenCalledTimes(1)
   expect(useMutation).toHaveBeenCalledWith(expect.objectContaining({ retry: false }))
+})
+
+
+it("polls pending health and stops when diagnostics finish", async () => {
+  hooks.useHealth()
+  const options = vi.mocked(useQuery).mock.calls.at(-1)![0]
+  const poll = options.refetchInterval as (query: unknown) => number | false
+  expect(poll({ state: { data: { status: "pending" } } })).toBe(2000)
+  expect(poll({ state: { data: { grade: "D" } } })).toBe(false)
+  expect(options.retry).toBe(false)
+})
+
+it.each(["useHealth", "useStats", "useBrains"] as const)("bounds and cancels %s requests", async (hook) => {
+  const deadline = new AbortController()
+  const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(deadline.signal)
+  const request = vi.fn<typeof fetch>().mockImplementation((_path, init) =>
+    new Promise((_resolve, reject) => {
+      init!.signal!.addEventListener("abort", () => reject(init!.signal!.reason))
+    }),
+  )
+  vi.stubGlobal("fetch", request)
+  hooks[hook]()
+  const options = vi.mocked(useQuery).mock.calls.at(-1)![0]
+  const queryFn = options.queryFn as (ctx: { signal: AbortSignal }) => Promise<unknown>
+  const reader = new AbortController()
+  const result = queryFn({ signal: reader.signal })
+  const assertion = expect(result).rejects.toThrow("deadline")
+  deadline.abort(new Error("deadline"))
+  await assertion
+  expect(timeout).toHaveBeenCalledWith(15_000)
+
+  timeout.mockReturnValue(new AbortController().signal)
+  const next = queryFn({ signal: reader.signal })
+  const cancelled = expect(next).rejects.toThrow("cancelled")
+  reader.abort(new Error("cancelled"))
+  await cancelled
+  timeout.mockRestore()
 })
