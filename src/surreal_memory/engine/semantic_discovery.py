@@ -1082,6 +1082,13 @@ async def _discover_semantic_synapses_resumable(
         saved = dict(legacy_checkpoint)
     else:
         saved = manifest
+    # A resumed owner epoch writes its snapshots under a fresh state_id, allocated lazily at
+    # its first save. A previous epoch may have saved revision N+1 and died before publishing
+    # the manifest pointer; re-saving (state_id, N+1) with different content would collide with
+    # that orphan ("semantic discovery state revisions are immutable"). Until the first save,
+    # the loaded (state_id, revision) stays the published reference, so an epoch that saves
+    # nothing (e.g. a batch continuation) never points at a snapshot that does not exist.
+    epoch_needs_fresh_state_id = durable_neuron_state is not None
     saved_stage = str(saved.get("stage") or "")
     saved_version = saved.get("version")
     saved_cursor = saved.get("cursor")
@@ -1167,6 +1174,7 @@ async def _discover_semantic_synapses_resumable(
             source_fence_session = None
             reference_time_rebuilt = True
             durable_neuron_state = None
+            epoch_needs_fresh_state_id = False
             state_id = None
             state_revision = 0
             saved = {}
@@ -1551,10 +1559,16 @@ async def _discover_semantic_synapses_resumable(
     async def write_source_checkpoint(
         stage: str, cursor: str | None, *, preserve_legacy_cursor: bool = False
     ) -> None:
-        nonlocal state_revision, published_manifest, published_counts, published_row
+        nonlocal state_id, state_revision, epoch_needs_fresh_state_id
+        nonlocal published_manifest, published_counts, published_row
         save = getattr(storage, "save_semantic_discovery_state", None)
         if not callable(save):
             raise RuntimeError("storage cannot save semantic_link staged source state")
+        if epoch_needs_fresh_state_id:
+            state_id, state_revision = str(uuid.uuid4()), 0
+            source_rebuild["state_id"] = state_id
+            source_rebuild["state_revision"] = 0
+            epoch_needs_fresh_state_id = False
         next_revision = state_revision + 1
         source_snapshot = source_rebuild_snapshot()
         source_snapshot["state_id"] = state_id

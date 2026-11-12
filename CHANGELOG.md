@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A resumed semantic-link discovery saves its snapshots under a fresh state id,
+  allocated at its first save. A previous attempt that stopped after saving a
+  revision but before publishing it no longer makes the resumed run fail with
+  "semantic discovery state revisions are immutable".
 - Compression reports a cumulative count of fibers whose originals were preserved,
   with per-fiber details at DEBUG level. Resume retains committed counts and marks
   older checkpoints with missing preservation history as partial.

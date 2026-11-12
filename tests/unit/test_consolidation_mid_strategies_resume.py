@@ -2680,3 +2680,96 @@ async def test_semantic_link_dry_run_does_not_change_storage_or_progress(
     assert storage.added_synapses == []
     assert progress.writes == []
     assert progress.state == before
+
+
+class _CrashBeforePublishProgress(_Progress):
+    """Simulates a process dying after ``save_semantic_discovery_state`` but before the
+    manifest pointer is published: the N-th checkpoint of ``crash_phase`` raises BEFORE the
+    pointer is recorded, so the already-saved revision stays an orphan."""
+
+    def __init__(self, strategy: str, *, crash_phase: str, crash_on_call: int) -> None:
+        super().__init__(strategy)
+        self.crash_phase: str | None = crash_phase
+        self.crash_on_call = crash_on_call
+        self._seen: dict[str, int] = {}
+
+    async def checkpoint(
+        self,
+        strategy: str,
+        phase: str,
+        *,
+        cursor: str | None = None,
+        pending: list[str] | None = None,
+        counters: dict[str, int | float] | None = None,
+        work: dict[str, tuple[str, int | str, int | str]] | None = None,
+    ) -> None:
+        if phase == self.crash_phase:
+            self._seen[phase] = self._seen.get(phase, 0) + 1
+            if self._seen[phase] == self.crash_on_call:
+                self.crash_phase = None
+                raise ConsolidationPausedError("simulated crash before publish")
+        await super().checkpoint(
+            strategy, phase, cursor=cursor, pending=pending, counters=counters, work=work
+        )
+
+
+@pytest.mark.asyncio
+async def test_semantic_link_resume_after_orphan_revision_uses_a_fresh_state_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A resumed owner epoch must not reuse the state_id of a previous epoch.
+
+    The crashed epoch saved revision N+1 but never published the pointer to it. Resuming
+    under the SAME state_id re-saves revision N+1 with different content (here: other page
+    boundaries; in production: another owner_token) and the immutable-revision guard fires
+    ("immutable state revision was retried with conflicting content").
+    """
+    neurons = [
+        Neuron.create(
+            NeuronType.CONCEPT if index % 2 == 0 else NeuronType.ENTITY,
+            f"semantic candidate {index}",
+            metadata={"_embedding": [1.0 - index * 0.01, index * 0.01]},
+            neuron_id=f"semantic-node-{index}",
+        )
+        for index in range(4)
+    ]
+    config = SimpleNamespace(
+        embedding_enabled=True,
+        embedding_provider="fixture",
+        embedding_model="fixture",
+        semantic_discovery_similarity_threshold=0.7,
+        semantic_discovery_max_pairs=50,
+        essence_generator="extractive",
+    )
+    monkeypatch.setattr(
+        "surreal_memory.engine.semantic_discovery._effective_embedding",
+        lambda _config: (True, "fixture", "fixture"),
+    )
+    monkeypatch.setattr("surreal_memory.engine.semantic_discovery._EMBEDDING_PAGE_SIZE", 2)
+    monkeypatch.setattr("surreal_memory.engine.semantic_discovery._SYNAPSE_PAGE_SIZE", 2)
+
+    storage = _Storage(neurons=neurons)
+    storage.brain.config = config
+    progress = _CrashBeforePublishProgress(
+        "semantic_link", crash_phase="semantic_link_discovery_neurons", crash_on_call=2
+    )
+    with pytest.raises(ConsolidationPausedError, match="simulated crash before publish"):
+        await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+            ConsolidationReport(), dry_run=False
+        )
+    first_epoch = set(storage.semantic_discovery_states)
+    first_state_ids = {state_id for state_id, _revision in first_epoch}
+    # The pointer in progress still references an earlier revision than the newest saved one.
+    published = json.loads(progress.strategy_state("semantic_link")["pending"][0])
+    published_revision = published["source_state_ref"]["revision"]
+    assert max(revision for _sid, revision in first_epoch) > published_revision
+
+    # New owner epoch: different page boundaries -> different content for the same revision number.
+    monkeypatch.setattr("surreal_memory.engine.semantic_discovery._EMBEDDING_PAGE_SIZE", 3)
+    await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+        ConsolidationReport(), dry_run=False
+    )
+
+    new_keys = set(storage.semantic_discovery_states) - first_epoch
+    assert new_keys, "the resumed epoch must have saved snapshots"
+    assert all(state_id not in first_state_ids for state_id, _revision in new_keys)
