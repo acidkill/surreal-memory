@@ -605,3 +605,488 @@ def test_success_history_only_updates_under_terminal_cas_and_survives_blocked_re
     saved = api.request.call_args.args[1]["data"]
     assert json.loads(saved["receipt.json"]) == blocked
     assert json.loads(saved["last_confirmed_success.json"]) == proof
+
+
+def recovered_checkpoint():
+    from surreal_memory.engine.consolidation import ConsolidationStrategy
+    from surreal_memory.engine.consolidation_progress import options_fingerprint
+
+    cp = checkpoint("paused")
+    reference = "2026-11-05T12:00:00"
+    recovered_at = "2026-11-08T21:00:00"
+    token = hourly.canonical(
+        {
+            "version": 1,
+            "brain_id": "default",
+            "versionstamp": 1,
+            "captured_at": reference,
+            "created_at_readonly": True,
+        }
+    )
+    new_token = token.replace('"versionstamp":1', '"versionstamp":2')
+    old_ref = {"state_id": "old", "revision": 4, "state_revision": 4, "source_token": token}
+    new_ref = {
+        "state_id": "generation-new",
+        "revision": 1,
+        "state_revision": 1,
+        "source_token": new_token,
+    }
+    prior = {
+        "kind": "semantic_link_discovery",
+        "version": 5,
+        "stage": "validation",
+        "cursor": "old-cursor",
+        "discovery": {
+            "kind": "semantic_link_discovery",
+            "version": 5,
+            "stage": "neurons",
+            "cursor": "old-cursor",
+            "source_state_ref": old_ref,
+        },
+        "source_validation_ref": {
+            "state_id": "validation",
+            "revision": 1,
+            "state_revision": 1,
+            "source_token": token,
+        },
+    }
+    bootstrap = {
+        "kind": "semantic_link_discovery",
+        "version": 5,
+        "stage": "neurons",
+        "cursor": None,
+        "source_state_ref": new_ref,
+    }
+    counters = {
+        "semantic_synapses_created": 7625,
+        "semantic_synapses_skipped": 77982,
+        "semantic_link_failures": 0,
+        "pairs_evaluated": 94223,
+    }
+    audit = {
+        "kind": "stale_semantic_source_restart",
+        "version": 2,
+        "brain_id": "default",
+        "run_id": cp["run_id"],
+        "options_fingerprint": cp["options_fingerprint"],
+        "reference_time": reference,
+        "expected_status": "failed",
+        "previous_phase": "semantic_link_discovery_validation",
+        "generation": 1,
+        "semantics": "cumulative_write_events",
+        "source_changed_verified": True,
+        "source_change": "neuron:deleted DELETE versionstamp=42",
+        "prior_manifest": prior,
+        "manifest_sha256": options_fingerprint(prior),
+        "prior_counters": counters.copy(),
+        "counters_sha256": options_fingerprint(counters),
+        "retired_source_state_ref": old_ref,
+        "retired_cursor": "old-cursor",
+        "source_token_sha256": hourly.hashlib.sha256(token.encode()).hexdigest(),
+        "new_source_token_sha256": hourly.hashlib.sha256(new_token.encode()).hexdigest(),
+        "source_state_ref": new_ref,
+        "bootstrap_sha256": options_fingerprint(bootstrap),
+        "resolved_error": "semantic_link (progress coordination: ConsolidationProgressError)",
+        "resolved_nested_error": "semantic_link source changed; discovery checkpoint preserved: source changed",
+        "owner_token": "recovery-owner",
+        "recovered_at": recovered_at,
+    }
+    strategies = [s.value for s in ConsolidationStrategy if s is not ConsolidationStrategy.ALL]
+    cp.update(
+        requested_strategies=strategies,
+        completed_strategies=[s for s in strategies if s != "semantic_link"],
+        reference_time=reference,
+        current_strategy="semantic_link",
+        phase="semantic_link_restart_pending",
+        cursor=None,
+        owner_token=audit["owner_token"],
+        updated_at=recovered_at,
+        counters={"semantic_link": counters.copy()},
+        strategy_states={
+            "semantic_link": {
+                "phase": "semantic_link_restart_pending",
+                "cursor": None,
+                "updated_at": recovered_at,
+                "counters": counters.copy(),
+                "pending": [hourly.canonical(bootstrap)],
+                "recovery": audit,
+                "recovery_history": [audit],
+            }
+        },
+    )
+    cp["strategy_states"].update(
+        {
+            strategy: {"phase": "completed", "counters": {}}
+            for strategy in cp["completed_strategies"]
+        }
+    )
+    return cp
+
+
+def recovery_receipt(cp):
+    state = receipt(cp, "bootstrap")
+    audit = cp["strategy_states"]["semantic_link"]["recovery"]
+    state.update(
+        source="operator_recovery",
+        cli_rc=None,
+        next_action="resume",
+        run_id=cp["run_id"],
+        options_fingerprint=cp["options_fingerprint"],
+        reference_time=cp["reference_time"],
+        no_active_worker_verified=True,
+        no_active_lease_verified=True,
+        source_generation=audit["generation"],
+        recovery_audit_sha256=hourly.checkpoint_hash(audit),
+    )
+    return state
+
+
+def test_operator_recovery_selects_same_run_resume_without_inventing_cli_exit():
+    import copy
+
+    cp = recovered_checkpoint()
+    original = copy.deepcopy(cp)
+    state = recovery_receipt(cp)
+    assert hourly.select_command(state, cp, None) == [
+        "smem",
+        "consolidate",
+        "--brain",
+        "default",
+        "--resume",
+    ]
+    assert state["cli_rc"] is None
+    assert cp == original
+    assert cp["counters"]["semantic_link"]["semantic_synapses_created"] == 7625
+
+
+def test_operator_recovery_accepts_equivalent_sdk_datetime_serializations():
+    from datetime import datetime
+
+    cp = recovered_checkpoint()
+    cp["reference_time"] = datetime.fromisoformat(cp["reference_time"])
+    cp["updated_at"] = datetime.fromisoformat(cp["updated_at"])
+    cp["strategy_states"]["semantic_link"]["updated_at"] += "Z"
+    state = recovery_receipt(cp)
+    state["reference_time"] = cp["reference_time"].isoformat() + "Z"
+    assert "--resume" in hourly.select_command(state, cp, None)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("approved", False),
+        ("run_id", "other"),
+        ("options_fingerprint", "other"),
+        ("reference_time", "2026-11-06T12:00:00"),
+        ("checkpoint_sha256", "other"),
+        ("recovery_audit_sha256", "other"),
+        ("source_generation", 2),
+        ("source_generation", True),
+        ("no_active_worker_verified", False),
+        ("no_active_lease_verified", False),
+        ("cli_rc", 0),
+        ("next_action", "fresh"),
+    ],
+)
+def test_operator_recovery_refuses_mismatched_seed(field, value):
+    cp = recovered_checkpoint()
+    state = recovery_receipt(cp)
+    state[field] = value
+    with pytest.raises(hourly.BlockedError):
+        hourly.select_command(state, cp, None)
+
+
+@pytest.mark.parametrize(
+    "where,field,value",
+    [
+        ("cp", "last_error", "unrelated active failure"),
+        ("cp", "completed_strategies", ["prune"]),
+        ("cp", "requested_strategies", ["semantic_link"]),
+        ("cp", "run_id", "other"),
+        ("cp", "options_fingerprint", "other"),
+        ("cp", "reference_time", "2026-11-06T12:00:00"),
+        ("semantic", "last_error", "unrelated active failure"),
+        ("semantic", "cursor", "old-cursor"),
+        ("semantic", "recovery_history", ["malformed historical failure"]),
+        ("semantic", "recovery_history", "malformed history"),
+        ("audit", "resolved_error", "unrelated failure"),
+        ("audit", "source_changed_verified", False),
+        ("audit", "generation", 0),
+        ("audit", "manifest_sha256", "other"),
+        ("audit", "source_token_sha256", "other"),
+        ("audit", "unexpected_error", "active failure"),
+        ("audit", "owner_token", "other"),
+    ],
+)
+def test_operator_recovery_refuses_active_errors_or_malformed_audit(where, field, value):
+    cp = recovered_checkpoint()
+    state = recovery_receipt(cp)
+    semantic = cp["strategy_states"]["semantic_link"]
+    target = {"cp": cp, "semantic": semantic, "audit": semantic["recovery"]}[where]
+    target[field] = value
+    state["checkpoint_sha256"] = hourly.checkpoint_hash(cp)
+    state["recovery_audit_sha256"] = hourly.checkpoint_hash(semantic["recovery"])
+    with pytest.raises(hourly.BlockedError):
+        hourly.select_command(state, cp, None)
+
+
+@pytest.mark.parametrize("status", ["paused", "completed"])
+def test_valid_recovery_history_survives_later_terminal_receipts(status):
+    cp = recovered_checkpoint()
+    cp["status"] = status
+    if status == "completed":
+        cp["completed_strategies"] = cp["requested_strategies"].copy()
+    cp["phase"] = "semantic_link_discovery_neurons"
+    cp["owner_token"] += "-later"
+    cp["strategy_states"]["semantic_link"]["phase"] = cp["phase"]
+    state = receipt(cp)
+    command = hourly.select_command(state, cp, hourly.MARKER + hourly.canonical(state))
+    assert ("--resume" in command) is (status == "paused")
+    cp["unrelated_history"] = cp["strategy_states"]["semantic_link"]["recovery"]
+    with pytest.raises(hourly.BlockedError):
+        hourly.clean_checkpoint(cp)
+
+
+@pytest.mark.parametrize("failures", [1, False, None])
+def test_operator_recovery_requires_explicit_numeric_zero_backend_failures(failures):
+    from surreal_memory.engine.consolidation_progress import options_fingerprint
+
+    cp = recovered_checkpoint()
+    semantic = cp["strategy_states"]["semantic_link"]
+    for counters in (
+        cp["counters"]["semantic_link"],
+        semantic["counters"],
+        semantic["recovery"]["prior_counters"],
+    ):
+        counters["semantic_link_failures"] = failures
+    semantic["recovery"]["counters_sha256"] = options_fingerprint(semantic["counters"])
+    with pytest.raises(hourly.BlockedError):
+        hourly.select_command(recovery_receipt(cp), cp, None)
+
+
+def test_missing_runtime_recovery_validator_blocks_historical_error_exemption():
+    from surreal_memory.engine import consolidation_progress
+
+    cp = recovered_checkpoint()
+    with patch.object(
+        consolidation_progress, "validate_semantic_source_generation_audit", None, create=True
+    ):
+        with pytest.raises(hourly.BlockedError):
+            hourly.clean_checkpoint(cp)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("preflight_window", [False, True])
+async def test_operator_recovery_active_lease_never_invokes_cli(preflight_window):
+    cp = recovered_checkpoint()
+    state = recovery_receipt(cp)
+    api = MagicMock()
+    api.state.return_value = {"data": {"receipt.json": hourly.canonical(state)}}
+    api.identity.return_value = {}
+    active = [{"owner_token": "active"}]
+    storage = SimpleNamespace(
+        get_consolidation_progress=AsyncMock(return_value=cp),
+        _query=AsyncMock(side_effect=[[], active] if preflight_window else [active]),
+    )
+    with patch.object(hourly.subprocess, "Popen") as popen:
+        assert await hourly.run(api, storage, MagicMock(baseline=[["uid", "[]"], 0])) == 0
+    popen.assert_not_called()
+    assert api.cas.call_args.args[1] == state
+    assert api.cas.call_args.args[2]["outcome"] == "deferred_active_lease"
+    assert state["cli_rc"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status,rc", [("completed", 0), ("paused", 1)])
+async def test_operator_recovery_runner_records_actual_terminal_exit(status, rc, capsys):
+    import copy
+
+    before = recovered_checkpoint()
+    state = recovery_receipt(before)
+    after = copy.deepcopy(before)
+    after["status"] = status
+    after["phase"] = "semantic_link_discovery_neurons"
+    after["strategy_states"]["semantic_link"]["phase"] = after["phase"]
+    if status == "completed":
+        after["completed_strategies"] = after["requested_strategies"].copy()
+    for counters in (
+        after["counters"]["semantic_link"],
+        after["strategy_states"]["semantic_link"]["counters"],
+    ):
+        counters["semantic_synapses_created"] += 2
+    api = MagicMock()
+    cm = {"metadata": {"resourceVersion": "1"}, "data": {"receipt.json": hourly.canonical(state)}}
+    api.state.return_value = cm
+    api.cas.return_value = cm
+    api.identity.return_value = {}
+    storage = SimpleNamespace(
+        get_consolidation_progress=AsyncMock(side_effect=[before, before, before, after]),
+        _query=AsyncMock(return_value=[]),
+    )
+    child = MagicMock()
+    child.poll.return_value = rc
+    child.wait.return_value = rc
+    with patch.object(hourly.subprocess, "Popen", return_value=child) as popen:
+        assert await hourly.run(api, storage, MagicMock(baseline=[["uid", "[]"], 0])) == 0
+    assert popen.call_args.args[0] == ["smem", "consolidate", "--brain", "default", "--resume"]
+    terminal_state = api.cas.call_args.args[1]
+    assert terminal_state["phase"] == "terminal"
+    assert terminal_state["cli_rc"] == rc
+    assert terminal_state["run_id"] == before["run_id"]
+    assert after["counters"]["semantic_link"]["semantic_synapses_created"] == 7627
+    command = hourly.select_command(terminal_state, after, capsys.readouterr().out)
+    assert ("--resume" in command) is (status == "paused")
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "source",
+        "seed_status",
+        "baseline",
+        "baseline_type",
+        "owner",
+        "updated_at",
+        "phase",
+        "cursor",
+        "duplicate_requested",
+        "duplicate_completed",
+        "untyped_requested",
+        "untyped_completed",
+        "negative_counter",
+        "boolean_counter",
+        "aggregate_counter",
+        "missing_failure_counter",
+        "history_empty",
+        "history_tip",
+        "history_invalid",
+        "history_v1",
+        "audit_missing",
+        "audit_float_version",
+        "pending_empty",
+        "pending_multiple",
+        "pending_json",
+        "pending_scalar",
+        "pending_changed",
+        "pending_oversized",
+        "missing_context",
+    ],
+)
+def test_operator_recovery_rejects_drift_and_malformed_evidence(mutation):
+    import copy
+
+    cp = recovered_checkpoint()
+    seed = recovery_receipt(cp)
+    semantic = cp["strategy_states"]["semantic_link"]
+    if mutation == "source":
+        seed["source"] = "automatic_recovery"
+    elif mutation == "seed_status":
+        seed["status"] = "completed"
+    elif mutation in {"baseline", "baseline_type"}:
+        seed["resource_baseline"] = [] if mutation == "baseline" else True
+    elif mutation in {"owner", "updated_at", "phase", "cursor"}:
+        field = "owner_token" if mutation == "owner" else mutation
+        cp[field] = "wrong"
+    elif mutation.startswith("duplicate_"):
+        field = mutation.removeprefix("duplicate_") + "_strategies"
+        cp[field].append(cp[field][0])
+    elif mutation.startswith("untyped_"):
+        cp[mutation.removeprefix("untyped_") + "_strategies"] = "semantic_link"
+    elif mutation in {"negative_counter", "boolean_counter"}:
+        semantic["counters"]["pairs_evaluated"] = -1 if mutation == "negative_counter" else True
+    elif mutation == "aggregate_counter":
+        cp["counters"]["semantic_link"]["pairs_evaluated"] += 1
+    elif mutation == "missing_failure_counter":
+        del semantic["counters"]["semantic_link_failures"]
+    elif mutation == "history_empty":
+        semantic["recovery_history"] = []
+    elif mutation == "history_tip":
+        semantic["recovery_history"] = [{**semantic["recovery"], "owner_token": "other"}]
+    elif mutation in {"history_invalid", "history_v1"}:
+        old = dict(semantic["recovery"], version=1) if mutation == "history_v1" else {}
+        semantic["recovery_history"].insert(0, old)
+    elif mutation == "audit_missing":
+        del semantic["recovery"]
+    elif mutation == "audit_float_version":
+        semantic["recovery"]["version"] = 2.0
+    elif mutation == "pending_empty":
+        semantic["pending"] = []
+    elif mutation == "pending_multiple":
+        semantic["pending"] *= 2
+    elif mutation == "pending_json":
+        semantic["pending"] = ["{"]
+    elif mutation == "pending_scalar":
+        semantic["pending"] = ["42"]
+    elif mutation == "pending_changed":
+        semantic["pending"] = ["{}"]
+    elif mutation == "pending_oversized":
+        semantic["pending"] = [" " * (512 * 1024 + 1)]
+    elif mutation == "missing_context":
+        del cp["reference_time"]
+    seed["checkpoint_sha256"] = hourly.checkpoint_hash(cp)
+    if "recovery" in semantic:
+        seed["recovery_audit_sha256"] = hourly.checkpoint_hash(semantic["recovery"])
+    original = copy.deepcopy(cp)
+    with pytest.raises(hourly.BlockedError):
+        hourly.select_command(seed, cp, None)
+    assert cp == original
+
+
+def test_recovery_bootstrap_is_not_confirmed_success():
+    from surreal_memory.engine.consolidation_receipts import confirmed_success
+
+    cp = recovered_checkpoint()
+    assert confirmed_success(recovery_receipt(cp), cp) is None
+    assert len(cp["strategy_states"]) == 20
+    assert len(cp["completed_strategies"]) == 19
+
+
+@pytest.mark.parametrize("rc", [None, 0, False, True, 2])
+def test_recovered_paused_terminal_requires_actual_cli_one(rc):
+    cp = recovered_checkpoint()
+    state = receipt(cp)
+    state["cli_rc"] = rc
+    with pytest.raises(hourly.BlockedError):
+        hourly.select_command(state, cp, hourly.MARKER + hourly.canonical(state))
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("kind", "unrelated"),
+        ("version", 4),
+        ("version", 5.0),
+        ("stage", "similarity"),
+        ("cursor", "stale"),
+        ("unexpected", "field"),
+    ],
+)
+def test_hash_consistent_forged_bootstrap_is_not_recovery_proof(field, value):
+    cp = recovered_checkpoint()
+    semantic = cp["strategy_states"]["semantic_link"]
+    manifest = json.loads(semantic["pending"][0])
+    manifest[field] = value
+    semantic["pending"] = [hourly.canonical(manifest)]
+    semantic["recovery"]["bootstrap_sha256"] = hourly.checkpoint_hash(manifest)
+    with pytest.raises(hourly.BlockedError):
+        hourly.select_command(recovery_receipt(cp), cp, None)
+
+
+@pytest.mark.parametrize("status,rc", [("paused", True), ("completed", False)])
+def test_terminal_validation_rejects_boolean_exit_codes(status, rc):
+    cp = recovered_checkpoint()
+    cp["status"] = status
+    if status == "completed":
+        cp["completed_strategies"] = cp["requested_strategies"].copy()
+    with pytest.raises(hourly.BlockedError):
+        hourly.terminal(cp, rc, cp, True, "")
+
+
+def test_optional_empty_recovery_is_absent_but_cannot_authorize_operator_resume():
+    cp = checkpoint("paused")
+    cp["strategy_states"] = {"semantic_link": {"recovery": None}}
+    assert not hourly.checkpoint_errors(cp)
+    state = receipt(cp, "bootstrap")
+    state.update(source="operator_recovery", cli_rc=None, next_action="resume")
+    with pytest.raises(hourly.BlockedError):
+        hourly.select_command(state, cp, None)
