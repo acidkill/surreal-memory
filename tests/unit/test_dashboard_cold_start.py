@@ -65,8 +65,9 @@ async def test_cold_dashboard_returns_counts_and_pending_without_waiting(
             client.get("/api/dashboard/health"),
             client.get("/api/dashboard/brains"),
         ),
-        timeout=0.2,
+        timeout=5.0,
     )
+    assert not gate.is_set()
     stats, health, brains = replies
     assert stats.status_code == 200
     assert stats.json()["total_neurons"] == 17

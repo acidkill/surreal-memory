@@ -19,26 +19,14 @@ Restart your AI tool. Your agent now remembers.
 
 ---
 
-## What's new in 3.12.2
+## What's new in 3.13.0
 
-- **Safer consolidation recovery:** resumable summarization, scoped pruning and
-  change-log cleanup, and compression safeguards for pinned/shared neurons,
-  original content, later edits and completed replay receipts.
-- **Less work per database round trip:** native record targets, neuron reads in
-  batches of 100, and optional verified acceleration for semantic checkpoint hashing.
-- **Quieter memory:** `recall`, `context`, `recap` and `explain` no longer feed
-  their queries or results back into passive memory capture. Explicit memory
-  writes remain available; normal recall reinforcement still occurs.
-- **More reliable operations:** failed WebSocket queries are surfaced without
-  unsafe replay, busy changefeeds are paged correctly, and completed-run semantic
-  snapshots can be removed under a configurable retention policy.
-- The dashboard command palette now filters page entries and Pro hints by query.
+- **Visible progress:** consolidation persists useful work and reports verified status and work metrics.
+- **Safer recovery:** semantic discovery continues bounded batches with source validation, and committed work survives budget pauses.
+- **Exact brain operations:** lookup and deletion use exact identity, with lease and registry safeguards for full deletion.
+- **More responsive operations:** dashboard statistics avoid cold diagnostics delays, and retention and snapshot cleanup use bounded reads.
 
-For an unfinished consolidation, use `smem consolidate --resume --brain default`.
-For a new run, use `smem consolidate --brain default`. Existing strategy budgets
-still apply; this release does not guarantee a large brain completes in one call.
-Read the [upgrade and consolidation guide](docs/guides/consolidation.md) before
-maintenance, especially the backup and downgrade notes.
+Existing strategy budgets still apply; large consolidation runs may need another resume. Read the [upgrade and consolidation guide](docs/guides/consolidation.md) before maintenance, especially the backup and downgrade notes.
 
 ### Previously in 3.12.1
 
