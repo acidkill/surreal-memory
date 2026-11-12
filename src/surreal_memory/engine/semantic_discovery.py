@@ -1803,6 +1803,9 @@ async def _discover_semantic_synapses_resumable(
             ):
                 raise RuntimeError("semantic_link neuron cursor changed during resume")
             await record_neuron(neuron)
+            # Fingerprinting a neuron is CPU-bound pure Python; hand the loop back every neuron so
+            # the lease heartbeat is never starved for a whole page.
+            await asyncio.sleep(0)
             neuron_cursor = neuron_id
             source_rebuild["neuron_cursor"] = neuron_cursor
             last_neuron_id = neuron_id
@@ -1911,6 +1914,7 @@ async def _discover_semantic_synapses_resumable(
     )
     replay_edge = replay_edge_cursor is not None
     replay_edge_found = not replay_edge
+    edge_scanned = 0
     if (
         saved_stage == "synapses"
         and legacy_edge_cursor is None
@@ -1937,6 +1941,9 @@ async def _discover_semantic_synapses_resumable(
             if replay_edge and replay_edge_cursor is not None and synapse_id > replay_edge_cursor:
                 raise RuntimeError("semantic_link synapse cursor changed during resume")
             fingerprint.add_synapse(synapse)
+            edge_scanned += 1
+            if edge_scanned % 100 == 0:
+                await asyncio.sleep(0)
             edge_cursor = synapse_id
             source_rebuild["edge_cursor"] = edge_cursor
             if replay_edge and synapse_id == replay_edge_cursor:

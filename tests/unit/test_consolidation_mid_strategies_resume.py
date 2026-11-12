@@ -2650,6 +2650,17 @@ async def test_semantic_link_rejects_snapshot_when_embedding_changes(
     assert storage.added_synapses == []
 
 
+def _scan_config() -> SimpleNamespace:
+    return SimpleNamespace(
+        embedding_enabled=True,
+        embedding_provider="fixture",
+        embedding_model="fixture",
+        semantic_discovery_similarity_threshold=0.7,
+        semantic_discovery_max_pairs=50,
+        essence_generator="extractive",
+    )
+
+
 @pytest.mark.asyncio
 async def test_semantic_link_dry_run_does_not_change_storage_or_progress(
     monkeypatch: pytest.MonkeyPatch,
@@ -2680,3 +2691,70 @@ async def test_semantic_link_dry_run_does_not_change_storage_or_progress(
     assert storage.added_synapses == []
     assert progress.writes == []
     assert progress.state == before
+
+
+@pytest.mark.parametrize(
+    ("neuron_count", "synapse_count", "min_turns"), [(60, 0, 60), (6, 2000, 20)]
+)
+async def test_semantic_discovery_scans_hand_control_back_to_the_event_loop(
+    monkeypatch: pytest.MonkeyPatch, neuron_count: int, synapse_count: int, min_turns: int
+) -> None:
+    """The fingerprint scans are CPU-bound; without a yield the lease heartbeat starves."""
+    import asyncio
+    import time as _time
+
+    from surreal_memory.engine.semantic_discovery import _SemanticFingerprintBuilder
+
+    neurons = [
+        Neuron.create(
+            NeuronType.CONCEPT,
+            f"scan candidate {index}",
+            metadata={"_embedding": [1.0 - index * 0.001, index * 0.001]},
+            neuron_id=f"scan-node-{index:04d}",
+        )
+        for index in range(neuron_count)
+    ]
+    synapses = [
+        Synapse.create(
+            f"scan-node-{index % neuron_count:04d}",
+            f"scan-node-{(index + 1) % neuron_count:04d}",
+            SynapseType.RELATED_TO,
+            synapse_id=f"scan-synapse-{index:04d}",
+        )
+        for index in range(synapse_count)
+    ]
+    config = _scan_config()
+    monkeypatch.setattr(
+        "surreal_memory.engine.semantic_discovery._effective_embedding",
+        lambda _config: (True, "fixture", "fixture"),
+    )
+    storage = _Storage(neurons=neurons, synapses=synapses)
+    storage.brain.config = config
+
+    original_neuron = _SemanticFingerprintBuilder.add_neuron
+
+    def busy_add_neuron(self: Any, neuron: Neuron) -> None:
+        end = _time.perf_counter() + 0.002  # stands in for the ~82 ms pure-Python SHA per neuron
+        while _time.perf_counter() < end:
+            pass
+        original_neuron(self, neuron)
+
+    monkeypatch.setattr(_SemanticFingerprintBuilder, "add_neuron", busy_add_neuron)
+
+    turns = 0
+    stop = False
+
+    async def ticker() -> None:
+        nonlocal turns
+        while not stop:
+            turns += 1
+            await asyncio.sleep(0)
+
+    task = asyncio.create_task(ticker())
+    # The production path: staged discovery driven by the engine with a progress session.
+    await _engine(
+        storage, ConsolidationStrategy.SEMANTIC_LINK, _Progress("semantic_link")
+    )._semantic_link(ConsolidationReport(), dry_run=False)
+    stop = True
+    await task
+    assert turns >= min_turns, f"the event loop got only {turns} turns during the scans"

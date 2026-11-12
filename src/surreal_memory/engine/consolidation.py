@@ -670,6 +670,9 @@ class ConsolidationReport:
                 f"{self.extra.get('validation_synapse_events', 0)} synapse events; "
                 f"cursor={self.extra.get('validation_cursor', 'unknown')}"
             )
+        lease_gap = self.extra.get("lease_max_renew_gap_s")
+        if lease_gap is not None:
+            lines.append(f"  Lease max renew gap: {lease_gap}s")
         if self.merge_details:
             lines.append("  Merge details:")
             for detail in self.merge_details:
@@ -887,6 +890,11 @@ class ConsolidationEngine:
                 f"lease for brain {progress_session.brain_id!r} was lost; "
                 "stopping before another work unit"
             )
+        # The heartbeat shares the event loop with the work and can be starved by a CPU-bound scan;
+        # renew here as well when it has not done so for a third of the lease.
+        renew_if_due = getattr(progress_session, "renew_if_due", None)
+        if renew_if_due is not None:
+            await renew_if_due()
         deadlines = [
             deadline
             for deadline in (self._strategy_deadline, self._total_deadline)
@@ -1334,6 +1342,11 @@ class ConsolidationEngine:
 
             if progress_messages:
                 report.extra["consolidation_progress_messages"] = progress_messages
+
+            if progress_session is not None:
+                renew_gap = getattr(progress_session, "max_renew_gap_s", None)
+                if isinstance(renew_gap, int | float):
+                    report.extra["lease_max_renew_gap_s"] = round(float(renew_gap), 1)
 
             report.duration_ms = (time.perf_counter() - start) * 1000
             return report
