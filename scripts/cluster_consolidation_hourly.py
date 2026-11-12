@@ -29,6 +29,7 @@ from surreal_memory.engine.consolidation_receipts import (
     select_command,
     success_timestamp,
     terminal,
+    timestamp,
 )
 from surreal_memory.engine.consolidation_receipts import (
     checkpoint_errors as checkpoint_errors,
@@ -42,6 +43,10 @@ GIB = 1024**3
 
 class DeferredError(BlockedError):
     """Temporary capacity shortage before any mutation."""
+
+
+class CapacityError(BlockedError):
+    """Runtime capacity requires a graceful, verified child stop."""
 
 
 def utcnow() -> str:
@@ -206,7 +211,7 @@ class Safety:
             raise BlockedError("database restarted, changed incarnation, or new OOM")
         self.baseline = baseline
         if values["available"] <= 4 * GIB:
-            error = DeferredError if initial else BlockedError
+            error = DeferredError if initial else CapacityError
             raise error("node free memory below safety floor")
         if initial:
             unsafe = values["current"] >= 14 * GIB or values["working"] >= 13 * GIB
@@ -215,7 +220,7 @@ class Safety:
                 values["current"] >= 15.25 * GIB and values["working"] >= 13 * GIB
             )
         if unsafe:
-            error = DeferredError if initial else BlockedError
+            error = DeferredError if initial else CapacityError
             raise error("database memory exceeds safety threshold")
 
 
@@ -228,7 +233,7 @@ async def live(storage: Any) -> tuple[dict[str, Any], list[Any]]:
     return cp, leases
 
 
-def stop(child: subprocess.Popen[Any]) -> None:
+def stop(child: subprocess.Popen[Any]) -> bool:
     if child.poll() is None:
         child.send_signal(signal.SIGINT)
         try:
@@ -240,6 +245,8 @@ def stop(child: subprocess.Popen[Any]) -> None:
             except subprocess.TimeoutExpired:
                 child.kill()
                 child.wait(timeout=10)
+            return False
+    return type(child.returncode) is int
 
 
 async def run(api: Kubernetes, storage: Any, safety: Safety) -> int:
@@ -247,6 +254,7 @@ async def run(api: Kubernetes, storage: Any, safety: Safety) -> int:
     receipt = json.loads(cm["data"]["receipt.json"])
     child = None
     owns = False
+    capacity_checkpoint = None
     try:
         if datetime.now(UTC) < datetime.fromisoformat("2026-11-05T13:15:00+00:00"):
             print("HOURLY_DEFERRED not-before", flush=True)
@@ -338,7 +346,11 @@ async def run(api: Kubernetes, storage: Any, safety: Safety) -> int:
                 child = subprocess.Popen(command, stdout=output, stderr=subprocess.STDOUT)
                 while child.poll() is None:
                     await asyncio.sleep(10)
-                    safety.sample()
+                    capacity_error = None
+                    try:
+                        safety.sample()
+                    except CapacityError as exc:
+                        capacity_error = exc
                     current, active = await live(storage)
                     if current and (
                         current.get("last_error")
@@ -354,6 +366,25 @@ async def run(api: Kubernetes, storage: Any, safety: Safety) -> int:
                         )
                     ):
                         raise BlockedError("engine lease absent or lost")
+                    if capacity_error is not None:
+                        if (
+                            not current
+                            or current.get("status") not in {"running", "paused", "completed"}
+                            or checkpoint_errors(current)
+                            or timestamp(current.get("reference_time")) is None
+                            or not isinstance(current.get("owner_token"), str)
+                            or not current["owner_token"]
+                        ):
+                            raise BlockedError(
+                                "capacity stop checkpoint is unsafe"
+                            ) from capacity_error
+                        capacity_checkpoint = current
+                        receipt["capacity_stop_reason"] = str(capacity_error)
+                        if not stop(child):
+                            raise BlockedError(
+                                "capacity stop required forced termination"
+                            ) from capacity_error
+                        break
                 rc = child.wait()
                 receipt["cli_rc"] = rc
             finally:
@@ -371,11 +402,29 @@ async def run(api: Kubernetes, storage: Any, safety: Safety) -> int:
                         cli_output_tail=text[-4096:],
                     )
                 print(text, end="", flush=True)
-        safety.sample()
+        try:
+            safety.sample()
+        except CapacityError:
+            if capacity_checkpoint is None:
+                raise
         after, leases = await live(storage)
         if leases:
             raise BlockedError("engine lease still active after child exit")
         terminal(after, rc, cp, "--resume" in command, text)
+        if capacity_checkpoint is not None and (
+            any(
+                after.get(key) != capacity_checkpoint.get(key)
+                for key in (
+                    "brain_id",
+                    "run_id",
+                    "owner_token",
+                    "options_fingerprint",
+                    "reference_time",
+                )
+            )
+            or ("--resume" in command and after.get("reference_time") != cp.get("reference_time"))
+        ):
+            raise BlockedError("capacity stop checkpoint scope changed")
         receipt.update(
             phase="terminal",
             status=after["status"],
