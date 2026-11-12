@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Explicit semantic recovery can retire an age-proven expired discovery source with a distinct audit, retaining committed graph effects and completed strategies. Automatic recovery still refuses expired source evidence.
+
 ## [3.13.0] — 2026-11-12 — consolidation progress and safer operations
 
 ### Added
