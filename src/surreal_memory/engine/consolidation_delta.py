@@ -208,6 +208,7 @@ async def run_with_delta(
     tier_config: TierConfig | None = None,
     on_progress: Callable[[str], None] | None = None,
     resume_run_id: str | None = None,
+    supersede_failed_semantic_link: bool = False,
 ) -> ConsolidationDelta:
     """Run consolidation and compute a before/after health delta.
 
@@ -224,6 +225,9 @@ async def run_with_delta(
         config: Optional consolidation config overrides.
         reference_time: Reference time for consolidation.
         resume_run_id: Require this unfinished run under the consolidation lease.
+        supersede_failed_semantic_link: Let a run of another strategy replace the record of a
+            failed (or too old to resume) lone semantic_link run instead of being refused.
+            Ignored together with ``resume_run_id``.
 
     Returns:
         ConsolidationDelta with before/after snapshots and report.
@@ -232,7 +236,12 @@ async def run_with_delta(
     from surreal_memory.engine.diagnostics import DiagnosticsEngine
 
     diagnostics = DiagnosticsEngine(storage)
-    engine = ConsolidationEngine(storage, config, tier_config=tier_config)
+    engine = ConsolidationEngine(
+        storage,
+        config,
+        tier_config=tier_config,
+        supersede_failed_semantic_link=supersede_failed_semantic_link,
+    )
 
     diagnostic_errors: dict[str, str] = {}
 

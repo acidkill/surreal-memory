@@ -86,6 +86,36 @@ def _parse_reference_time(value: Any) -> datetime:
     raise ConsolidationResumeMismatchError("unfinished consolidation has no valid reference_time")
 
 
+def _supersede_reason(existing: Mapping[str, Any], requested: Sequence[str]) -> str | None:
+    """Why the unfinished run of a lone semantic_link may be replaced by the next run, if it may.
+
+    semantic_link is additive and idempotent (deterministic edge ids), so abandoning its
+    half-finished run loses nothing. Anything else - other strategies, or a run that can still
+    be resumed - is left alone.
+    """
+    from surreal_memory.storage.surrealdb.semantic_source_revision import (
+        SEMANTIC_SOURCE_TOKEN_MAX_AGE,
+    )
+
+    if sorted(existing.get("requested_strategies") or []) != ["semantic_link"]:
+        return None
+    if existing.get("status") == "failed" and list(requested) != ["semantic_link"]:
+        return "failed_semantic_link_run_does_not_block_other_strategies"
+    try:
+        age = utcnow() - _parse_reference_time(existing.get("reference_time"))
+    except ConsolidationResumeMismatchError:
+        return None
+    if age >= SEMANTIC_SOURCE_TOKEN_MAX_AGE:
+        return "older_than_the_source_token_window"
+    return None
+
+
+def _iso(value: Any) -> str | None:
+    if value is None:
+        return None
+    return value.isoformat() if hasattr(value, "isoformat") else str(value)
+
+
 _LEGACY_DISCOVERY_PHASES = {
     "semantic_link_discovery_neurons",
     "semantic_link_discovery_selection",
@@ -1752,6 +1782,8 @@ class ConsolidationProgressSession:
         self.state = state
         self.lease_seconds = lease_seconds
         self.resumed = False
+        # Audit of the unfinished semantic_link run this session replaced, if it did.
+        self.superseded: dict[str, Any] | None = None
         self._lease_lost = False
         self._checkpoint_unconfirmed = False
         self._closed = False
@@ -1767,8 +1799,15 @@ class ConsolidationProgressSession:
         *,
         explicit_reference_time: datetime | None = None,
         resume_run_id: str | None = None,
+        supersede_failed_semantic_link: bool = False,
     ) -> ConsolidationProgressSession | None:
-        """Acquire the brain lease, then resume or initialize its active record."""
+        """Acquire the brain lease, then resume or initialize its active record.
+
+        With ``supersede_failed_semantic_link`` an unfinished record of a lone semantic_link run
+        that failed (and must not block other strategies) or is too old to resume is replaced by
+        a new run; what was replaced is kept in ``strategy_states["_superseded_runs"]``. An
+        explicit ``resume_run_id`` never supersedes.
+        """
         if not supports_persistent_progress(storage):
             if resume_run_id is not None:
                 raise ConsolidationResumeMismatchError(
@@ -1798,6 +1837,36 @@ class ConsolidationProgressSession:
                     f"resume checkpoint {resume_run_id!r} changed or is no longer unfinished; "
                     "its checkpoint was left untouched"
                 )
+            superseded: dict[str, Any] | None = None
+            carried_audit: list[Any] = []
+            if (
+                supersede_failed_semantic_link
+                and resume_run_id is None
+                and existing
+                and str(existing.get("status")) in INCOMPLETE_STATUSES
+            ):
+                reason = _supersede_reason(existing, requested)
+                if reason is not None:
+                    previous_states = existing.get("strategy_states")
+                    previous_audit = (
+                        previous_states.get("_superseded_runs")
+                        if isinstance(previous_states, Mapping)
+                        else None
+                    )
+                    carried_audit = (
+                        list(previous_audit)[:4] if isinstance(previous_audit, list) else []
+                    )
+                    superseded = {
+                        "run_id": existing.get("run_id"),
+                        "status": existing.get("status"),
+                        "phase": existing.get("phase"),
+                        "last_error": str(existing.get("last_error") or "")[:300] or None,
+                        "updated_at": _iso(existing.get("updated_at")),
+                        "reference_time": _iso(existing.get("reference_time")),
+                        "reason": reason,
+                        "superseded_at": utcnow().isoformat(),
+                    }
+                    existing = None
             if existing and str(existing.get("status")) in INCOMPLETE_STATUSES:
                 if existing.get("engine_version") != CONSOLIDATION_ENGINE_VERSION:
                     raise ConsolidationResumeMismatchError(
@@ -1866,7 +1935,9 @@ class ConsolidationProgressSession:
                     "current_strategy": None,
                     "phase": "starting",
                     "cursor": None,
-                    "strategy_states": {},
+                    "strategy_states": (
+                        {"_superseded_runs": [superseded, *carried_audit]} if superseded else {}
+                    ),
                     "counters": {},
                     "owner_token": owner_token,
                     "started_at": utcnow(),
@@ -1875,6 +1946,7 @@ class ConsolidationProgressSession:
                 }
                 record = await storage.start_consolidation_progress(state)
                 session = cls(storage, brain_id, owner_token, dict(record))
+                session.superseded = superseded
             session._heartbeat_task = asyncio.create_task(
                 session._renew_lease(), name=f"consolidation-lease:{brain_id}"
             )

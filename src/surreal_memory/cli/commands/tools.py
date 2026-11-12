@@ -509,6 +509,17 @@ def consolidate(
     min_inactive_days: Annotated[
         float, typer.Option("--min-inactive-days", help="Minimum inactive days before pruning")
     ] = 7.0,
+    supersede_failed_semantic_link: Annotated[
+        bool,
+        typer.Option(
+            "--supersede-failed-semantic-link",
+            help=(
+                "Let this run replace the record of a failed (or too old to resume) lone "
+                "semantic_link run instead of being refused; semantic_link is additive and "
+                "idempotent, so nothing is lost. The replaced run is kept in the new record."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Consolidate brain memories by pruning, merging, or summarizing.
 
@@ -572,6 +583,13 @@ def consolidate(
     if resume and dry_run:
         typer.secho(
             "Error: --resume cannot be combined with --dry-run.", fg=typer.colors.RED, err=True
+        )
+        raise typer.Exit(1)
+    if resume and supersede_failed_semantic_link:
+        typer.secho(
+            "Error: --resume cannot be combined with --supersede-failed-semantic-link.",
+            fg=typer.colors.RED,
+            err=True,
         )
         raise typer.Exit(1)
 
@@ -676,6 +694,7 @@ def consolidate(
                 dry_run=dry_run,
                 config=cons_config,
                 on_progress=lambda message: typer.echo(message),
+                supersede_failed_semantic_link=supersede_failed_semantic_link,
             )
 
         typer.echo("")

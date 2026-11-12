@@ -67,7 +67,11 @@ class SurrealDBConsolidationStateMixin:
         """Create or replace the completed run record for a new brain-scoped run.
 
         Callers must hold the brain lease and must have verified that any
-        existing record is complete before invoking this method.
+        existing record is complete before invoking this method. The one
+        deliberate exception is ``ConsolidationProgressSession.open`` with
+        ``supersede_failed_semantic_link``: it replaces the unfinished record of
+        a lone semantic_link run that failed or can no longer be resumed, after
+        copying an audit of that run into the new record.
         """
         brain_id = str(state["brain_id"])
         record_id = self._consolidation_record_id(brain_id)

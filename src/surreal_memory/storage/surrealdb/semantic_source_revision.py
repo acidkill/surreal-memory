@@ -16,6 +16,10 @@ from uuid import uuid4
 
 _CHANGEFEED_RETENTION = timedelta(days=7)
 _TOKEN_MAX_AGE = timedelta(days=6, hours=15, minutes=36)
+# Public alias: how old a source token may get before a run that captured it can no longer be
+# resumed (kept below the changefeed retention). The consolidation engine reads it to decide
+# when an unfinished semantic_link run has expired.
+SEMANTIC_SOURCE_TOKEN_MAX_AGE = _TOKEN_MAX_AGE
 _TOKEN_VERSION = 1
 _BARRIER_CHANGEFEED_PAGE_SIZE = 128
 _BARRIER_CHANGEFEED_MAX_ROWS = 100_000
