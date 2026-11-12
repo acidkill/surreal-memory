@@ -359,3 +359,41 @@ async def test_observer_access_distinguishes_dashboard_proxy_from_private_metric
                 await client.get(path, headers={"X-Forwarded-For": "127.0.0.1"})
             ).status_code == 403
     storage.get_consolidation_progress.assert_not_awaited()
+
+
+@pytest.mark.parametrize("status", ["paused", "completed"])
+def test_valid_recovery_archive_is_historical_in_observer_and_runner(status):
+    from tests.unit.test_cluster_consolidation_hourly import recovered_checkpoint
+
+    cp = recovered_checkpoint()
+    cp["status"] = status
+    if status == "completed":
+        cp["completed_strategies"] = cp["requested_strategies"].copy()
+    cp["phase"] = "semantic_link_discovery_neurons"
+    value = receipt(cp)
+    original = deepcopy(cp)
+    assert not observer.checkpoint_errors(cp)
+    result = summarize(cp, configmap(value))
+    assert result.state == status
+    assert (result.last_confirmed_success_at is not None) is (status == "completed")
+    assert cp == original
+
+
+@pytest.mark.parametrize("mutation", ["active", "unknown_field", "wrong_run", "v1", "outside_path"])
+def test_recovery_archive_cannot_hide_active_or_invalid_evidence(mutation):
+    from tests.unit.test_cluster_consolidation_hourly import recovered_checkpoint
+
+    cp = recovered_checkpoint()
+    audit = cp["strategy_states"]["semantic_link"]["recovery"]
+    if mutation == "active":
+        cp["last_error"] = "active failure"
+    elif mutation == "unknown_field":
+        audit["unexpected"] = "field"
+    elif mutation == "wrong_run":
+        audit["run_id"] = "different"
+    elif mutation == "v1":
+        audit["version"] = 1
+    else:
+        cp["unrelated_archive"] = audit
+    assert observer.checkpoint_errors(cp)
+    assert summarize(cp, configmap(receipt(cp))).state == "failed"
