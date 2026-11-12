@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Resuming semantic-link apply accepts an edge that recall reinforced after it
+  was written (higher weight and count, new activation time). Any other change
+  to a written edge still stops the run.
 - Compression reports a cumulative count of fibers whose originals were preserved,
   with per-fiber details at DEBUG level. Resume retains committed counts and marks
   older checkpoints with missing preservation history as partial.

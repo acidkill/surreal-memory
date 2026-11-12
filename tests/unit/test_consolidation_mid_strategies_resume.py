@@ -14,7 +14,7 @@ import pytest
 
 from surreal_memory.core.fiber import Fiber
 from surreal_memory.core.neuron import Neuron, NeuronType
-from surreal_memory.core.synapse import Synapse, SynapseType
+from surreal_memory.core.synapse import Direction, Synapse, SynapseType
 from surreal_memory.engine import semantic_discovery as semantic_discovery_module
 from surreal_memory.engine.consolidation import (
     ConsolidationConfig,
@@ -1165,6 +1165,92 @@ async def test_semantic_link_rejects_changed_row_after_apply_checkpoint(
     saved = result.synapses[0]
     storage.synapses[saved.id] = dc_replace(saved, weight=saved.weight / 2)
     monkeypatch.setattr(progress, "checkpoint", durable_checkpoint)
+    with pytest.raises(ConsolidationProgressError, match="changed after its checkpoint"):
+        await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+            ConsolidationReport(), dry_run=False
+        )
+    assert progress.strategy_state("semantic_link")["phase"] == "semantic_link_pending"
+
+
+async def _interrupt_semantic_link_before_apply_checkpoint(
+    monkeypatch: pytest.MonkeyPatch, result: SemanticDiscoveryResult
+) -> tuple[_Storage, _Progress]:
+    """Write every discovered edge, then fail the apply checkpoint (edges stay pending)."""
+    storage = _Storage()
+    progress = _Progress("semantic_link")
+    monkeypatch.setattr(
+        "surreal_memory.engine.semantic_discovery.discover_semantic_synapses",
+        lambda *_args, **_kwargs: _semantic_discovery_result(result),
+    )
+    durable_checkpoint = progress.checkpoint
+
+    async def fail_before_apply_checkpoint(strategy: str, phase: str, **kwargs: Any) -> None:
+        if phase == "semantic_link_apply":
+            raise OSError("simulated checkpoint failure")
+        await durable_checkpoint(strategy, phase, **kwargs)
+
+    monkeypatch.setattr(progress, "checkpoint", fail_before_apply_checkpoint)
+    with pytest.raises(OSError, match="checkpoint failure"):
+        await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+            ConsolidationReport(), dry_run=False
+        )
+    monkeypatch.setattr(progress, "checkpoint", durable_checkpoint)
+    return storage, progress
+
+
+@pytest.mark.asyncio
+async def test_semantic_link_resume_accepts_recall_reinforcement_of_a_written_edge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Recall may reinforce an edge between its write and the apply checkpoint.
+
+    Reinforcement raises the weight and the count and stamps last_activated; the resumed
+    apply must count the edge as written instead of failing the run.
+    """
+    result = _semantic_batch_result(1)
+    storage, progress = await _interrupt_semantic_link_before_apply_checkpoint(monkeypatch, result)
+    saved = result.synapses[0]
+    storage.synapses[saved.id] = storage.synapses[saved.id].reinforce(delta=0.1)
+    added_before = len(storage.added_synapses)
+
+    report = ConsolidationReport()
+    await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+        report, dry_run=False
+    )
+
+    assert report.semantic_synapses_created == 1
+    assert len(storage.added_synapses) == added_before
+    assert storage.synapses[saved.id].reinforced_count == saved.reinforced_count + 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "change",
+    [
+        pytest.param({"metadata": {"rewritten": True}}, id="metadata"),
+        pytest.param({"direction": True, "weight_delta": 0.1}, id="direction"),
+        pytest.param({"reinforced_count_delta": -1, "weight_delta": 0.1}, id="lower-count"),
+    ],
+)
+async def test_semantic_link_resume_rejects_non_reinforcement_change_of_a_written_edge(
+    monkeypatch: pytest.MonkeyPatch, change: dict[str, Any]
+) -> None:
+    result = _semantic_batch_result(1)
+    storage, progress = await _interrupt_semantic_link_before_apply_checkpoint(monkeypatch, result)
+    saved = storage.synapses[result.synapses[0].id]
+    fields: dict[str, Any] = {"weight": min(1.0, saved.weight + change.get("weight_delta", 0.0))}
+    if "metadata" in change:
+        fields["metadata"] = change["metadata"]
+    if "direction" in change:
+        fields["direction"] = (
+            Direction.BIDIRECTIONAL
+            if saved.direction != Direction.BIDIRECTIONAL
+            else Direction.UNIDIRECTIONAL
+        )
+    if "reinforced_count_delta" in change:
+        fields["reinforced_count"] = saved.reinforced_count + change["reinforced_count_delta"]
+    storage.synapses[saved.id] = dc_replace(saved, **fields)
+
     with pytest.raises(ConsolidationProgressError, match="changed after its checkpoint"):
         await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
             ConsolidationReport(), dry_run=False
