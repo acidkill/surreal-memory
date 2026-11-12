@@ -3249,6 +3249,8 @@ class SurrealDBStorage(
                         )
 
     async def get_brain(self, brain_id: str) -> Brain | None:
+        if not brain_id:
+            return None
         self._ensure_conn()
         try:
             # Query all brains and filter manually (string matching in SurrealDB is problematic)
@@ -3257,15 +3259,12 @@ class SurrealDBStorage(
                 for r in rows:
                     rid = r["id"]
                     name = str(r.get("name") or "")
-                    # Compare record ID string
-                    rid_str = str(rid) if not hasattr(rid, "id") else f"brain:{rid.id}"
-                    # Brains are addressed by name; match the name field first,
-                    # then fall back to a record-id match for id-based lookups.
-                    # Without the name match, get_brain(name) never resolves a
-                    # brain whose record id is a random UUID, so the bootstrap
-                    # re-creates a fresh brain on every start (orphan-row leak).
-                    if name == brain_id or brain_id in rid_str or rid_str.endswith(f":{brain_id}"):
-                        bid_str = str(rid.id) if hasattr(rid, "id") else _record_id_part(str(rid))
+                    bid_str = str(rid.id) if hasattr(rid, "id") else _record_id_part(str(rid))
+                    # Keep exact names for legacy UUID-backed brains, plus bare
+                    # and fully qualified IDs (including the SDK's quoted form).
+                    # Substrings can resolve an absent ID to a surviving prefix
+                    # neighbour, or hide an exact match later in the result set.
+                    if brain_id in (name, bid_str, f"brain:{bid_str}", str(rid)):
                         return Brain(
                             id=bid_str,
                             name=name,
