@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Resuming semantic-link apply accepts an edge that recall reinforced after it
+  was written (higher weight and count, new activation time). Any other change
+  to a written edge still stops the run.
 - A resumed semantic-link discovery saves its snapshots under a fresh state id,
   allocated at its first save. A previous attempt that stopped after saving a
   revision but before publishing it no longer makes the resumed run fail with
