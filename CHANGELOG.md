@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `smem consolidate --supersede-failed-semantic-link` (off by default) lets a
+  run replace the record of a failed or expired lone `semantic_link` run instead
+  of being refused; the replaced run is kept in the new record. An explicit
+  `--resume` never supersedes.
+
 ### Fixed
 
 - Explicit semantic recovery can retire an age-proven expired discovery source with a distinct audit, retaining committed graph effects and completed strategies. Automatic recovery still refuses expired source evidence.

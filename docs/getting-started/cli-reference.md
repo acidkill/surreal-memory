@@ -679,6 +679,7 @@ smem consolidate [OPTIONS]
 | `--prune-threshold` | float | No | `0.05` | Weight threshold for pruning synapses |
 | `--merge-overlap` | float | No | `0.5` | Jaccard overlap threshold for merging fibers |
 | `--min-inactive-days` | float | No | `7.0` | Minimum inactive days before pruning |
+| `--supersede-failed-semantic-link` | boolean | No | `False` | Let this run replace the record of a failed (or too old to resume) lone semantic_link run instead of being refused; s... |
 
 ### `smem cleanup`
 
