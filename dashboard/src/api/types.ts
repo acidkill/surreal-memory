@@ -11,7 +11,8 @@ export interface DashboardStats {
   total_synapses: number
   total_fibers: number
   health_grade: string
-  purity_score: number
+  purity_score: number | null
+  diagnostic_status: "pending" | "ready" | "unavailable"
   brains: BrainSummary[]
 }
 
@@ -23,7 +24,8 @@ export interface BrainSummary {
   synapse_count: number
   fiber_count: number
   grade: string
-  purity_score: number
+  purity_score: number | null
+  diagnostic_status: "pending" | "ready" | "unavailable"
   is_active: boolean
 }
 
@@ -67,6 +69,10 @@ export interface ConsolidationStatus {
 }
 
 // GET /api/dashboard/health
+export interface PendingHealth {
+  status: "pending"
+}
+
 export interface HealthReport {
   grade: string
   purity_score: number

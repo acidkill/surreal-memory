@@ -6,6 +6,7 @@ import type {
   BrainDeleteResponse,
   BrainSwitchResponse,
   HealthReport,
+  PendingHealth,
   ConsolidationStatus,
   HealthCheckResponse,
   TimelineResponse,
@@ -56,7 +57,10 @@ const keys = {
 export function useStats() {
   return useQuery({
     queryKey: keys.stats,
-    queryFn: () => api.get<DashboardStats>("/api/dashboard/stats"),
+    queryFn: ({ signal }) => api.get<DashboardStats>("/api/dashboard/stats", {
+      signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
+    }),
+    retry: false,
   })
 }
 
@@ -73,7 +77,13 @@ export function useHealthCheck() {
 export function useBrains() {
   return useQuery({
     queryKey: keys.brains,
-    queryFn: () => api.get<BrainSummary[]>("/api/dashboard/brains"),
+    queryFn: ({ signal }) => api.get<BrainSummary[]>("/api/dashboard/brains", {
+      signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
+    }),
+    refetchInterval: (query) => query.state.status !== "error" && query.state.data?.some(
+      (brain) => brain.diagnostic_status === "pending",
+    ) ? 2000 : false,
+    retry: false,
   })
 }
 
@@ -95,7 +105,12 @@ export function useSwitchBrain() {
 export function useHealth() {
   return useQuery({
     queryKey: keys.health,
-    queryFn: () => api.get<HealthReport>("/api/dashboard/health"),
+    queryFn: ({ signal }) => api.get<HealthReport | PendingHealth>("/api/dashboard/health", {
+      signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
+    }),
+    refetchInterval: (query) => query.state.status !== "error"
+      && query.state.data && "status" in query.state.data ? 2000 : false,
+    retry: false,
   })
 }
 

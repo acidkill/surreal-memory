@@ -13,6 +13,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allocated at its first save. A previous attempt that stopped after saving a
   revision but before publishing it no longer makes the resumed run fail with
   "semantic discovery state revisions are immutable".
+- Explicit semantic recovery can retire an age-proven expired discovery source with a distinct audit, retaining committed graph effects and completed strategies. Automatic recovery still refuses expired source evidence.
+- The consolidation supervisor retains a resumable receipt after a resource pause only when the real child exit and clean durable checkpoint match; changed identities, OOM events and unknown failures remain blocked.
+
+## [3.13.0] — 2026-11-12 — consolidation progress and safer operations
+
+### Added
+
+- Consolidation persists useful work progress and exposes verified status and work metrics.
+
+### Fixed
+
+- Brain lookup and deletion use exact identity, with lease and registry safeguards for full deletion.
+- Semantic discovery resumes bounded batches with source validation, stable candidate ordering and audited recovery of stale source generations.
+- Consolidation retains committed work across budget pauses; the supervisor recognizes audited semantic recovery.
+- Dashboard statistics stay responsive during cold diagnostics. Health scores use complete memory cohorts.
+- Change-log retention, habit selection and snapshot cleanup use bounded reads; hooks retain client identity and verify persistence receipts.
+
 - Compression reports a cumulative count of fibers whose originals were preserved,
   with per-fiber details at DEBUG level. Resume retains committed counts and marks
   older checkpoints with missing preservation history as partial.

@@ -517,6 +517,8 @@ def validate_semantic_source_generation_audit(
         "owner_token",
         "recovered_at",
     }
+    if marker.get("version") == 3:
+        expected_fields.add("source_expiry_verified_at")
     optional_fields = {"retired_cursor", "resolved_error", "resolved_nested_error"}
     if set(marker) - expected_fields or expected_fields - optional_fields - set(marker):
         return False
@@ -546,6 +548,18 @@ def validate_semantic_source_generation_audit(
         old_ref, new_ref = marker["retired_source_state_ref"], marker["source_state_ref"]
         old_token, new_token = old_ref["source_token"], new_ref["source_token"]
         old_decoded, new_decoded = json.loads(old_token), json.loads(new_token)
+        from surreal_memory.storage.surrealdb.semantic_source_revision import _TOKEN_MAX_AGE
+
+        expired = marker.get("version") == 3
+        expiry_proven = (
+            expired
+            and marker.get("source_changed_verified") is False
+            and _parse_reference_time(marker["source_expiry_verified_at"])
+            - _parse_reference_time(old_decoded["captured_at"])
+            >= _TOKEN_MAX_AGE
+            and _parse_reference_time(marker["source_expiry_verified_at"])
+            <= _parse_reference_time(new_decoded["captured_at"])
+        )
         bootstrap = {
             "kind": "semantic_link_discovery",
             "version": 5,
@@ -555,7 +569,8 @@ def validate_semantic_source_generation_audit(
         }
         return (
             marker.get("kind") == "stale_semantic_source_restart"
-            and marker.get("version") == 2
+            and type(marker.get("version")) is int
+            and marker["version"] in {2, 3}
             and marker.get("brain_id") == brain_id
             and marker.get("run_id") == run_id
             and marker.get("options_fingerprint") == options_fingerprint
@@ -564,7 +579,7 @@ def validate_semantic_source_generation_audit(
             and type(marker.get("generation")) is int
             and marker["generation"] > 0
             and marker.get("semantics") == "cumulative_write_events"
-            and marker.get("source_changed_verified") is True
+            and (expiry_proven if expired else marker.get("source_changed_verified") is True)
             and all(
                 safe_metadata(marker[key])
                 for key in (
@@ -646,13 +661,18 @@ async def _restart_semantic_source_generation(
     dry_run: bool = True,
     source_changed: bool = False,
     source_change_reason: str | None = None,
+    allow_expired_source: bool = False,
     budget_check: Callable[[], Awaitable[None]] | None = None,
     progress_session: ConsolidationProgressSession | None = None,
 ) -> dict[str, Any]:
     """Retire an unapplied proposal; committed counters remain write-event totals."""
     from surreal_memory.engine.consolidation import ConsolidationConfig, ConsolidationStrategy
     from surreal_memory.engine.semantic_discovery import _load_source_state
-    from surreal_memory.storage.surrealdb.semantic_source_revision import SemanticSourceChangedError
+    from surreal_memory.storage.surrealdb.semantic_source_revision import (
+        _TOKEN_MAX_AGE,
+        SemanticSourceChangedError,
+        SemanticSourceFenceExpiredError,
+    )
 
     loop = asyncio.get_running_loop()
     deadline = loop.time() + ConsolidationConfig().strategy_timeout_seconds
@@ -727,7 +747,7 @@ async def _restart_semantic_source_generation(
         or (history_raw and history_raw[-1] != old_marker)
         or (
             isinstance(old_marker, Mapping)
-            and old_marker.get("version") == 2
+            and old_marker.get("version") in {2, 3}
             and not validate_semantic_source_generation_audit(
                 old_marker,
                 brain_id=brain_id,
@@ -767,6 +787,7 @@ async def _restart_semantic_source_generation(
             "already_recovered": True,
             "dry_run": dry_run,
             "previous_phase": old_marker["previous_phase"],
+            "source_expired": old_marker["version"] == 3,
         }
 
     if state.get("status") == "paused":
@@ -832,8 +853,22 @@ async def _restart_semantic_source_generation(
         or decoded.get("brain_id") != brain_id
         or decoded.get("created_at_readonly") is not True
         or type(decoded.get("versionstamp")) is not int
+        or decoded["versionstamp"] < 0
+        or not isinstance(decoded.get("captured_at"), str)
     ):
         raise ConsolidationResumeMismatchError("source generation token is not readonly-attested")
+    expiry_verified_at: datetime | None = None
+
+    async def verify_expiry(exc: SemanticSourceFenceExpiredError) -> datetime:
+        if not allow_expired_source:
+            raise ConsolidationResumeMismatchError(
+                "expired discovery requires manual recovery"
+            ) from exc
+        observed_at = _parse_reference_time(await storage._server_now())
+        if observed_at - _parse_reference_time(decoded["captured_at"]) < _TOKEN_MAX_AGE:
+            raise ConsolidationResumeMismatchError("source expiry age was not proven") from exc
+        return observed_at
+
     proof_ref = wrapper.get("source_validation_ref", manifest.get("source_validation_ref"))
     if proof_ref is not None:
         if not isinstance(proof_ref, Mapping) or proof_ref.get("source_token") != token:
@@ -865,6 +900,12 @@ async def _restart_semantic_source_generation(
                         source_changed = True
                         source_change_reason = str(exc)
                         break
+                    except SemanticSourceFenceExpiredError as exc:
+                        expiry_verified_at = await verify_expiry(exc)
+                        source_change_reason = (
+                            "semantic source token exceeded the safe changefeed window"
+                        )
+                        break
                     except RuntimeError as exc:
                         raise ConsolidationPausedError(
                             f"source generation validation unavailable; checkpoint unchanged: {exc}"
@@ -885,13 +926,16 @@ async def _restart_semantic_source_generation(
                         raise ConsolidationPausedError(
                             "source generation validation pending; checkpoint unchanged"
                         )
-    if not source_changed:
+    if not source_changed and expiry_verified_at is None:
         try:
             await storage.assert_semantic_source_unchanged(token, created_before=reference_time)
         except SemanticSourceChangedError as exc:
             source_changed = True
             source_change_reason = str(exc)
-    if not source_changed:
+        except SemanticSourceFenceExpiredError as exc:
+            expiry_verified_at = await verify_expiry(exc)
+            source_change_reason = "semantic source token exceeded the safe changefeed window"
+    if not source_changed and expiry_verified_at is None:
         raise ConsolidationResumeMismatchError(
             "semantic source change before reference_time was not proven"
         )
@@ -902,6 +946,7 @@ async def _restart_semantic_source_generation(
             "already_recovered": False,
             "dry_run": True,
             "previous_phase": str(phase),
+            "source_expired": expiry_verified_at is not None,
         }
 
     new_token = await storage.capture_semantic_source_token()
@@ -912,6 +957,10 @@ async def _restart_semantic_source_generation(
         or new_decoded.get("created_at_readonly") is not True
         or type(new_decoded.get("versionstamp")) is not int
         or new_decoded["versionstamp"] < decoded["versionstamp"]
+        or (
+            expiry_verified_at is not None
+            and _parse_reference_time(new_decoded.get("captured_at")) < expiry_verified_at
+        )
     ):
         raise ConsolidationResumeMismatchError("new source generation token is invalid")
     state_id = "generation-" + str(uuid4())
@@ -955,7 +1004,7 @@ async def _restart_semantic_source_generation(
         history.append(dict(old_marker))
     marker = {
         "kind": "stale_semantic_source_restart",
-        "version": 2,
+        "version": 3 if expiry_verified_at is not None else 2,
         "brain_id": brain_id,
         "run_id": run_id,
         "options_fingerprint": state["options_fingerprint"],
@@ -964,7 +1013,7 @@ async def _restart_semantic_source_generation(
         "previous_phase": phase,
         "generation": 1 + max((item.get("generation", 0) for item in history), default=0),
         "semantics": "cumulative_write_events",
-        "source_changed_verified": True,
+        "source_changed_verified": source_changed,
         "source_change": str(source_change_reason or "semantic source changed")[:2000],
         "prior_manifest": wrapper,
         "manifest_sha256": sha256(canonical.encode()).hexdigest(),
@@ -981,6 +1030,8 @@ async def _restart_semantic_source_generation(
         "owner_token": owner_token,
         "recovered_at": updated_at,
     }
+    if expiry_verified_at is not None:
+        marker["source_expiry_verified_at"] = expiry_verified_at
     history.append(marker)
     next_semantic = dict(semantic)
     next_semantic.update(
@@ -1006,7 +1057,9 @@ async def _restart_semantic_source_generation(
             current_semantic = candidate["strategy_states"]["semantic_link"]
             current_marker = dict(current_semantic["recovery"])
             intended_marker = dict(marker)
-            for key in ("reference_time", "recovered_at"):
+            for key in ("reference_time", "recovered_at", "source_expiry_verified_at"):
+                if key not in intended_marker:
+                    continue
                 current_marker[key] = _parse_reference_time(current_marker[key])
                 intended_marker[key] = _parse_reference_time(intended_marker[key])
             pending_manifest, _ = _decode_legacy_discovery_pending(current_semantic.get("pending"))
@@ -1097,6 +1150,7 @@ async def _restart_semantic_source_generation(
         "dry_run": False,
         "previous_phase": str(phase),
         "generation": marker["generation"],
+        "source_expired": expiry_verified_at is not None,
         "state": saved,
     }
 
@@ -1171,10 +1225,10 @@ async def recover_stale_semantic_link_discovery(
         semantic = state.get("strategy_states", {}).get("semantic_link", {})
         marker = semantic.get("recovery") if isinstance(semantic, Mapping) else None
         if state.get("phase") == "semantic_link_discovery_validation" or (
-            isinstance(marker, Mapping) and marker.get("version") == 2
+            isinstance(marker, Mapping) and marker.get("version") in {2, 3}
         ):
             return await _restart_semantic_source_generation(
-                storage, state, owner_token, dry_run=dry_run
+                storage, state, owner_token, dry_run=dry_run, allow_expired_source=True
             )
 
         from surreal_memory.engine.consolidation import ConsolidationStrategy

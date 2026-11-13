@@ -1338,7 +1338,7 @@ def recover_semantic_discovery(
         bool,
         typer.Option(
             "--stale-source",
-            help="Restart unapplied discovery after its frozen source changed",
+            help="Restart unapplied discovery after its frozen source changed or expired",
         ),
     ] = False,
 ) -> None:
@@ -1381,6 +1381,9 @@ def recover_semantic_discovery(
         except ConsolidationProgressError as exc:
             typer.secho(f"Recovery refused: {exc}", fg="red")
             raise typer.Exit(1) from exc
+        if result.get("source_expired"):
+            action = "retired" if execute else "would be retired"
+            typer.echo(f"Expired discovery source {action}; no source mutation was claimed.")
         if execute:
             typer.echo(
                 f"Recovered run {result['run_id']}: semantic_link discovery will restart "
