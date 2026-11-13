@@ -19,6 +19,7 @@ from surreal_memory.engine.consolidation_receipts import (
     checkpoint_errors,
     checkpoint_hash,
     confirmed_success,
+    resource_rebaseline_matches,
     success_timestamp,
     terminal_receipt_matches,
     timestamp,
@@ -226,6 +227,8 @@ def summarize_consolidation(
         status.state = "deferred_lease"
     elif cp.get("status") == "running" and receipt and receipt.get("phase") == "started":
         status.state = "running"
+    elif resource_rebaseline_matches(receipt, cp):
+        status.state = "paused"
     elif terminal_receipt_matches(receipt, cp):
         if cp["status"] == "completed" and confirmed_success(receipt, cp) is not None:
             status.state = "completed"

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import hashlib
 import json
@@ -11,6 +12,7 @@ import os
 import signal
 import ssl
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.parse
@@ -26,6 +28,7 @@ from surreal_memory.engine.consolidation_receipts import (
     canonical,
     checkpoint_hash,
     confirmed_success,
+    resource_rebaseline_seed,
     select_command,
     success_timestamp,
     terminal,
@@ -147,11 +150,62 @@ class Kubernetes:
             "job_uid": owners[0]["uid"],
         }
 
+    def no_other_jobs(self, own_uid: str) -> None:
+        result = self.request(f"/apis/batch/v1/namespaces/{self.namespace}/jobs")
+        jobs = result.get("items") if isinstance(result, dict) else None
+        if not isinstance(jobs, list) or not own_uid:
+            raise BlockedError("resource rebaseline Job inventory unavailable")
+        own = 0
+        for job in jobs:
+            uid = job.get("metadata", {}).get("uid")
+            status = job.get("status", {})
+            if not isinstance(uid, str) or not uid or not isinstance(status, dict):
+                raise BlockedError("resource rebaseline Job identity unknown")
+            if uid == own_uid:
+                own += 1
+                continue
+            active = status.get("active", 0)
+            terminal_job = any(
+                condition.get("type") in {"Complete", "Failed"}
+                and condition.get("status") == "True"
+                for condition in status.get("conditions", [])
+            )
+            if type(active) is not int or active != 0 or not terminal_job:
+                raise BlockedError("resource rebaseline requires zero other active or unknown Jobs")
+        if own != 1:
+            raise BlockedError("resource rebaseline operator Job UID missing or ambiguous")
+
+
+def configured_memory_limit() -> int:
+    path = os.environ.get("SURREAL_MEMORY_MAINTENANCE_CONFIG")
+    if path is None:
+        return 16 * GIB
+
+    def unique_fields(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        if len({key for key, _ in pairs}) != len(pairs):
+            raise ValueError("duplicate maintenance config field")
+        return dict(pairs)
+
+    try:
+        with Path(path).open("rb") as source:
+            raw = source.read(4097)
+        config = json.loads(raw, object_pairs_hook=unique_fields) if len(raw) <= 4096 else None
+    except (OSError, ValueError) as exc:
+        raise BlockedError("maintenance instance config is unavailable or malformed") from exc
+    if not isinstance(config, dict) or set(config) != {"memory_limit_bytes"}:
+        raise BlockedError("maintenance instance config fields are invalid")
+    limit = config["memory_limit_bytes"]
+    if type(limit) is not int or limit <= 3 * GIB or limit % GIB:
+        raise BlockedError("approved memory limit must be whole GiB above the resident reserve")
+    return limit
+
 
 class Safety:
     def __init__(self, api: Kubernetes) -> None:
         self.api = api
         self.baseline: Any = None
+        self.memory_limit_bytes = configured_memory_limit()
+        self.policy_sha256 = checkpoint_hash({"memory_limit_bytes": self.memory_limit_bytes})
 
     def sample(self, initial: bool = False) -> None:
         pod = self.api.request(self.api.path("pods/" + os.environ["DB_POD"]))
@@ -161,8 +215,9 @@ class Safety:
             for c in containers
             if c.get("name") == "surrealdb"
         ]
-        if limits != ["16Gi"]:
-            raise BlockedError("database must have the approved 16Gi pod limit")
+        expected_limit = f"{self.memory_limit_bytes // GIB}Gi"
+        if limits != [expected_limit]:
+            raise BlockedError(f"database must have the approved {expected_limit} pod limit")
         statuses = pod.get("status", {}).get("containerStatuses", [])
         if not statuses or pod.get("status", {}).get("phase") != "Running":
             raise BlockedError("database pod unavailable")
@@ -206,6 +261,8 @@ class Safety:
             ):
                 raise BlockedError("underlying resource scrape stale or missing")
             values[key] = value
+        if values["working"] > values["current"]:
+            raise BlockedError("working-set metric exceeds current memory")
         baseline = (identity, values["oom"], values["failcnt"])
         if self.baseline is not None and baseline != self.baseline:
             raise BlockedError("database restarted, changed incarnation, or new OOM")
@@ -213,12 +270,15 @@ class Safety:
         if values["available"] <= 4 * GIB:
             error = DeferredError if initial else CapacityError
             raise error("node free memory below safety floor")
+        startup_resident = self.memory_limit_bytes - 3 * GIB
         if initial:
-            unsafe = values["current"] >= 14 * GIB or values["working"] >= 13 * GIB
+            unsafe = values["working"] >= startup_resident
         else:
-            unsafe = values["working"] >= 14.5 * GIB or (
-                values["current"] >= 15.25 * GIB and values["working"] >= 13 * GIB
+            unsafe = values["working"] >= self.memory_limit_bytes - 1.5 * GIB or (
+                values["current"] >= self.memory_limit_bytes - 0.75 * GIB
+                and values["working"] >= startup_resident
             )
+        unsafe = unsafe or values["current"] > self.memory_limit_bytes
         if unsafe:
             error = DeferredError if initial else CapacityError
             raise error("database memory exceeds safety threshold")
@@ -231,6 +291,102 @@ async def live(storage: Any) -> tuple[dict[str, Any], list[Any]]:
         brain_id="default",
     )
     return cp, leases
+
+
+async def rebaseline_resources(
+    api: Kubernetes, storage: Any, safety: Safety, args: argparse.Namespace
+) -> int:
+    """One audited ConfigMap CAS; never mutate an engine checkpoint or start a child."""
+    cm = api.state()
+    raw = cm["data"]["receipt.json"]
+    if hashlib.sha256(raw.encode()).hexdigest() != args.previous_receipt_sha256:
+        raise BlockedError("resource rebaseline predecessor bytes changed")
+    previous = json.loads(raw)
+    cp, leases = await live(storage)
+    if (
+        leases
+        or cp.get("run_id") != args.confirm_run_id
+        or checkpoint_hash(cp) != args.checkpoint_sha256
+    ):
+        raise BlockedError("resource rebaseline checkpoint or lease proof changed")
+    identity = api.identity()
+    api.no_other_jobs(identity["job_uid"])
+    log = api.previous_log(previous)
+    if len(log.encode()) > 128 * 1024:
+        raise BlockedError("resource rebaseline predecessor log oversized")
+    observation_raw = cm["data"].get("last_observation.json")
+    observation_log = None
+    if observation_raw is not None:
+        observation = json.loads(observation_raw)
+        observation_log = api.previous_log(observation)
+        if (
+            len(observation_log.encode()) > 128 * 1024
+            or "HOURLY_OBSERVATION " + canonical(observation) not in observation_log.splitlines()
+            or MARKER + canonical(previous) not in observation_log.splitlines()
+        ):
+            raise BlockedError("resource rebaseline latest observation proof missing")
+    safety.sample(initial=True)
+    seed = resource_rebaseline_seed(
+        previous,
+        cp,
+        log,
+        safety.baseline,
+        args.previous_memory_limit_bytes,
+        safety.memory_limit_bytes,
+        utcnow(),
+    )
+    archive = {
+        "receipt_raw": raw,
+        "receipt_log": log,
+        "observation_raw": observation_raw,
+        "observation_log": observation_log,
+        "operator": identity,
+        "seed_sha256": checkpoint_hash(seed),
+    }
+    key = "resource_rebaseline_" + checkpoint_hash(archive) + ".json"
+    if key in cm["data"]:
+        raise BlockedError("resource rebaseline archive already exists")
+    data = dict(cm["data"])
+    data[key] = canonical(archive)
+    data.pop("last_observation.json", None)
+    prepared = dict(cm, data=data)
+    safety.sample(initial=True)
+    latest, leases = await live(storage)
+    api.no_other_jobs(identity["job_uid"])
+    if leases or checkpoint_hash(latest) != args.checkpoint_sha256:
+        raise BlockedError("resource rebaseline pre-CAS checkpoint or lease changed")
+    expected_data = dict(data, **{"receipt.json": canonical(seed)})
+    if len(canonical(expected_data).encode()) > 900 * 1024:
+        raise BlockedError("resource rebaseline archive exceeds bounded state capacity")
+    try:
+        api.cas(prepared, seed)
+        readback = api.state()
+        latest, leases = await live(storage)
+        safety.sample(initial=True)
+        api.no_other_jobs(identity["job_uid"])
+        if (
+            readback.get("data") != expected_data
+            or leases
+            or checkpoint_hash(latest) != args.checkpoint_sha256
+        ):
+            raise BlockedError("resource rebaseline readback or checkpoint diverged")
+    except Exception as exc:
+        raise BlockedError(
+            "resource rebaseline outcome uncertain; inspect state without retry"
+        ) from exc
+    print(
+        "HOURLY_RESOURCE_REBASELINE "
+        + canonical(
+            {
+                "checkpoint_sha256": args.checkpoint_sha256,
+                "archive_key": key,
+                "seed_sha256": checkpoint_hash(seed),
+                "resource_policy_sha256": safety.policy_sha256,
+            }
+        ),
+        flush=True,
+    )
+    return 0
 
 
 def stop(child: subprocess.Popen[Any]) -> bool:
@@ -300,6 +456,11 @@ async def run(api: Kubernetes, storage: Any, safety: Safety) -> int:
             return 0
         command = select_command(receipt, cp, decision_log)
         safety.sample(initial=True)
+        if (
+            receipt.get("source") == "operator_resource_rebaseline"
+            and receipt.get("resource_policy_sha256") != safety.policy_sha256
+        ):
+            raise BlockedError("approved resource policy changed since operator rebaseline")
         if not receipt.get("resource_baseline") or canonical(
             receipt["resource_baseline"]
         ) != canonical(safety.baseline):
@@ -433,6 +594,7 @@ async def run(api: Kubernetes, storage: Any, safety: Safety) -> int:
             checkpoint_sha256=checkpoint_hash(after),
             finished_at=utcnow(),
             resource_baseline=safety.baseline,
+            resource_policy_sha256=safety.policy_sha256,
         )
         proof = confirmed_success(receipt, after)
         if proof is not None:
@@ -472,17 +634,48 @@ async def run(api: Kubernetes, storage: Any, safety: Safety) -> int:
         return 2
 
 
-async def main() -> int:
+async def main(argv: list[str] | None = None) -> int:
     from surreal_memory.unified_config import get_config, get_shared_storage
 
     if os.environ.get("SURREAL_MEMORY_STORAGE") != "surrealdb":
         raise BlockedError("persistent backend required")
     get_config()
     get_config(reload=True)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--rebaseline-resources", action="store_true")
+    parser.add_argument("--confirm-run-id")
+    parser.add_argument("--checkpoint-sha256")
+    parser.add_argument("--previous-receipt-sha256")
+    parser.add_argument("--previous-memory-limit-bytes", type=int)
+    args = parser.parse_args(argv or [])
+    proof = (
+        args.confirm_run_id,
+        args.checkpoint_sha256,
+        args.previous_receipt_sha256,
+        args.previous_memory_limit_bytes,
+    )
+    if args.rebaseline_resources != all(value is not None for value in proof) or (
+        not args.rebaseline_resources and any(value is not None for value in proof)
+    ):
+        parser.error("resource rebaseline requires all explicit predecessor proof arguments")
     api = Kubernetes()
+    safety = Safety(api)
+    storage: Any
+    if args.rebaseline_resources:
+        # A normal storage factory initializes schema and can migrate brain data.
+        # The operator path must only authenticate/select the existing database.
+        from surreal_memory.storage.surrealdb import SurrealDBStorage
+
+        storage = SurrealDBStorage()
+        storage.set_brain("default")
+        try:
+            await storage._reconnect()
+            return await rebaseline_resources(api, storage, safety, args)
+        finally:
+            await storage.close()
     storage = await get_shared_storage("default")
-    return await run(api, storage, Safety(api))
+    return await run(api, storage, safety)
 
 
 if __name__ == "__main__":
-    raise SystemExit(asyncio.run(main()))
+    raise SystemExit(asyncio.run(main(sys.argv[1:])))

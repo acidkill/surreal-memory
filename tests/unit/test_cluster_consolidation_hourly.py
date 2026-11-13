@@ -517,6 +517,8 @@ def test_safety_new_restart_and_new_oom_block(monkeypatch):
     with patch.object(hourly.urllib.request, "urlopen", side_effect=response):
         safety.sample(initial=True)
         current_memory[0] = 14 * hourly.GIB
+        safety.sample(initial=True)
+        working_memory[0] = 13 * hourly.GIB
         with pytest.raises(hourly.DeferredError):
             safety.sample(initial=True)
         current_memory[0] = 15.25 * hourly.GIB
@@ -927,7 +929,11 @@ async def test_operator_recovery_runner_records_actual_terminal_exit(status, rc,
     child.poll.return_value = rc
     child.wait.return_value = rc
     with patch.object(hourly.subprocess, "Popen", return_value=child) as popen:
-        assert await hourly.run(api, storage, MagicMock(baseline=[["uid", "[]"], 0])) == 0
+        safety = MagicMock(
+            baseline=[["uid", "[]"], 0],
+            policy_sha256=hourly.checkpoint_hash({"memory_limit_bytes": 16 * hourly.GIB}),
+        )
+        assert await hourly.run(api, storage, safety) == 0
     assert popen.call_args.args[0] == ["smem", "consolidate", "--brain", "default", "--resume"]
     terminal_state = api.cas.call_args.args[1]
     assert terminal_state["phase"] == "terminal"

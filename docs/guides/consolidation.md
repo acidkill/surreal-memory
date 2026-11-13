@@ -178,3 +178,57 @@ events. The PostToolUse hook recognizes plain and `mcp__SERVER__NAME` names and
 matches blacklist prefixes against both the original and canonical name. Useful
 external tool events can still be captured. This policy prevents new feedback;
 it does not erase old memories or historical tool events.
+
+
+## Cluster runner resource changes
+
+The optional `SURREAL_MEMORY_MAINTENANCE_CONFIG` environment variable names a
+private mounted JSON file. It accepts exactly one integer field,
+`memory_limit_bytes`, in whole GiB above 3 GiB; an absent variable preserves the
+16 GiB default. Missing, malformed, oversized or unknown configuration blocks
+execution. Keep instance configuration outside public source control. The actual
+database Pod limit must match the approved value exactly.
+
+Startup requires working set below the approved limit minus 3 GiB. Runtime
+stops gracefully when working set reaches limit minus 1.5 GiB, or when both
+current usage reaches limit minus 0.75 GiB and working set reaches limit minus
+3 GiB. Current usage may never exceed the approved limit; working set may never
+exceed current usage. Node available memory must exceed 4 GiB. Metric freshness,
+unique series, Pod/container identity, readiness, restart and OOM checks remain
+mandatory.
+
+[cAdvisor computes working set](https://github.com/google/cadvisor/blob/master/lib/container/libcontainer/handler.go)
+as usage minus inactive file memory, floored at zero. It includes active file
+cache, dirty and kernel memory and is not an RSS or unreclaimable-memory
+measurement. Cache-aware admission therefore retains current usage, resident
+headroom and node capacity checks.
+
+A planned database replacement changes its resource identity. Ordinary runs
+continue to refuse that change. Before replacement, suspend scheduling, wait for
+all workers and engine leases to stop, preserve the database backup and rollback
+configuration, and retain the clean paused terminal receipt and original Job log.
+After the approved resource replacement and database readiness, an operator Job can
+invoke the runner's single `--rebaseline-resources` mode. It requires explicit
+confirmation of the current run, the checkpoint SHA-256, the SHA-256 of the raw
+previous receipt bytes, and the previous memory limit. The private mounted config
+supplies the newly approved limit. Use the runner's `--help` for argument names.
+The operator service account additionally needs read-only namespace Job listing;
+ordinary scheduling needs no new permission.
+
+This mode verifies the original successful supervisor Job/log and actual paused
+CLI exit, unchanged run/options/reference/states/counters, zero other active or
+unknown Jobs, zero engine leases, and a ready replacement database with fresh
+metrics, no restarts, OOM or limit failures. It atomically archives the old receipt,
+log and latest observation under the state's resourceVersion, then saves a
+distinct approved bootstrap receipt binding the new identity and policy. Exact
+readback and unchanged engine state are required. It never invokes consolidation,
+edits a checkpoint, records a synthetic CLI success, or treats resource changes
+as source expiry. A conflict or uncertain acknowledgement requires inspection;
+do not automatically retry. Verify the saved receipt and checkpoint before
+resuming the schedule. The next ordinary invocation must select `--resume` for
+the same paused run. Before the seed CAS, a rollback replacement may use the same limit, a lower
+limit or a higher limit, provided the clean terminal proof and target capacity
+guards still pass. After a seed CAS, hold scheduling and retain the approved
+resources while repairing forward until a real clean terminal receipt exists.
+A bootstrap seed cannot serve as a predecessor for another rebaseline. Preserve
+all evidence; never rewrite a terminal receipt baseline.
