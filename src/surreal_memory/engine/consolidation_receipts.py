@@ -168,6 +168,185 @@ def _operator_recovery_seed(receipt: dict[str, Any], cp: dict[str, Any]) -> bool
     return True
 
 
+def resource_rebaseline_seed(
+    previous: dict[str, Any],
+    cp: dict[str, Any],
+    log: str,
+    baseline: Any,
+    previous_limit: int,
+    memory_limit: int,
+    approved_at: str,
+) -> dict[str, Any]:
+    """Authorize only the unchanged paused run after an explicit resource replacement."""
+    from surreal_memory.engine.consolidation import ConsolidationStrategy
+
+    clean_checkpoint(cp)
+    if not isinstance(log, str) or len(log.encode()) > 128 * 1024:
+        raise BlockedError("resource rebaseline predecessor log missing or oversized")
+    if (
+        not isinstance(previous, dict)
+        or previous.get("phase") != "terminal"
+        or previous.get("run_id") != cp["run_id"]
+        or cp["status"] != "paused"
+    ):
+        raise BlockedError("resource rebaseline requires a clean paused terminal predecessor")
+    select_command(previous, cp, log)
+    terminal(
+        cp, 1, cp, True, "\n".join(line for line in log.splitlines() if not line.startswith(MARKER))
+    )
+    approved, finished = timestamp(approved_at), timestamp(previous.get("finished_at"))
+    if approved is None or finished is None or approved < finished or approved > datetime.now(UTC):
+        raise BlockedError("resource rebaseline approval time is invalid")
+    expected = {s.value for s in ConsolidationStrategy if s is not ConsolidationStrategy.ALL}
+    requested, completed = cp.get("requested_strategies"), cp.get("completed_strategies")
+    states = cp.get("strategy_states")
+    semantic = states.get("semantic_link") if isinstance(states, dict) else None
+    counters = semantic.get("counters") if isinstance(semantic, dict) else None
+    if not (
+        isinstance(requested, list)
+        and isinstance(completed, list)
+        and all(isinstance(s, str) for s in requested + completed)
+        and len(requested) == len(expected)
+        and set(requested) == expected
+        and len(completed) == len(expected) - 1
+        and set(completed) == expected - {"semantic_link"}
+        and cp.get("current_strategy") == "semantic_link"
+        and isinstance(states, dict)
+        and expected - {"semantic_link"} <= set(states)
+        and isinstance(counters, dict)
+        and all(type(v) is int and v >= 0 for v in counters.values())
+        and counters.get("semantic_link_failures") == 0
+        and isinstance(cp.get("counters"), dict)
+        and cp["counters"].get("semantic_link") == counters
+        and timestamp(cp.get("reference_time")) is not None
+    ):
+        raise BlockedError("resource rebaseline checkpoint scope or retained effects are invalid")
+    gib = 1024**3
+    if not (
+        type(previous_limit) is int
+        and type(memory_limit) is int
+        and previous_limit > 3 * gib
+        and memory_limit > 3 * gib
+        and previous_limit % gib == memory_limit % gib == 0
+    ):
+        raise BlockedError("resource rebaseline requires approved whole-GiB limits above reserve")
+    previous_policy = previous.get("resource_policy_sha256")
+    if previous_policy is not None and previous_policy != checkpoint_hash(
+        {"memory_limit_bytes": previous_limit}
+    ):
+        raise BlockedError("resource rebaseline previous limit conflicts with terminal policy")
+
+    def identity(value: Any, fresh: bool) -> tuple[str, list[list[Any]]]:
+        if not (
+            isinstance(value, list)
+            and len(value) == 3
+            and isinstance(value[0], list)
+            and len(value[0]) == 2
+            and isinstance(value[0][0], str)
+            and value[0][0]
+            and isinstance(value[0][1], str)
+            and all(type(v) in {int, float} and v == 0 for v in value[1:])
+        ):
+            raise BlockedError("resource rebaseline identity or OOM evidence is invalid")
+        try:
+            containers = json.loads(value[0][1])
+        except ValueError as exc:
+            raise BlockedError("resource rebaseline container evidence is malformed") from exc
+        if not (
+            isinstance(containers, list)
+            and containers
+            and all(
+                isinstance(c, list)
+                and len(c) == 3
+                and all(isinstance(v, str) and v for v in c[:2])
+                and type(c[2]) is int
+                and c[2] >= 0
+                and (not fresh or c[2] == 0)
+                for c in containers
+            )
+            and len({c[0] for c in containers}) == len(containers)
+        ):
+            raise BlockedError("resource rebaseline container restart evidence is invalid")
+        return value[0][0], containers
+
+    old_baseline = previous.get("resource_baseline")
+    old_uid, old_containers = identity(old_baseline, False)
+    new_baseline = json.loads(canonical(baseline))
+    new_uid, new_containers = identity(new_baseline, True)
+    if (
+        old_uid == new_uid
+        or {c[0] for c in old_containers} != {c[0] for c in new_containers}
+        or {c[1] for c in old_containers} & {c[1] for c in new_containers}
+    ):
+        raise BlockedError("resource rebaseline requires a distinct replacement database")
+    audit = {
+        "kind": "planned_database_resource_restart",
+        "version": 1,
+        "previous_receipt": previous,
+        "previous_log": log,
+        "previous_receipt_sha256": checkpoint_hash(previous),
+        "previous_log_sha256": hashlib.sha256(log.encode()).hexdigest(),
+        "previous_memory_limit_bytes": previous_limit,
+        "memory_limit_bytes": memory_limit,
+        "approved_at": approved_at,
+        "retained_states_sha256": checkpoint_hash(states),
+        "retained_counters_sha256": checkpoint_hash(cp["counters"]),
+    }
+    return {
+        "phase": "bootstrap",
+        "source": "operator_resource_rebaseline",
+        "approved": True,
+        "status": "paused",
+        "cli_rc": None,
+        "next_action": "resume",
+        "observed_at": approved_at,
+        "run_id": cp["run_id"],
+        "options_fingerprint": cp["options_fingerprint"],
+        "reference_time": cp["reference_time"],
+        "checkpoint_sha256": checkpoint_hash(cp),
+        "resource_baseline": new_baseline,
+        "resource_policy_sha256": checkpoint_hash({"memory_limit_bytes": memory_limit}),
+        "no_active_worker_verified": True,
+        "no_active_lease_verified": True,
+        "resource_rebaseline": audit,
+    }
+
+
+def _operator_resource_rebaseline_seed(receipt: dict[str, Any], cp: dict[str, Any]) -> bool:
+    if receipt.get("source") != "operator_resource_rebaseline":
+        return False
+    audit = receipt.get("resource_rebaseline")
+    if not isinstance(audit, dict):
+        raise BlockedError("resource rebaseline audit missing")
+    try:
+        expected = resource_rebaseline_seed(
+            audit["previous_receipt"],
+            cp,
+            audit["previous_log"],
+            receipt["resource_baseline"],
+            audit["previous_memory_limit_bytes"],
+            audit["memory_limit_bytes"],
+            audit["approved_at"],
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise BlockedError("resource rebaseline audit malformed") from exc
+    if canonical(receipt) != canonical(expected):
+        raise BlockedError("resource rebaseline audit or retained checkpoint diverged")
+    return True
+
+
+def resource_rebaseline_matches(receipt: Any, cp: Any) -> bool:
+    """Let read-only observers validate the same distinct operator bootstrap contract."""
+    if not isinstance(receipt, dict) or not isinstance(cp, dict):
+        return False
+    try:
+        return receipt.get("phase") == "bootstrap" and _operator_resource_rebaseline_seed(
+            receipt, cp
+        )
+    except (BlockedError, TypeError, ValueError, KeyError):
+        return False
+
+
 def select_command(receipt: dict[str, Any], cp: dict[str, Any], log: str | None) -> list[str]:
     clean_checkpoint(cp)
     if receipt.get("phase") not in {"bootstrap", "terminal"}:
@@ -176,7 +355,9 @@ def select_command(receipt: dict[str, Any], cp: dict[str, Any], log: str | None)
         raise BlockedError("live checkpoint diverged from receipt")
     recovered = False
     if receipt.get("phase") == "bootstrap":
-        recovered = _operator_recovery_seed(receipt, cp)
+        recovered = _operator_recovery_seed(receipt, cp) or _operator_resource_rebaseline_seed(
+            receipt, cp
+        )
         interrupted = (
             receipt.get("source") == "user_interrupted"
             and cp["status"] == "paused"

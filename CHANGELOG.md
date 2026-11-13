@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Cluster maintenance admits warm file cache within approved resource reserves and
+  supports an explicitly audited planned database resource restart without changing
+  the paused consolidation checkpoint.
+
 - Semantic discovery scans hand control back to the event loop and budget checks
   renew the consolidation lease when the heartbeat is late, so a slow portable
   SHA-256 fallback no longer lets the lease expire mid-scan. The report shows the
