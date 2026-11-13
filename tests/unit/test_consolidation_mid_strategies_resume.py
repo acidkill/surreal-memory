@@ -14,7 +14,7 @@ import pytest
 
 from surreal_memory.core.fiber import Fiber
 from surreal_memory.core.neuron import Neuron, NeuronType
-from surreal_memory.core.synapse import Synapse, SynapseType
+from surreal_memory.core.synapse import Direction, Synapse, SynapseType
 from surreal_memory.engine import semantic_discovery as semantic_discovery_module
 from surreal_memory.engine.consolidation import (
     ConsolidationConfig,
@@ -1166,6 +1166,111 @@ async def test_semantic_link_rejects_changed_row_after_apply_checkpoint(
     storage.synapses[saved.id] = dc_replace(saved, weight=saved.weight / 2)
     monkeypatch.setattr(progress, "checkpoint", durable_checkpoint)
     with pytest.raises(ConsolidationProgressError, match="changed after its checkpoint"):
+        await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+            ConsolidationReport(), dry_run=False
+        )
+    assert progress.strategy_state("semantic_link")["phase"] == "semantic_link_pending"
+
+
+async def _interrupt_semantic_link_before_apply_checkpoint(
+    monkeypatch: pytest.MonkeyPatch, result: SemanticDiscoveryResult
+) -> tuple[_Storage, _Progress]:
+    """Write every discovered edge, then fail the apply checkpoint (edges stay pending)."""
+    storage = _Storage()
+    progress = _Progress("semantic_link")
+    monkeypatch.setattr(
+        "surreal_memory.engine.semantic_discovery.discover_semantic_synapses",
+        lambda *_args, **_kwargs: _semantic_discovery_result(result),
+    )
+    durable_checkpoint = progress.checkpoint
+
+    async def fail_before_apply_checkpoint(strategy: str, phase: str, **kwargs: Any) -> None:
+        if phase == "semantic_link_apply":
+            raise OSError("simulated checkpoint failure")
+        await durable_checkpoint(strategy, phase, **kwargs)
+
+    monkeypatch.setattr(progress, "checkpoint", fail_before_apply_checkpoint)
+    with pytest.raises(OSError, match="checkpoint failure"):
+        await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+            ConsolidationReport(), dry_run=False
+        )
+    monkeypatch.setattr(progress, "checkpoint", durable_checkpoint)
+    return storage, progress
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("delta", [0.1, 1.0])
+async def test_semantic_link_resume_accepts_recall_reinforcement_of_a_written_edge(
+    monkeypatch: pytest.MonkeyPatch,
+    delta: float,
+) -> None:
+    """Recall may reinforce an edge between its write and the apply checkpoint.
+
+    Reinforcement raises the weight and the count and stamps last_activated; the resumed
+    apply must count the edge as written instead of failing the run.
+    """
+    result = _semantic_batch_result(1)
+    storage, progress = await _interrupt_semantic_link_before_apply_checkpoint(monkeypatch, result)
+    saved = result.synapses[0]
+    storage.synapses[saved.id] = storage.synapses[saved.id].reinforce(delta=delta)
+    added_before = len(storage.added_synapses)
+
+    report = ConsolidationReport()
+    await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+        report, dry_run=False
+    )
+
+    assert report.semantic_synapses_created == 1
+    assert len(storage.added_synapses) == added_before
+    assert storage.synapses[saved.id].reinforced_count == saved.reinforced_count + 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "change",
+    [
+        pytest.param({"metadata": {"rewritten": True}}, id="metadata"),
+        pytest.param({"direction": True, "weight_delta": 0.1}, id="direction"),
+        pytest.param({"reinforced_count_delta": -1, "weight_delta": 0.1}, id="lower-count"),
+        pytest.param({"weight": 1.1}, id="weight-above-maximum"),
+        pytest.param({"weight": float("inf")}, id="infinite-weight"),
+        pytest.param({"weight": float("nan")}, id="nan-weight"),
+        pytest.param({"source_id": "changed-source"}, id="source"),
+        pytest.param({"target_id": "changed-target"}, id="target"),
+        pytest.param({"id": "changed-id"}, id="identity"),
+        pytest.param({"type": SynapseType.RELATED_TO}, id="type"),
+        pytest.param({"created_at": _REFERENCE_TIME}, id="creation-time"),
+    ],
+)
+async def test_semantic_link_resume_rejects_non_reinforcement_change_of_a_written_edge(
+    monkeypatch: pytest.MonkeyPatch, change: dict[str, Any]
+) -> None:
+    result = _semantic_batch_result(1)
+    storage, progress = await _interrupt_semantic_link_before_apply_checkpoint(monkeypatch, result)
+    saved = storage.synapses[result.synapses[0].id]
+    fields: dict[str, Any] = {"weight": min(1.0, saved.weight + change.get("weight_delta", 0.0))}
+    if "metadata" in change:
+        fields["metadata"] = change["metadata"]
+    if "direction" in change:
+        fields["direction"] = (
+            Direction.BIDIRECTIONAL
+            if saved.direction != Direction.BIDIRECTIONAL
+            else Direction.UNIDIRECTIONAL
+        )
+    if "reinforced_count_delta" in change:
+        fields["reinforced_count"] = saved.reinforced_count + change["reinforced_count_delta"]
+    fields.update(
+        {
+            key: value
+            for key, value in change.items()
+            if key in {"weight", "source_id", "target_id", "id", "type", "created_at"}
+        }
+    )
+    storage.synapses[saved.id] = dc_replace(saved, **fields)
+
+    with pytest.raises(
+        ConsolidationProgressError, match=r"changed after its (?:pending )?checkpoint"
+    ):
         await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
             ConsolidationReport(), dry_run=False
         )
@@ -2758,3 +2863,96 @@ async def test_semantic_discovery_scans_hand_control_back_to_the_event_loop(
     stop = True
     await task
     assert turns >= min_turns, f"the event loop got only {turns} turns during the scans"
+
+
+class _CrashBeforePublishProgress(_Progress):
+    """Simulates a process dying after ``save_semantic_discovery_state`` but before the
+    manifest pointer is published: the N-th checkpoint of ``crash_phase`` raises BEFORE the
+    pointer is recorded, so the already-saved revision stays an orphan."""
+
+    def __init__(self, strategy: str, *, crash_phase: str, crash_on_call: int) -> None:
+        super().__init__(strategy)
+        self.crash_phase: str | None = crash_phase
+        self.crash_on_call = crash_on_call
+        self._seen: dict[str, int] = {}
+
+    async def checkpoint(
+        self,
+        strategy: str,
+        phase: str,
+        *,
+        cursor: str | None = None,
+        pending: list[str] | None = None,
+        counters: dict[str, int | float] | None = None,
+        work: dict[str, tuple[str, int | str, int | str]] | None = None,
+    ) -> None:
+        if phase == self.crash_phase:
+            self._seen[phase] = self._seen.get(phase, 0) + 1
+            if self._seen[phase] == self.crash_on_call:
+                self.crash_phase = None
+                raise ConsolidationPausedError("simulated crash before publish")
+        await super().checkpoint(
+            strategy, phase, cursor=cursor, pending=pending, counters=counters, work=work
+        )
+
+
+@pytest.mark.asyncio
+async def test_semantic_link_resume_after_orphan_revision_uses_a_fresh_state_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A resumed owner epoch must not reuse the state_id of a previous epoch.
+
+    The crashed epoch saved revision N+1 but never published the pointer to it. Resuming
+    under the SAME state_id re-saves revision N+1 with different content (here: other page
+    boundaries; in production: another owner_token) and the immutable-revision guard fires
+    ("immutable state revision was retried with conflicting content").
+    """
+    neurons = [
+        Neuron.create(
+            NeuronType.CONCEPT if index % 2 == 0 else NeuronType.ENTITY,
+            f"semantic candidate {index}",
+            metadata={"_embedding": [1.0 - index * 0.01, index * 0.01]},
+            neuron_id=f"semantic-node-{index}",
+        )
+        for index in range(4)
+    ]
+    config = SimpleNamespace(
+        embedding_enabled=True,
+        embedding_provider="fixture",
+        embedding_model="fixture",
+        semantic_discovery_similarity_threshold=0.7,
+        semantic_discovery_max_pairs=50,
+        essence_generator="extractive",
+    )
+    monkeypatch.setattr(
+        "surreal_memory.engine.semantic_discovery._effective_embedding",
+        lambda _config: (True, "fixture", "fixture"),
+    )
+    monkeypatch.setattr("surreal_memory.engine.semantic_discovery._EMBEDDING_PAGE_SIZE", 2)
+    monkeypatch.setattr("surreal_memory.engine.semantic_discovery._SYNAPSE_PAGE_SIZE", 2)
+
+    storage = _Storage(neurons=neurons)
+    storage.brain.config = config
+    progress = _CrashBeforePublishProgress(
+        "semantic_link", crash_phase="semantic_link_discovery_neurons", crash_on_call=2
+    )
+    with pytest.raises(ConsolidationPausedError, match="simulated crash before publish"):
+        await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+            ConsolidationReport(), dry_run=False
+        )
+    first_epoch = set(storage.semantic_discovery_states)
+    first_state_ids = {state_id for state_id, _revision in first_epoch}
+    # The pointer in progress still references an earlier revision than the newest saved one.
+    published = json.loads(progress.strategy_state("semantic_link")["pending"][0])
+    published_revision = published["source_state_ref"]["revision"]
+    assert max(revision for _sid, revision in first_epoch) > published_revision
+
+    # New owner epoch: different page boundaries -> different content for the same revision number.
+    monkeypatch.setattr("surreal_memory.engine.semantic_discovery._EMBEDDING_PAGE_SIZE", 3)
+    await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
+        ConsolidationReport(), dry_run=False
+    )
+
+    new_keys = set(storage.semantic_discovery_states) - first_epoch
+    assert new_keys, "the resumed epoch must have saved snapshots"
+    assert all(state_id not in first_state_ids for state_id, _revision in new_keys)

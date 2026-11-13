@@ -10611,6 +10611,27 @@ class ConsolidationEngine:
             """Match the store's public spelling for record ids with underscores."""
             return synapse_id.replace("_", "-")
 
+        def written_edge_is_intact(existing: Synapse, saved: Synapse) -> bool:
+            """The stored edge is the checkpointed one, give or take recall reinforcement.
+
+            Between the write and the apply checkpoint, recall may reinforce the new edge
+            (Synapse.reinforce): it only raises the weight and the count and stamps
+            last_activated. Every other field must still equal what discovery produced.
+            """
+            return (
+                canonical_synapse_id(existing.id) == canonical_synapse_id(saved.id)
+                and saved.weight <= existing.weight <= 1.0
+                and existing.reinforced_count >= saved.reinforced_count
+                and dc_replace(
+                    existing,
+                    id=saved.id,
+                    weight=saved.weight,
+                    reinforced_count=saved.reinforced_count,
+                    last_activated=saved.last_activated,
+                )
+                == saved
+            )
+
         async def source_fingerprint(excluded_synapses: Sequence[Synapse]) -> str:
             excluded_edges = {
                 (
@@ -11198,10 +11219,7 @@ class ConsolidationEngine:
                 raise
             existing = await self._storage.get_synapse(synapse.id)
             if existing is not None:
-                if (
-                    canonical_synapse_id(existing.id) != canonical_synapse_id(synapse.id)
-                    or dc_replace(existing, id=synapse.id) != synapse
-                ):
+                if not written_edge_is_intact(existing, synapse):
                     raise ConsolidationProgressError(
                         f"semantic-link synapse {synapse.id!r} changed after its checkpoint"
                     )
