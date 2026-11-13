@@ -1199,8 +1199,10 @@ async def _interrupt_semantic_link_before_apply_checkpoint(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("delta", [0.1, 1.0])
 async def test_semantic_link_resume_accepts_recall_reinforcement_of_a_written_edge(
     monkeypatch: pytest.MonkeyPatch,
+    delta: float,
 ) -> None:
     """Recall may reinforce an edge between its write and the apply checkpoint.
 
@@ -1210,7 +1212,7 @@ async def test_semantic_link_resume_accepts_recall_reinforcement_of_a_written_ed
     result = _semantic_batch_result(1)
     storage, progress = await _interrupt_semantic_link_before_apply_checkpoint(monkeypatch, result)
     saved = result.synapses[0]
-    storage.synapses[saved.id] = storage.synapses[saved.id].reinforce(delta=0.1)
+    storage.synapses[saved.id] = storage.synapses[saved.id].reinforce(delta=delta)
     added_before = len(storage.added_synapses)
 
     report = ConsolidationReport()
@@ -1230,6 +1232,14 @@ async def test_semantic_link_resume_accepts_recall_reinforcement_of_a_written_ed
         pytest.param({"metadata": {"rewritten": True}}, id="metadata"),
         pytest.param({"direction": True, "weight_delta": 0.1}, id="direction"),
         pytest.param({"reinforced_count_delta": -1, "weight_delta": 0.1}, id="lower-count"),
+        pytest.param({"weight": 1.1}, id="weight-above-maximum"),
+        pytest.param({"weight": float("inf")}, id="infinite-weight"),
+        pytest.param({"weight": float("nan")}, id="nan-weight"),
+        pytest.param({"source_id": "changed-source"}, id="source"),
+        pytest.param({"target_id": "changed-target"}, id="target"),
+        pytest.param({"id": "changed-id"}, id="identity"),
+        pytest.param({"type": SynapseType.RELATED_TO}, id="type"),
+        pytest.param({"created_at": _REFERENCE_TIME}, id="creation-time"),
     ],
 )
 async def test_semantic_link_resume_rejects_non_reinforcement_change_of_a_written_edge(
@@ -1249,9 +1259,18 @@ async def test_semantic_link_resume_rejects_non_reinforcement_change_of_a_writte
         )
     if "reinforced_count_delta" in change:
         fields["reinforced_count"] = saved.reinforced_count + change["reinforced_count_delta"]
+    fields.update(
+        {
+            key: value
+            for key, value in change.items()
+            if key in {"weight", "source_id", "target_id", "id", "type", "created_at"}
+        }
+    )
     storage.synapses[saved.id] = dc_replace(saved, **fields)
 
-    with pytest.raises(ConsolidationProgressError, match="changed after its checkpoint"):
+    with pytest.raises(
+        ConsolidationProgressError, match=r"changed after its (?:pending )?checkpoint"
+    ):
         await _engine(storage, ConsolidationStrategy.SEMANTIC_LINK, progress)._semantic_link(
             ConsolidationReport(), dry_run=False
         )

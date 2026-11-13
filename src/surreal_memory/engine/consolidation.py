@@ -10607,7 +10607,7 @@ class ConsolidationEngine:
             """
             return (
                 canonical_synapse_id(existing.id) == canonical_synapse_id(saved.id)
-                and existing.weight >= saved.weight
+                and saved.weight <= existing.weight <= 1.0
                 and existing.reinforced_count >= saved.reinforced_count
                 and dc_replace(
                     existing,
