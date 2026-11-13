@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Semantic discovery scans hand control back to the event loop and budget checks
+  renew the consolidation lease when the heartbeat is late, so a slow portable
+  SHA-256 fallback no longer lets the lease expire mid-scan. The report shows the
+  largest lease renew gap.
 - Resuming semantic-link apply accepts an edge that recall reinforced after it
   was written (higher weight and count, new activation time). Any other change
   to a written edge still stops the run.

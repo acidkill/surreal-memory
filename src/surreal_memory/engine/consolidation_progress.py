@@ -6,6 +6,7 @@ import asyncio
 import inspect
 import json
 import logging
+import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import datetime
 from hashlib import sha256
@@ -1810,6 +1811,12 @@ class ConsolidationProgressSession:
         self._checkpoint_unconfirmed = False
         self._closed = False
         self._heartbeat_task: asyncio.Task[None] | None = None
+        # The lease is fresh when the session is created (acquired just before). Every successful
+        # renewal, from the heartbeat or from ``renew_if_due``, moves the mark and feeds the
+        # longest-gap metric that the report and the weekly ledger expose.
+        self._last_renewed = time.monotonic()
+        self._max_renew_gap_s = 0.0
+        self._renew_lock = asyncio.Lock()
 
     @classmethod
     async def open(
@@ -1941,6 +1948,11 @@ class ConsolidationProgressSession:
     def lease_lost(self) -> bool:
         """Whether the background heartbeat has fenced this worker out."""
         return self._lease_lost
+
+    @property
+    def max_renew_gap_s(self) -> float:
+        """Longest observed gap between two successful lease renewals, in seconds."""
+        return self._max_renew_gap_s
 
     @property
     def reference_time(self) -> datetime:
@@ -2146,16 +2158,52 @@ class ConsolidationProgressSession:
             )
         self.state = dict(saved)
 
+    async def _renew_once(self) -> bool:
+        """Renew the lease once, serialised with other renewals, and record the gap."""
+        async with self._renew_lock:
+            if self._lease_lost:
+                return False
+            renewed = await self.storage.renew_consolidation_lease(
+                self.brain_id,
+                self.owner_token,
+                lease_seconds=self.lease_seconds,
+            )
+            if renewed:
+                now = time.monotonic()
+                self._max_renew_gap_s = max(self._max_renew_gap_s, now - self._last_renewed)
+                self._last_renewed = now
+            return bool(renewed)
+
+    async def renew_if_due(self) -> None:
+        """Renew the lease when the heartbeat has not done so for a third of its length.
+
+        The heartbeat is an asyncio task on the same loop as the work. A scan that holds the loop
+        (pure-Python hashing of every candidate vector) starves it, so budget checks renew the
+        lease themselves. Raises ``ConsolidationLeaseLostError`` when the renewal is refused.
+        """
+        if self._closed or self._lease_lost:
+            return
+        if time.monotonic() - self._last_renewed < max(10, self.lease_seconds // 3):
+            return
+        try:
+            renewed = await self._renew_once()
+        except Exception:
+            self._lease_lost = True
+            logger.exception("Consolidation lease renewal failed for brain %s", self.brain_id)
+            raise ConsolidationLeaseLostError(
+                f"lease for brain {self.brain_id!r} could not be renewed"
+            ) from None
+        if not renewed:
+            self._lease_lost = True
+            logger.error("Consolidation lease lost for brain %s", self.brain_id)
+            raise ConsolidationLeaseLostError(f"lease for brain {self.brain_id!r} was lost")
+
     async def _renew_lease(self) -> None:
         interval = max(10, self.lease_seconds // 3)
         try:
             while not self._closed:
                 await asyncio.sleep(interval)
-                if not await self.storage.renew_consolidation_lease(
-                    self.brain_id,
-                    self.owner_token,
-                    lease_seconds=self.lease_seconds,
-                ):
+                if not await self._renew_once():
                     self._lease_lost = True
                     logger.error(
                         "Consolidation lease lost for brain %s; the active strategy "
