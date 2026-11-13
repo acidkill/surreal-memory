@@ -43,7 +43,7 @@ def checkpoint_errors(value: Any) -> bool:
             return not (
                 isinstance(item, dict)
                 and type(item.get("version")) is int
-                and item["version"] == 2
+                and item["version"] in {2, 3}
                 and all(
                     isinstance(cp.get(key), str) and bool(cp[key])
                     for key in ("brain_id", "run_id", "options_fingerprint")
@@ -127,7 +127,7 @@ def _operator_recovery_seed(receipt: dict[str, Any], cp: dict[str, Any]) -> bool
         and isinstance(receipt.get("resource_baseline"), list)
         and bool(receipt["resource_baseline"])
         and audit.get("kind") == "stale_semantic_source_restart"
-        and audit.get("version") == 2
+        and audit.get("version") in {2, 3}
         and type(receipt.get("source_generation")) is int
         and receipt["source_generation"] == audit.get("generation")
         and receipt.get("recovery_audit_sha256") == checkpoint_hash(audit)

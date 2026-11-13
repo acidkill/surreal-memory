@@ -549,7 +549,7 @@ async def test_stale_recovery_repeats_from_failed_checkpoint_and_preserves_audit
 
 
 async def _publish_generation_fixture(
-    store: SurrealDBStorage,
+    store: SurrealDBStorage, *, expired: bool = False
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], str]:
     brain_id = store._get_brain_id()
     owner = "generation-fixture-owner"
@@ -558,6 +558,15 @@ async def _publish_generation_fixture(
     await store.add_neuron(neuron)
     reference_time = utcnow()
     token = await store.capture_semantic_source_token()
+    if expired:
+        token = json.dumps(
+            {
+                **json.loads(token),
+                "captured_at": ((await store._server_now()) - timedelta(days=8)).isoformat(),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
     scope = {
         "brain_id": brain_id,
         "run_id": run_id,
@@ -661,7 +670,10 @@ async def _publish_generation_fixture(
             "current_strategy": "semantic_link",
             "phase": nested["phase"],
             "cursor": nested["cursor"],
-            "strategy_states": {"prune": {"phase": "completed"}, "semantic_link": nested},
+            "strategy_states": {
+                **{name: {"phase": "completed"} for name in strategies - {"semantic_link"}},
+                "semantic_link": nested,
+            },
             "counters": {"prune": {"synapses_pruned": 4}, "semantic_link": counters},
             "started_at": reference_time,
             "updated_at": utcnow(),
@@ -799,3 +811,77 @@ async def test_generation_recovery_reconciles_real_cas_lost_ack_and_clears_only_
     )
     assert "operation=delete" in marker["source_change"]
     assert await store.get_neuron(neuron_id) is None
+
+
+@pytest.mark.asyncio
+async def test_expired_generation_real_cas_retains_graph_and_all_completed_states(
+    store: SurrealDBStorage,
+) -> None:
+    from surreal_memory.core.synapse import Synapse, SynapseType
+    from surreal_memory.engine.consolidation_progress import _restart_semantic_source_generation
+    from surreal_memory.engine.consolidation_receipts import checkpoint_errors
+
+    before, _, _, neuron_id = await _publish_generation_fixture(store, expired=True)
+    edges = []
+    for number in range(2):
+        target = Neuron.create(NeuronType.CONCEPT, f"previously committed target {number}")
+        await store.add_neuron(target)
+        edge = Synapse.create(neuron_id, target.id, SynapseType.SIMILAR_TO)
+        await store.add_synapse(edge)
+        edges.append(edge)
+    automatic_owner = "expired-automatic-control"
+    assert await store.acquire_consolidation_lease(
+        before["brain_id"], automatic_owner, lease_seconds=30
+    )
+    try:
+        with pytest.raises(ConsolidationResumeMismatchError, match="manual recovery"):
+            await _restart_semantic_source_generation(store, before, automatic_owner, dry_run=False)
+    finally:
+        assert await store.release_consolidation_lease(before["brain_id"], automatic_owner)
+    assert (await store.get_consolidation_progress())["updated_at"] == before["updated_at"]
+    result = await recover_stale_semantic_link_discovery(
+        store,
+        run_id=before["run_id"],
+        expected_options_fingerprint=before["options_fingerprint"],
+        expected_status="failed",
+        confirmation_run_id=before["run_id"],
+        dry_run=False,
+    )
+    after = await store.get_consolidation_progress()
+    assert result["source_expired"] is True
+    assert after["status"] == "paused" and after["phase"] == "semantic_link_restart_pending"
+    for field in (
+        "run_id",
+        "reference_time",
+        "options_fingerprint",
+        "requested_strategies",
+        "completed_strategies",
+        "counters",
+    ):
+        assert after[field] == before[field]
+    assert len(after["completed_strategies"]) == 19
+    for name in before["completed_strategies"]:
+        assert after["strategy_states"][name] == before["strategy_states"][name]
+    audit = after["strategy_states"]["semantic_link"]["recovery"]
+    assert audit["version"] == 3 and audit["source_changed_verified"] is False
+    assert validate_semantic_source_generation_audit(
+        audit,
+        brain_id=before["brain_id"],
+        run_id=before["run_id"],
+        options_fingerprint=before["options_fingerprint"],
+        reference_time=before["reference_time"],
+    )
+    assert not checkpoint_errors(after)
+    for edge in edges:
+        stored = await store.get_synapse(edge.id)
+        assert stored is not None and stored.id == edge.id
+    assert await store.acquire_consolidation_lease(
+        before["brain_id"], after["owner_token"], lease_seconds=30
+    )
+    try:
+        ref = audit["source_state_ref"]
+        fresh = await store.load_semantic_discovery_state(ref["state_id"], ref["revision"])
+        assert fresh["batch_index"] >= 1 and fresh["candidates"] == []
+        assert fresh["source_token"] != audit["retired_source_state_ref"]["source_token"]
+    finally:
+        assert await store.release_consolidation_lease(before["brain_id"], after["owner_token"])

@@ -243,7 +243,7 @@ def test_stop_terminates_then_kills_unresponsive_child():
         subprocess.TimeoutExpired("smem", 10),
         -9,
     ]
-    hourly.stop(child)
+    assert hourly.stop(child) is False
     child.terminate.assert_called_once()
     child.kill.assert_called_once()
 
@@ -1090,3 +1090,229 @@ def test_optional_empty_recovery_is_absent_but_cannot_authorize_operator_resume(
     state.update(source="operator_recovery", cli_rc=None, next_action="resume")
     with pytest.raises(hourly.BlockedError):
         hourly.select_command(state, cp, None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status,rc", [("paused", 1), ("completed", 0)])
+@pytest.mark.parametrize(
+    "fault",
+    [
+        None,
+        "pod",
+        "container",
+        "restart",
+        "oom",
+        "failcnt",
+        "metric",
+        "lease",
+        "owner",
+        "run",
+        "reference",
+        "options",
+        "brain",
+        "backend",
+        "failed",
+        "exit",
+        "forced",
+        "ack",
+        "unknown",
+    ],
+)
+async def test_runtime_capacity_sigint_records_actual_terminal_and_next_command(
+    monkeypatch, tmp_path, capsys, status, rc, fault
+):
+    import asyncio
+    import copy
+    import io
+    import signal
+    import sys
+    import time
+
+    before = checkpoint("paused")
+    before.update({"reference_time": "2026-11-05T12:00:00", "owner_token": "old"})
+    state = receipt(before, "bootstrap")
+    state.update(source="user_interrupted", cli_rc=None, next_action="resume")
+    state["resource_baseline"] = [["db-uid", '[["surrealdb","cid",0]]'], 0.0, 0.0]
+    after = {**before, "status": status, "owner_token": "worker"}
+    if status == "completed":
+        after["completed_strategies"] = after["requested_strategies"]
+    if fault in {"owner", "run", "reference", "options", "brain"}:
+        field = {
+            "owner": "owner_token",
+            "run": "run_id",
+            "reference": "reference_time",
+            "options": "options_fingerprint",
+            "brain": "brain_id",
+        }[fault]
+        after[field] = "changed"
+    elif fault == "backend":
+        after["last_error"] = "backend write failed"
+    elif fault == "failed":
+        after["status"] = "failed"
+    ready, saved = tmp_path / "ready", tmp_path / "checkpoint"
+    real_popen = subprocess.Popen
+    real_sleep = asyncio.sleep
+    children, commands = [], []
+    payload = (
+        "import json,signal,sys,time;from pathlib import Path\n"
+        "def pause(*args):\n"
+        " Path(sys.argv[2]).write_text(sys.argv[3]);print('clean capacity pause',flush=True);"
+        "sys.exit(int(sys.argv[4]))\n"
+        "signal.signal(signal.SIGINT,pause)\n"
+        "Path(sys.argv[1]).write_text('ready')\n"
+        "while True: time.sleep(.01)\n"
+    )
+
+    def popen(command, **kwargs):
+        commands.append(command)
+        child = real_popen(
+            [
+                sys.executable,
+                "-u",
+                "-c",
+                payload,
+                str(ready),
+                str(saved),
+                json.dumps(after),
+                str(2 if fault == "exit" else rc),
+            ],
+            **kwargs,
+        )
+        children.append(child)
+        return child
+
+    pressure = [False]
+
+    async def tick(seconds):
+        for _ in range(200):
+            if ready.exists():
+                break
+            await real_sleep(0.005)
+        assert ready.exists()
+        pressure[0] = True
+
+    pod = {
+        "metadata": {"uid": "db-uid"},
+        "spec": {
+            "containers": [{"name": "surrealdb", "resources": {"limits": {"memory": "16Gi"}}}]
+        },
+        "status": {
+            "phase": "Running",
+            "containerStatuses": [
+                {"name": "surrealdb", "containerID": "cid", "restartCount": 0, "ready": True}
+            ],
+        },
+    }
+    api = MagicMock()
+    cm = {"metadata": {"resourceVersion": "1"}, "data": {"receipt.json": json.dumps(state)}}
+    api.state.side_effect = lambda: copy.deepcopy(cm)
+    api.identity.return_value = {"pod_name": "self"}
+
+    def database_pod(*args):
+        result = copy.deepcopy(pod)
+        if saved.exists():
+            if fault == "pod":
+                result["metadata"]["uid"] = "replacement"
+            if fault in {"container", "restart"}:
+                result["status"]["containerStatuses"][0][
+                    "containerID" if fault == "container" else "restartCount"
+                ] = "replacement" if fault == "container" else 1
+        return result
+
+    api.request.side_effect = database_pod
+
+    def cas(old, decision, observation=None):
+        if fault == "ack" and decision["phase"] == "terminal":
+            raise RuntimeError("receipt acknowledgement unavailable")
+        cm["data"]["receipt.json"] = hourly.canonical(decision)
+        return copy.deepcopy(cm)
+
+    api.cas.side_effect = cas
+    reads = [0]
+
+    async def progress(brain):
+        reads[0] += 1
+        if saved.exists():
+            return json.loads(saved.read_text())
+        return before if reads[0] <= 3 else {**before, "status": "running", "owner_token": "worker"}
+
+    async def leases(*args, **kwargs):
+        if saved.exists() and fault == "lease":
+            return [{"owner_token": "worker"}]
+        return [] if reads[0] <= 3 or saved.exists() else [{"owner_token": "worker"}]
+
+    storage = SimpleNamespace(get_consolidation_progress=progress, _query=leases)
+    monkeypatch.setenv("DB_POD", "db")
+    monkeypatch.setenv("PROMETHEUS_URL", "http://prometheus:9090")
+    for key in ("CURRENT", "WORKING", "AVAILABLE", "OOM", "FAILCNT"):
+        monkeypatch.setenv("PROM_QUERY_" + key, key.lower())
+
+    def response(url, **kwargs):
+        if pressure[0] and fault == "unknown":
+            raise hourly.BlockedError("unknown backend failure")
+        query = hourly.urllib.parse.parse_qs(hourly.urllib.parse.urlsplit(url).query)["query"][0]
+        values = {
+            "current": 15.5 * hourly.GIB if pressure[0] else 9 * hourly.GIB,
+            "working": 14.5 * hourly.GIB if pressure[0] else 8 * hourly.GIB,
+            "available": 6 * hourly.GIB,
+            "oom": 1 if saved.exists() and fault == "oom" else 0,
+            "failcnt": 1 if saved.exists() and fault == "failcnt" else 0,
+        }
+        if saved.exists() and fault == "metric":
+            return io.BytesIO(b'{"status":"success","data":{"result":[]}}')
+        value = time.time() if query.startswith("timestamp(") else values[query]
+        return io.BytesIO(
+            json.dumps(
+                {"status": "success", "data": {"result": [{"value": [time.time(), str(value)]}]}}
+            ).encode()
+        )
+
+    if fault == "forced":
+        original_stop = hourly.stop
+
+        def forced(child):
+            original_stop(child)
+            return False
+
+        monkeypatch.setattr(hourly, "stop", forced)
+    with (
+        patch.object(hourly.subprocess, "Popen", side_effect=popen),
+        patch.object(hourly.asyncio, "sleep", side_effect=tick),
+        patch.object(hourly.urllib.request, "urlopen", side_effect=response),
+    ):
+        try:
+            assert await hourly.run(api, storage, hourly.Safety(api)) == (2 if fault else 0)
+        finally:
+            for child in children:
+                if child.poll() is None:
+                    child.send_signal(signal.SIGKILL)
+                    child.wait(timeout=5)
+    final_log = capsys.readouterr().out
+    final = json.loads(cm["data"]["receipt.json"])
+    if fault:
+        assert final["phase"] == "blocked"
+        assert "confirmed_success" not in final
+        assert final["cli_rc"] == children[0].returncode
+        return
+    assert final["phase"] == "terminal" and final["cli_rc"] == rc
+    assert children[0].returncode == rc
+    assert final["capacity_stop_reason"] == "database memory exceeds safety threshold"
+    assert "--resume" in commands[0]
+    assert ("--resume" in hourly.select_command(final, after, final_log)) is (status == "paused")
+    if status == "paused":
+        api.previous_log.return_value = final_log
+        next_child = MagicMock(returncode=1)
+        next_child.poll.return_value = next_child.wait.return_value = 1
+        with patch.object(hourly.subprocess, "Popen", return_value=next_child) as next_popen:
+            assert (
+                await hourly.run(api, storage, MagicMock(baseline=final["resource_baseline"])) == 0
+            )
+        assert "--resume" in next_popen.call_args.args[0]
+
+
+@pytest.mark.parametrize("returncode", [None, True])
+def test_stop_requires_observed_integer_child_exit(returncode):
+    child = MagicMock(returncode=returncode)
+    child.poll.return_value = None
+    assert hourly.stop(child) is False
+    child.send_signal.assert_called_once_with(hourly.signal.SIGINT)
