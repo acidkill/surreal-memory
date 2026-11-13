@@ -2161,6 +2161,8 @@ class ConsolidationProgressSession:
     async def _renew_once(self) -> bool:
         """Renew the lease once, serialised with other renewals, and record the gap."""
         async with self._renew_lock:
+            if self._lease_lost:
+                return False
             renewed = await self.storage.renew_consolidation_lease(
                 self.brain_id,
                 self.owner_token,

@@ -76,6 +76,25 @@ async def test_budget_check_fences_work_when_lease_renewal_raises() -> None:
 
 
 @pytest.mark.asyncio
+async def test_budget_check_preserves_lease_loss_while_waiting_for_renewal() -> None:
+    import asyncio
+
+    session = _session()
+    session._last_renewed = time.monotonic() - 100.0
+    engine = ConsolidationEngine(SimpleNamespace(), ConsolidationConfig())
+    engine._progress_session = session
+    await session._renew_lock.acquire()
+    check = asyncio.create_task(engine._check_progress_budget())
+    await asyncio.sleep(0)
+    session._lease_lost = True
+    session._renew_lock.release()
+
+    with pytest.raises(ConsolidationLeaseLostError):
+        await check
+    session.storage.renew_consolidation_lease.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_budget_check_renews_the_lease_when_the_session_supports_it() -> None:
     engine = ConsolidationEngine(SimpleNamespace(), ConsolidationConfig())
     engine._progress_session = SimpleNamespace(  # type: ignore[assignment]
