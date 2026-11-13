@@ -10810,7 +10810,7 @@ class ConsolidationEngine:
         # are replayed by semantic_discovery itself.
         cursor: str | None = None
         recovery = state.get("recovery")
-        if isinstance(recovery, dict) and recovery.get("version") == 2:
+        if isinstance(recovery, dict) and recovery.get("version") in {2, 3}:
             if report.extra.get("semantic_source_generation") != recovery["generation"]:
                 for key in (
                     "semantic_coverage_complete",
