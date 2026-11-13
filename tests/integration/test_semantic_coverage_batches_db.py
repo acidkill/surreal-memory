@@ -23,6 +23,7 @@ from surreal_memory.engine.consolidation import (
     ConsolidationEngine,
     ConsolidationStrategy,
 )
+from surreal_memory.engine.consolidation_receipts import native_payload_hash
 from surreal_memory.storage.surrealdb.store import SurrealDBStorage
 from surreal_memory.utils.timeutils import utcnow
 
@@ -432,6 +433,8 @@ async def test_tampered_batch_or_window_manifest_fails_closed(
         continuation[tamper_field] += 1
     strategy_state["pending"] = [json.dumps(manifest, sort_keys=True, separators=(",", ":"))]
     claimed["strategy_states"]["semantic_link"] = strategy_state
+    # Keep the proof valid so this fixture reaches the manifest validation layer.
+    claimed["native_handoff"]["payload_sha256"] = native_payload_hash(claimed)
     saved = await store.save_consolidation_progress(brain.id, tamper_owner, claimed)
     assert saved is not None
     assert await store.release_consolidation_lease(brain.id, tamper_owner)

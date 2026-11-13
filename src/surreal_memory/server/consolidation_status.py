@@ -19,6 +19,8 @@ from surreal_memory.engine.consolidation_receipts import (
     checkpoint_errors,
     checkpoint_hash,
     confirmed_success,
+    native_handoff_bridge_matches,
+    native_handoff_matches,
     resource_rebaseline_matches,
     success_timestamp,
     terminal_receipt_matches,
@@ -227,8 +229,13 @@ def summarize_consolidation(
         status.state = "deferred_lease"
     elif cp.get("status") == "running" and receipt and receipt.get("phase") == "started":
         status.state = "running"
-    elif resource_rebaseline_matches(receipt, cp):
+    elif resource_rebaseline_matches(receipt, cp) or native_handoff_bridge_matches(receipt, cp):
         status.state = "paused"
+    elif native_handoff_matches(receipt, cp):
+        if cp["status"] == "paused":
+            status.state = "paused"
+        else:
+            status.reason = "native_completed_external_cli_unknown"
     elif terminal_receipt_matches(receipt, cp):
         if cp["status"] == "completed" and confirmed_success(receipt, cp) is not None:
             status.state = "completed"

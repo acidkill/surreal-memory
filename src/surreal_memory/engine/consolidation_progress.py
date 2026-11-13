@@ -1805,6 +1805,7 @@ class ConsolidationProgressSession:
         self.brain_id = brain_id
         self.owner_token = owner_token
         self.state = state
+        self._native_handoff = state.get("native_handoff")
         self.lease_seconds = lease_seconds
         self.resumed = False
         self._lease_lost = False
@@ -1846,6 +1847,12 @@ class ConsolidationProgressSession:
             raise ConsolidationLeaseBusyError(
                 f"brain {brain_id!r} already has an active consolidation worker"
             )
+
+        from surreal_memory.engine.consolidation_receipts import (
+            BlockedError,
+            native_handoff_valid,
+            prepare_native_handoff,
+        )
 
         try:
             requested = sorted(set(requested_strategies))
@@ -1899,12 +1906,17 @@ class ConsolidationProgressSession:
                         "explicit reference_time differs from the unfinished run; "
                         "its checkpoint was left untouched"
                     )
+                try:
+                    handoff = prepare_native_handoff(existing, existing, fresh=False)
+                except BlockedError as exc:
+                    raise ConsolidationResumeMismatchError(str(exc)) from exc
                 claimed = await storage.claim_consolidation_progress(brain_id, owner_token)
                 if claimed is None:
                     raise ConsolidationLeaseBusyError(
                         "unfinished consolidation changed while its lease was acquired"
                     )
                 session = cls(storage, brain_id, owner_token, dict(claimed))
+                session._native_handoff = handoff
                 session.resumed = True
                 # This lease holder starts a new attempt at the same saved work.
                 # A later ordinary budget pause must not retain the prior
@@ -1934,7 +1946,15 @@ class ConsolidationProgressSession:
                     "updated_at": utcnow(),
                     "last_error": None,
                 }
+                try:
+                    state["native_handoff"] = prepare_native_handoff(existing, state, fresh=True)
+                except BlockedError as exc:
+                    raise ConsolidationResumeMismatchError(str(exc)) from exc
                 record = await storage.start_consolidation_progress(state)
+                if not native_handoff_valid(record):
+                    raise ConsolidationCheckpointUnconfirmedError(
+                        "new checkpoint native handoff was not persisted"
+                    )
                 session = cls(storage, brain_id, owner_token, dict(record))
             session._heartbeat_task = asyncio.create_task(
                 session._renew_lease(), name=f"consolidation-lease:{brain_id}"
@@ -2106,8 +2126,12 @@ class ConsolidationProgressSession:
                 persisted = await self.storage.get_consolidation_progress(self.brain_id)
             except Exception:
                 persisted = None
+            from surreal_memory.engine.consolidation_receipts import native_handoff_valid
+
             if (
                 persisted
+                and native_handoff_valid(persisted)
+                and persisted.get("native_handoff") == self.state.get("native_handoff")
                 and persisted.get("run_id") == self.state.get("run_id")
                 and persisted.get("options_fingerprint") == self.state.get("options_fingerprint")
                 and persisted.get("brain_id") == self.brain_id
@@ -2140,6 +2164,18 @@ class ConsolidationProgressSession:
             raise ConsolidationLeaseLostError(
                 f"lease for brain {self.brain_id!r} was lost; checkpoint was not saved"
             )
+        from surreal_memory.engine.consolidation_receipts import (
+            native_handoff_valid,
+            native_payload_hash,
+            prepare_native_handoff,
+        )
+
+        if self._native_handoff is None:
+            self._native_handoff = prepare_native_handoff(None, self.state, fresh=False)
+        self.state["native_handoff"] = {
+            **self._native_handoff,
+            "payload_sha256": native_payload_hash(self.state),
+        }
         try:
             saved = await self.storage.save_consolidation_progress(
                 self.brain_id, self.owner_token, self.state
@@ -2156,7 +2192,13 @@ class ConsolidationProgressSession:
             raise ConsolidationLeaseLostError(
                 f"lease fence for brain {self.brain_id!r} rejected the checkpoint"
             )
+        if not native_handoff_valid(saved):
+            self._checkpoint_unconfirmed = True
+            raise ConsolidationCheckpointUnconfirmedError(
+                "native handoff did not round-trip with its checkpoint"
+            )
         self.state = dict(saved)
+        self._native_handoff = self.state["native_handoff"]
 
     async def _renew_once(self) -> bool:
         """Renew the lease once, serialised with other renewals, and record the gap."""
