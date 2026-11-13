@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 import pytest
 
 from surreal_memory.engine.consolidation_progress import ConsolidationProgressSession
+from surreal_memory.engine.consolidation_receipts import native_handoff_valid
 from surreal_memory.storage.surrealdb.schema import ensure_schema
 from surreal_memory.storage.surrealdb.store import SurrealDBStorage
 from surreal_memory.utils.timeutils import utcnow
@@ -42,6 +43,10 @@ async def test_failed_resume_clears_error_under_lease_and_preserves_saved_work()
     await store.initialize()
     store.set_brain("synthetic")
     try:
+        # Reapply the additive field on an existing schema epoch, as on upgraded databases.
+        await store._query("REMOVE FIELD native_handoff ON consolidation_progress")
+        await ensure_schema(store._conn)
+        await ensure_schema(store._conn)
         reference = utcnow() - timedelta(days=3)
         first = await ConsolidationProgressSession.open(
             store, ["prune", "merge"], "same", reference
@@ -50,6 +55,7 @@ async def test_failed_resume_clears_error_under_lease_and_preserves_saved_work()
         sessions.append(first)
         legacy = deepcopy(await store.get_consolidation_progress("synthetic"))
         assert legacy is not None
+        assert native_handoff_valid(legacy)
         assert legacy.get("work_progress_seq") is None
         assert legacy.get("last_work_progress_at") is None
         await store._query("REMOVE FIELD work_progress_seq ON consolidation_progress")
@@ -93,6 +99,10 @@ async def test_failed_resume_clears_error_under_lease_and_preserves_saved_work()
         await resumed.pause()
         paused = await store.get_consolidation_progress("synthetic")
         assert paused is not None and paused["status"] == "paused"
+        assert native_handoff_valid(paused)
+        assert (
+            paused["native_handoff"]["attempt_seq"] == before["native_handoff"]["attempt_seq"] + 1
+        )
         assert paused.get("last_error") is None
         await resumed.fail("new attempt failed")
         failed = await store.get_consolidation_progress("synthetic")

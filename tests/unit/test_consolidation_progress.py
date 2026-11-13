@@ -772,6 +772,7 @@ async def test_auto_tier_receipt_allows_finalization_only_resume(
     assert storage.progress is not None
     assert storage.progress["phase"] == "auto_tier_completed"
     storage.progress["phase"] = receipt
+    storage.progress.pop("native_handoff", None)  # Model the legacy finalization receipt.
     monkeypatch.setattr(storage, "save_consolidation_progress", saved)
     second = await engine.run([ConsolidationStrategy.PRUNE], reference_time=REFERENCE_TIME)
     assert second.extra["consolidation_status"] == (
@@ -889,6 +890,7 @@ async def test_legacy_work_checkpoint_stays_unknown_until_new_committed_unit() -
     await first.checkpoint("prune", "synapse_scan", cursor="synapse:10", counters={"deleted": 5})
     await first.close()
     assert storage.progress is not None
+    storage.progress.pop("native_handoff")
     storage.progress.pop("work_progress_seq")
     storage.progress.pop("last_work_progress_at")
     storage.progress["strategy_states"]["prune"].pop("work_progress")

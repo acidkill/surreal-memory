@@ -28,6 +28,7 @@ from surreal_memory.engine.consolidation_receipts import (
     canonical,
     checkpoint_hash,
     confirmed_success,
+    native_handoff_anchor,
     resource_rebaseline_seed,
     select_command,
     success_timestamp,
@@ -596,6 +597,9 @@ async def run(api: Kubernetes, storage: Any, safety: Safety) -> int:
             resource_baseline=safety.baseline,
             resource_policy_sha256=safety.policy_sha256,
         )
+        anchor = native_handoff_anchor(after)
+        if anchor is not None:
+            receipt["native_handoff_anchor"] = anchor
         proof = confirmed_success(receipt, after)
         if proof is not None:
             receipt["confirmed_success"] = proof
