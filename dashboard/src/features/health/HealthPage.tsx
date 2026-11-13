@@ -45,7 +45,9 @@ function getGradeConfig(grade: string) {
 }
 
 export default function HealthPage() {
-  const { data: health, isLoading } = useHealth()
+  const { data, isLoading, isError, refetch } = useHealth()
+  const pending = data && "status" in data
+  const health = data && !("status" in data) ? data : undefined
   const { data: workStatus, isLoading: workLoading, isError: workUnavailable } = useConsolidationStatus()
   const { t } = useTranslation()
 
@@ -80,6 +82,18 @@ export default function HealthPage() {
 
       <ConsolidationWorkPanel status={workStatus} loading={workLoading} unavailable={workUnavailable} />
 
+      {(isLoading || pending || isError) && (
+        <Card>
+          <CardContent className="space-y-3 p-6" role={isError ? "alert" : "status"}>
+            <p>{isError
+              ? t("health.unavailable", "Diagnostics are unavailable. Please retry.")
+              : t("health.pending", "Diagnostics are being calculated. Counts remain available on Overview.")}</p>
+            {isError && <Button onClick={() => void refetch()}>{t("common.retry", "Retry")}</Button>}
+          </CardContent>
+        </Card>
+      )}
+
+      {health && <>
       {/* Conflict tiles */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <Card>
@@ -240,6 +254,7 @@ export default function HealthPage() {
           </CardContent>
         </Card>
       </div>
+      </>}
       {/* Memory Enrichment Guide */}
       <MemoryEnrichmentGuide />
     </div>

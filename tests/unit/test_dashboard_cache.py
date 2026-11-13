@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib
 import unittest.mock
+from contextlib import asynccontextmanager
 
 import pytest
 
@@ -16,18 +17,18 @@ from surreal_memory.server.dashboard_cache import TTLCache
 
 
 @pytest.fixture(autouse=True)
-def _reset_dashboard_module_state():
-    """Keep the module-level serve-stale state from leaking between tests."""
+async def _reset_dashboard_module_state(monkeypatch):
+    """Cache tests use inert storage; scope behavior has its own regression suite."""
     from surreal_memory.server.routes import dashboard_api
 
-    dashboard_api._BRAINS_LAST_GOOD = None
-    dashboard_api._BRAINS_REFRESHING = False
-    dashboard_api._GRADE_CACHE.clear()
-    dashboard_api._GRADE_LAST_GOOD.clear()
-    dashboard_api._GRADE_REFRESH_KEYS.clear()
+    @asynccontextmanager
+    async def scope(storage, name):
+        yield storage
+
+    monkeypatch.setattr(dashboard_api, "storage_for_scope", scope)
+    await dashboard_api.invalidate_brain_caches()
     yield
-    dashboard_api._GRADE_LAST_GOOD.clear()
-    dashboard_api._GRADE_CACHE.clear()
+    await dashboard_api.invalidate_brain_caches()
 
 
 class _Clock:

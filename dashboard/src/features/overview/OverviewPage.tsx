@@ -1,4 +1,5 @@
 import { useState } from "react"
+import { Link as RouterLink } from "react-router-dom"
 import { useStats, useBrains, useSwitchBrain, useDeleteBrain } from "@/api/hooks/useDashboard"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -44,8 +45,8 @@ function KpiCard({
 }
 
 export default function OverviewPage() {
-  const { data: stats, isLoading: statsLoading } = useStats()
-  const { data: brains, isLoading: brainsLoading } = useBrains()
+  const { data: stats, isLoading: statsLoading, isError: statsError, refetch: retryStats } = useStats()
+  const { data: brains, isLoading: brainsLoading, isError: brainsError, refetch: retryBrains } = useBrains()
   const switchBrain = useSwitchBrain()
   const deleteBrain = useDeleteBrain()
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null)
@@ -79,29 +80,34 @@ export default function OverviewPage() {
       {/* Guide card for new users */}
       <GuideCard />
 
+      {statsError && <div role="alert" className="space-y-2">
+        <p>{t("overview.statsUnavailable", "Statistics are unavailable. Please retry.")}</p>
+        <Button onClick={() => void retryStats()}>{t("common.retry", "Retry")}</Button>
+      </div>}
+
       {/* KPI Cards */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <KpiCard
           label={t("overview.neurons")}
-          value={stats?.total_neurons ?? 0}
+          value={stats?.total_neurons ?? "—"}
           icon={Brain}
           loading={statsLoading}
         />
         <KpiCard
           label={t("overview.synapses")}
-          value={stats?.total_synapses ?? 0}
+          value={stats?.total_synapses ?? "—"}
           icon={Link}
           loading={statsLoading}
         />
         <KpiCard
           label={t("overview.fibers")}
-          value={stats?.total_fibers ?? 0}
+          value={stats?.total_fibers ?? "—"}
           icon={Stack}
           loading={statsLoading}
         />
         <KpiCard
           label={t("overview.brains")}
-          value={stats?.total_brains ?? 0}
+          value={stats?.total_brains ?? "—"}
           icon={Lightning}
           loading={statsLoading}
         />
@@ -116,6 +122,20 @@ export default function OverviewPage() {
           <CardTitle>{t("overview.brainList")}</CardTitle>
         </CardHeader>
         <CardContent>
+          {brains?.some((brain) => brain.diagnostic_status === "unavailable") && (
+            <p className="mb-3 text-sm text-muted-foreground">
+              {t("overview.diagnosticsRetry", "Select the brain, then open Health to retry diagnostics.")}{" "}
+              <RouterLink to="/health" className="text-primary underline">
+                {t("overview.openHealth", "Open Health")}
+              </RouterLink>
+            </p>
+          )}
+          {brainsError && (
+            <div role="alert" className="space-y-2">
+              <p>{t("overview.brainsUnavailable", "Brain summaries are unavailable. Please retry.")}</p>
+              <Button onClick={() => void retryBrains()}>{t("common.retry", "Retry")}</Button>
+            </div>
+          )}
           {brainsLoading ? (
             <div className="space-y-3">
               {Array.from({ length: 3 }).map((_, i) => (
@@ -169,14 +189,19 @@ export default function OverviewPage() {
                       <td className="py-3">
                         <Badge
                           variant={
-                            brain.grade === "A" || brain.grade === "A+"
+                            brain.purity_score == null ? "outline"
+                              : brain.grade === "A" || brain.grade === "A+"
                               ? "success"
                               : brain.grade === "B" || brain.grade === "B+"
                                 ? "secondary"
                                 : "warning"
                           }
                         >
-                          {brain.grade}
+                          {brain.purity_score == null
+                            ? brain.diagnostic_status === "unavailable"
+                              ? t("health.unavailableShort", "Unavailable")
+                              : t("health.pendingShort", "Pending")
+                            : brain.grade}
                         </Badge>
                       </td>
                       <td className="py-3">
@@ -207,7 +232,7 @@ export default function OverviewPage() {
                 </tbody>
               </table>
             </div>
-          ) : (
+          ) : !brainsError && (
             <p className="text-sm text-muted-foreground">{t("overview.noBrains")}</p>
           )}
         </CardContent>

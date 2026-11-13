@@ -61,6 +61,21 @@ async def test_renew_if_due_raises_lease_lost_when_the_store_refuses_the_renewal
 
 
 @pytest.mark.asyncio
+async def test_budget_check_fences_work_when_lease_renewal_raises() -> None:
+    session = _session()
+    session._last_renewed = time.monotonic() - 100.0
+    session.storage.renew_consolidation_lease.side_effect = OSError("fixture unavailable")
+    engine = ConsolidationEngine(SimpleNamespace(), ConsolidationConfig())
+    engine._progress_session = session
+
+    with pytest.raises(ConsolidationLeaseLostError, match="could not be renewed"):
+        await engine._check_progress_budget()
+
+    assert session.lease_lost is True
+    session.storage.renew_consolidation_lease.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_budget_check_renews_the_lease_when_the_session_supports_it() -> None:
     engine = ConsolidationEngine(SimpleNamespace(), ConsolidationConfig())
     engine._progress_session = SimpleNamespace(  # type: ignore[assignment]

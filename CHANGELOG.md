@@ -9,11 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Semantic discovery scans hand control back to the event loop and budget checks
-  renew the consolidation lease when the heartbeat is late, so a slow portable
-  SHA-256 fallback no longer lets the lease expire mid-scan. The report shows the
-  largest lease renew gap.
-- Compression reports a cumulative count of fibers whose originals were preserved,
+\1\2- Compression reports a cumulative count of fibers whose originals were preserved,
   with per-fiber details at DEBUG level. Resume retains committed counts and marks
   older checkpoints with missing preservation history as partial.
 - Consolidation confirms the final checkpoint before cleaning up snapshots.

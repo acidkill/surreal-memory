@@ -1,7 +1,7 @@
 """Unit tests for SurrealDB brain lookup (no live DB required).
 
 Regression coverage for the duplicate-brain bug: get_brain() must match a
-brain by its `name` field, not only by a record-id substring. When it only
+brain by its exact name or record ID, never by a substring. When it only
 matched by id, get_brain("my-brain.v2") always returned None (record ids are
 random UUIDs), so the bootstrap re-created a fresh brain on every process
 start, accumulating hundreds of orphan rows.
@@ -10,6 +10,8 @@ start, accumulating hundreds of orphan rows.
 from __future__ import annotations
 
 from typing import Any
+
+import pytest
 
 import surreal_memory.storage.surrealdb as _surrealdb_pkg
 from surreal_memory import unified_config
@@ -205,3 +207,72 @@ async def test_surrealdb_bootstrap_reuses_live_connection(monkeypatch: Any) -> N
 
     assert storage is live  # same instance, reused
     assert live.brain_context == "brain-3"
+
+
+async def test_get_brain_absent_prefix_does_not_resolve_surviving_brain() -> None:
+    store = _BrainLookupStore([{"id": "brain:lookup-probe-b", "name": "lookup-probe-b"}])
+    assert await store.get_brain("lookup-probe") is None
+    survivor = await store.get_brain("lookup-probe-b")
+    assert survivor is not None and survivor.id == "lookup-probe-b"
+
+
+@pytest.mark.parametrize("exact_first", [True, False])
+@pytest.mark.parametrize("requested", ["lookup-probe", "brain:lookup-probe", "legacy-name"])
+async def test_get_brain_exact_match_is_independent_of_row_order(
+    exact_first: bool, requested: str
+) -> None:
+    exact = {"id": "brain:lookup-probe", "name": "legacy-name"}
+    longer = {"id": "brain:lookup-probe-b", "name": "legacy-name-b"}
+    store = _BrainLookupStore([exact, longer] if exact_first else [longer, exact])
+    brain = await store.get_brain(requested)
+    assert brain is not None
+    assert (brain.id, brain.name) == ("lookup-probe", "legacy-name")
+
+
+@pytest.mark.parametrize(
+    "requested",
+    [
+        "",
+        " ",
+        "brain:",
+        "lookup-pro",
+        "probe",
+        "up-probe",
+        "LOOKUP-PROBE",
+        "other:lookup-probe",
+        "brain:brain:lookup-probe",
+        "lookup-probe ",
+    ],
+)
+async def test_get_brain_rejects_fuzzy_or_malformed_lookup(requested: str) -> None:
+    store = _BrainLookupStore(
+        [
+            {"id": "brain:lookup-probe", "name": "lookup-name"},
+            {"id": "brain:unnamed", "name": ""},
+        ]
+    )
+    assert await store.get_brain(requested) is None
+
+
+@pytest.mark.parametrize("bare_id", ["default", "lookup-probe", "123", "123_456"])
+@pytest.mark.parametrize("quoting", ["plain", "angle", "backtick", "sdk"])
+async def test_get_brain_preserves_exact_record_id_representations(
+    bare_id: str, quoting: str
+) -> None:
+    if quoting == "sdk":
+        # Import the concrete datatype, as in test_semantic_source_revision:
+        # SDK-free suites may legitimately stub the root module with MagicMock.
+        try:
+            from surrealdb.data.types.record_id import RecordID
+        except ImportError:
+            pytest.skip("requires the optional SurrealDB Python SDK")
+        rid = RecordID("brain", bare_id)
+    else:
+        wrappers = {"plain": ("", ""), "angle": ("⟨", "⟩"), "backtick": ("`", "`")}
+        left, right = wrappers[quoting]
+        rid = f"brain:{left}{bare_id}{right}"
+    store = _BrainLookupStore([{"id": rid, "name": "display-name"}])
+    for requested in (bare_id, f"brain:{bare_id}", str(rid), "display-name"):
+        brain = await store.get_brain(requested)
+        assert brain is not None, requested
+        assert (brain.id, brain.name) == (bare_id, "display-name")
