@@ -6,7 +6,7 @@ RUN npm ci
 COPY dashboard/ ./
 RUN npm run build
 
-FROM python:3.11-slim AS builder
+FROM python:3.12-slim AS builder
 WORKDIR /app
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
@@ -15,7 +15,7 @@ COPY src/ ./src/
 COPY --from=dashboard /app/src/surreal_memory/server/static/dist ./src/surreal_memory/server/static/dist
 RUN pip install --no-cache-dir ".[server,surrealdb,embeddings-openai]"
 
-FROM python:3.11-slim
+FROM python:3.12-slim
 ARG VCS_REF=unknown
 LABEL org.opencontainers.image.source="https://github.com/acidkill/surreal-memory" \
       org.opencontainers.image.revision="${VCS_REF}"

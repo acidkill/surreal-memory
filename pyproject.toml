@@ -113,7 +113,9 @@ embeddings-openai = [
     # test_python_version_pin.py::TestStubSyntaxHazard, which exists to catch
     # exactly that. Without numpy the strategy still runs: the fallback is
     # bounded, yields to the event loop, and warns that it truncated.
-    "numpy>=1.24",
+    # Checkpoints fence the exact backend version; Python 3.11 cannot run 2.5.4.
+    "numpy==2.4.6; python_version < '3.12'",
+    "numpy==2.5.4; python_version >= '3.12'",
 ]
 embeddings-openrouter = [
     "openai>=1.0",
