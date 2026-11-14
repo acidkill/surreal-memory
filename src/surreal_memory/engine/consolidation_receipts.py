@@ -708,7 +708,217 @@ def native_handoff_bridge_matches(receipt: Any, cp: Any) -> bool:
         return False
 
 
+def _failed_runtime_source_ref(cp: dict[str, Any]) -> dict[str, Any]:
+    pending = cp["strategy_states"]["semantic_link"].get("pending")
+    if not isinstance(pending, list) or len(pending) != 1 or not isinstance(pending[0], str):
+        raise BlockedError("failed runtime resume manifest missing")
+    if len(pending[0].encode()) > 512 * 1024:
+        raise BlockedError("failed runtime resume manifest oversized")
+    manifest = json.loads(pending[0])
+    if not isinstance(manifest, dict):
+        raise BlockedError("failed runtime resume manifest malformed")
+    if manifest.get("stage") == "validation":
+        manifest = manifest.get("discovery")
+    if not isinstance(manifest, dict) or manifest.get("kind") != "semantic_link_discovery":
+        raise BlockedError("failed runtime resume manifest malformed")
+    ref = manifest.get("source_state_ref")
+    if not isinstance(ref, dict) or not ref.get("state_id") or type(ref.get("revision")) is not int:
+        raise BlockedError("failed runtime resume source reference missing")
+    return ref
+
+
+def failed_runtime_resume_seed(
+    previous: dict[str, Any],
+    previous_log: str,
+    first_blocked: dict[str, Any],
+    cp: dict[str, Any],
+    *,
+    approval: dict[str, Any],
+) -> dict[str, Any]:
+    """Bind one reviewed backend-mismatch retry; retain the failed checkpoint verbatim."""
+    from surreal_memory.engine.consolidation import ConsolidationStrategy
+
+    if not all(
+        isinstance(item, dict) for item in (previous, first_blocked, cp, approval)
+    ) or not isinstance(previous_log, str):
+        raise BlockedError("failed runtime resume evidence malformed")
+    expected = {s.value for s in ConsolidationStrategy if s is not ConsolidationStrategy.ALL}
+    if (
+        cp.get("status") != "failed"
+        or cp.get("last_error")
+        != "semantic_link (progress coordination: ConsolidationProgressError)"
+        or cp.get("phase") != "semantic_link_discovery_validation"
+        or cp.get("current_strategy") != "semantic_link"
+        or set(cp.get("requested_strategies", [])) != expected
+        or set(cp.get("completed_strategies", [])) != expected - {"semantic_link"}
+        or not native_handoff_valid(cp)
+        or timestamp(cp.get("reference_time")) is None
+    ):
+        raise BlockedError("failed runtime resume checkpoint scope differs")
+    # Classify the single permitted active error without changing the actual checkpoint.
+    clean_checkpoint({**cp, "status": "paused", "last_error": None})
+    states = cp["strategy_states"]
+    counters = cp.get("counters")
+    if (
+        set(states) != expected
+        or any(states[name].get("phase") != "completed" for name in expected - {"semantic_link"})
+        or not isinstance(counters, dict)
+        or counters.get("semantic_link") != states["semantic_link"].get("counters")
+        or counters.get("semantic_link", {}).get("semantic_link_failures") != 0
+    ):
+        raise BlockedError("failed runtime resume retained work differs")
+    bindings = {
+        "checkpoint_sha256": checkpoint_hash(cp),
+        "previous_receipt_sha256": checkpoint_hash(previous),
+        "previous_log_sha256": hashlib.sha256(previous_log.encode()).hexdigest(),
+        "first_blocked_sha256": checkpoint_hash(first_blocked),
+        "other_states_sha256": checkpoint_hash(
+            {key: value for key, value in states.items() if key != "semantic_link"}
+        ),
+        "counters_sha256": checkpoint_hash(counters),
+        "source_state_ref": _failed_runtime_source_ref(cp),
+    }
+    if any(approval.get(key) != value for key, value in bindings.items()):
+        raise BlockedError("failed runtime resume approved evidence changed")
+    failure = "semantic_link similarity backend changed after its checkpoint"
+    if (
+        not isinstance(previous_log, str)
+        or len(previous_log.encode()) > 128 * 1024
+        or "RuntimeError: " + failure not in previous_log.splitlines()
+        or not previous_log.rstrip().endswith("HOURLY_BLOCKED live checkpoint reports failure")
+        or MARKER in previous_log
+        or re.search(r"(?i)(OOMKilled|lease.lost|timed.out)", previous_log)
+        or any(
+            re.match(
+                r"^(?:[a-zA-Z_][a-zA-Z0-9_]*\.)*[a-zA-Z_][a-zA-Z0-9_]*(?:Error|Exception):", line
+            )
+            and line
+            not in {
+                "RuntimeError: " + failure,
+                "surreal_memory.engine.consolidation_progress.ConsolidationProgressError: "
+                "semantic_link discovery requires optimization or a safe restart: " + failure,
+            }
+            for line in previous_log.splitlines()
+        )
+        or previous != first_blocked
+        or previous.get("phase") != "blocked"
+        or previous.get("reason") != "live checkpoint reports failure"
+        or previous.get("before_run_id") != cp["run_id"]
+        or type(previous.get("cli_rc")) is not int
+        or previous["cli_rc"] != 130
+    ):
+        raise BlockedError("failed runtime resume is not the reviewed backend failure")
+    pod = approval.get("failed_pod")
+    if (
+        not isinstance(pod, dict)
+        or set(pod) != {"pod_uid", "job_uid", "exit_code"}
+        or type(pod["exit_code"]) is not int
+        or pod["exit_code"] != 2
+        or any(not pod.get(key) or pod[key] != previous.get(key) for key in ("pod_uid", "job_uid"))
+    ):
+        raise BlockedError("failed runtime resume failed Pod provenance differs")
+    approved, blocked = (
+        timestamp(approval.get("approved_at")),
+        timestamp(previous.get("blocked_at")),
+    )
+    if approved is None or blocked is None or not blocked <= approved <= datetime.now(UTC):
+        raise BlockedError("failed runtime resume approval time is invalid")
+    runtime = approval.get("runtime")
+    if (
+        not isinstance(runtime, dict)
+        or runtime.get("numpy_version") != "2.5.4"
+        or runtime.get("selected_backend") != "numpy_float32:2.5.4"
+        or approval.get("source_backend") != runtime["selected_backend"]
+        or not isinstance(runtime.get("package_version"), str)
+        or not runtime["package_version"]
+        or re.fullmatch(r"3\.(?:1[2-9]|[2-9][0-9])\.\d+", str(runtime.get("python_version")))
+        is None
+        or re.fullmatch(r"[0-9a-f]{40}", str(runtime.get("source_sha"))) is None
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", str(runtime.get("image_digest"))) is None
+        or re.fullmatch(r"[0-9a-f]{64}", str(approval.get("source_state_sha256"))) is None
+        or re.fullmatch(r"[0-9a-f]{64}", str(approval.get("resource_policy_sha256"))) is None
+        or not isinstance(approval.get("source_token"), str)
+        or not approval["source_token"]
+        or approval["source_state_ref"].get("source_token") != approval["source_token"]
+        or approval.get("no_active_worker_verified") is not True
+        or approval.get("no_active_lease_verified") is not True
+    ):
+        raise BlockedError("failed runtime resume compatible runtime or safety proof missing")
+    baseline = approval.get("resource_baseline")
+    if (
+        not isinstance(baseline, list)
+        or len(baseline) != 3
+        or not isinstance(baseline[0], list)
+        or len(baseline[0]) != 2
+        or not all(isinstance(item, str) and item for item in baseline[0])
+        or any(type(item) not in {int, float} or item != 0 for item in baseline[1:])
+    ):
+        raise BlockedError("failed runtime resume fresh resource identity missing")
+    containers = json.loads(baseline[0][1])
+    if (
+        not isinstance(containers, list)
+        or not containers
+        or not all(
+            isinstance(item, list)
+            and len(item) == 3
+            and all(isinstance(value, str) and value for value in item[:2])
+            and type(item[2]) is int
+            and item[2] >= 0
+            for item in containers
+        )
+    ):
+        raise BlockedError("failed runtime resume container identity missing")
+    return {
+        "phase": "bootstrap",
+        "source": "operator_failed_runtime_resume",
+        "approved": True,
+        "status": "failed",
+        "cli_rc": None,
+        "next_action": "resume",
+        "observed_at": approval["approved_at"],
+        "run_id": cp["run_id"],
+        "options_fingerprint": cp["options_fingerprint"],
+        "reference_time": cp["reference_time"],
+        "checkpoint_sha256": bindings["checkpoint_sha256"],
+        "resource_baseline": baseline,
+        "resource_policy_sha256": approval["resource_policy_sha256"],
+        "failed_runtime_resume": {
+            "version": 1,
+            "previous_receipt": previous,
+            "previous_log": previous_log,
+            "first_blocked_receipt": first_blocked,
+            "approval": approval,
+        },
+    }
+
+
+def failed_runtime_resume_matches(receipt: Any, cp: Any) -> bool:
+    """Share exact approval validation without treating failed work as healthy."""
+    if not isinstance(receipt, dict) or not isinstance(cp, dict):
+        return False
+    if receipt.get("source") != "operator_failed_runtime_resume":
+        return False
+    try:
+        audit = receipt["failed_runtime_resume"]
+        if type(audit["version"]) is not int or audit["version"] != 1:
+            return False
+        expected = failed_runtime_resume_seed(
+            audit["previous_receipt"],
+            audit["previous_log"],
+            audit["first_blocked_receipt"],
+            cp,
+            approval=audit["approval"],
+        )
+        return canonical(receipt) == canonical(expected)
+    except (BlockedError, KeyError, TypeError, ValueError, AttributeError):
+        return False
+
+
 def select_command(receipt: dict[str, Any], cp: dict[str, Any], log: str | None) -> list[str]:
+    if receipt.get("source") == "operator_failed_runtime_resume":
+        if not failed_runtime_resume_matches(receipt, cp):
+            raise BlockedError("failed runtime resume approval or checkpoint diverged")
+        return ["smem", "consolidate", "--brain", "default", "--resume"]
     clean_checkpoint(cp)
     if receipt.get("phase") not in {"bootstrap", "terminal"}:
         raise BlockedError("previous attempt is interrupted, blocked, or unknown")

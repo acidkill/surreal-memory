@@ -28,6 +28,7 @@ from surreal_memory.engine.consolidation_receipts import (
     canonical,
     checkpoint_hash,
     confirmed_success,
+    failed_runtime_resume_matches,
     native_handoff_anchor,
     resource_rebaseline_seed,
     select_command,
@@ -406,6 +407,55 @@ def stop(child: subprocess.Popen[Any]) -> bool:
     return type(child.returncode) is int
 
 
+async def verify_failed_runtime_resume(
+    api: Kubernetes, storage: Any, safety: Safety, receipt: dict[str, Any], cp: dict[str, Any]
+) -> None:
+    """Recheck the approved runtime/source against this worker before ownership CAS."""
+    from importlib.metadata import version
+
+    import numpy as np
+
+    if not failed_runtime_resume_matches(receipt, cp):
+        raise BlockedError("failed runtime resume seed is invalid")
+    approval = receipt["failed_runtime_resume"]["approval"]
+    runtime = approval["runtime"]
+    if (
+        ".".join(map(str, sys.version_info[:3])) != runtime["python_version"]
+        or version("numpy") != np.__version__
+        or np.__version__ != runtime["numpy_version"]
+        or version("surreal-memory") != runtime["package_version"]
+        or safety.policy_sha256 != receipt["resource_policy_sha256"]
+    ):
+        raise BlockedError("failed runtime resume installed runtime or policy differs")
+    identity = api.identity()
+    api.no_other_jobs(identity["job_uid"])
+    pod = api.request(api.path("pods/" + identity["pod_name"]))
+    specs = pod.get("spec", {}).get("containers", [])
+    statuses = pod.get("status", {}).get("containerStatuses", [])
+    digest = runtime["image_digest"]
+    if (
+        pod.get("metadata", {}).get("uid") != identity["pod_uid"]
+        or len(specs) != 1
+        or len(statuses) != 1
+        or not specs[0].get("image", "").endswith("@" + digest)
+        or not statuses[0].get("imageID", "").endswith(digest)
+    ):
+        raise BlockedError("failed runtime resume worker image differs")
+    ref = approval["source_state_ref"]
+    source = await storage.load_semantic_discovery_state(ref["state_id"], ref["revision"])
+    if (
+        not isinstance(source, dict)
+        or checkpoint_hash(source) != approval["source_state_sha256"]
+        or source.get("source_token") != approval["source_token"]
+        or (source.get("legacy_checkpoint") or {}).get("similarity_backend")
+        != approval["source_backend"]
+    ):
+        raise BlockedError("failed runtime resume immutable source differs")
+    await storage.assert_semantic_source_unchanged(
+        approval["source_token"], created_before=timestamp(cp["reference_time"])
+    )
+
+
 async def run(api: Kubernetes, storage: Any, safety: Safety) -> int:
     cm = api.state()
     receipt = json.loads(cm["data"]["receipt.json"])
@@ -457,6 +507,12 @@ async def run(api: Kubernetes, storage: Any, safety: Safety) -> int:
             return 0
         command = select_command(receipt, cp, decision_log)
         safety.sample(initial=True)
+        runtime_resume = receipt.get("source") == "operator_failed_runtime_resume"
+        if runtime_resume:
+            archive = "failed_runtime_resume_" + checkpoint_hash(receipt) + ".json"
+            if cm["data"].get(archive) != canonical(receipt):
+                raise BlockedError("failed runtime resume archive missing or stale")
+            await verify_failed_runtime_resume(api, storage, safety, receipt, cp)
         if (
             receipt.get("source") == "operator_resource_rebaseline"
             and receipt.get("resource_policy_sha256") != safety.policy_sha256
@@ -483,7 +539,12 @@ async def run(api: Kubernetes, storage: Any, safety: Safety) -> int:
             return 0
         if checkpoint_hash(latest) != checkpoint_hash(cp):
             raise BlockedError("checkpoint changed during preflight")
+        if runtime_resume:
+            safety.sample(initial=True)
+            api.no_other_jobs(api.identity()["job_uid"])
+        resume_seed_sha256 = checkpoint_hash(receipt) if runtime_resume else None
         receipt = {
+            **({"failed_runtime_resume_sha256": resume_seed_sha256} if runtime_resume else {}),
             "phase": "started",
             "started_at": utcnow(),
             "before_sha256": checkpoint_hash(cp),
@@ -496,6 +557,9 @@ async def run(api: Kubernetes, storage: Any, safety: Safety) -> int:
         latest, leases = await live(storage)
         if leases or checkpoint_hash(latest) != checkpoint_hash(cp):
             raise BlockedError("checkpoint or lease changed after ownership CAS")
+        if runtime_resume:
+            safety.sample(initial=True)
+            api.no_other_jobs(api.identity()["job_uid"])
         with tempfile.TemporaryFile(mode="w+t") as output:
 
             def interrupted(signum: int, frame: Any) -> None:

@@ -279,3 +279,52 @@ async def test_reviewed_bridge_archives_evidence_and_rejects_mutations():
         receipts.native_handoff_bridge_seed(
             previous, log, {**blocked, "reason": "different"}, cp, **options
         )
+
+
+@pytest.mark.asyncio
+async def test_failed_runtime_approval_remains_failed_until_native_claim_clears_error():
+    from tests.unit.test_failed_runtime_resume import runtime_resume_fixture
+
+    cp, previous, log, approval = runtime_resume_fixture()
+    seed = receipts.failed_runtime_resume_seed(previous, log, previous, cp, approval=approval)
+    before = deepcopy(cp)
+    status = summarize_consolidation(
+        cp,
+        configmap(seed),
+        checkpoint_available=True,
+        now=datetime(2026, 1, 1, 2, 1, tzinfo=UTC),
+    )
+    assert status.state == "failed"
+    assert status.reason == "runtime_resume_pending"
+    assert receipts.confirmed_success(seed, cp) is None
+    assert cp == before
+
+    storage = FakeProgressStorage()
+    session = await open_session(storage)
+    for strategy in STRATEGIES:
+        if strategy != "semantic_link":
+            await session.complete_strategy(strategy)
+    await session.checkpoint(
+        "semantic_link",
+        "semantic_link_discovery_validation",
+        counters={"semantic_link_failures": 0},
+    )
+    await session.fail("semantic_link (progress coordination: ConsolidationProgressError)")
+    await session.close()
+    failed = deepcopy(storage.progress)
+    resumed = await open_session(storage)
+    running = deepcopy(storage.progress)
+    assert running["status"] == "running"
+    assert running["last_error"] is None
+    assert running["owner_token"] != failed["owner_token"]
+    for key in (
+        "run_id",
+        "reference_time",
+        "completed_strategies",
+        "strategy_states",
+        "counters",
+        "work_progress_seq",
+    ):
+        assert running.get(key) == failed.get(key)
+    assert receipts.native_handoff_valid(running)
+    await resumed.close()
