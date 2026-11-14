@@ -482,6 +482,73 @@ async def verify_failed_runtime_resume(
     # Native resume validates mutable source via its saved, budgeted validation cursor.
 
 
+def failed_resume_startup_pending(
+    before: dict[str, Any], current: dict[str, Any], active: list[Any]
+) -> bool:
+    """Recognize only native acquire/claim intervals or a proved same-run continuation."""
+    anchor = native_handoff_anchor(before)
+    if anchor is None or not current:
+        raise BlockedError("failed runtime resume checkpoint proof missing")
+    owner = current.get("owner_token")
+    lease_owner = active[0].get("owner_token") if len(active) == 1 else None
+    owner_valid = isinstance(owner, str) and bool(owner) and owner != before.get("owner_token")
+    lease_valid = (
+        isinstance(lease_owner, str)
+        and bool(lease_owner)
+        and lease_owner != before.get("owner_token")
+    )
+    if checkpoint_hash(current) == checkpoint_hash(before):
+        if not active or (len(active) == 1 and lease_valid):
+            return True
+        raise BlockedError("failed runtime resume startup lease differs")
+    # claim_consolidation_progress changes only these two fields before the running save.
+    restored = dict(current)
+    for key in ("owner_token", "updated_at"):
+        if key in before:
+            restored[key] = before[key]
+        else:
+            restored.pop(key, None)
+    if (
+        owner_valid
+        and timestamp(current.get("updated_at")) is not None
+        and len(active) == 1
+        and lease_owner == owner
+        and checkpoint_hash(restored) == checkpoint_hash(before)
+    ):
+        return True
+    claimed = native_handoff_anchor(current)
+    if (
+        claimed is None
+        or any(
+            claimed[key] != anchor[key]
+            for key in (
+                "lineage_root_sha256",
+                "run_seq",
+                "scope_sha256",
+                "run_id",
+                "reference_time",
+            )
+        )
+        or claimed["attempt_seq"] <= anchor["attempt_seq"]
+        or any(
+            claimed["completed_states"].get(name) != digest
+            for name, digest in anchor["completed_states"].items()
+        )
+        or any(
+            claimed["counters"].get(name) != anchor["counters"].get(name)
+            for name in anchor["completed_states"]
+        )
+        or current.get("status") not in {"running", "paused", "completed"}
+        or checkpoint_errors(current)
+        or not owner_valid
+        or len(active) > 1
+        or (active and lease_owner != owner)
+        or (current.get("status") == "running" and not active)
+    ):
+        raise BlockedError("failed runtime resume native claim differs")
+    return False
+
+
 async def run(api: Kubernetes, storage: Any, safety: Safety) -> int:
     cm = api.state()
     receipt = json.loads(cm["data"]["receipt.json"])
@@ -586,6 +653,9 @@ async def run(api: Kubernetes, storage: Any, safety: Safety) -> int:
         if runtime_resume:
             safety.sample(initial=True)
             api.no_other_jobs(api.identity()["job_uid"])
+        awaiting_native_claim = runtime_resume
+        native_owner = None
+        observed_lease_owner = None
         with tempfile.TemporaryFile(mode="w+t") as output:
 
             def interrupted(signum: int, frame: Any) -> None:
@@ -604,9 +674,39 @@ async def run(api: Kubernetes, storage: Any, safety: Safety) -> int:
                     except CapacityError as exc:
                         capacity_error = exc
                     current, active = await live(storage)
-                    if current and (
-                        current.get("last_error")
-                        or current.get("status") in {"failed", "lease_lost", "timed_out"}
+                    pending = False
+                    if runtime_resume:
+                        pending = failed_resume_startup_pending(cp, current, active)
+                        if active:
+                            owner = active[0]["owner_token"]
+                            if observed_lease_owner is not None and owner != observed_lease_owner:
+                                raise BlockedError("failed runtime resume startup lease changed")
+                            observed_lease_owner = owner
+                        elif pending and observed_lease_owner is not None:
+                            raise BlockedError("failed runtime resume startup lease lost")
+                        if (
+                            not pending
+                            and observed_lease_owner is not None
+                            and current.get("owner_token") != observed_lease_owner
+                        ):
+                            raise BlockedError("failed runtime resume claim owner differs")
+                        if pending and not awaiting_native_claim:
+                            raise BlockedError("failed runtime resume reverted after native claim")
+                        if not pending:
+                            if (
+                                native_owner is not None
+                                and current.get("owner_token") != native_owner
+                            ):
+                                raise BlockedError("failed runtime resume native owner changed")
+                            native_owner = current["owner_token"]
+                            awaiting_native_claim = False
+                    if (
+                        not pending
+                        and current
+                        and (
+                            current.get("last_error")
+                            or current.get("status") in {"failed", "lease_lost", "timed_out"}
+                        )
                     ):
                         raise BlockedError("live checkpoint reports failure")
                     if (
@@ -662,6 +762,16 @@ async def run(api: Kubernetes, storage: Any, safety: Safety) -> int:
         after, leases = await live(storage)
         if leases:
             raise BlockedError("engine lease still active after child exit")
+        if runtime_resume:
+            if failed_resume_startup_pending(cp, after, leases):
+                raise BlockedError("child exited before native claim")
+            if (
+                observed_lease_owner is not None
+                and after.get("owner_token") != observed_lease_owner
+            ):
+                raise BlockedError("failed runtime resume claim owner differs")
+            if native_owner is not None and after.get("owner_token") != native_owner:
+                raise BlockedError("failed runtime resume native owner changed")
         terminal(after, rc, cp, "--resume" in command, text)
         if capacity_checkpoint is not None and (
             any(
