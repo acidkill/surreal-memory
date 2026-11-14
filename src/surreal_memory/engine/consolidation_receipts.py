@@ -719,10 +719,22 @@ def _failed_runtime_source_ref(cp: dict[str, Any]) -> dict[str, Any]:
         raise BlockedError("failed runtime resume manifest malformed")
     if manifest.get("stage") == "validation":
         manifest = manifest.get("discovery")
-    if not isinstance(manifest, dict) or manifest.get("kind") != "semantic_link_discovery":
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("kind") != "semantic_link_discovery"
+        or type(manifest.get("version")) is not int
+        or manifest["version"] != 5
+        or manifest.get("stage") != "similarity"
+    ):
         raise BlockedError("failed runtime resume manifest malformed")
     ref = manifest.get("source_state_ref")
-    if not isinstance(ref, dict) or not ref.get("state_id") or type(ref.get("revision")) is not int:
+    if (
+        not isinstance(ref, dict)
+        or not isinstance(ref.get("state_id"), str)
+        or not ref["state_id"]
+        or type(ref.get("revision")) is not int
+        or ref["revision"] < 1
+    ):
         raise BlockedError("failed runtime resume source reference missing")
     return ref
 
@@ -761,6 +773,7 @@ def failed_runtime_resume_seed(
     counters = cp.get("counters")
     if (
         set(states) != expected
+        or states["semantic_link"].get("phase") != cp["phase"]
         or any(states[name].get("phase") != "completed" for name in expected - {"semantic_link"})
         or not isinstance(counters, dict)
         or counters.get("semantic_link") != states["semantic_link"].get("counters")
@@ -790,7 +803,8 @@ def failed_runtime_resume_seed(
         or re.search(r"(?i)(OOMKilled|lease.lost|timed.out)", previous_log)
         or any(
             re.match(
-                r"^(?:[a-zA-Z_][a-zA-Z0-9_]*\.)*[a-zA-Z_][a-zA-Z0-9_]*(?:Error|Exception):", line
+                r"^(?:[a-zA-Z_][a-zA-Z0-9_]*\.)*(?:[a-zA-Z0-9_]*Error|[a-zA-Z0-9_]*Exception):",
+                line,
             )
             and line
             not in {
