@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import os
 import shutil
 import subprocess
 from html.parser import HTMLParser
+from importlib.metadata import version
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 
 class AssetLinks(HTMLParser):
@@ -23,11 +27,58 @@ class AssetLinks(HTMLParser):
                     self.paths.add(value)
 
 
+async def check_similarity_backend() -> None:
+    """Observe the actual durable selector, using only two synthetic vectors."""
+    from surreal_memory.core.brain import BrainConfig
+    from surreal_memory.core.neuron import Neuron, NeuronType
+    from surreal_memory.engine.semantic_discovery import discover_semantic_synapses
+
+    neurons = [
+        Neuron.create(
+            NeuronType.CONCEPT,
+            f"image smoke {index}",
+            neuron_id=f"smoke-{index}",
+            metadata={"_embedding": [1.0, index * 0.01]},
+        )
+        for index in range(2)
+    ]
+    storage = SimpleNamespace(
+        current_brain_id="image-smoke",
+        find_neurons_after_id=AsyncMock(
+            side_effect=lambda cursor, **_options: neurons if cursor is None else []
+        ),
+        get_synapses_after_id=AsyncMock(return_value=[]),
+        get_synapse_degrees=AsyncMock(return_value={}),
+        find_existing_synapse_pairs=AsyncMock(return_value=set()),
+        capture_semantic_source_token=AsyncMock(return_value="image-smoke-source"),
+        assert_semantic_source_unchanged=AsyncMock(),
+        save_semantic_discovery_state=AsyncMock(),
+    )
+    with patch(
+        "surreal_memory.engine.semantic_discovery._effective_embedding",
+        return_value=(True, "openai", "image-smoke"),
+    ):
+        result = await discover_semantic_synapses(
+            storage, BrainConfig(embedding_enabled=True), checkpoint=AsyncMock()
+        )
+    assert result.synapses_created == 1
+    backend = storage.save_semantic_discovery_state.call_args.args[2]["legacy_checkpoint"][
+        "similarity_backend"
+    ]
+    assert version("numpy") == "2.5.4", version("numpy")
+    assert backend == "numpy_float32:2.5.4", backend
+    from surreal_memory import __version__
+
+    assert version("surreal-memory") == __version__
+    print(f"Installed package {__version__}; selected similarity backend {backend}")
+
+
 def main() -> None:
     """Exercise installed extras, the CLI and dashboard without a live backend."""
     assert os.getuid() != 0, "production image must run as a non-root user"
     for module in ("surrealdb", "openai", "numpy", "uvicorn"):
         importlib.import_module(module)
+    asyncio.run(check_similarity_backend())
     smem = shutil.which("smem")
     assert smem, "installed CLI is missing"
     subprocess.run([smem, "consolidate", "--help"], check=True, capture_output=True)
