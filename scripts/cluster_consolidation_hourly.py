@@ -451,9 +451,7 @@ async def verify_failed_runtime_resume(
         != approval["source_backend"]
     ):
         raise BlockedError("failed runtime resume immutable source differs")
-    await storage.assert_semantic_source_unchanged(
-        approval["source_token"], created_before=timestamp(cp["reference_time"])
-    )
+    # Native resume validates mutable source via its saved, budgeted validation cursor.
 
 
 async def run(api: Kubernetes, storage: Any, safety: Safety) -> int:

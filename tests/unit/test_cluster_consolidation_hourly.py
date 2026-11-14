@@ -1374,7 +1374,10 @@ async def test_failed_runtime_resume_rechecks_actual_worker_and_source(change):
     ):
         if change is None:
             await hourly.verify_failed_runtime_resume(api, storage, safety, seed, cp)
-            storage.assert_semantic_source_unchanged.assert_awaited_once()
+            storage.load_semantic_discovery_state.assert_awaited_once_with(
+                approval["source_state_ref"]["state_id"], approval["source_state_ref"]["revision"]
+            )
+            storage.assert_semantic_source_unchanged.assert_not_awaited()
             api.no_other_jobs.assert_called_once_with("current-job")
         else:
             with pytest.raises(hourly.BlockedError):
