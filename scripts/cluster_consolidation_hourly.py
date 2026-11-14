@@ -442,7 +442,35 @@ async def verify_failed_runtime_resume(
     ):
         raise BlockedError("failed runtime resume worker image differs")
     ref = approval["source_state_ref"]
-    source = await storage.load_semantic_discovery_state(ref["state_id"], ref["revision"])
+    # The native public loader requires a lease; preclaim proof is one exact indexed read.
+    rows = await storage._query(
+        "SELECT brain_id, run_id, state_id, revision, source_token, payload "
+        "FROM semantic_discovery_state WITH INDEX idx_sds_state_revision "
+        "WHERE brain_id = $brain_id AND run_id = $run_id "
+        "AND state_id = $state_id AND revision = $revision LIMIT 1",
+        brain_id=cp["brain_id"],
+        run_id=cp["run_id"],
+        state_id=ref["state_id"],
+        revision=ref["revision"],
+    )
+    if len(rows) != 1 or not isinstance(rows[0], dict):
+        raise BlockedError("failed runtime resume exact source row missing")
+    row = rows[0]
+    source = row.get("payload")
+    expected = {
+        "brain_id": cp["brain_id"],
+        "run_id": cp["run_id"],
+        "state_id": ref["state_id"],
+        "revision": ref["revision"],
+        "source_token": approval["source_token"],
+    }
+    if (
+        not isinstance(source, dict)
+        or any(row.get(key) != value or source.get(key) != value for key, value in expected.items())
+        or source.get("state_revision") != ref["revision"]
+        or ref.get("source_token") != approval["source_token"]
+    ):
+        raise BlockedError("failed runtime resume source row or payload identity differs")
     if (
         not isinstance(source, dict)
         or checkpoint_hash(source) != approval["source_state_sha256"]
