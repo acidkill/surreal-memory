@@ -1322,3 +1322,84 @@ def test_stop_requires_observed_integer_child_exit(returncode):
     child.poll.return_value = None
     assert hourly.stop(child) is False
     child.send_signal.assert_called_once_with(hourly.signal.SIGINT)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", [None, "numpy", "image", "source", "policy", "lease"])
+async def test_failed_runtime_resume_rechecks_actual_worker_and_source(change):
+    from copy import deepcopy
+
+    from surreal_memory.engine.consolidation_receipts import failed_runtime_resume_seed
+    from tests.unit.test_failed_runtime_resume import runtime_resume_fixture
+
+    cp, previous, log, approval = runtime_resume_fixture()
+    seed = failed_runtime_resume_seed(previous, log, previous, cp, approval=approval)
+    runtime = approval["runtime"]
+    identity = {"pod_name": "worker", "pod_uid": "current-worker", "job_uid": "current-job"}
+    pod = {
+        "metadata": {"uid": identity["pod_uid"]},
+        "spec": {"containers": [{"image": "registry/image@" + runtime["image_digest"]}]},
+        "status": {"containerStatuses": [{"imageID": runtime["image_digest"]}]},
+    }
+    source = {
+        "source_token": "synthetic-token",
+        "legacy_checkpoint": {"similarity_backend": "numpy_float32:2.5.4"},
+    }
+    api = MagicMock()
+    api.identity.return_value = identity
+    api.request.return_value = pod
+    safety = MagicMock(policy_sha256=seed["resource_policy_sha256"])
+    storage = SimpleNamespace(
+        load_semantic_discovery_state=AsyncMock(return_value=deepcopy(source)),
+        assert_semantic_source_unchanged=AsyncMock(),
+    )
+    numpy = SimpleNamespace(__version__="2.5.4")
+    if change == "numpy":
+        numpy.__version__ = "2.4.6"
+    elif change == "image":
+        pod["status"]["containerStatuses"][0]["imageID"] = "sha256:" + "0" * 64
+    elif change == "source":
+        storage.load_semantic_discovery_state.return_value["source_token"] = "different"  # noqa: S105 - synthetic mutation fence, not a credential.
+    elif change == "policy":
+        safety.policy_sha256 = "different"
+    elif change == "lease":
+        api.no_other_jobs.side_effect = hourly.BlockedError("another active worker")
+    with (
+        patch.dict("sys.modules", {"numpy": numpy}),
+        patch.object(hourly.sys, "version_info", (3, 12, 1)),
+        patch(
+            "importlib.metadata.version",
+            side_effect=lambda name: "2.5.4" if name == "numpy" else "1.0",
+        ),
+    ):
+        if change is None:
+            await hourly.verify_failed_runtime_resume(api, storage, safety, seed, cp)
+            storage.load_semantic_discovery_state.assert_awaited_once_with(
+                approval["source_state_ref"]["state_id"], approval["source_state_ref"]["revision"]
+            )
+            storage.assert_semantic_source_unchanged.assert_not_awaited()
+            api.no_other_jobs.assert_called_once_with("current-job")
+        else:
+            with pytest.raises(hourly.BlockedError):
+                await hourly.verify_failed_runtime_resume(api, storage, safety, seed, cp)
+
+
+@pytest.mark.asyncio
+async def test_failed_runtime_seed_without_immutable_archive_never_launches():
+    from surreal_memory.engine.consolidation_receipts import failed_runtime_resume_seed
+    from tests.unit.test_failed_runtime_resume import runtime_resume_fixture
+
+    cp, previous, log, approval = runtime_resume_fixture()
+    seed = failed_runtime_resume_seed(previous, log, previous, cp, approval=approval)
+    api = MagicMock()
+    cm = {"metadata": {"resourceVersion": "1"}, "data": {"receipt.json": hourly.canonical(seed)}}
+    api.state.return_value = cm
+    storage = SimpleNamespace(
+        get_consolidation_progress=AsyncMock(return_value=cp),
+        _query=AsyncMock(return_value=[]),
+    )
+    safety = MagicMock(baseline=seed["resource_baseline"])
+    with patch.object(hourly.subprocess, "Popen") as popen:
+        assert await hourly.run(api, storage, safety) == 2
+    popen.assert_not_called()
+    assert api.cas.call_args.args[1]["reason"] == "failed runtime resume archive missing or stale"

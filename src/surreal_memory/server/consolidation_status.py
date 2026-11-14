@@ -19,6 +19,7 @@ from surreal_memory.engine.consolidation_receipts import (
     checkpoint_errors,
     checkpoint_hash,
     confirmed_success,
+    failed_runtime_resume_matches,
     native_handoff_bridge_matches,
     native_handoff_matches,
     resource_rebaseline_matches,
@@ -212,7 +213,12 @@ def summarize_consolidation(
     if receipt is not None and receipt.get("phase") == "blocked" and status.observation_available:
         status.state, status.reason = "blocked", "scheduler_blocked"
     elif valid_cp and (cp.get("status") == "failed" or checkpoint_errors(cp)):
-        status.state, status.reason = "failed", "checkpoint_failed"
+        status.state = "failed"
+        status.reason = (
+            "runtime_resume_pending"
+            if failed_runtime_resume_matches(receipt, cp)
+            else "checkpoint_failed"
+        )
     elif not status.observation_available:
         status.reason = "scheduler_unavailable"
     elif status.last_observed_at is None or status.observation_stale:
