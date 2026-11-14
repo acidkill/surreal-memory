@@ -1430,3 +1430,331 @@ async def test_failed_runtime_seed_without_immutable_archive_never_launches():
         assert await hourly.run(api, storage, safety) == 2
     popen.assert_not_called()
     assert api.cas.call_args.args[1]["reason"] == "failed runtime resume archive missing or stale"
+
+
+def failed_startup_fixture():
+    from surreal_memory.engine.consolidation_progress import (
+        CONSOLIDATION_ENGINE_VERSION,
+        PROGRESS_FORMAT_VERSION,
+        SCHEMA_VERSION,
+    )
+    from surreal_memory.engine.consolidation_receipts import (
+        failed_runtime_resume_seed,
+        native_payload_hash,
+    )
+    from tests.unit.test_failed_runtime_resume import runtime_resume_fixture
+
+    cp, previous, log, approval = runtime_resume_fixture()
+    cp.update(
+        engine_version=CONSOLIDATION_ENGINE_VERSION,
+        format_version=PROGRESS_FORMAT_VERSION,
+        schema_version=SCHEMA_VERSION,
+        owner_token="previous-owner",  # noqa: S106 - synthetic lease identity.
+        updated_at="2026-01-01T01:00:00Z",
+    )
+    cp["native_handoff"]["payload_sha256"] = native_payload_hash(cp)
+    approval["checkpoint_sha256"] = hourly.checkpoint_hash(cp)
+    return cp, failed_runtime_resume_seed(previous, log, previous, cp, approval=approval)
+
+
+@pytest.mark.parametrize("interval", ["unstarted", "acquired", "claimed"])
+def test_failed_resume_startup_pending_is_comparison_only(interval):
+    from copy import deepcopy
+
+    before, _ = failed_startup_fixture()
+    current = deepcopy(before)
+    active = [] if interval == "unstarted" else [{"owner_token": "new-owner"}]
+    if interval == "claimed":
+        current.update({"owner_token": "new-owner", "updated_at": hourly.utcnow()})
+    saved = deepcopy(current)
+    assert hourly.failed_resume_startup_pending(before, current, active)
+    assert current == saved
+    current["work_progress_seq"] = 999
+    with pytest.raises(hourly.BlockedError):
+        hourly.failed_resume_startup_pending(before, current, active)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status,rc", [("paused", 1), ("completed", 0)])
+@pytest.mark.parametrize(
+    "fault",
+    [
+        None,
+        "fast_terminal",
+        "exit_before_claim",
+        "failed_drift",
+        "claim_drift",
+        "source_drift",
+        "extra_lease",
+        "foreign_lease",
+        "scope",
+        "completed_state",
+        "capacity",
+        "oom",
+        "db_change",
+        "lost_lease",
+        "failure_after_claim",
+        "reversion_after_claim",
+        "terminal_scope",
+        "cli_exit",
+        "ordinary_seed",
+    ],
+)
+async def test_failed_resume_real_session_startup_protocol(tmp_path, capsys, status, rc, fault):
+    import asyncio
+    import copy
+    import sys
+
+    from surreal_memory.engine.consolidation_progress import ConsolidationProgressSession
+    from surreal_memory.engine.consolidation_receipts import native_payload_hash
+    from tests.unit.test_consolidation_progress import FakeProgressStorage
+
+    before, seed = failed_startup_fixture()
+    approval = seed["failed_runtime_resume"]["approval"]
+    gates = {stage: asyncio.Event() for stage in ("acquired", "claimed", "running")}
+    reached = {stage: asyncio.Event() for stage in gates}
+    snapshots = []
+
+    class ObservedStorage(FakeProgressStorage):
+        async def boundary(self, stage):
+            snapshots.append((stage, copy.deepcopy(self.progress), self.lease_owner))
+            reached[stage].set()
+            await gates[stage].wait()
+
+        async def acquire_consolidation_lease(self, *args, **kwargs):
+            result = await super().acquire_consolidation_lease(*args, **kwargs)
+            await self.boundary("acquired")
+            return result
+
+        async def claim_consolidation_progress(self, *args, **kwargs):
+            result = await super().claim_consolidation_progress(*args, **kwargs)
+            assert result is not None
+            self.progress["updated_at"] = hourly.utcnow()
+            result = copy.deepcopy(self.progress)
+            await self.boundary("claimed")
+            return result
+
+        async def save_consolidation_progress(self, *args, **kwargs):
+            result = await super().save_consolidation_progress(*args, **kwargs)
+            if not reached["running"].is_set():
+                await self.boundary("running")
+            return result
+
+        async def _query(self, query, **kwargs):
+            if "semantic_discovery_state" in query:
+                assert self.lease_owner is None  # Exact preclaim read has no owner prerequisite.
+                ref = approval["source_state_ref"]
+                payload = {
+                    "brain_id": before["brain_id"],
+                    "run_id": before["run_id"],
+                    "state_id": ref["state_id"],
+                    "revision": ref["revision"],
+                    "state_revision": ref["revision"],
+                    "source_token": approval["source_token"],
+                    "legacy_checkpoint": {"similarity_backend": approval["source_backend"]},
+                }
+                return [{**payload, "payload": payload}]
+            active = [] if self.lease_owner is None else [{"owner_token": self.lease_owner}]
+            if tick_number == 1 and fault == "extra_lease":
+                return [{"owner_token": "one"}, {"owner_token": "two"}]
+            if tick_number == 3 and fault == "foreign_lease":
+                return [{"owner_token": "foreign"}]
+            if tick_number == 5 and fault == "lost_lease":
+                return []
+            return active
+
+    storage = ObservedStorage()
+    storage.progress = copy.deepcopy(before)
+    cm = {
+        "metadata": {"resourceVersion": "1"},
+        "data": {
+            "receipt.json": hourly.canonical(seed),
+            "failed_runtime_resume_" + hourly.checkpoint_hash(seed) + ".json": hourly.canonical(
+                seed
+            ),
+        },
+    }
+    if fault == "ordinary_seed":
+        ordinary = {**seed, "source": "user_interrupted"}
+        cm["data"]["receipt.json"] = hourly.canonical(ordinary)
+    identity = {"pod_name": "self", "pod_uid": "worker-pod", "job_uid": "worker-job"}
+    api = MagicMock()
+    api.state.side_effect = lambda: copy.deepcopy(cm)
+    api.identity.return_value = identity
+    runtime = approval["runtime"]
+    api.request.return_value = {
+        "metadata": {"uid": identity["pod_uid"]},
+        "spec": {"containers": [{"image": "registry/image@" + runtime["image_digest"]}]},
+        "status": {"containerStatuses": [{"imageID": runtime["image_digest"]}]},
+    }
+
+    def cas(old, decision, observation=None):
+        cm["data"]["receipt.json"] = hourly.canonical(decision)
+        return copy.deepcopy(cm)
+
+    api.cas.side_effect = cas
+    tick_number = 0
+    safety = MagicMock(
+        baseline=seed["resource_baseline"], policy_sha256=seed["resource_policy_sha256"]
+    )
+
+    def sample(initial=False):
+        if tick_number == 1 and not initial:
+            if fault == "capacity":
+                raise hourly.CapacityError("database memory exceeds safety threshold")
+            if fault in {"oom", "db_change"}:
+                raise hourly.BlockedError("database restarted, changed incarnation, or new OOM")
+
+    safety.sample.side_effect = sample
+    real_popen = subprocess.Popen
+    child = None
+    native_task = None
+    session = None
+    ready, exit_file = tmp_path / "ready", tmp_path / "exit"
+    payload = (
+        "import sys,time;from pathlib import Path\n"
+        "Path(sys.argv[1]).write_text('ready')\n"
+        "while not Path(sys.argv[2]).exists(): time.sleep(.005)\n"
+        "print('ordinary budget boundary',flush=True)\n"
+        "sys.exit(int(Path(sys.argv[2]).read_text()))\n"
+    )
+
+    def popen(command, **kwargs):
+        nonlocal child
+        assert command == ["smem", "consolidate", "--brain", "default", "--resume"]
+        assert storage.lease_owner is None and storage.progress == before
+        child = real_popen(
+            [sys.executable, "-u", "-c", payload, str(ready), str(exit_file)], **kwargs
+        )
+        return child
+
+    async def finish():
+        if status == "completed":
+            await session.complete_strategy("semantic_link")
+            await session.complete()
+        else:
+            await session.pause()
+        await session.close()
+        if fault == "terminal_scope":
+            storage.progress["engine_version"] = "changed"
+            storage.progress["native_handoff"]["payload_sha256"] = native_payload_hash(
+                storage.progress
+            )
+        exit_file.write_text(str(1 - rc if fault == "cli_exit" else rc))
+        for _ in range(400):
+            if child.poll() is not None:
+                return
+            await asyncio.sleep(0.005)
+        pytest.fail("real child did not exit")
+
+    async def tick(seconds):
+        nonlocal tick_number, native_task, session
+        assert seconds == 10
+        tick_number += 1
+        for _ in range(400):
+            if ready.exists():
+                break
+            await asyncio.sleep(0.005)
+        assert ready.exists()
+        if tick_number == 1:
+            if fault == "exit_before_claim":
+                exit_file.write_text(str(rc))
+                for _ in range(400):
+                    if child.poll() is not None:
+                        return
+                    await asyncio.sleep(0.005)
+                pytest.fail("real child did not exit before claim")
+            if fault == "failed_drift":
+                storage.progress["last_error"] = "new failure"
+            if fault == "source_drift":
+                storage.progress["strategy_states"]["semantic_link"]["pending"] = ["changed"]
+        elif tick_number == 2:
+            native_task = asyncio.create_task(
+                ConsolidationProgressSession.open(
+                    storage,
+                    before["requested_strategies"],
+                    before["options_fingerprint"],
+                    hourly.datetime(2026, 1, 1),
+                    resume_run_id=before["run_id"],
+                )
+            )
+            await asyncio.wait_for(reached["acquired"].wait(), 2)
+        elif tick_number == 3:
+            gates["acquired"].set()
+            await asyncio.wait_for(reached["claimed"].wait(), 2)
+            if fault == "claim_drift":
+                storage.progress["work_progress_seq"] = 999
+        elif tick_number == 4:
+            gates["claimed"].set()
+            await asyncio.wait_for(reached["running"].wait(), 2)
+            if fault == "scope":
+                storage.progress["engine_version"] = "changed"
+            if fault == "completed_state":
+                storage.progress["strategy_states"]["prune"]["phase"] = "changed"
+            if fault in {"scope", "completed_state"}:
+                storage.progress["native_handoff"]["payload_sha256"] = native_payload_hash(
+                    storage.progress
+                )
+            if fault == "fast_terminal":
+                gates["running"].set()
+                session = await asyncio.wait_for(native_task, 2)
+                await finish()
+        elif tick_number == 5:
+            gates["running"].set()
+            session = await asyncio.wait_for(native_task, 2)
+            if fault == "failure_after_claim":
+                await session.fail("new failure")
+            elif fault == "reversion_after_claim":
+                storage.progress = copy.deepcopy(before)
+            elif fault != "lost_lease":
+                await finish()
+        else:
+            pytest.fail("supervisor failed to reach a bounded decision")
+
+    expected = 0 if fault in {None, "fast_terminal"} else 2
+    with (
+        patch.object(hourly.subprocess, "Popen", side_effect=popen),
+        # Keep native heartbeat/task scheduling on the real asyncio module.
+        patch.object(hourly, "asyncio", SimpleNamespace(sleep=tick)),
+        patch.dict("sys.modules", {"numpy": SimpleNamespace(__version__="2.5.4")}),
+        patch.object(hourly.sys, "version_info", (3, 12, 1)),
+        patch(
+            "importlib.metadata.version",
+            side_effect=lambda name: "2.5.4" if name == "numpy" else "1.0",
+        ),
+    ):
+        try:
+            assert await hourly.run(api, storage, safety) == expected
+        finally:
+            if native_task is not None and not native_task.done():
+                native_task.cancel()
+                try:
+                    await native_task
+                except asyncio.CancelledError:
+                    pass
+            if session is not None:
+                await session.close()
+            if child is not None and child.poll() is None:
+                child.kill()
+                child.wait(timeout=5)
+    final = json.loads(cm["data"]["receipt.json"])
+    if expected == 0:
+        assert [stage for stage, _, _ in snapshots] == ["acquired", "claimed", "running"]
+        acquired, claimed, running = [cp for _, cp, _ in snapshots]
+        assert acquired == before and claimed["status"] == "failed"
+        assert claimed["last_error"] == before["last_error"]
+        assert running["status"] == "running" and running["last_error"] is None
+        assert final["phase"] == "terminal" and final["status"] == status
+        assert final["cli_rc"] == child.returncode == rc
+        assert (
+            final["native_handoff_anchor"]["attempt_seq"] > before["native_handoff"]["attempt_seq"]
+        )
+        assert tick_number == (4 if fault == "fast_terminal" else 5)
+    else:
+        assert final["phase"] == "blocked"
+        assert "confirmed_success" not in final
+        if child is not None:
+            assert final["cli_rc"] == child.returncode
+        if fault == "ordinary_seed":
+            assert child is None
+    capsys.readouterr()
