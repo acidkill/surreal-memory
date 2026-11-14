@@ -655,6 +655,7 @@ async def run(api: Kubernetes, storage: Any, safety: Safety) -> int:
             api.no_other_jobs(api.identity()["job_uid"])
         awaiting_native_claim = runtime_resume
         native_owner = None
+        observed_lease_owner = None
         with tempfile.TemporaryFile(mode="w+t") as output:
 
             def interrupted(signum: int, frame: Any) -> None:
@@ -676,6 +677,19 @@ async def run(api: Kubernetes, storage: Any, safety: Safety) -> int:
                     pending = False
                     if runtime_resume:
                         pending = failed_resume_startup_pending(cp, current, active)
+                        if active:
+                            owner = active[0]["owner_token"]
+                            if observed_lease_owner is not None and owner != observed_lease_owner:
+                                raise BlockedError("failed runtime resume startup lease changed")
+                            observed_lease_owner = owner
+                        elif pending and observed_lease_owner is not None:
+                            raise BlockedError("failed runtime resume startup lease lost")
+                        if (
+                            not pending
+                            and observed_lease_owner is not None
+                            and current.get("owner_token") != observed_lease_owner
+                        ):
+                            raise BlockedError("failed runtime resume claim owner differs")
                         if pending and not awaiting_native_claim:
                             raise BlockedError("failed runtime resume reverted after native claim")
                         if not pending:
@@ -751,6 +765,11 @@ async def run(api: Kubernetes, storage: Any, safety: Safety) -> int:
         if runtime_resume:
             if failed_resume_startup_pending(cp, after, leases):
                 raise BlockedError("child exited before native claim")
+            if (
+                observed_lease_owner is not None
+                and after.get("owner_token") != observed_lease_owner
+            ):
+                raise BlockedError("failed runtime resume claim owner differs")
             if native_owner is not None and after.get("owner_token") != native_owner:
                 raise BlockedError("failed runtime resume native owner changed")
         terminal(after, rc, cp, "--resume" in command, text)

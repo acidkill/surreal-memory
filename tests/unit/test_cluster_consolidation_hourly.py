@@ -1481,6 +1481,9 @@ def test_failed_resume_startup_pending_is_comparison_only(interval):
     [
         None,
         "fast_terminal",
+        "unobserved_fast_terminal",
+        "lost_startup_lease",
+        "replaced_startup_lease",
         "exit_before_claim",
         "exit_after_acquire",
         "failed_drift",
@@ -1682,6 +1685,11 @@ async def test_failed_resume_real_session_startup_protocol(tmp_path, capsys, sta
                 )
             )
             await asyncio.wait_for(reached["acquired"].wait(), 2)
+            if fault == "unobserved_fast_terminal":
+                for gate in gates.values():
+                    gate.set()
+                session = await asyncio.wait_for(native_task, 2)
+                await finish()
             if fault == "exit_after_acquire":
                 exit_file.write_text(str(rc))
                 for _ in range(400):
@@ -1690,6 +1698,9 @@ async def test_failed_resume_real_session_startup_protocol(tmp_path, capsys, sta
                     await asyncio.sleep(0.005)
                 pytest.fail("real child did not exit after lease acquisition")
         elif phase_tick == 3:
+            if fault in {"lost_startup_lease", "replaced_startup_lease"}:
+                storage.lease_owner = None if fault == "lost_startup_lease" else "replacement"
+                return
             gates["acquired"].set()
             await asyncio.wait_for(reached["claimed"].wait(), 2)
             if fault == "claim_drift":
@@ -1721,7 +1732,7 @@ async def test_failed_resume_real_session_startup_protocol(tmp_path, capsys, sta
         else:
             pytest.fail("supervisor failed to reach a bounded decision")
 
-    expected = 0 if fault in {None, "fast_terminal"} else 2
+    expected = 0 if fault in {None, "fast_terminal", "unobserved_fast_terminal"} else 2
     with (
         patch.object(hourly.subprocess, "Popen", side_effect=popen),
         # Keep native heartbeat/task scheduling on the real asyncio module.
@@ -1759,8 +1770,11 @@ async def test_failed_resume_real_session_startup_protocol(tmp_path, capsys, sta
         assert (
             final["native_handoff_anchor"]["attempt_seq"] > before["native_handoff"]["attempt_seq"]
         )
-        assert phase_tick == (4 if fault == "fast_terminal" else 5)
-        assert tick_number == (5 if fault == "fast_terminal" else 6)
+        expected_phase = (
+            2 if fault == "unobserved_fast_terminal" else (4 if fault == "fast_terminal" else 5)
+        )
+        assert phase_tick == expected_phase
+        assert tick_number == expected_phase + 1
         completed = before["completed_strategies"]
         assert len(completed) == 19
         assert all(
