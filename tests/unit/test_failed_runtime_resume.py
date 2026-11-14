@@ -77,6 +77,11 @@ def runtime_resume_fixture():
         "source_state_ref": ref.copy(),
         "source_state_sha256": receipts.checkpoint_hash(
             {
+                "brain_id": cp["brain_id"],
+                "run_id": cp["run_id"],
+                "state_id": ref["state_id"],
+                "revision": ref["revision"],
+                "state_revision": ref["revision"],
                 "source_token": "synthetic-token",
                 "legacy_checkpoint": {"similarity_backend": "numpy_float32:2.5.4"},
             }

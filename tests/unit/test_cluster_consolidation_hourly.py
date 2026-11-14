@@ -1325,7 +1325,9 @@ def test_stop_requires_observed_integer_child_exit(returncode):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("change", [None, "numpy", "image", "source", "policy", "lease"])
+@pytest.mark.parametrize(
+    "change", [None, "numpy", "image", "source", "policy", "lease", "missing", "row", "payload"]
+)
 async def test_failed_runtime_resume_rechecks_actual_worker_and_source(change):
     from copy import deepcopy
 
@@ -1342,6 +1344,11 @@ async def test_failed_runtime_resume_rechecks_actual_worker_and_source(change):
         "status": {"containerStatuses": [{"imageID": runtime["image_digest"]}]},
     }
     source = {
+        "brain_id": cp["brain_id"],
+        "run_id": cp["run_id"],
+        "state_id": approval["source_state_ref"]["state_id"],
+        "revision": approval["source_state_ref"]["revision"],
+        "state_revision": approval["source_state_ref"]["revision"],
         "source_token": "synthetic-token",
         "legacy_checkpoint": {"similarity_backend": "numpy_float32:2.5.4"},
     }
@@ -1350,7 +1357,12 @@ async def test_failed_runtime_resume_rechecks_actual_worker_and_source(change):
     api.request.return_value = pod
     safety = MagicMock(policy_sha256=seed["resource_policy_sha256"])
     storage = SimpleNamespace(
-        load_semantic_discovery_state=AsyncMock(return_value=deepcopy(source)),
+        # The public loader correctly refuses a no-lease preclaim read.
+        load_semantic_discovery_state=AsyncMock(return_value=None),
+        _query=AsyncMock(return_value=[{**deepcopy(source), "payload": deepcopy(source)}]),
+        acquire_consolidation_lease=AsyncMock(),
+        claim_consolidation_progress=AsyncMock(),
+        save_consolidation_progress=AsyncMock(),
         assert_semantic_source_unchanged=AsyncMock(),
     )
     numpy = SimpleNamespace(__version__="2.5.4")
@@ -1359,11 +1371,17 @@ async def test_failed_runtime_resume_rechecks_actual_worker_and_source(change):
     elif change == "image":
         pod["status"]["containerStatuses"][0]["imageID"] = "sha256:" + "0" * 64
     elif change == "source":
-        storage.load_semantic_discovery_state.return_value["source_token"] = "different"  # noqa: S105 - synthetic mutation fence, not a credential.
+        storage._query.return_value[0]["payload"]["source_token"] = "different"  # noqa: S105 - synthetic mutation fence, not a credential.
     elif change == "policy":
         safety.policy_sha256 = "different"
     elif change == "lease":
         api.no_other_jobs.side_effect = hourly.BlockedError("another active worker")
+    elif change == "missing":
+        storage._query.return_value = []
+    elif change == "row":
+        storage._query.return_value[0]["brain_id"] = "other"
+    elif change == "payload":
+        storage._query.return_value[0]["payload"]["revision"] += 1
     with (
         patch.dict("sys.modules", {"numpy": numpy}),
         patch.object(hourly.sys, "version_info", (3, 12, 1)),
@@ -1374,9 +1392,18 @@ async def test_failed_runtime_resume_rechecks_actual_worker_and_source(change):
     ):
         if change is None:
             await hourly.verify_failed_runtime_resume(api, storage, safety, seed, cp)
-            storage.load_semantic_discovery_state.assert_awaited_once_with(
-                approval["source_state_ref"]["state_id"], approval["source_state_ref"]["revision"]
-            )
+            storage._query.assert_awaited_once()
+            assert "WITH INDEX idx_sds_state_revision" in storage._query.call_args.args[0]
+            assert storage._query.call_args.kwargs == {
+                "brain_id": cp["brain_id"],
+                "run_id": cp["run_id"],
+                "state_id": approval["source_state_ref"]["state_id"],
+                "revision": approval["source_state_ref"]["revision"],
+            }
+            storage.load_semantic_discovery_state.assert_not_awaited()
+            storage.acquire_consolidation_lease.assert_not_awaited()
+            storage.claim_consolidation_progress.assert_not_awaited()
+            storage.save_consolidation_progress.assert_not_awaited()
             storage.assert_semantic_source_unchanged.assert_not_awaited()
             api.no_other_jobs.assert_called_once_with("current-job")
         else:
