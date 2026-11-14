@@ -1482,6 +1482,7 @@ def test_failed_resume_startup_pending_is_comparison_only(interval):
         None,
         "fast_terminal",
         "exit_before_claim",
+        "exit_after_acquire",
         "failed_drift",
         "claim_drift",
         "source_drift",
@@ -1555,11 +1556,11 @@ async def test_failed_resume_real_session_startup_protocol(tmp_path, capsys, sta
                 }
                 return [{**payload, "payload": payload}]
             active = [] if self.lease_owner is None else [{"owner_token": self.lease_owner}]
-            if tick_number == 1 and fault == "extra_lease":
+            if phase_tick == 1 and fault == "extra_lease":
                 return [{"owner_token": "one"}, {"owner_token": "two"}]
-            if tick_number == 3 and fault == "foreign_lease":
+            if phase_tick == 3 and fault == "foreign_lease":
                 return [{"owner_token": "foreign"}]
-            if tick_number == 5 and fault == "lost_lease":
+            if phase_tick == 5 and fault == "lost_lease":
                 return []
             return active
 
@@ -1594,12 +1595,13 @@ async def test_failed_resume_real_session_startup_protocol(tmp_path, capsys, sta
 
     api.cas.side_effect = cas
     tick_number = 0
+    phase_tick = 0
     safety = MagicMock(
         baseline=seed["resource_baseline"], policy_sha256=seed["resource_policy_sha256"]
     )
 
     def sample(initial=False):
-        if tick_number == 1 and not initial:
+        if phase_tick == 1 and not initial:
             if fault == "capacity":
                 raise hourly.CapacityError("database memory exceeds safety threshold")
             if fault in {"oom", "db_change"}:
@@ -1648,15 +1650,16 @@ async def test_failed_resume_real_session_startup_protocol(tmp_path, capsys, sta
         pytest.fail("real child did not exit")
 
     async def tick(seconds):
-        nonlocal tick_number, native_task, session
+        nonlocal tick_number, phase_tick, native_task, session
         assert seconds == 10
         tick_number += 1
+        phase_tick = max(1, tick_number - 1)
         for _ in range(400):
             if ready.exists():
                 break
             await asyncio.sleep(0.005)
         assert ready.exists()
-        if tick_number == 1:
+        if phase_tick == 1:
             if fault == "exit_before_claim":
                 exit_file.write_text(str(rc))
                 for _ in range(400):
@@ -1668,7 +1671,7 @@ async def test_failed_resume_real_session_startup_protocol(tmp_path, capsys, sta
                 storage.progress["last_error"] = "new failure"
             if fault == "source_drift":
                 storage.progress["strategy_states"]["semantic_link"]["pending"] = ["changed"]
-        elif tick_number == 2:
+        elif phase_tick == 2:
             native_task = asyncio.create_task(
                 ConsolidationProgressSession.open(
                     storage,
@@ -1679,12 +1682,19 @@ async def test_failed_resume_real_session_startup_protocol(tmp_path, capsys, sta
                 )
             )
             await asyncio.wait_for(reached["acquired"].wait(), 2)
-        elif tick_number == 3:
+            if fault == "exit_after_acquire":
+                exit_file.write_text(str(rc))
+                for _ in range(400):
+                    if child.poll() is not None:
+                        return
+                    await asyncio.sleep(0.005)
+                pytest.fail("real child did not exit after lease acquisition")
+        elif phase_tick == 3:
             gates["acquired"].set()
             await asyncio.wait_for(reached["claimed"].wait(), 2)
             if fault == "claim_drift":
                 storage.progress["work_progress_seq"] = 999
-        elif tick_number == 4:
+        elif phase_tick == 4:
             gates["claimed"].set()
             await asyncio.wait_for(reached["running"].wait(), 2)
             if fault == "scope":
@@ -1699,7 +1709,7 @@ async def test_failed_resume_real_session_startup_protocol(tmp_path, capsys, sta
                 gates["running"].set()
                 session = await asyncio.wait_for(native_task, 2)
                 await finish()
-        elif tick_number == 5:
+        elif phase_tick == 5:
             gates["running"].set()
             session = await asyncio.wait_for(native_task, 2)
             if fault == "failure_after_claim":
@@ -1749,7 +1759,18 @@ async def test_failed_resume_real_session_startup_protocol(tmp_path, capsys, sta
         assert (
             final["native_handoff_anchor"]["attempt_seq"] > before["native_handoff"]["attempt_seq"]
         )
-        assert tick_number == (4 if fault == "fast_terminal" else 5)
+        assert phase_tick == (4 if fault == "fast_terminal" else 5)
+        assert tick_number == (5 if fault == "fast_terminal" else 6)
+        completed = before["completed_strategies"]
+        assert len(completed) == 19
+        assert all(
+            storage.progress["strategy_states"][name] == before["strategy_states"][name]
+            for name in completed
+        )
+        assert (
+            running["strategy_states"]["semantic_link"]["pending"]
+            == before["strategy_states"]["semantic_link"]["pending"]
+        )
     else:
         assert final["phase"] == "blocked"
         assert "confirmed_success" not in final
