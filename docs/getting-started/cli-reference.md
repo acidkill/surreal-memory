@@ -679,6 +679,8 @@ smem consolidate [OPTIONS]
 | `--prune-threshold` | float | No | `0.05` | Weight threshold for pruning synapses |
 | `--merge-overlap` | float | No | `0.5` | Jaccard overlap threshold for merging fibers |
 | `--min-inactive-days` | float | No | `7.0` | Minimum inactive days before pruning |
+| `--strategy-timeout` | float range | No | — | Per-strategy execution budget in seconds; preserves saved work identity |
+| `--total-timeout` | float range | No | — | Overall engine execution budget in seconds; excludes health snapshots |
 
 ### `smem cleanup`
 

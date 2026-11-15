@@ -232,11 +232,19 @@ async def test_run_with_delta_forwards_progress_callback(
     callback_messages: list[str] = []
     callback = callback_messages.append
 
-    await run_with_delta(MagicMock(), "default", on_progress=callback)
+    await run_with_delta(
+        MagicMock(),
+        "default",
+        on_progress=callback,
+        strategy_timeout_seconds=1800,
+        total_timeout_seconds=3000,
+    )
 
     engine_run.assert_awaited_once()
     assert engine_run.await_args is not None
     assert engine_run.await_args.kwargs["on_progress"] is callback
+    assert engine_run.await_args.kwargs["strategy_timeout_seconds"] == 1800
+    assert engine_run.await_args.kwargs["total_timeout_seconds"] == 3000
 
 
 @pytest.mark.asyncio

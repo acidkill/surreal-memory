@@ -208,6 +208,8 @@ async def run_with_delta(
     tier_config: TierConfig | None = None,
     on_progress: Callable[[str], None] | None = None,
     resume_run_id: str | None = None,
+    strategy_timeout_seconds: float | None = None,
+    total_timeout_seconds: float | None = None,
 ) -> ConsolidationDelta:
     """Run consolidation and compute a before/after health delta.
 
@@ -253,6 +255,8 @@ async def run_with_delta(
         reference_time=reference_time,
         on_progress=on_progress,
         resume_run_id=resume_run_id,
+        strategy_timeout_seconds=strategy_timeout_seconds,
+        total_timeout_seconds=total_timeout_seconds,
     )
 
     # Step 3: After snapshot

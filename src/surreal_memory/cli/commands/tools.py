@@ -509,6 +509,22 @@ def consolidate(
     min_inactive_days: Annotated[
         float, typer.Option("--min-inactive-days", help="Minimum inactive days before pruning")
     ] = 7.0,
+    strategy_timeout: Annotated[
+        float | None,
+        typer.Option(
+            "--strategy-timeout",
+            min=0.001,
+            help="Per-strategy execution budget in seconds; preserves saved work identity",
+        ),
+    ] = None,
+    total_timeout: Annotated[
+        float | None,
+        typer.Option(
+            "--total-timeout",
+            min=0.001,
+            help="Overall engine execution budget in seconds; excludes health snapshots",
+        ),
+    ] = None,
 ) -> None:
     """Consolidate brain memories by pruning, merging, or summarizing.
 
@@ -665,6 +681,8 @@ def consolidate(
                 strategies=strategies_to_run,
                 dry_run=dry_run,
                 config=cons_config,
+                strategy_timeout_seconds=strategy_timeout,
+                total_timeout_seconds=total_timeout,
                 on_progress=lambda message: typer.echo(message),
                 resume_run_id=resume_run_id,
             )
@@ -675,6 +693,8 @@ def consolidate(
                 strategies=strategies_to_run,
                 dry_run=dry_run,
                 config=cons_config,
+                strategy_timeout_seconds=strategy_timeout,
+                total_timeout_seconds=total_timeout,
                 on_progress=lambda message: typer.echo(message),
             )
 

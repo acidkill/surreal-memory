@@ -55,6 +55,16 @@ after the saved run has completed.
 | `blocked` | Saved work, configuration or ownership checks prevent execution | Preserve the checkpoint and diagnose the mismatch |
 | `failed`, `lease_lost`, `timed_out`, or reported failed stages | The run did not complete successfully | Preserve logs/state and investigate before retrying |
 
+The hourly cluster supervisor uses a 1,800-second stage budget and a
+3,000-second engine budget, leaving 500 seconds below its 3,500-second Job
+deadline for setup, health snapshots and shutdown. These are execution limits,
+so an existing paused run retains its options fingerprint and committed work.
+Resource and lease supervision remain active; a budget pause is not completion.
+Interactive CLI defaults remain 600 seconds per stage and 3,600 seconds overall.
+Use `--strategy-timeout` and `--total-timeout` to override invocation limits.
+Health snapshots are outside the engine budget; the Job deadline remains the
+outer bound if setup or diagnostics exceed the headroom.
+
 A stable run ID and report date are expected across resumes. Report counters are
 cumulative for the saved run. A pending work unit can drain over several calls
 before its committed cursor advances, so an unchanged printed cursor/count alone

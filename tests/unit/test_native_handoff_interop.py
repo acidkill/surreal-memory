@@ -236,7 +236,11 @@ async def test_reviewed_bridge_archives_evidence_and_rejects_mutations():
         resource_baseline=[["synthetic", "[]"], 0],
         resource_policy_sha256="b" * 64,
     )
-    log = receipts.MARKER + receipts.canonical(previous)
+    log = (
+        "  Consolidation status: paused\n  Stages timed out: semantic_link\n"
+        + receipts.MARKER
+        + receipts.canonical(previous)
+    )
     blocked = {
         **previous,
         "phase": "blocked",
