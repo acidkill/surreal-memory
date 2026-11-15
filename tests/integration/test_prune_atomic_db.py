@@ -451,6 +451,13 @@ async def test_legacy_repair_pages_eight_fibers_once_with_id_only_replies(client
     )
     assert page_counts == [8, 8, 1]
     assert budget_checks == 3
+    assert (
+        await first.repair_prune_synapse_refs_if_absent(
+            [edge.id, second_missing], lease_owner_token=owner
+        )
+        == 0
+    )
+    assert page_counts == [8, 8, 1, 0]
     for fiber in fibers:
         repaired = await first.get_fiber(fiber.id)
         assert repaired is not None and repaired.synapse_ids == {"keep-synthetic"}

@@ -226,7 +226,7 @@ async def _run_repair(mode: str, version: str, options: dict[str, str], pid: int
         assert await storage.acquire_consolidation_lease(brain.id, owner, lease_seconds=300)
         if mode == "repair-bounded":
             select_sql = (
-                "SELECT VALUE id FROM fiber WITH INDEX idx_fiber_synapses "
+                "SELECT id FROM fiber WITH INDEX idx_fiber_synapses "
                 "WHERE brain_id = $brain_id AND synapse_ids CONTAINSANY $absent LIMIT $probe_limit"
             )
             plan_params: dict[str, Any] = {

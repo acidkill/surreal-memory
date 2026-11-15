@@ -24,26 +24,23 @@ LET $lease = (UPDATE type::record('consolidation_lease', $lease_id)
     WHERE brain_id = $brain_id AND owner_token = $owner
       AND expires_at > time::now() RETURN AFTER);
 IF array::len($lease) != 1 { THROW 'prune lease lost'; };
-LET $present = (SELECT VALUE id FROM __PRUNE_RECORDS__);
+LET $present = (SELECT id FROM __PRUNE_RECORDS__);
+LET $present_ids = array::map($present, |$row| $row.id);
 LET $absent = array::map(
-    array::filter($candidates, |$candidate| !(type::record('synapse', $candidate.record_id) IN $present)),
+    array::filter($candidates, |$candidate| !(type::record('synapse', $candidate.record_id) IN $present_ids)),
     |$candidate| $candidate.public_id
 );
-LET $matches = IF array::len($absent) > 0 {
-    (SELECT VALUE id FROM fiber WITH INDEX idx_fiber_synapses
-     WHERE brain_id = $brain_id AND synapse_ids CONTAINSANY $absent LIMIT $probe_limit)
-} ELSE { [] };
-LET $targets = array::slice($matches, 0, $fiber_limit);
-LET $updated = IF array::len($targets) > 0 {
-    (UPDATE $targets SET synapse_ids = array::difference(synapse_ids, $absent)
-     WHERE brain_id = $brain_id AND synapse_ids CONTAINSANY $absent RETURN id)
-} ELSE { [] };
+LET $matches = (SELECT id FROM fiber WITH INDEX idx_fiber_synapses
+    WHERE brain_id = $brain_id AND synapse_ids CONTAINSANY $absent LIMIT $probe_limit);
+LET $targets = array::map(array::slice($matches, 0, $fiber_limit), |$row| $row.id);
+LET $updated = (UPDATE $targets SET synapse_ids = array::difference(synapse_ids, $absent)
+    WHERE brain_id = $brain_id AND synapse_ids CONTAINSANY $absent RETURN id);
 LET $final_lease = (UPDATE type::record('consolidation_lease', $lease_id)
     SET sweep_fenced_at = time::now()
     WHERE brain_id = $brain_id AND owner_token = $owner
       AND expires_at > time::now() RETURN AFTER);
 IF array::len($final_lease) != 1 { THROW 'prune lease lost'; };
-SELECT * FROM [{updated_ids: ($updated.id ?? []), has_more: array::len($matches) > $fiber_limit}];
+SELECT * FROM [{updated_ids: array::map($updated, |$row| $row.id), has_more: array::len($matches) > $fiber_limit}];
 COMMIT TRANSACTION;
 """
 
