@@ -222,6 +222,8 @@ class ReflexPipeline:
         parser: QueryParser | None = None,
         use_reflex: bool = True,
         embedding_provider: EmbeddingProvider | None = None,
+        *,
+        read_only: bool = False,
     ) -> None:
         """
         Initialize the retrieval pipeline.
@@ -232,7 +234,9 @@ class ReflexPipeline:
             parser: Custom query parser (creates default if None)
             use_reflex: If True, use ReflexActivation; else use SpreadingActivation
             embedding_provider: Optional embedding provider for semantic fallback
+            read_only: Evaluate retrieval without learning, access, or session writes.
         """
+        self._read_only = read_only
         self._storage = storage
         self._config = config
         self._parser = parser or QueryParser()
@@ -375,7 +379,7 @@ class ReflexPipeline:
         # 2. Auto-detect depth if not specified
         _depth_decision: DepthDecision | None = None
         _session_state = None
-        if session_id:
+        if session_id and not self._read_only:
             try:
                 from surreal_memory.engine.session_state import SessionManager
 
@@ -385,7 +389,7 @@ class ReflexPipeline:
 
         if depth is None:
             rule_depth = self._detect_depth(stimulus)
-            if self._adaptive_selector is not None:
+            if not self._read_only and self._adaptive_selector is not None:
                 try:
                     _depth_decision = await self._adaptive_selector.select_depth(
                         stimulus,
@@ -452,7 +456,7 @@ class ReflexPipeline:
         # 3.7 Predictive priming: merge session-aware activation boosts
         _priming_result = None
         _primed_neuron_ids: set[str] = set()
-        if session_id and _session_state is not None:
+        if session_id and not self._read_only and _session_state is not None:
             try:
                 from surreal_memory.engine.priming import (
                     ActivationCache,
@@ -616,7 +620,7 @@ class ReflexPipeline:
                 },
             )
             # Flush any pending writes even on early exit
-            if self._write_queue.pending_count > 0:
+            if not self._read_only and self._write_queue.pending_count > 0:
                 try:
                     await self._write_queue.flush(self._storage)
                 except Exception:
@@ -748,7 +752,7 @@ class ReflexPipeline:
         latency_ms = (time.perf_counter() - start_time) * 1000
 
         # 8. Reinforce accessed memories (deferred to after response)
-        if activations and reconstruction.confidence > 0.3:
+        if not self._read_only and activations and reconstruction.confidence > 0.3:
             try:
                 top_neuron_ids = [
                     nid
@@ -764,7 +768,7 @@ class ReflexPipeline:
                 logger.debug("Reinforcement failed (non-critical)", exc_info=True)
 
         # 9. Track access time for lifecycle heat scoring (batch update, non-critical)
-        if activations:
+        if not self._read_only and activations:
             try:
                 await self._storage.batch_update_last_accessed(list(activations.keys()))
             except Exception:
@@ -827,7 +831,7 @@ class ReflexPipeline:
             )
 
         # Update priming cache and metrics (non-critical)
-        if session_id and _priming_result is not None:
+        if session_id and not self._read_only and _priming_result is not None:
             try:
                 from surreal_memory.engine.priming import record_priming_outcome
 
@@ -861,7 +865,7 @@ class ReflexPipeline:
                 "reason": _depth_decision.reason,
                 "exploration": _depth_decision.exploration,
             }
-            if self._adaptive_selector is not None:
+            if not self._read_only and self._adaptive_selector is not None:
                 try:
                     # Infer agent_used_result from priming hit rate:
                     # If primed neurons appeared in result → agent is using the recall
@@ -901,18 +905,19 @@ class ReflexPipeline:
             logger.debug("Workflow suggestion failed (non-critical)", exc_info=True)
 
         # Flush deferred writes (fiber conductivity, Hebbian strengthening)
-        if self._write_queue.pending_count > 0:
+        if not self._read_only and self._write_queue.pending_count > 0:
             try:
                 await self._write_queue.flush(self._storage)
             except Exception:
                 logger.debug("Deferred write flush failed (non-critical)", exc_info=True)
 
         # Post-recall reconsolidation: recalled memories absorb current context.
-        # Per-call opt-out (False) makes recall a genuinely read-only probe for
-        # speculative callers; the per-brain reconsolidation_enabled switch stays
+        # Per-call opt-out disables reconsolidation; read_only disables all writes.
+        # The per-brain reconsolidation_enabled switch stays
         # the global source of truth (issue #198).
         if (
-            reconsolidate
+            not self._read_only
+            and reconsolidate
             and getattr(self._config, "reconsolidation_enabled", True)
             and fibers_matched
         ):
@@ -937,7 +942,7 @@ class ReflexPipeline:
                 logger.debug("Reconsolidation failed (non-critical)", exc_info=True)
 
         # Record session query (non-critical)
-        if session_id:
+        if session_id and not self._read_only:
             try:
                 from surreal_memory.engine.session_state import SessionManager
 
@@ -1328,12 +1333,13 @@ class ReflexPipeline:
         ]
 
         # Defer fiber conductivity updates (non-blocking)
-        for fiber in fibers:
-            conducted_fiber = fiber.conduct(conducted_at=reference_time)
-            self._write_queue.defer_fiber_update(conducted_fiber)
+        if not self._read_only:
+            for fiber in fibers:
+                conducted_fiber = fiber.conduct(conducted_at=reference_time)
+                self._write_queue.defer_fiber_update(conducted_fiber)
 
         # Defer Hebbian strengthening (non-blocking)
-        if co_activations:
+        if not self._read_only and co_activations:
             await self._defer_co_activated(co_activations, activations=activations)
 
         return activations, intersections, co_activations

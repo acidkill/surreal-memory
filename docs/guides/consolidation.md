@@ -242,3 +242,59 @@ guards still pass. After a seed CAS, hold scheduling and retain the approved
 resources while repairing forward until a real clean terminal receipt exists.
 A bootstrap seed cannot serve as a predecessor for another rebaseline. Preserve
 all evidence; never rewrite a terminal receipt baseline.
+
+
+## Conservative pruning and activation evaluation
+
+Pruning protects stored synapse weights of at least `0.1`, every synapse referenced
+by a fiber, and either endpoint belonging to a pinned fiber or a fiber with
+salience greater than `0.8`. The existing single-outgoing-target safeguard still
+applies to weights of at least `0.02`; it is not general graph-bridge detection.
+The remaining candidates must satisfy the configured decay and inactivity rules.
+Prune-specific conditional deletion checks the expected record and ownership in
+bounded transactions. Reinforcement or another change requires a fresh decision.
+Pin and fiber protection uses the transaction snapshot; it is not a global lock
+on independent concurrent fiber writes.
+
+`classic`, `ppr`, `hybrid`, and `auto` are retrieval strategies, not storage schema
+versions. The ordinary `classic` pipeline uses Reflex fiber trails. `hybrid` adds
+PPR and preserves the Reflex branch with dampened gap filling. `auto` selects from
+total graph density and may change its choice as the graph changes. Changing only
+activation does not change consolidation options or reset a saved run.
+
+Run the synthetic, network-isolated quality comparison with:
+
+```bash
+python scripts/benchmark_prune_hybrid.py --output /tmp/prune-hybrid.json --max-rss-mib 512
+```
+
+The JSON separates synthetic evidence from production acceptance. Migration needs
+all critical top-10 hits, noninferior overall recall/MRR, improved hard-query
+recall with a newly correct query, and cold/warm p95 no worse than twice the
+classic baseline. Resource limits must be supplied and satisfied. Failed or
+unmeasured gates do not authorize migration. Public fixtures contain synthetic
+facts only; production judgments and identifiers stay private. Do not copy the
+production brain or create evaluation brains on the production database.
+
+`ReflexPipeline(..., read_only=True)` with `ReadOnlyStorage` is the evaluation
+boundary. It suppresses learning and access/session updates; the storage wrapper
+rejects unexpected operations even if a caller catches their exceptions.
+`reconsolidate=False` by itself does not suppress all normal recall writes.
+
+After review, deployment, and successful production evaluation, the explicit
+configuration change is:
+
+```bash
+smem brain set-activation --brain default --from classic --to hybrid
+```
+
+It uses a brief ownership claim through the existing consolidation lease,
+compares the complete expected configuration, changes only the strategy, and
+confirms readback. An active consolidation prevents migration. The reverse
+`--from hybrid --to classic` uses the same guards; it does not restore deleted
+synapses or overwrite other configuration fields.
+
+Keep hourly consolidation suspended during verification. A code merge or
+configuration change does not authorize enabling the schedule. Verify the same
+saved run, actual CLI outcome, recall quality, and resource observations before
+requesting a separate scheduling decision.

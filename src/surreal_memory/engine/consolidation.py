@@ -43,6 +43,7 @@ from surreal_memory.engine.consolidation_progress import (
     supports_persistent_progress,
     supports_storage_methods,
 )
+from surreal_memory.engine.prune_policy import PrunePolicy
 from surreal_memory.storage.errors import is_duplicate_key_error
 from surreal_memory.utils.timeutils import ensure_naive_utc, utcnow
 
@@ -1480,40 +1481,37 @@ class ConsolidationEngine:
         neuron_page_size = 1000
         dead_neuron_days = getattr(self._config, "prune_dead_neuron_days", 14.0)
 
+        policy = PrunePolicy(
+            reference_time,
+            self._config.prune_weight_threshold,
+            self._config.prune_min_inactive_days,
+            self._dream_decay_multiplier,
+        )
+
         def _base_synapse_candidate(synapse: Synapse) -> bool:
-            if synapse.source_id in pinned_neuron_ids or synapse.target_id in pinned_neuron_ids:
-                return False
-            if synapse.created_at is not None and synapse.created_at > reference_time:
-                return False
-
-            decayed = synapse.time_decay(reference_time=reference_time)
-            if synapse.metadata.get("_inferred", False) and synapse.reinforced_count < 2:
-                decayed = decayed.decay(factor=0.5)
-            if synapse.metadata.get("_dream", False) and synapse.reinforced_count < 2:
-                decayed = decayed.decay(factor=1.0 / self._dream_decay_multiplier)
-            if synapse.metadata.get("_semantic_discovery", False) and synapse.reinforced_count < 2:
-                decayed = decayed.decay(factor=0.5)
-
-            should_prune = decayed.weight < self._config.prune_weight_threshold
-            if synapse.last_activated is not None:
-                days_inactive = (reference_time - synapse.last_activated).total_seconds() / 86400
-                should_prune = (
-                    should_prune and days_inactive >= self._config.prune_min_inactive_days
-                )
-            elif synapse.created_at is not None:
-                days_since_creation = (reference_time - synapse.created_at).total_seconds() / 86400
-                grace_period = max(1.0, self._config.prune_min_inactive_days / 7)
-                should_prune = should_prune and days_since_creation >= grace_period
-            return should_prune
+            return (
+                synapse.source_id not in pinned_neuron_ids
+                and synapse.target_id not in pinned_neuron_ids
+                and policy.eligible(synapse)
+            )
 
         async def _synapse_candidates(synapses: list[Synapse]) -> list[str]:
             base_candidates = [synapse for synapse in synapses if _base_synapse_candidate(synapse)]
             if not base_candidates:
                 return []
 
-            source_ids = {synapse.source_id for synapse in base_candidates}
+            endpoint_ids = {
+                endpoint
+                for synapse in base_candidates
+                for endpoint in (synapse.source_id, synapse.target_id)
+            }
             high_salience_ids = await storage.get_fiber_neuron_ids_for(
-                list(source_ids), min_salience=0.8
+                list(endpoint_ids), min_salience=0.8
+            )
+            fiber_refs = (
+                await storage.get_fiber_synapse_ids_for([s.id for s in base_candidates])
+                if supports_storage_methods(storage, ("get_fiber_synapse_ids_for",))
+                else set()
             )
             bridge_sources = {
                 synapse.source_id
@@ -1528,7 +1526,11 @@ class ConsolidationEngine:
 
             candidates: list[str] = []
             for synapse in base_candidates:
-                if synapse.source_id in high_salience_ids:
+                if (
+                    synapse.id in fiber_refs
+                    or synapse.source_id in high_salience_ids
+                    or synapse.target_id in high_salience_ids
+                ):
                     continue
                 if (
                     synapse.weight >= 0.02
@@ -1541,16 +1543,59 @@ class ConsolidationEngine:
         async def _finish_synapse_pending(ids: list[str], page_cursor: str | None) -> None:
             nonlocal synapses_pruned
             current = await storage.get_synapses_by_ids(ids)
-            eligible_ids = set(await _synapse_candidates(current))
-            if eligible_ids:
-                await storage.delete_synapses_batch(eligible_ids)
-
-            remaining = await storage.get_synapses_by_ids(ids)
-            remaining_ids = {synapse.id for synapse in remaining}
-            removed_ids = set(ids) - remaining_ids
-            if removed_ids:
-                await storage.remove_synapse_refs_from_fibers(removed_ids)
-            synapses_pruned += len(removed_ids)
+            if supports_storage_methods(storage, ("prune_synapses_if_unchanged",)):
+                progress = self._progress_session
+                run_id = str(getattr(progress, "state", {}).get("run_id", ""))
+                owner = str(getattr(progress, "owner_token", ""))
+                operation_id = hashlib.sha256(
+                    json.dumps([run_id, page_cursor, sorted(ids)]).encode()
+                ).hexdigest()
+                outcomes = await storage.prune_synapses_if_unchanged(
+                    current,
+                    pending_ids=ids,
+                    policy=policy,
+                    run_id=run_id,
+                    operation_id=operation_id,
+                    lease_owner_token=owner,
+                )
+                if set(outcomes) != set(ids) or any(
+                    value not in {"deleted", "protected", "changed", "missing"}
+                    for value in outcomes.values()
+                ):
+                    raise RuntimeError("prune returned incomplete or invalid outcomes")
+                removed_count = sum(value == "deleted" for value in outcomes.values())
+                # Old pending checkpoints counted already-missing IDs; keep that history.
+                if not counters.get("prune_atomic_journal"):
+                    legacy_missing = sum(value == "missing" for value in outcomes.values())
+                    removed_count += legacy_missing
+                    if legacy_missing:
+                        if not supports_storage_methods(
+                            storage, ("repair_prune_synapse_refs_if_absent",)
+                        ):
+                            raise RuntimeError(
+                                "legacy prune reconciliation requires absence-guarded fiber repair"
+                            )
+                        await storage.repair_prune_synapse_refs_if_absent(
+                            [sid for sid, outcome in outcomes.items() if outcome == "missing"],
+                            lease_owner_token=owner,
+                        )
+                        counters["prune_legacy_missing"] = (
+                            int(counters.get("prune_legacy_missing", 0)) + legacy_missing
+                        )
+                        logger.warning(
+                            "Prune reconciled %d historical missing IDs without deletion receipts",
+                            legacy_missing,
+                        )
+                synapses_pruned += removed_count
+            else:
+                eligible_ids = set(await _synapse_candidates(current))
+                if eligible_ids:
+                    await storage.delete_synapses_batch(eligible_ids)
+                remaining = await storage.get_synapses_by_ids(ids)
+                removed_ids = set(ids) - {synapse.id for synapse in remaining}
+                if removed_ids:
+                    await storage.remove_synapse_refs_from_fibers(removed_ids)
+                synapses_pruned += len(removed_ids)
             report.synapses_pruned = synapses_pruned
             counters.update(
                 synapses_pruned=synapses_pruned,
@@ -1602,6 +1647,8 @@ class ConsolidationEngine:
                 )
 
                 if candidates and not dry_run:
+                    if supports_storage_methods(storage, ("prune_synapses_if_unchanged",)):
+                        counters["prune_atomic_journal"] = 1
                     await _save_checkpoint(
                         "synapse_pending",
                         cursor=next_cursor,
@@ -1875,7 +1922,7 @@ class ConsolidationEngine:
         pinned_neuron_ids = await self._storage.get_pinned_neuron_ids()
 
         # Build fiber salience cache for high-salience protection
-        fibers_for_salience = await self._storage.get_fibers(limit=10000)
+        fibers_for_salience = await self._all_fibers_paged()
         fiber_salience_cache: dict[str, list[Fiber]] = {}
         for fib in fibers_for_salience:
             if fib.salience > 0.8:
@@ -1893,65 +1940,30 @@ class ConsolidationEngine:
         for s in all_synapses:
             neighbor_synapses_map.setdefault(s.source_id, []).append(s)
 
+        policy = PrunePolicy(
+            reference_time,
+            self._config.prune_weight_threshold,
+            self._config.prune_min_inactive_days,
+            self._dream_decay_multiplier,
+        )
+        fiber_synapse_ids = {sid for fiber in fibers_for_salience for sid in fiber.synapse_ids}
         for syn_idx, synapse in enumerate(all_synapses):
             if syn_idx % 500 == 0 and syn_idx > 0:
-                await asyncio.sleep(0)  # Yield to event loop
-
-            # Skip synapses connected to pinned (KB) neurons
-            if synapse.source_id in pinned_neuron_ids or synapse.target_id in pinned_neuron_ids:
+                await asyncio.sleep(0)
+            if (
+                not policy.eligible(synapse)
+                or synapse.id in fiber_synapse_ids
+                or synapse.source_id in pinned_neuron_ids
+                or synapse.target_id in pinned_neuron_ids
+                or synapse.source_id in fiber_salience_cache
+                or synapse.target_id in fiber_salience_cache
+            ):
                 continue
-
-            # Apply time-based decay before checking weight threshold
-            decayed = synapse.time_decay(reference_time=reference_time)
-
-            # Inferred synapses with low reinforcement decay 2x faster
-            is_inferred = synapse.metadata.get("_inferred", False)
-            if is_inferred and synapse.reinforced_count < 2:
-                decayed = decayed.decay(factor=0.5)
-
-            # Dream synapses decay Nx faster (default 10x)
-            is_dream = synapse.metadata.get("_dream", False)
-            if is_dream and synapse.reinforced_count < 2:
-                dream_factor = 1.0 / self._dream_decay_multiplier
-                decayed = decayed.decay(factor=dream_factor)
-
-            # Semantic discovery synapses decay 2x faster unless reinforced
-            is_semantic = synapse.metadata.get("_semantic_discovery", False)
-            if is_semantic and synapse.reinforced_count < 2:
-                decayed = decayed.decay(factor=0.5)
-
-            should_prune = decayed.weight < self._config.prune_weight_threshold
-
-            # Check inactivity
-            if synapse.last_activated is not None:
-                days_inactive = (reference_time - synapse.last_activated).total_seconds() / 86400
-                should_prune = (
-                    should_prune and days_inactive >= self._config.prune_min_inactive_days
-                )
-            elif synapse.created_at is not None:
-                days_since_creation = (reference_time - synapse.created_at).total_seconds() / 86400
-                # Never-activated synapses use a shorter grace period
-                grace_period = max(1.0, self._config.prune_min_inactive_days / 7)
-                should_prune = should_prune and days_since_creation >= grace_period
-
-            if should_prune:
-                # High-salience fibers resist pruning
-                source_fibers = fiber_salience_cache.get(synapse.source_id, [])
-                for fib in source_fibers:
-                    if fib.salience > 0.8:
-                        should_prune = False
-                        break
-
-            if should_prune:
-                # Protect bridge synapses (only connection between source and target)
-                if synapse.weight >= 0.02:
-                    out_synapses = neighbor_synapses_map.get(synapse.source_id, [])
-                    neighbor_ids = {s.target_id for s in out_synapses}
-                    if synapse.target_id in neighbor_ids and len(neighbor_ids) <= 1:
-                        continue  # Bridge synapse — don't prune
-
-                pruned_synapse_ids.add(synapse.id)
-                report.synapses_pruned += 1
+            targets = {s.target_id for s in neighbor_synapses_map.get(synapse.source_id, [])}
+            if synapse.weight >= 0.02 and len(targets) <= 1:
+                continue
+            pruned_synapse_ids.add(synapse.id)
+            report.synapses_pruned += 1
 
         # Batch delete all pruned synapses at once
         if pruned_synapse_ids and not dry_run:

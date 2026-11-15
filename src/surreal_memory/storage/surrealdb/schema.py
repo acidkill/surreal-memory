@@ -175,6 +175,8 @@ DEFINE INDEX idx_fiber_anchor ON fiber FIELDS brain_id, anchor_neuron_id;
 -- Recall repeatedly asks which fibers contain each anchor neuron. The array-element
 -- column must lead for SurrealDB 3.1+ to use it for IN/CONTAINS predicates.
 DEFINE INDEX IF NOT EXISTS idx_fiber_neurons ON fiber FIELDS neuron_ids.*, brain_id;
+-- Prune protects even low-salience fiber edges through bounded scalar probes.
+DEFINE INDEX IF NOT EXISTS idx_fiber_synapses ON fiber FIELDS synapse_ids.*, brain_id;
 
 -- Brains (top-level containers)
 DEFINE TABLE brain SCHEMALESS;

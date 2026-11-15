@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from surreal_memory.core.watch_record import WatchedFile
     from surreal_memory.engine.brain_versioning import BrainVersion
     from surreal_memory.engine.memory_stages import MaturationRecord, MemoryStage
+    from surreal_memory.engine.prune_policy import PrunePolicy
     from surreal_memory.utils.geo import GeoFilter
 
 
@@ -931,6 +932,23 @@ class NeuralStorage(ABC):
         min_salience: float | None = None,
     ) -> set[str]:
         """Return supplied neuron IDs represented in fibers, when supported."""
+        raise NotImplementedError
+
+    async def prune_synapses_if_unchanged(
+        self,
+        expected: list[Synapse],
+        *,
+        pending_ids: list[str],
+        policy: PrunePolicy,
+        run_id: str,
+        operation_id: str,
+        lease_owner_token: str,
+    ) -> dict[str, Literal["deleted", "protected", "changed", "missing"]]:
+        """Optional atomic prune with expected snapshots, a live lease and replay receipts."""
+        raise NotImplementedError
+
+    async def get_fiber_synapse_ids_for(self, synapse_ids: list[str] | set[str]) -> set[str]:
+        """Return supplied edges referenced by any fiber, when supported."""
         raise NotImplementedError
 
     async def remove_synapse_refs_from_fibers(self, synapse_ids: list[str] | set[str]) -> int:

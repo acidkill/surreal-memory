@@ -35,6 +35,7 @@ from surreal_memory.storage.surrealdb._ids import (
     _to_public_id,
     _to_surreal_id,
 )
+from surreal_memory.storage.surrealdb.activation_migration import SurrealDBActivationMigrationMixin
 from surreal_memory.storage.surrealdb.activity import SurrealDBActivityMixin
 from surreal_memory.storage.surrealdb.alerts import SurrealDBAlertsMixin
 from surreal_memory.storage.surrealdb.cognitive import SurrealDBCognitiveMixin
@@ -47,6 +48,7 @@ from surreal_memory.storage.surrealdb.keyword_entity import SurrealDBKeywordEnti
 from surreal_memory.storage.surrealdb.maturation import SurrealDBMaturationMixin
 from surreal_memory.storage.surrealdb.pinning import SurrealDBPinningMixin
 from surreal_memory.storage.surrealdb.projects import SurrealDBProjectsMixin
+from surreal_memory.storage.surrealdb.prune import SurrealDBPruneMixin
 from surreal_memory.storage.surrealdb.reasoning_traces import SurrealDBReasoningTracesMixin
 from surreal_memory.storage.surrealdb.retrieval_trace import SurrealDBRetrievalTraceMixin
 from surreal_memory.storage.surrealdb.review_schedules import SurrealDBReviewSchedulesMixin
@@ -667,6 +669,8 @@ def _row_to_fiber(row: dict[str, Any]) -> Fiber:
 
 
 class SurrealDBStorage(
+    SurrealDBPruneMixin,
+    SurrealDBActivationMigrationMixin,
     SurrealDBTypedMemoryMixin,
     SurrealDBRetrievalTraceMixin,
     SurrealDBProjectsMixin,
@@ -4211,16 +4215,28 @@ class SurrealDBStorage(
         a far smaller lie than a constant zero.
         """
         lit = _brain_literal(self._get_brain_id())
-        where = f"brain_id = {lit} AND synced = true AND changed_at < $cutoff"
-        cutoff = utcnow() - timedelta(days=older_than_days)
+        # An incomplete run may still need a synced deletion receipt after a long pause.
+        progress = await self.get_consolidation_progress()
+        active_run_id = (
+            str(progress.get("run_id") or "")
+            if progress and progress.get("status") != "completed"
+            else ""
+        )
+        where = (
+            f"brain_id = {lit} AND synced = true AND changed_at < $cutoff"
+            " AND (payload._prune.run_id IS NONE OR payload._prune.run_id != $active_run_id)"
+        )
+        params = {
+            "cutoff": utcnow() - timedelta(days=older_than_days),
+            "active_run_id": active_run_id,
+        }
         counted = await self._query(
-            f"SELECT count() AS c FROM change_log WHERE {where} GROUP ALL",
-            cutoff=cutoff,
+            f"SELECT count() AS c FROM change_log WHERE {where} GROUP ALL", **params
         )
         doomed = int(counted[0].get("c", 0) or 0) if counted else 0
         if not doomed:
             return 0
-        await self._query(f"DELETE FROM change_log WHERE {where}", cutoff=cutoff)
+        await self._query(f"DELETE FROM change_log WHERE {where}", **params)
         return doomed
 
     async def collapse_pending_updates(

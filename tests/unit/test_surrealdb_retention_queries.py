@@ -34,6 +34,7 @@ async def test_synced_change_retention_reuses_same_bound_cutoff() -> None:
     store = object.__new__(SurrealDBStorage)
     store._get_brain_id = lambda: "default"  # type: ignore[method-assign]
     store._query = AsyncMock(side_effect=[[{"c": 2}], []])  # type: ignore[method-assign]
+    store.get_consolidation_progress = AsyncMock(return_value=None)  # type: ignore[method-assign]
 
     assert await store.prune_synced_changes(older_than_days=30) == 2
 
@@ -42,3 +43,19 @@ async def test_synced_change_retention_reuses_same_bound_cutoff() -> None:
     assert "time::ago" not in count.args[0]
     assert isinstance(count.kwargs["cutoff"], datetime)
     assert delete.kwargs["cutoff"] == count.kwargs["cutoff"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "protected_run"), [("paused", "run-a"), ("failed", "run-a"), ("completed", "")]
+)
+async def test_synced_retention_preserves_incomplete_prune_replay_receipts(status, protected_run):
+    store = object.__new__(SurrealDBStorage)
+    store._get_brain_id = lambda: "default"
+    store.get_consolidation_progress = AsyncMock(return_value={"status": status, "run_id": "run-a"})
+    store._query = AsyncMock(side_effect=[[{"c": 2}], []])
+    assert await store.prune_synced_changes(older_than_days=30) == 2
+    count, delete = store._query.await_args_list
+    assert "payload._prune.run_id != $active_run_id" in count.args[0]
+    assert count.kwargs["active_run_id"] == protected_run
+    assert delete.kwargs == count.kwargs
