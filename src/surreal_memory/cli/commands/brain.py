@@ -736,3 +736,36 @@ def brain_recall_check(
                 f"sampled memories ({rate:.0%})"
             )
             typer.secho(result["note"], fg=typer.colors.BRIGHT_BLACK)
+
+
+@brain_app.command("set-activation")
+def brain_set_activation(
+    brain: Annotated[str, typer.Option("--brain", help="Exact brain name (default only)")],
+    from_strategy: Annotated[str, typer.Option("--from", help="Expected persisted strategy")],
+    to_strategy: Annotated[str, typer.Option("--to", help="Requested strategy")],
+) -> None:
+    """Explicitly migrate classic <-> hybrid with full-config and lease guards."""
+    if brain != "default" or {from_strategy, to_strategy} != {"classic", "hybrid"}:
+        raise typer.BadParameter("Use --brain default and classic <-> hybrid")
+
+    async def _migrate() -> None:
+        from surreal_memory.storage.surrealdb.activation_migration import (
+            activation_migration_storage,
+        )
+
+        async with activation_migration_storage() as storage:
+            snapshot = await storage.get_activation_snapshot(brain_name=brain)
+            receipt = await storage.set_activation_strategy(
+                brain_id=snapshot["brain_id"],
+                expected_config=snapshot["config"],
+                expected_config_sha256=snapshot["config_sha256"],
+                from_strategy=from_strategy,
+                to_strategy=to_strategy,
+            )
+            output_result(receipt, True)
+
+    try:
+        run_async(_migrate())
+    except Exception as exc:
+        typer.secho(f"Activation migration failed: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(1) from exc

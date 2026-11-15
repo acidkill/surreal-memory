@@ -174,7 +174,9 @@ async def test_dream_plan_resumes_from_bounded_checkpoint_without_full_relation_
 ) -> None:
     """A paused pair page resumes exactly, without collecting all RELATED_TO rows."""
     activated = tuple(f"candidate-{index:02d}" for index in range(15))
-    start = DreamPlanCheckpoint(7, activated, 0, (), (), 0, False)
+    start = DreamPlanCheckpoint(
+        7, activated, 0, (), (), 0, False, eligible_pair_ordinals=tuple(range(105))
+    )
     saved: list[DreamPlanCheckpoint] = []
 
     async def stop_after_page(state: DreamPlanCheckpoint) -> None:
@@ -209,7 +211,9 @@ async def test_dream_resume_rejects_changed_related_pair_in_checkpointed_page(
         await store.add_neuron(
             Neuron.create(type=NeuronType.CONCEPT, content=neuron_id, neuron_id=neuron_id)
         )
-    start = DreamPlanCheckpoint(7, activated, 0, (), (), 0, False)
+    start = DreamPlanCheckpoint(
+        7, activated, 0, (), (), 0, False, eligible_pair_ordinals=tuple(range(105))
+    )
     saved: list[DreamPlanCheckpoint] = []
 
     async def stop_after_page(state: DreamPlanCheckpoint) -> None:

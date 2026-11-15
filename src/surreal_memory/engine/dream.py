@@ -16,6 +16,7 @@ import logging
 import random
 from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass, field
+from itertools import islice
 from typing import TYPE_CHECKING
 
 from surreal_memory.core.synapse import Synapse, SynapseType
@@ -44,6 +45,7 @@ class DreamPlanCheckpoint:
     planned_synapses: tuple[Synapse, ...]
     pairs_explored: int
     complete: bool
+    eligible_pair_ordinals: tuple[int, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -57,6 +59,70 @@ class DreamResult:
 
     synapses_created: list[Synapse] = field(default_factory=list)
     pairs_explored: int = 0
+
+
+def validate_dream_checkpoint(state: DreamPlanCheckpoint) -> None:
+    """Reject missing coactivation proof and malformed plans before graph I/O."""
+    if state.eligible_pair_ordinals is None:
+        raise RuntimeError("legacy dream checkpoint lacks coactivation proof")
+    ids = state.activated_ids
+    if (
+        not isinstance(ids, tuple)
+        or not all(isinstance(nid, str) for nid in ids)
+        or len(ids) > _MAX_ACTIVATED
+        or tuple(sorted(set(ids))) != ids
+    ):
+        raise RuntimeError("dream checkpoint activated IDs are not unique and stable")
+    if (
+        type(state.seed) is not int
+        or type(state.pair_cursor) is not int
+        or type(state.pairs_explored) is not int
+        or type(state.complete) is not bool
+    ):
+        raise RuntimeError("dream checkpoint fields have invalid types")
+    limit = min(len(ids) * (len(ids) - 1) // 2, _MAX_DREAM_PAIRS - 1)
+    eligible = state.eligible_pair_ordinals
+    if (
+        not isinstance(eligible, tuple)
+        or not all(type(ordinal) is int and 0 <= ordinal < limit for ordinal in eligible)
+        or tuple(sorted(set(eligible))) != eligible
+    ):
+        raise RuntimeError("dream checkpoint eligible pair ordinals are invalid")
+    if not 0 <= state.pair_cursor <= limit:
+        raise RuntimeError("dream checkpoint pair cursor is invalid")
+    if not state.complete and state.pair_cursor % _PLAN_PAGE_SIZE:
+        raise RuntimeError("dream checkpoint cursor is not page aligned")
+    if not state.pair_cursor <= state.pairs_explored <= _MAX_DREAM_PAIRS:
+        raise RuntimeError("dream checkpoint explored-pair counter is invalid")
+    if (
+        not isinstance(state.pair_receipts, tuple)
+        or len(state.pair_receipts) != (state.pair_cursor + _PLAN_PAGE_SIZE - 1) // _PLAN_PAGE_SIZE
+        or any(
+            not isinstance(receipt, str)
+            or len(receipt) != 64
+            or any(character not in "0123456789abcdef" for character in receipt)
+            for receipt in state.pair_receipts
+        )
+    ):
+        raise RuntimeError("dream checkpoint pair receipts do not match its cursor")
+    if len(state.planned_synapses) > _MAX_NEW_SYNAPSES:
+        raise RuntimeError("dream checkpoint contains too many planned synapses")
+    eligible_set = set(eligible)
+    eligible_pairs = {
+        pair
+        for ordinal, pair in enumerate(islice(_candidate_pairs(ids), state.pair_cursor))
+        if ordinal in eligible_set
+    }
+    planned_pairs = [
+        _canonical_pair(synapse.source_id, synapse.target_id) for synapse in state.planned_synapses
+    ]
+    if len(set(planned_pairs)) != len(planned_pairs) or any(
+        synapse.type != SynapseType.RELATED_TO
+        or synapse.metadata.get("_dream") is not True
+        or pair not in eligible_pairs
+        for synapse, pair in zip(state.planned_synapses, planned_pairs, strict=True)
+    ):
+        raise RuntimeError("dream checkpoint planned pair lacks coactivation proof")
 
 
 async def dream(
@@ -79,15 +145,13 @@ async def dream(
         run_seed = seed if seed is not None else random.SystemRandom().getrandbits(64)
         rng = random.Random(run_seed)
         all_neurons: list[Neuron] = await storage.find_neurons(limit=10000, include_embedding=False)
-        if len(all_neurons) < 2:
-            return DreamResult()
-
         seed_neurons = rng.sample(all_neurons, min(config.dream_neuron_count, len(all_neurons)))
         from surreal_memory.engine.activation import SpreadingActivation
 
         activation_engine = SpreadingActivation(storage, config)
         activated_set: set[str] = set()
-        for neuron in seed_neurons:
+        exploration_masks: dict[str, int] = {}
+        for exploration, neuron in enumerate(seed_neurons):
             if len(activated_set) >= _MAX_ACTIVATED:
                 break
             try:
@@ -96,47 +160,40 @@ async def dream(
                 )
                 for result in results.values():
                     activated_set.add(result.neuron_id)
+                    exploration_masks[result.neuron_id] = exploration_masks.get(
+                        result.neuron_id, 0
+                    ) | (1 << exploration)
                     if len(activated_set) >= _MAX_ACTIVATED:
                         break
             except Exception:
                 logger.debug("Dream activation failed for neuron %s", neuron.id, exc_info=True)
                 continue
 
+        activated_ids = tuple(sorted(activated_set))
+        eligible = tuple(
+            ordinal
+            for ordinal, (left, right) in enumerate(
+                islice(_candidate_pairs(activated_ids), _MAX_DREAM_PAIRS - 1)
+            )
+            if exploration_masks[left] & exploration_masks[right]
+        )
         state = DreamPlanCheckpoint(
             seed=run_seed,
-            activated_ids=tuple(sorted(activated_set)),
+            activated_ids=activated_ids,
             pair_cursor=0,
             pair_receipts=(),
             planned_synapses=(),
             pairs_explored=0,
             complete=False,
+            eligible_pair_ordinals=eligible,
         )
         if checkpoint is not None:
             await checkpoint(state)
     else:
         state = resume
-        if len(state.activated_ids) > _MAX_ACTIVATED:
-            raise RuntimeError("dream checkpoint contains too many activated neurons")
-        if tuple(sorted(set(state.activated_ids))) != state.activated_ids:
-            raise RuntimeError("dream checkpoint activated IDs are not unique and stable")
-        if len(state.planned_synapses) > _MAX_NEW_SYNAPSES:
-            raise RuntimeError("dream checkpoint contains too many planned synapses")
-        planned_pairs = [
-            _canonical_pair(synapse.source_id, synapse.target_id)
-            for synapse in state.planned_synapses
-        ]
-        if len(set(planned_pairs)) != len(planned_pairs):
-            raise RuntimeError("dream checkpoint contains duplicate planned pairs")
-        if any(
-            synapse.type != SynapseType.RELATED_TO
-            or synapse.metadata.get("_dream") is not True
-            or synapse.source_id not in state.activated_ids
-            or synapse.target_id not in state.activated_ids
-            or synapse.source_id == synapse.target_id
-            for synapse in state.planned_synapses
-        ):
-            raise RuntimeError("dream checkpoint contains an incompatible planned synapse")
 
+    validate_dream_checkpoint(state)
+    eligible_ordinals = set(state.eligible_pair_ordinals or ())
     activated_ids = state.activated_ids
     candidates = _candidate_pairs(activated_ids)
     planned_by_pair = {
@@ -198,7 +255,7 @@ async def dream(
         observed = await _pair_signature(storage, left, right)
         existing = any(observed)
         _digest_pair(digest, left, right, observed)
-        if not existing:
+        if not existing and ordinal in eligible_ordinals:
             synapse = Synapse.create(
                 source_id=left,
                 target_id=right,
@@ -223,6 +280,7 @@ async def dream(
                 planned_synapses=tuple(planned),
                 pairs_explored=cursor,
                 complete=False,
+                eligible_pair_ordinals=state.eligible_pair_ordinals,
             )
             if checkpoint is not None:
                 await checkpoint(state)
@@ -263,6 +321,7 @@ async def dream(
             planned_synapses=tuple(planned),
             pairs_explored=pairs_explored,
             complete=True,
+            eligible_pair_ordinals=state.eligible_pair_ordinals,
         )
         if checkpoint is not None:
             await checkpoint(complete_state)

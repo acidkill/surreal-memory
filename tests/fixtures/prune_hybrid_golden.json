@@ -1,0 +1,397 @@
+{
+  "description": "Synthetic relevance judgments fixed before any strategy benchmark; association queries require graph traversal.",
+  "facts": [
+    {
+      "id": "atlas",
+      "topic": "deployment",
+      "summary": "Release Atlas requires approval before production deployment",
+      "critical": true
+    },
+    {
+      "id": "birch",
+      "topic": "backup",
+      "summary": "Birch backups retain thirty days of encrypted snapshots",
+      "critical": true
+    },
+    {
+      "id": "cobalt",
+      "topic": "incident",
+      "summary": "Cobalt incident escalation contacts the operations lead",
+      "critical": true
+    },
+    {
+      "id": "delta",
+      "topic": "network",
+      "summary": "Delta network denies public database access",
+      "critical": true
+    },
+    {
+      "id": "ember",
+      "topic": "recovery",
+      "summary": "Ember recovery uses the offline signing key",
+      "critical": true
+    },
+    {
+      "id": "fjord",
+      "topic": "privacy",
+      "summary": "Fjord privacy policy forbids exporting customer records",
+      "critical": true
+    },
+    {
+      "id": "granite",
+      "topic": "migration",
+      "summary": "Granite migration requires a tested rollback",
+      "critical": true
+    },
+    {
+      "id": "harbor",
+      "topic": "budget",
+      "summary": "Harbor budget requires owner approval for purchases",
+      "critical": true
+    },
+    {
+      "id": "indigo",
+      "topic": "access",
+      "summary": "Indigo access requires hardware security keys",
+      "critical": true
+    },
+    {
+      "id": "juniper",
+      "topic": "retention",
+      "summary": "Juniper retention removes logs after ninety days",
+      "critical": true
+    },
+    {
+      "id": "kestrel",
+      "topic": "storage",
+      "summary": "Kestrel storage uses replicated volumes",
+      "critical": false
+    },
+    {
+      "id": "lantern",
+      "topic": "monitoring",
+      "summary": "Lantern monitoring alerts on disk pressure",
+      "critical": false
+    },
+    {
+      "id": "maple",
+      "topic": "scheduling",
+      "summary": "Maple scheduling runs every morning",
+      "critical": false
+    },
+    {
+      "id": "north",
+      "topic": "catalog",
+      "summary": "North catalog indexes documents nightly",
+      "critical": false
+    },
+    {
+      "id": "orchid",
+      "topic": "search",
+      "summary": "Orchid search supports phrase matching",
+      "critical": false
+    },
+    {
+      "id": "pebble",
+      "topic": "release",
+      "summary": "Pebble release includes a changelog",
+      "critical": false
+    },
+    {
+      "id": "quartz",
+      "topic": "testing",
+      "summary": "Quartz testing uses isolated fixtures",
+      "critical": false
+    },
+    {
+      "id": "river",
+      "topic": "routing",
+      "summary": "River routing directs traffic to the gateway",
+      "critical": false
+    },
+    {
+      "id": "spruce",
+      "topic": "service",
+      "summary": "Spruce service reports health status",
+      "critical": false
+    },
+    {
+      "id": "thistle",
+      "topic": "archive",
+      "summary": "Thistle archive stores signed manifests",
+      "critical": false
+    }
+  ],
+  "queries": [
+    {
+      "id": "direct-atlas",
+      "query": "atlas deployment",
+      "expected": [
+        "fact-atlas"
+      ],
+      "hard": false,
+      "critical": true
+    },
+    {
+      "id": "direct-birch",
+      "query": "birch backup",
+      "expected": [
+        "fact-birch"
+      ],
+      "hard": false,
+      "critical": true
+    },
+    {
+      "id": "direct-cobalt",
+      "query": "cobalt incident",
+      "expected": [
+        "fact-cobalt"
+      ],
+      "hard": false,
+      "critical": true
+    },
+    {
+      "id": "direct-delta",
+      "query": "delta network",
+      "expected": [
+        "fact-delta"
+      ],
+      "hard": false,
+      "critical": true
+    },
+    {
+      "id": "direct-ember",
+      "query": "ember recovery",
+      "expected": [
+        "fact-ember"
+      ],
+      "hard": false,
+      "critical": true
+    },
+    {
+      "id": "direct-fjord",
+      "query": "fjord privacy",
+      "expected": [
+        "fact-fjord"
+      ],
+      "hard": false,
+      "critical": true
+    },
+    {
+      "id": "direct-granite",
+      "query": "granite migration",
+      "expected": [
+        "fact-granite"
+      ],
+      "hard": false,
+      "critical": true
+    },
+    {
+      "id": "direct-harbor",
+      "query": "harbor budget",
+      "expected": [
+        "fact-harbor"
+      ],
+      "hard": false,
+      "critical": true
+    },
+    {
+      "id": "direct-indigo",
+      "query": "indigo access",
+      "expected": [
+        "fact-indigo"
+      ],
+      "hard": false,
+      "critical": true
+    },
+    {
+      "id": "direct-juniper",
+      "query": "juniper retention",
+      "expected": [
+        "fact-juniper"
+      ],
+      "hard": false,
+      "critical": true
+    },
+    {
+      "id": "direct-kestrel",
+      "query": "kestrel storage",
+      "expected": [
+        "fact-kestrel"
+      ],
+      "hard": false,
+      "critical": false
+    },
+    {
+      "id": "direct-lantern",
+      "query": "lantern monitoring",
+      "expected": [
+        "fact-lantern"
+      ],
+      "hard": false,
+      "critical": false
+    },
+    {
+      "id": "direct-maple",
+      "query": "maple scheduling",
+      "expected": [
+        "fact-maple"
+      ],
+      "hard": false,
+      "critical": false
+    },
+    {
+      "id": "direct-north",
+      "query": "north catalog",
+      "expected": [
+        "fact-north"
+      ],
+      "hard": false,
+      "critical": false
+    },
+    {
+      "id": "direct-orchid",
+      "query": "orchid search",
+      "expected": [
+        "fact-orchid"
+      ],
+      "hard": false,
+      "critical": false
+    },
+    {
+      "id": "direct-pebble",
+      "query": "pebble release",
+      "expected": [
+        "fact-pebble"
+      ],
+      "hard": false,
+      "critical": false
+    },
+    {
+      "id": "direct-quartz",
+      "query": "quartz testing",
+      "expected": [
+        "fact-quartz"
+      ],
+      "hard": false,
+      "critical": false
+    },
+    {
+      "id": "direct-river",
+      "query": "river routing",
+      "expected": [
+        "fact-river"
+      ],
+      "hard": false,
+      "critical": false
+    },
+    {
+      "id": "direct-spruce",
+      "query": "spruce service",
+      "expected": [
+        "fact-spruce"
+      ],
+      "hard": false,
+      "critical": false
+    },
+    {
+      "id": "direct-thistle",
+      "query": "thistle archive",
+      "expected": [
+        "fact-thistle"
+      ],
+      "hard": false,
+      "critical": false
+    },
+    {
+      "id": "association-atlas",
+      "query": "atlas companion",
+      "expected": [
+        "fact-atlas"
+      ],
+      "hard": true,
+      "critical": true
+    },
+    {
+      "id": "association-birch",
+      "query": "birch companion",
+      "expected": [
+        "fact-birch"
+      ],
+      "hard": true,
+      "critical": true
+    },
+    {
+      "id": "association-cobalt",
+      "query": "cobalt companion",
+      "expected": [
+        "fact-cobalt"
+      ],
+      "hard": true,
+      "critical": true
+    },
+    {
+      "id": "association-delta",
+      "query": "delta companion",
+      "expected": [
+        "fact-delta"
+      ],
+      "hard": true,
+      "critical": true
+    },
+    {
+      "id": "association-ember",
+      "query": "ember companion",
+      "expected": [
+        "fact-ember"
+      ],
+      "hard": true,
+      "critical": true
+    },
+    {
+      "id": "association-fjord",
+      "query": "fjord companion",
+      "expected": [
+        "fact-fjord"
+      ],
+      "hard": true,
+      "critical": true
+    },
+    {
+      "id": "association-granite",
+      "query": "granite companion",
+      "expected": [
+        "fact-granite"
+      ],
+      "hard": true,
+      "critical": true
+    },
+    {
+      "id": "association-harbor",
+      "query": "harbor companion",
+      "expected": [
+        "fact-harbor"
+      ],
+      "hard": true,
+      "critical": true
+    },
+    {
+      "id": "association-indigo",
+      "query": "indigo companion",
+      "expected": [
+        "fact-indigo"
+      ],
+      "hard": true,
+      "critical": true
+    },
+    {
+      "id": "association-juniper",
+      "query": "juniper companion",
+      "expected": [
+        "fact-juniper"
+      ],
+      "hard": true,
+      "critical": true
+    }
+  ]
+}

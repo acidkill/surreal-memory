@@ -41,6 +41,7 @@ CLI_CATEGORIES: list[tuple[str, str, list[str]]] = [
             "brain import",
             "brain delete",
             "brain health",
+            "brain set-activation",
             "brain transplant",
         ],
     ),
