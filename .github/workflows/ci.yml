@@ -231,14 +231,16 @@ jobs:
       # Run both shapes on fresh DB processes so setup/test history cannot
       # contaminate the sampled RSS interval. The legacy delete loop is
       # intentionally restricted to this disposable, memory-capped container.
-      - name: Benchmark bounded snapshot cleanup
+      - name: Benchmark bounded snapshot and fiber repair
         run: |
           set -euo pipefail
           report="semantic-discovery-prune-${{ matrix.surrealdb }}.jsonl"
           : > "$report"
-          for mode in legacy bounded; do
+          failed=0
+          for mode in legacy bounded repair-legacy repair-bounded; do
             docker rm -f surrealdb-ci >/dev/null 2>&1 || true
-            docker run -d --name surrealdb-ci -p 8001:8001 --cpus=2 --memory=1g --memory-swap=1g \
+            docker run -d --name surrealdb-ci -p 127.0.0.1:8001:8001 --cpus=2 --memory=1g --memory-swap=1g --tmpfs /data --tmpfs /logs \
+              --label "io.surreal-memory.test-run=$(python -c 'import uuid; print(uuid.uuid4().hex)')" \
               surrealdb/surrealdb:v${{ matrix.surrealdb }} \
               start memory --user root --pass root --bind 0.0.0.0:8001 \
               --allow-experimental gql --allow-eval-query >/dev/null
@@ -255,14 +257,29 @@ jobs:
               docker logs surrealdb-ci
               exit 1
             fi
+            python -m tests._disposable_surrealdb register surrealdb-ci "$RUNNER_TEMP/smem-disposable.json"
             pid="$(docker inspect --format='{{.State.Pid}}' surrealdb-ci)"
-            SURREALDB_CONTAINER_PID="$pid" python scripts/benchmark_semantic_discovery_prune.py \
-              --mode "$mode" --version "${{ matrix.surrealdb }}" | tee -a "$report"
+            if PYTHONPATH="$GITHUB_WORKSPACE" SURREALDB_CONTAINER_PID="$pid" python scripts/benchmark_semantic_discovery_prune.py \
+              --mode "$mode" --version "${{ matrix.surrealdb }}" | tee -a "$report"; then
+              :
+            else
+              rc=$?
+              oom="$(docker inspect --format='{{.State.OOMKilled}}' surrealdb-ci)"
+              python -c 'import json,sys; print(json.dumps({"mode":sys.argv[1], "benchmark_exit":int(sys.argv[2]), "container_oom_killed":sys.argv[3] == "true"}))' "$mode" "$rc" "$oom" | tee -a "$report"
+              if [ "$mode" != repair-legacy ] || [ "$oom" != true ]; then failed=1; fi
+            fi
             docker rm -f surrealdb-ci >/dev/null
           done
-          cat "$report" >> "$GITHUB_STEP_SUMMARY"
+          exit "$failed"
 
-      - name: Upload snapshot cleanup benchmark metrics
+      - name: Summarize snapshot and fiber repair benchmark metrics
+        if: always()
+        run: |
+          report="semantic-discovery-prune-${{ matrix.surrealdb }}.jsonl"
+          if [ -f "$report" ]; then cat "$report" >> "$GITHUB_STEP_SUMMARY"; fi
+
+      - name: Upload snapshot and fiber repair benchmark metrics
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: semantic-discovery-prune-${{ matrix.surrealdb }}

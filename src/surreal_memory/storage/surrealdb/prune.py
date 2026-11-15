@@ -3,14 +3,49 @@
 from __future__ import annotations
 
 from hashlib import sha256
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Literal
 
 from surreal_memory.core.synapse import Synapse
 from surreal_memory.engine.prune_policy import PrunePolicy
 from surreal_memory.storage.errors import PruneTransactionConflictError
-from surreal_memory.storage.surrealdb._ids import _to_surreal_id
+from surreal_memory.storage.surrealdb._ids import _record_id_part, _to_public_id, _to_surreal_id
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
 
 PruneOutcome = Literal["deleted", "protected", "changed", "missing"]
+_REPAIR_FIBERS_PER_TRANSACTION = 8
+_PRUNE_REPAIR_TRANSACTION = """
+-- bounded legacy prune repair
+BEGIN TRANSACTION;
+LET $lease = (UPDATE type::record('consolidation_lease', $lease_id)
+    SET sweep_fenced_at = time::now()
+    WHERE brain_id = $brain_id AND owner_token = $owner
+      AND expires_at > time::now() RETURN AFTER);
+IF array::len($lease) != 1 { THROW 'prune lease lost'; };
+LET $present = (SELECT VALUE id FROM __PRUNE_RECORDS__);
+LET $absent = array::map(
+    array::filter($candidates, |$candidate| !(type::record('synapse', $candidate.record_id) IN $present)),
+    |$candidate| $candidate.public_id
+);
+LET $matches = IF array::len($absent) > 0 {
+    (SELECT VALUE id FROM fiber WITH INDEX idx_fiber_synapses
+     WHERE brain_id = $brain_id AND synapse_ids CONTAINSANY $absent LIMIT $probe_limit)
+} ELSE { [] };
+LET $targets = array::slice($matches, 0, $fiber_limit);
+LET $updated = IF array::len($targets) > 0 {
+    (UPDATE $targets SET synapse_ids = array::difference(synapse_ids, $absent)
+     WHERE brain_id = $brain_id AND synapse_ids CONTAINSANY $absent RETURN id)
+} ELSE { [] };
+LET $final_lease = (UPDATE type::record('consolidation_lease', $lease_id)
+    SET sweep_fenced_at = time::now()
+    WHERE brain_id = $brain_id AND owner_token = $owner
+      AND expires_at > time::now() RETURN AFTER);
+IF array::len($final_lease) != 1 { THROW 'prune lease lost'; };
+SELECT * FROM [{updated_ids: ($updated.id ?? []), has_more: array::len($matches) > $fiber_limit}];
+COMMIT TRANSACTION;
+"""
 
 # Each transaction reads its own coherent protection snapshot. Independently
 # overlapping fiber/pin writes may linearize later; same-edge writes conflict.
@@ -168,61 +203,65 @@ class SurrealDBPruneMixin:
         synapse_ids: list[str],
         *,
         lease_owner_token: str,
+        budget_check: Callable[[], Awaitable[None]] | None = None,
     ) -> int:
-        """Finish old pending cleanup only for edges absent in the repair snapshot."""
-        from surreal_memory.storage.surrealdb.store import _row_to_fiber
-
+        """Repair at most eight fibers per transaction, once per missing-ID group."""
         if not lease_owner_token:
             raise ValueError("prune repair requires a lease owner")
+        unique_ids = list(dict.fromkeys(synapse_ids))
         count = 0
-        for start in range(0, len(synapse_ids), 32):
+        for start in range(0, len(unique_ids), 32):
             params: dict[str, Any] = {
                 "brain_id": self._get_brain_id(),
                 "owner": lease_owner_token,
                 "lease_id": sha256(self._get_brain_id().encode()).hexdigest(),
+                "fiber_limit": _REPAIR_FIBERS_PER_TRANSACTION,
+                "probe_limit": _REPAIR_FIBERS_PER_TRANSACTION + 1,
             }
-            statements = [
-                "BEGIN TRANSACTION;",
-                "LET $lease = (UPDATE type::record('consolidation_lease', $lease_id) "
-                "SET sweep_fenced_at = time::now() WHERE brain_id = $brain_id "
-                "AND owner_token = $owner AND expires_at > time::now() RETURN AFTER);",
-                "IF array::len($lease) != 1 { THROW 'prune lease lost'; };",
-            ]
-            for index, sid in enumerate(synapse_ids[start : start + 32]):
-                params[f"sid_{index}"] = sid
+            candidates = []
+            targets = []
+            for index, sid in enumerate(unique_ids[start : start + 32]):
                 params[f"record_{index}"] = _to_surreal_id(sid)
-                statements.append(
-                    "UPDATE (SELECT VALUE id FROM fiber WITH INDEX idx_fiber_synapses "
-                    f"WHERE brain_id = $brain_id AND synapse_ids CONTAINS $sid_{index}) "
-                    f"SET synapse_ids = array::difference(synapse_ids, [$sid_{index}]) "
-                    "WHERE brain_id = $brain_id "
-                    f"AND synapse_ids CONTAINS $sid_{index} "
-                    f"AND array::len((SELECT id FROM type::record('synapse', $record_{index}))) = 0 "
-                    "RETURN AFTER;"
-                )
-            statements.extend(
-                [
-                    "LET $final_lease = (UPDATE type::record('consolidation_lease', $lease_id) "
-                    "SET sweep_fenced_at = time::now() WHERE brain_id = $brain_id "
-                    "AND owner_token = $owner AND expires_at > time::now() RETURN AFTER);",
-                    "IF array::len($final_lease) != 1 { THROW 'prune lease lost'; };",
-                    "COMMIT TRANSACTION;",
-                ]
+                candidates.append({"public_id": sid, "record_id": _to_surreal_id(sid)})
+                targets.append(f"type::record('synapse', $record_{index})")
+            params["candidates"] = candidates
+            sql = _PRUNE_REPAIR_TRANSACTION.replace(
+                "__PRUNE_RECORDS__", "[" + ", ".join(targets) + "]"
             )
-            await self._ensure_conn_on_current_loop()
-            raw = await self._ensure_conn().query_raw("\n".join(statements), params)
-            results = _checked_prune_results(raw)
-            updated = [
-                _row_to_fiber(row)
-                for statement in results
-                for row in (
-                    statement["result"] if isinstance(statement.get("result"), list) else []
+            while True:
+                if budget_check is not None:
+                    await budget_check()
+                await self._ensure_conn_on_current_loop()
+                results = _checked_prune_results(await self._ensure_conn().query_raw(sql, params))
+                pages = [
+                    row
+                    for statement in results
+                    for row in (
+                        statement["result"] if isinstance(statement.get("result"), list) else []
+                    )
+                    if isinstance(row, dict) and set(row) == {"updated_ids", "has_more"}
+                ]
+                if len(pages) != 1:
+                    raise RuntimeError("prune repair page response is unconfirmed")
+                page = pages[0]
+                updated_ids = page["updated_ids"]
+                if (
+                    not isinstance(updated_ids, list)
+                    or len(updated_ids) > _REPAIR_FIBERS_PER_TRANSACTION
+                    or type(page["has_more"]) is not bool
+                    or any(not str(rid).startswith("fiber:") for rid in updated_ids)
+                ):
+                    raise RuntimeError("prune repair page response is invalid")
+                public_ids = [_to_public_id(_record_id_part(str(rid))) for rid in updated_ids]
+                if len(set(public_ids)) != len(public_ids) or (page["has_more"] and not public_ids):
+                    raise RuntimeError("prune repair page made no bounded progress")
+                # Fiber updates already have a null journal payload; only IDs are needed.
+                await self._record_changes_bulk(
+                    "fiber", "update", [SimpleNamespace(id=fid) for fid in public_ids]
                 )
-                if isinstance(row, dict) and "synapse_ids" in row
-            ]
-            # Keep the existing legacy cleanup's fiber-update sync journal contract.
-            await self._record_changes_bulk("fiber", "update", updated)
-            count += len(updated)
+                count += len(public_ids)
+                if not page["has_more"]:
+                    break
         return count
 
     async def prune_synapses_if_unchanged(

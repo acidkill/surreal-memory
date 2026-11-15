@@ -12,12 +12,16 @@ import uuid
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 from surrealdb import RecordID
 
 from surreal_memory.core.brain import Brain
+from surreal_memory.core.neuron import Neuron, NeuronType
+from surreal_memory.core.synapse import Synapse, SynapseType
 from surreal_memory.storage.surrealdb.store import SurrealDBStorage
 from surreal_memory.utils.timeutils import utcnow
+from tests._disposable_surrealdb import _inspect, load_target
 
 ROWS = 512
 PROTECTED_ROWS = 64
@@ -123,17 +127,266 @@ class _RssSampler:
         self._thread.join()
 
 
-async def _run(mode: str, version: str) -> dict[str, Any]:
-    url = os.environ["SURREALDB_URL"]
-    pid = int(os.environ["SURREALDB_CONTAINER_PID"])
-    suffix = uuid.uuid4().hex[:10]
-    storage = SurrealDBStorage(
-        url=url,
-        user=os.getenv("SURREALDB_USER", "root"),
-        password=os.getenv("SURREALDB_PASS", "root"),
-        namespace=f"sds_bench_{mode}_{suffix}",
-        database=f"run_{suffix}",
+async def _wire_counted_query(
+    query_raw: Any, sql: str, params: Any, **kwargs: Any
+) -> tuple[Any, int]:
+    """Count the HTTP CBOR response bytes before the SDK decodes the reply."""
+    from surrealdb.connections import async_http
+
+    decode = async_http.decode
+    sizes: list[int] = []
+
+    def capture(raw: bytes) -> Any:
+        sizes.append(len(raw))
+        return decode(raw)
+
+    with patch.object(async_http, "decode", side_effect=capture):
+        result = await query_raw(sql, params, **kwargs)
+    if len(sizes) != 1:
+        raise RuntimeError("could not prove one HTTP CBOR response for transaction")
+    return result, sizes[0]
+
+
+def _repair_scan_evidence(plan: Any) -> dict[str, Any]:
+    scans = _physical_scans(plan)
+    outputs = [
+        scan.get("metrics", {}).get("output_rows")
+        if isinstance(scan.get("metrics"), dict)
+        else None
+        for scan in scans
+    ]
+    measured = bool(scans) and all(type(value) is int and value >= 0 for value in outputs)
+    count = sum(outputs) if measured else None
+    return {
+        "physical_scans": scans,
+        "scan_output_rows": count,
+        "indexed_scan_output_bound": measured
+        and count <= 9
+        and any(scan["operator"] == "IndexScan" for scan in scans),
+        "physical_read_bound": None,
+        "physical_read_gap": "EXPLAIN output_rows counts emitted rows, not underlying index entries read",
+    }
+
+
+def _repair_page(statements: list[dict[str, Any]]) -> dict[str, Any]:
+    assert all("synapse_ids" not in str(statement.get("result")) for statement in statements)
+    pages = [
+        row
+        for statement in statements
+        for row in (statement.get("result") if isinstance(statement.get("result"), list) else [])
+        if isinstance(row, dict) and set(row) == {"updated_ids", "has_more"}
+    ]
+    assert len(pages) == 1
+    ids = pages[0]["updated_ids"]
+    assert isinstance(ids, list)
+    assert len(ids) <= 8
+    assert all(
+        getattr(item, "table_name", None) == "fiber"
+        or (isinstance(item, str) and item.startswith("fiber:"))
+        for item in ids
     )
+    assert type(pages[0]["has_more"]) is bool
+    return pages[0]
+
+
+async def _run_repair(mode: str, version: str, options: dict[str, str], pid: int) -> dict[str, Any]:
+    """Compare full-row legacy repair with the bounded real storage method."""
+    from surreal_memory.storage.surrealdb.prune import _checked_prune_results
+
+    storage = SurrealDBStorage(**options, database=f"repair_{uuid.uuid4().hex[:10]}")
+    await storage.initialize()
+    brain = Brain.create(name="synthetic-repair-benchmark")
+    await storage.save_brain(brain)
+    storage.set_brain(brain.id)
+    owner = uuid.uuid4().hex
+    try:
+        nodes = [Neuron.create(NeuronType.CONCEPT, f"repair-node-{i}") for i in range(2)]
+        for node in nodes:
+            await storage.add_neuron(node)
+        live = Synapse.create(nodes[0].id, nodes[1].id, SynapseType.RELATED_TO)
+        await storage.add_synapse(live)
+        missing = ["missing-repair-a", "missing-repair-b"]
+        unrelated = [f"unrelated-{i:05d}" for i in range(30_000)]
+        expected = set(unrelated) | {live.id}
+        refs = unrelated + missing + [live.id]
+        fiber_count = 24
+        for start in range(0, fiber_count, 4):
+            rows = [
+                {
+                    "id": RecordID("fiber", f"repair_{i:04d}"),
+                    "brain_id": brain.id,
+                    "neuron_ids": [nodes[0].id],
+                    "anchor_neuron_id": nodes[0].id,
+                    "synapse_ids": refs,
+                    "metadata": {"padding": "x" * (128 * 1024)},
+                }
+                for i in range(start, min(start + 4, fiber_count))
+            ]
+            await storage._query("INSERT INTO fiber $rows RETURN NONE", rows=rows)
+        assert await storage.acquire_consolidation_lease(brain.id, owner, lease_seconds=300)
+        if mode == "repair-bounded":
+            select_sql = (
+                "SELECT VALUE id FROM fiber WITH INDEX idx_fiber_synapses "
+                "WHERE brain_id = $brain_id AND synapse_ids CONTAINSANY $absent LIMIT $probe_limit"
+            )
+            plan_params: dict[str, Any] = {
+                "brain_id": brain.id,
+                "absent": missing,
+                "probe_limit": 9,
+            }
+        else:
+            select_sql = (
+                "SELECT VALUE id FROM fiber WITH INDEX idx_fiber_synapses "
+                "WHERE brain_id = $brain_id AND synapse_ids CONTAINS $sid"
+            )
+            plan_params = {"brain_id": brain.id, "sid": missing[0]}
+        plan = await storage._query_response(select_sql + " EXPLAIN FULL", **plan_params)
+        process_start = _start_ticks(pid)
+        baseline = _rss_kib(pid)
+        _reset_hwm(pid)
+        transaction_sizes: list[int] = []
+        response_bytes: list[int] = []
+        response_shapes: list[dict[str, Any]] = []
+        with _RssSampler(pid) as sampler:
+            if mode == "repair-legacy":
+                # Reproduce the former unbounded per-edge UPDATE and full-row reply.
+                from hashlib import sha256
+
+                statements = [
+                    "BEGIN TRANSACTION;",
+                    "LET $lease = (UPDATE type::record('consolidation_lease', $lease_id) "
+                    "SET sweep_fenced_at = time::now() WHERE brain_id = $brain_id "
+                    "AND owner_token = $owner AND expires_at > time::now() RETURN AFTER);",
+                    "IF array::len($lease) != 1 { THROW 'prune lease lost'; };",
+                ]
+                params: dict[str, Any] = {
+                    "brain_id": brain.id,
+                    "owner": owner,
+                    "lease_id": sha256(brain.id.encode()).hexdigest(),
+                }
+                for i, sid in enumerate(missing + [live.id]):
+                    params[f"sid_{i}"] = sid
+                    params[f"record_{i}"] = sid
+                    statements.append(
+                        "UPDATE (SELECT VALUE id FROM fiber WITH INDEX idx_fiber_synapses "  # noqa: S608
+                        f"WHERE brain_id = $brain_id AND synapse_ids CONTAINS $sid_{i}) "
+                        f"SET synapse_ids = array::difference(synapse_ids, [$sid_{i}]) "
+                        f"WHERE brain_id = $brain_id AND synapse_ids CONTAINS $sid_{i} "
+                        f"AND array::len((SELECT id FROM type::record('synapse', $record_{i}))) = 0 "
+                        "RETURN AFTER;"
+                    )
+                statements.extend(
+                    [
+                        "LET $final_lease = (UPDATE type::record('consolidation_lease', $lease_id) "
+                        "SET sweep_fenced_at = time::now() WHERE brain_id = $brain_id "
+                        "AND owner_token = $owner AND expires_at > time::now() RETURN AFTER);",
+                        "IF array::len($final_lease) != 1 { THROW 'prune lease lost'; };",
+                        "COMMIT TRANSACTION;",
+                    ]
+                )
+                raw, size = await _wire_counted_query(
+                    storage._ensure_conn().query_raw, "\n".join(statements), params
+                )
+                response_bytes.append(size)
+                results = _checked_prune_results(raw)
+                rows = [
+                    row
+                    for statement in results
+                    for row in (
+                        statement.get("result") if isinstance(statement.get("result"), list) else []
+                    )
+                    if isinstance(row, dict) and "synapse_ids" in row
+                ]
+                transaction_sizes.append(len(rows))
+                response_shapes.append({"full_fiber_rows": len(rows)})
+                updated = len(rows)
+            else:
+                connection = storage._ensure_conn()
+                original_query_raw = connection.query_raw
+
+                async def capture(sql: str, params: Any = None, **kwargs: Any) -> Any:
+                    if "-- bounded legacy prune repair" not in sql:
+                        return await original_query_raw(sql, params, **kwargs)
+                    raw, size = await _wire_counted_query(original_query_raw, sql, params, **kwargs)
+                    response_bytes.append(size)
+                    if "-- bounded legacy prune repair" in sql:
+                        statements = _checked_prune_results(raw)
+                        page = _repair_page(statements)
+                        ids = page["updated_ids"]
+                        transaction_sizes.append(len(ids))
+                        response_shapes.append(
+                            {"updated_ids": len(ids), "has_more": page["has_more"]}
+                        )
+                    return raw
+
+                connection.query_raw = capture
+                try:
+                    updated = await storage.repair_prune_synapse_refs_if_absent(
+                        missing + [live.id], lease_owner_token=owner
+                    )
+                finally:
+                    connection.query_raw = original_query_raw
+                assert transaction_sizes == [8, 8, 8]
+                assert [page["has_more"] for page in response_shapes] == [True, True, False]
+                assert updated == fiber_count
+        if mode == "repair-legacy":
+            assert updated == fiber_count * len(missing)
+        assert _start_ticks(pid) == process_start, "SurrealDB process changed during repair"
+        sample_peak = max(sampler.samples_kib)
+        kernel_hwm = _hwm_kib(pid)
+        rows = await storage._query(
+            "SELECT synapse_ids, metadata FROM fiber WHERE brain_id = $brain_id", brain_id=brain.id
+        )
+        assert len(rows) == fiber_count
+        assert all(set(row["synapse_ids"]) == expected for row in rows)
+        assert all(row["metadata"]["padding"] == "x" * (128 * 1024) for row in rows)
+        assert await storage.get_synapses_by_ids([live.id])
+        await storage.release_consolidation_lease(brain.id, owner)
+        return {
+            "mode": mode,
+            "db_version": version,
+            "fibers": fiber_count,
+            "unrelated_refs_per_fiber": len(unrelated),
+            "missing_edges": len(missing),
+            "updates": updated,
+            "transaction_count": len(transaction_sizes),
+            "transaction_mutations": transaction_sizes,
+            "transaction_rows_returned": sum(transaction_sizes),
+            "response_shapes": response_shapes,
+            "response_wire_bytes": response_bytes,
+            "response_wire_format": "HTTP CBOR body before SDK decode",
+            "lookup_plan": json.dumps(plan, default=str),
+            "lookup_plan_scope": "EXPLAIN FULL for initial selector before repair; physical scope not assumed",
+            "logical_probe_limit": 9 if mode == "repair-bounded" else None,
+            "lookup_scan_evidence": _repair_scan_evidence(plan),
+            "rss_baseline_kib": baseline,
+            "rss_sampled_peak_kib": sample_peak,
+            "rss_sampled_peak_delta_kib": sample_peak - baseline,
+            "rss_kernel_hwm_kib": kernel_hwm,
+            "rss_sample_interval_ms": 10,
+            "rss_metric": "VmHWM reset after setup; /proc VmRSS sampled during repair",
+        }
+    finally:
+        await storage.close()
+
+
+def _benchmark_target() -> tuple[dict[str, str], int]:
+    target = load_target()
+    if target is None:
+        raise RuntimeError("registered disposable container is required")
+    descriptor = json.loads(Path(os.environ["SMEM_TEST_SURREALDB_TARGET_FILE"]).read_text())
+    pid = int(os.environ["SURREALDB_CONTAINER_PID"])
+    if _inspect(descriptor["container_id"])["State"]["Pid"] != pid:
+        raise RuntimeError("measurement process does not match registered container")
+    return target.child().storage_kwargs(), pid
+
+
+async def _run(mode: str, version: str) -> dict[str, Any]:
+    options, pid = _benchmark_target()
+    if mode.startswith("repair-"):
+        return await _run_repair(mode, version, options, pid)
+    suffix = uuid.uuid4().hex[:10]
+    storage = SurrealDBStorage(**options, database=f"run_{suffix}")
     await storage.initialize()
     brain = Brain.create(name=f"sds-prune-benchmark-{mode}-{suffix}")
     await storage.save_brain(brain)
@@ -365,10 +618,18 @@ async def _run(mode: str, version: str) -> dict[str, Any]:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=("legacy", "bounded"), required=True)
+    parser.add_argument(
+        "--mode", choices=("legacy", "bounded", "repair-legacy", "repair-bounded"), required=True
+    )
     parser.add_argument("--version", required=True)
     args = parser.parse_args()
-    print(json.dumps(asyncio.run(_run(args.mode, args.version)), sort_keys=True))
+    result = asyncio.run(_run(args.mode, args.version))
+    print(json.dumps(result, sort_keys=True))
+    if (
+        args.mode == "repair-bounded"
+        and not result["lookup_scan_evidence"]["indexed_scan_output_bound"]
+    ):
+        raise SystemExit("bounded selector scan output is unreported or exceeds nine rows")
 
 
 if __name__ == "__main__":

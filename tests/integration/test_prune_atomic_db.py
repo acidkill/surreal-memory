@@ -392,3 +392,73 @@ async def test_real_conflict_rereads_reinforced_edge_and_completes_or_pauses(cli
         checkpoint = await first.get_consolidation_progress()
         assert checkpoint["strategy_states"]["prune"]["phase"] == "synapse_pending"
         assert checkpoint["strategy_states"]["prune"]["pending"] == [edge.id]
+
+
+async def test_legacy_repair_pages_eight_fibers_once_with_id_only_replies(clients, monkeypatch):
+    from surreal_memory.storage.surrealdb.prune import _checked_prune_results
+
+    first, second, edge, _ = clients
+    owner = "owner"
+    second_missing = str(uuid4())
+    fibers = []
+    for index in range(17):
+        fiber = Fiber.create(
+            neuron_ids={edge.source_id, edge.target_id},
+            synapse_ids={edge.id, second_missing, "keep-synthetic"},
+            anchor_neuron_id=edge.source_id,
+            metadata={"synthetic_padding": "x" * 4096},
+            fiber_id="1234567890" if index == 0 else None,
+        )
+        await second.add_fiber(fiber)
+        fibers.append(fiber)
+    await second.delete_synapse(edge.id)
+    conn, original = first._ensure_conn(), first._ensure_conn().query_raw
+    page_counts = []
+
+    async def observe(sql, params=None, **kwargs):
+        raw = await original(sql, params, **kwargs)
+        if "-- bounded legacy prune repair" in sql:
+            results = _checked_prune_results(raw)
+            pages = [
+                row
+                for statement in results
+                for row in (
+                    statement["result"] if isinstance(statement.get("result"), list) else []
+                )
+                if isinstance(row, dict) and set(row) == {"updated_ids", "has_more"}
+            ]
+            assert len(pages) == 1
+            page_counts.append(len(pages[0]["updated_ids"]))
+            assert page_counts[-1] <= 8
+            assert (
+                "RETURN AFTER;"
+                not in sql.split("LET $updated", 1)[1].split("LET $final_lease", 1)[0]
+            )
+        return raw
+
+    monkeypatch.setattr(conn, "query_raw", observe)
+    budget_checks = 0
+
+    async def budget():
+        nonlocal budget_checks
+        budget_checks += 1
+
+    assert (
+        await first.repair_prune_synapse_refs_if_absent(
+            [edge.id, second_missing], lease_owner_token=owner, budget_check=budget
+        )
+        == 17
+    )
+    assert page_counts == [8, 8, 1]
+    assert budget_checks == 3
+    for fiber in fibers:
+        repaired = await first.get_fiber(fiber.id)
+        assert repaired is not None and repaired.synapse_ids == {"keep-synthetic"}
+        assert repaired.metadata == fiber.metadata
+    changes = await first._query(
+        "SELECT entity_id, payload FROM change_log WHERE brain_id = $brain AND entity_type = 'fiber' AND operation = 'update'",
+        brain=first.brain_id,
+    )
+    assert len(changes) == 17
+    assert {row["entity_id"] for row in changes} == {fiber.id for fiber in fibers}
+    assert all(row.get("payload") is None for row in changes)
