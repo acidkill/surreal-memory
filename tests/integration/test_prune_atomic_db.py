@@ -399,6 +399,7 @@ async def test_legacy_repair_pages_eight_fibers_once_with_id_only_replies(client
 
     from scripts.benchmark_semantic_discovery_prune import _repair_scan_evidence
     from surreal_memory.storage.surrealdb.prune import (
+        _PRUNE_REPAIR_CONTINUATION_SELECTOR,
         _PRUNE_REPAIR_SELECTOR,
         _checked_prune_results,
     )
@@ -406,6 +407,11 @@ async def test_legacy_repair_pages_eight_fibers_once_with_id_only_replies(client
     first, second, edge, _ = clients
     owner = "owner"
     second_missing = str(uuid4())
+    # Exercise the real empty-page SQL (including last([]).id/null) before seeding.
+    assert (
+        await first.repair_prune_synapse_refs_if_absent([second_missing], lease_owner_token=owner)
+        == 0
+    )
     fibers = []
     numeric_record_id = None
     for index in range(17):
@@ -414,7 +420,7 @@ async def test_legacy_repair_pages_eight_fibers_once_with_id_only_replies(client
             synapse_ids={second_missing, "keep-synthetic"} | ({edge.id} if index < 16 else set()),
             anchor_neuron_id=edge.source_id,
             metadata={"synthetic_padding": "x" * 4096},
-            fiber_id="1234567890" if index == 0 else None,
+            fiber_id="1234567890" if index == 0 else f"aaaaaaaa-aaaa-4aaa-8aaa-{index:012d}",
         )
         await second.add_fiber(fiber)
         fibers.append(fiber)
@@ -439,62 +445,61 @@ async def test_legacy_repair_pages_eight_fibers_once_with_id_only_replies(client
     foreign_fibers = []
     second.set_brain(foreign_brain.id)
     try:
-        for _ in range(10):
+        for index in range(10):
             foreign = Fiber.create(
                 neuron_ids={edge.source_id, edge.target_id},
                 synapse_ids={edge.id, second_missing, "keep-foreign"},
                 anchor_neuron_id=edge.source_id,
                 metadata={"scope": "foreign", "synthetic_padding": "y" * 4096},
+                fiber_id=f"000000000{index}",
             )
-            await second.add_fiber(foreign)
-            before_foreign = await second.get_fiber(foreign.id)
-            assert before_foreign is not None
-            assert before_foreign.synapse_ids == foreign.synapse_ids
-            assert before_foreign.metadata == foreign.metadata
-            foreign_fibers.append(foreign)
+            # Include the integer ID distinct from the target's same-looking string ID.
+            record = RecordID("fiber", 1234567890 if index == 0 else foreign.id)
+            await second._query(
+                "INSERT INTO fiber $rows RETURN NONE",
+                rows=[
+                    {
+                        "id": record,
+                        "brain_id": foreign_brain.id,
+                        "neuron_ids": list(foreign.neuron_ids),
+                        "anchor_neuron_id": foreign.anchor_neuron_id,
+                        "synapse_ids": list(foreign.synapse_ids),
+                        "metadata": foreign.metadata,
+                    }
+                ],
+            )
+            before_foreign = await second._query(
+                "SELECT id, synapse_ids, metadata FROM $record WHERE brain_id = $brain",
+                record=record,
+                brain=foreign_brain.id,
+            )
+            assert len(before_foreign) == 1 and before_foreign[0]["id"] == record
+            assert set(before_foreign[0]["synapse_ids"]) == foreign.synapse_ids
+            assert before_foreign[0]["metadata"] == foreign.metadata
+            foreign_fibers.append((record, foreign))
     finally:
         second.set_brain(target_brain_id)
-    plan = await first._query_response(
-        _PRUNE_REPAIR_SELECTOR + " EXPLAIN FULL", brain_id=first.brain_id, probe_sid=edge.id
-    )
-    evidence = _repair_scan_evidence(plan)
-    print(
-        json.dumps(
-            {"prune_index_probe": "array-first-wildcard", "plan": plan, "evidence": evidence},
-            default=str,
-            sort_keys=True,
-        ),
-        flush=True,
-    )
-    # Diagnostic DDL is confined to this registered, disposable tiny fixture.
-    for layout, index_name, fields in (
-        ("brain-first-wildcard", "idx_prune_probe_brain_wildcard", "brain_id, synapse_ids.*"),
-        ("brain-first-direct", "idx_prune_probe_brain_direct", "brain_id, synapse_ids"),
+    plan_params = {"brain_id": first.brain_id, "absent": [edge.id, second_missing]}
+    initial_rows = await first._query(_PRUNE_REPAIR_SELECTOR, **plan_params)
+    assert len(initial_rows) == 9
+    assert all(not row["eligible"] for row in initial_rows[:8])
+    assert type(initial_rows[0]["id"].id) is int
+    for phase, selector, cursor in (
+        ("initial", _PRUNE_REPAIR_SELECTOR, None),
+        ("continuation", _PRUNE_REPAIR_CONTINUATION_SELECTOR, initial_rows[7]["id"].id),
+        ("after_integer", _PRUNE_REPAIR_CONTINUATION_SELECTOR, initial_rows[0]["id"].id),
     ):
-        try:
-            _checked_prune_results(
-                await first._ensure_conn().query_raw(
-                    f"DEFINE INDEX {index_name} ON fiber FIELDS {fields};"
-                )
-            )
-            probe_sql = _PRUNE_REPAIR_SELECTOR.replace("idx_fiber_synapses", index_name)
-            probe_plan = await first._query_response(
-                probe_sql + " EXPLAIN FULL", brain_id=first.brain_id, probe_sid=edge.id
-            )
-            diagnostic = {
-                "prune_index_probe": layout,
-                "fields": fields,
-                "plan": probe_plan,
-                "evidence": _repair_scan_evidence(probe_plan),
-            }
-        except Exception as exc:
-            diagnostic = {
-                "prune_index_probe": layout,
-                "error_type": type(exc).__name__,
-                "error": str(exc)[:1000],
-            }
-        print(json.dumps(diagnostic, default=str, sort_keys=True), flush=True)
-    assert evidence["indexed_scan_output_bound"], json.dumps(evidence, default=str)
+        params = {**plan_params, "cursor": cursor}
+        plan = await first._query_response(selector + " EXPLAIN FULL", **params)
+        evidence = _repair_scan_evidence(plan)
+        assert evidence["primary_scan_output_bound"], json.dumps(
+            {"phase": phase, **evidence}, default=str
+        )
+    after_integer = await first._query(
+        _PRUNE_REPAIR_CONTINUATION_SELECTOR, **plan_params, cursor=1234567890
+    )
+    assert len(after_integer) == 9
+    assert all(type(row["id"].id) is str for row in after_integer)
     await second.delete_synapse(edge.id)
     conn, original = first._ensure_conn(), first._ensure_conn().query_raw
     page_counts = []
@@ -509,11 +514,14 @@ async def test_legacy_repair_pages_eight_fibers_once_with_id_only_replies(client
                 for row in (
                     statement["result"] if isinstance(statement.get("result"), list) else []
                 )
-                if isinstance(row, dict) and set(row) == {"updated_ids", "has_more"}
+                if isinstance(row, dict)
+                and set(row) == {"updated_ids", "has_more", "next_cursor", "scanned"}
             ]
             assert len(pages) == 1
             page_counts.append(len(pages[0]["updated_ids"]))
             assert page_counts[-1] <= 8
+            assert 0 <= pages[0]["scanned"] <= 9
+            assert getattr(pages[0]["next_cursor"], "table_name", None) == "fiber"
             assert (
                 "RETURN AFTER;"
                 not in sql.split("LET $updated", 1)[1].split("LET $final_lease", 1)[0]
@@ -533,15 +541,15 @@ async def test_legacy_repair_pages_eight_fibers_once_with_id_only_replies(client
         )
         == 17
     )
-    assert page_counts == [8, 8, 1]
-    assert budget_checks == 3
+    assert page_counts == [0, 6, 8, 3]
+    assert budget_checks == 4
     assert (
         await first.repair_prune_synapse_refs_if_absent(
             [edge.id, second_missing], lease_owner_token=owner
         )
         == 0
     )
-    assert page_counts == [8, 8, 1, 0, 0]
+    assert page_counts == [0, 6, 8, 3, 0, 0, 0, 0]
     for index, fiber in enumerate(fibers):
         if index == 0:
             after = await first._query(
@@ -564,15 +572,15 @@ async def test_legacy_repair_pages_eight_fibers_once_with_id_only_replies(client
     assert len(changes) == 17
     assert {row["entity_id"] for row in changes} == {fiber.id for fiber in fibers}
     assert all(row.get("payload") is None for row in changes)
-    second.set_brain(foreign_brain.id)
-    try:
-        for foreign in foreign_fibers:
-            unchanged = await second.get_fiber(foreign.id)
-            assert unchanged is not None
-            assert unchanged.synapse_ids == foreign.synapse_ids
-            assert unchanged.metadata == foreign.metadata
-    finally:
-        second.set_brain(target_brain_id)
+    for record, foreign in foreign_fibers:
+        unchanged = await second._query(
+            "SELECT id, synapse_ids, metadata FROM $record WHERE brain_id = $brain",
+            record=record,
+            brain=foreign_brain.id,
+        )
+        assert len(unchanged) == 1 and unchanged[0]["id"] == record
+        assert set(unchanged[0]["synapse_ids"]) == foreign.synapse_ids
+        assert unchanged[0]["metadata"] == foreign.metadata
     foreign_updates = await first._query(
         "SELECT entity_id FROM change_log WHERE brain_id = $brain "
         "AND entity_type = 'fiber' AND operation = 'update'",

@@ -1,8 +1,9 @@
-"""Legacy repair must bound work by fibers, rather than only missing edge IDs."""
+"""Offline raw-page adapter contracts; real SQL plans are checked in DB CI."""
 
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import dataclass
 from typing import Any
 
 import pytest
@@ -12,14 +13,30 @@ from surreal_memory.storage.surrealdb.prune import SurrealDBPruneMixin
 _OWNER = "synthetic"
 
 
+@dataclass
+class Record:
+    table_name: str
+    id: Any
+
+    def __str__(self):
+        value = f"⟨{self.id}⟩" if isinstance(self.id, str) and self.id.isdigit() else self.id
+        return f"{self.table_name}:{value}"
+
+
 class RepairDB(SurrealDBPruneMixin):
     def __init__(self, count: int = 17) -> None:
-        self.fibers = {f"fiber-{i}": {"edge-a", "edge-b", "keep"} for i in range(count)}
+        self.fibers: dict[Any, set[str]] = {
+            f"fiber-{i}": {"edge-a", "edge-b", "keep"} for i in range(count)
+        }
+        self.foreign: set[Any] = set()
         self.present: set[str] = set()
         self.mutation_counts: list[int] = []
         self.responses: list[list[dict[str, Any]]] = []
         self.journal_ids: list[str] = []
+        self.cursors: list[Any] = []
+        self.groups: list[list[str]] = []
         self.before_raw = None
+        self.page_override = None
 
     def _get_brain_id(self):
         return "synthetic"
@@ -37,40 +54,41 @@ class RepairDB(SurrealDBPruneMixin):
     async def query_raw(self, sql, params):
         if self.before_raw:
             await self.before_raw()
-        bounded = "-- bounded legacy prune repair" in sql
-        if bounded:
-            absent = {item["public_id"] for item in params["candidates"]} - self.present
-            matches = [fid for fid, refs in self.fibers.items() if refs & absent]
-            selected = matches[:8]
-            for fid in selected:
-                self.fibers[fid] -= absent
-            result = [
-                {
-                    "updated_ids": ["fiber:" + fid.replace("-", "_") for fid in selected],
-                    "has_more": len(matches) > 8,
-                }
-            ]
-            self.mutation_counts.append(len(selected))
-        else:
-            # Prior implementation rewrites each matching fiber once per edge,
-            # retaining every whole-fiber snapshot in the same RPC response.
-            result = []
-            for key, sid in params.items():
-                if not key.startswith("sid_") or sid in self.present:
-                    continue
-                for fid, refs in self.fibers.items():
-                    if sid in refs:
-                        refs.discard(sid)
-                        result.append(
-                            {
-                                "id": "fiber:" + fid.replace("-", "_"),
-                                "neuron_ids": ["anchor"],
-                                "synapse_ids": sorted(refs),
-                                "anchor_neuron_id": "anchor",
-                                "metadata": {"synthetic_large_field": "x" * 1024},
-                            }
-                        )
-            self.mutation_counts.append(len(result))
+        self.cursors.append(params["cursor"])
+        self.groups.append([item["public_id"] for item in params["candidates"]])
+        records = [
+            (fid, Record("fiber", fid.replace("-", "_") if isinstance(fid, str) else fid))
+            for fid in self.fibers
+        ]
+        records.sort(key=lambda row: (0 if type(row[1].id) is int else 1, row[1].id))
+        start = 0
+        if params["has_cursor"]:
+            assert "type::record('fiber', $cursor>..)" in sql
+            start = next(
+                i + 1
+                for i, (_, record) in enumerate(records)
+                if type(record.id) is type(params["cursor"]) and record.id == params["cursor"]
+            )
+        raw = records[start : start + 9]
+        processed = raw[:8]
+        absent = {item["public_id"] for item in params["candidates"]} - self.present
+        selected = [
+            (fid, record)
+            for fid, record in processed
+            if fid not in self.foreign and self.fibers[fid] & absent
+        ]
+        for fid, _ in selected:
+            self.fibers[fid] -= absent
+        page = {
+            "updated_ids": [record for _, record in selected],
+            "has_more": len(raw) > 8,
+            "next_cursor": processed[-1][1] if processed else None,
+            "scanned": len(raw),
+        }
+        if self.page_override:
+            page = self.page_override(page)
+        self.mutation_counts.append(len(selected))
+        result = [page]
         self.responses.append(deepcopy(result))
         return {"result": [{"status": "OK", "result": result}]}
 
@@ -85,7 +103,11 @@ async def test_repair_bounds_fibers_and_avoids_repeated_full_payloads():
     assert result == 17
     assert len(db.journal_ids) == len(set(db.journal_ids)) == 17
     assert all(refs == {"keep"} for refs in db.fibers.values())
-    assert all(set(row) == {"updated_ids", "has_more"} for page in db.responses for row in page)
+    assert all(
+        set(row) == {"updated_ids", "has_more", "next_cursor", "scanned"}
+        for page in db.responses
+        for row in page
+    )
 
 
 async def test_budget_pause_between_pages_replays_remaining_refs_without_duplicates():
@@ -157,3 +179,84 @@ async def test_fiber_update_journal_still_has_null_payload():
 
     db._record_changes_bulk = journal
     await db.repair_prune_synapse_refs_if_absent(["edge-a"], lease_owner_token=_OWNER)
+
+
+async def test_zero_update_foreign_prefix_advances_without_skipping_disjoint_refs():
+    db = RepairDB(2)
+    for i in range(8):
+        db.fibers[f"000{i}"] = {"edge-a", "edge-b", "foreign"}
+        db.foreign.add(f"000{i}")
+    db.fibers["fiber-0"] = {"edge-a", "keep"}
+    db.fibers["fiber-1"] = {"edge-b", "keep"}
+    assert (
+        await db.repair_prune_synapse_refs_if_absent(["edge-a", "edge-b"], lease_owner_token=_OWNER)
+        == 2
+    )
+    assert db.mutation_counts == [0, 2]
+    assert all(db.fibers[f"000{i}"] == {"edge-a", "edge-b", "foreign"} for i in range(8))
+    assert all(db.fibers[f"fiber-{i}"] == {"keep"} for i in range(2))
+
+
+async def test_cursor_keeps_integer_and_numeric_string_identity_distinct():
+    db = RepairDB(0)
+    for i in range(8):
+        db.fibers[i] = {"edge-a", "foreign"}
+        db.foreign.add(i)
+    db.fibers["7"] = {"edge-a", "keep"}
+    assert await db.repair_prune_synapse_refs_if_absent(["edge-a"], lease_owner_token=_OWNER) == 1
+    assert db.cursors == [None, 7]
+    assert type(db.cursors[1]) is int
+    assert db.fibers["7"] == {"keep"}
+    assert db.fibers[7] == {"edge-a", "foreign"}
+
+
+async def test_empty_page_terminates_and_group_cursor_resets():
+    db = RepairDB(0)
+    assert (
+        await db.repair_prune_synapse_refs_if_absent(
+            [f"edge-{i}" for i in range(33)], lease_owner_token=_OWNER
+        )
+        == 0
+    )
+    assert db.cursors == [None, None]
+    assert [len(group) for group in db.groups] == [32, 1]
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    ["overread", "overupdate", "wrong_table", "missing_cursor", "more", "empty_cursor", "repeat"],
+)
+async def test_invalid_raw_page_receipts_fail_closed(invalid):
+    db = RepairDB()
+
+    def invalid_page(page):
+        if invalid == "overread":
+            page["scanned"] = 10
+        elif invalid == "overupdate":
+            page["updated_ids"] *= 2
+        elif invalid == "wrong_table":
+            page["next_cursor"] = Record("neuron", "wrong")
+        elif invalid == "missing_cursor":
+            page["next_cursor"] = None
+        elif invalid == "more":
+            page["has_more"] = False
+        elif invalid == "empty_cursor":
+            page.update(scanned=0, updated_ids=[], has_more=False)
+        elif invalid == "repeat" and len(db.cursors) > 1:
+            page["next_cursor"] = Record("fiber", db.cursors[-1])
+        return page
+
+    db.page_override = invalid_page
+    with pytest.raises(RuntimeError, match="prune repair"):
+        await db.repair_prune_synapse_refs_if_absent(["edge-a"], lease_owner_token=_OWNER)
+
+
+@pytest.mark.parametrize("count,counts", [(0, [0]), (8, [8]), (16, [8, 8])])
+async def test_empty_and_exact_multiple_terminal_pages(count, counts):
+    db = RepairDB(count)
+    assert (
+        await db.repair_prune_synapse_refs_if_absent(["edge-a"], lease_owner_token=_OWNER) == count
+    )
+    assert db.mutation_counts == counts
+    assert db.responses[-1][0]["has_more"] is False
+    assert db.responses[-1][0]["scanned"] == (8 if count else 0)

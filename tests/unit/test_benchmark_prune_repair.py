@@ -33,8 +33,13 @@ def test_repair_scan_plan_does_not_invent_physical_metrics():
 
 
 def test_repair_page_rejects_full_rows_and_overlarge_or_non_id_responses():
-    identifier = SimpleNamespace(table_name="fiber")
-    page = {"updated_ids": [identifier] * 8, "has_more": True}
+    identifier = SimpleNamespace(table_name="fiber", id="synthetic")
+    page = {
+        "updated_ids": [identifier] * 8,
+        "has_more": True,
+        "next_cursor": identifier,
+        "scanned": 9,
+    }
     assert bench._repair_page([{"result": [page]}]) == page
     with pytest.raises(AssertionError):
         bench._repair_page([{"result": [{"synapse_ids": ["x"]}, page]}])
@@ -182,20 +187,26 @@ def test_legacy_oom_acceptance_requires_measurement_marker(
     assert result.returncode == expected_rc, result.stderr
 
 
-def test_scan_evidence_requires_measured_index_output_and_discloses_read_gap():
-    evidence = bench._repair_scan_evidence({"operator": "IndexScan", "metrics": {"output_rows": 9}})
-    assert evidence["indexed_scan_output_bound"] is True
+def test_scan_evidence_requires_measured_primary_output_and_discloses_read_gap():
+    evidence = bench._repair_scan_evidence({"operator": "TableScan", "metrics": {"output_rows": 9}})
+    assert evidence["primary_scan_output_bound"] is True
     assert evidence["scan_output_rows"] == 9
     assert evidence["physical_read_bound"] is None
     assert (
+        bench._repair_scan_evidence({"operator": "IndexScan", "metrics": {"output_rows": 9}})[
+            "primary_scan_output_bound"
+        ]
+        is False
+    )
+    assert (
         bench._repair_scan_evidence({"operator": "IndexScan", "metrics": {"output_rows": 10}})[
-            "indexed_scan_output_bound"
+            "primary_scan_output_bound"
         ]
         is False
     )
     assert (
         bench._repair_scan_evidence({"operator": "IndexScan", "metrics": None})[
-            "indexed_scan_output_bound"
+            "primary_scan_output_bound"
         ]
         is False
     )
@@ -415,53 +426,12 @@ async def test_repair_verification_keeps_all_identity_ref_and_metadata_assertion
         )
 
 
-@pytest.mark.asyncio
-async def test_scalar_repair_probes_every_candidate_and_rechecks_budget_per_transaction():
-    from surreal_memory.storage.surrealdb.prune import SurrealDBPruneMixin
-
-    class Storage(SurrealDBPruneMixin):
-        def __init__(self):
-            self.probes, self.groups, self.changes = [], [], []
-            self.pages = [
-                {"updated_ids": [f"fiber:first_{i}" for i in range(8)], "has_more": True},
-                {"updated_ids": ["fiber:first_last"], "has_more": False},
-                {"updated_ids": ["fiber:disjoint_second"], "has_more": False},
-                {"updated_ids": [], "has_more": False},
-            ]
-
-        def _get_brain_id(self):
-            return "synthetic-brain"
-
-        def _ensure_conn(self):
-            return self
-
-        async def _ensure_conn_on_current_loop(self):
-            pass
-
-        async def query_raw(self, sql, params):
-            self.probes.append(params["probe_sid"])
-            self.groups.append([candidate["public_id"] for candidate in params["candidates"]])
-            return [{"status": "OK", "result": [self.pages.pop(0)]}]
-
-        async def _record_changes_bulk(self, entity, operation, changes):
-            self.changes.extend(change.id for change in changes)
-
-    checks = 0
-
-    async def budget():
-        nonlocal checks
-        checks += 1
-
-    storage = Storage()
-    assert (
-        await storage.repair_prune_synapse_refs_if_absent(
-            ["first-missing", "second-missing", "present"],
-            lease_owner_token="synthetic-owner",  # noqa: S106 - synthetic fixture owner
-            budget_check=budget,
-        )
-        == 10
-    )
-    assert storage.probes == ["first-missing", "first-missing", "second-missing", "present"]
-    assert storage.groups == [["first-missing", "second-missing", "present"]] * 4
-    assert checks == 4
-    assert len(storage.changes) == 10
+def test_primary_scan_gate_accepts_measured_wrapper_but_rejects_literal_range():
+    literal = {"operator": "RecordIdScan", "metrics": {"output_rows": 9}}
+    assert bench._repair_scan_evidence(literal)["primary_scan_output_bound"] is False
+    wrapped = {"operator": "DynamicScan", "metrics": {"output_rows": 9}, "children": [literal]}
+    evidence = bench._repair_scan_evidence(wrapped)
+    assert evidence["primary_scan_output_bound"] is True
+    assert evidence["scan_output_rows"] == 9
+    literal["metrics"]["output_rows"] = 10
+    assert bench._repair_scan_evidence(wrapped)["primary_scan_output_bound"] is False

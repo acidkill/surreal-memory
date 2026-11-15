@@ -264,13 +264,18 @@ def _repair_scan_evidence(plan: Any) -> dict[str, Any]:
         for scan in scans
     ]
     measured = bool(scans) and all(type(value) is int and value >= 0 for value in outputs)
-    count = sum(outputs) if measured else None
+    count = max(outputs) if measured else None
+    literal_record_scan = any(scan["operator"] == "RecordIdScan" for scan in scans) and not any(
+        scan["operator"] == "DynamicScan" for scan in scans
+    )
     return {
         "physical_scans": scans,
         "scan_output_rows": count,
-        "indexed_scan_output_bound": measured
+        "scan_output_metric": "maximum per physical scan; wrapper outputs may overlap",
+        "primary_scan_output_bound": measured
         and count <= 9
-        and any(scan["operator"] == "IndexScan" for scan in scans),
+        and not literal_record_scan
+        and all(scan["operator"] in {"TableScan", "DynamicScan", "RecordIdScan"} for scan in scans),
         "physical_read_bound": None,
         "physical_read_gap": "EXPLAIN output_rows counts emitted rows, not underlying index entries read",
     }
@@ -282,19 +287,26 @@ def _repair_page(statements: list[dict[str, Any]]) -> dict[str, Any]:
         row
         for statement in statements
         for row in (statement.get("result") if isinstance(statement.get("result"), list) else [])
-        if isinstance(row, dict) and set(row) == {"updated_ids", "has_more"}
+        if isinstance(row, dict)
+        and set(row) == {"updated_ids", "has_more", "next_cursor", "scanned"}
     ]
     assert len(pages) == 1
     ids = pages[0]["updated_ids"]
     assert isinstance(ids, list)
     assert len(ids) <= 8
-    assert all(
-        getattr(item, "table_name", None) == "fiber"
-        or (isinstance(item, str) and item.startswith("fiber:"))
-        for item in ids
+    assert all(getattr(item, "table_name", None) == "fiber" for item in ids)
+    page = pages[0]
+    assert type(page["scanned"]) is int
+    assert 0 <= page["scanned"] <= 9
+    assert len(ids) <= min(page["scanned"], 8)
+    assert type(page["has_more"]) is bool
+    assert page["has_more"] == (page["scanned"] > 8)
+    assert (
+        (getattr(page["next_cursor"], "table_name", None) == "fiber")
+        if page["scanned"]
+        else page["next_cursor"] is None
     )
-    assert type(pages[0]["has_more"]) is bool
-    return pages[0]
+    return page
 
 
 def _legacy_repair_query(
@@ -368,6 +380,7 @@ async def _run_repair(
     from surrealdb import RecordID
 
     from surreal_memory.storage.surrealdb.prune import (
+        _PRUNE_REPAIR_CONTINUATION_SELECTOR,
         _PRUNE_REPAIR_SELECTOR,
         _checked_prune_results,
     )
@@ -449,7 +462,7 @@ async def _run_repair(
             select_sql = _PRUNE_REPAIR_SELECTOR
             plan_params: dict[str, Any] = {
                 "brain_id": brain.id,
-                "probe_sid": missing[0],
+                "absent": missing,
             }
         else:
             select_sql = (
@@ -464,6 +477,23 @@ async def _run_repair(
             lookup_scan_evidence=_repair_scan_evidence(plan),
             lookup_plan=plan,
         )
+        continuation_plan = None
+        if mode == "repair-bounded":
+            first_page = await storage._query(select_sql, **plan_params)
+            assert len(first_page) == 9
+            cursor = first_page[7]["id"]
+            assert getattr(cursor, "table_name", None) == "fiber"
+            mark("continuation_explain_started", selector_sql=_PRUNE_REPAIR_CONTINUATION_SELECTOR)
+            continuation_plan = await storage._query_response(
+                _PRUNE_REPAIR_CONTINUATION_SELECTOR + " EXPLAIN FULL",
+                **plan_params,
+                cursor=cursor.id,
+            )
+            mark(
+                "continuation_explain_completed",
+                continuation_scan_evidence=_repair_scan_evidence(continuation_plan),
+                continuation_lookup_plan=continuation_plan,
+            )
         baseline = _rss_kib(pid)
         _reset_hwm(pid)
         mark(
@@ -533,7 +563,11 @@ async def _run_repair(
                         ids = page["updated_ids"]
                         transaction_sizes.append(len(ids))
                         response_shapes.append(
-                            {"updated_ids": len(ids), "has_more": page["has_more"]}
+                            {
+                                "updated_ids": len(ids),
+                                "has_more": page["has_more"],
+                                "scanned": page["scanned"],
+                            }
                         )
                     mark(
                         "transaction_completed",
@@ -550,14 +584,9 @@ async def _run_repair(
                     )
                 finally:
                     connection.query_raw = original_query_raw
-                assert transaction_sizes == [8, 8, 8, 0, 0]
-                assert [page["has_more"] for page in response_shapes] == [
-                    True,
-                    True,
-                    False,
-                    False,
-                    False,
-                ]
+                assert transaction_sizes == [8, 8, 8]
+                assert [page["has_more"] for page in response_shapes] == [True, True, False]
+                assert [page["scanned"] for page in response_shapes] == [9, 9, 8]
                 assert updated == fiber_count
         if mode == "repair-legacy":
             assert updated == fiber_count * len(missing)
@@ -602,6 +631,8 @@ async def _run_repair(
             "lookup_plan_scope": "EXPLAIN FULL for initial selector before repair; physical scope not assumed",
             "logical_probe_limit": 9 if mode == "repair-bounded" else None,
             "lookup_scan_evidence": _repair_scan_evidence(plan),
+            "continuation_lookup_plan": json.dumps(continuation_plan, default=str),
+            "continuation_scan_evidence": _repair_scan_evidence(continuation_plan),
             "rss_baseline_kib": baseline,
             "rss_sampled_peak_kib": sample_peak,
             "rss_sampled_peak_delta_kib": sample_peak - baseline,
@@ -886,9 +917,9 @@ def main() -> None:
 
     result = asyncio.run(execute())
     print(json.dumps(result, sort_keys=True))
-    if (
-        args.mode == "repair-bounded"
-        and not result["lookup_scan_evidence"]["indexed_scan_output_bound"]
+    if args.mode == "repair-bounded" and not all(
+        result[key]["primary_scan_output_bound"]
+        for key in ("lookup_scan_evidence", "continuation_scan_evidence")
     ):
         raise SystemExit("bounded selector scan output is unreported or exceeds nine rows")
 
