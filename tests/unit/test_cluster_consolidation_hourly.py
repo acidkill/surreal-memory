@@ -19,6 +19,26 @@ hourly = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(hourly)
 
 
+def publish_exit_code(path: Path, code: int) -> None:
+    pending = path.with_suffix(".pending")
+    pending.write_text(str(code))
+    pending.replace(path)
+
+
+def test_exit_code_is_published_after_complete_write(tmp_path, monkeypatch):
+    target = tmp_path / "exit"
+    original_replace = Path.replace
+
+    def checked_replace(source, destination):
+        assert not target.exists()
+        assert source.read_text() == "1"
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(Path, "replace", checked_replace)
+    publish_exit_code(target, 1)
+    assert target.read_text() == "1"
+
+
 def checkpoint(status="completed", run_id="run"):
     return {
         "brain_id": "default",
@@ -1718,7 +1738,7 @@ async def test_failed_resume_real_session_startup_protocol(tmp_path, capsys, sta
             storage.progress["native_handoff"]["payload_sha256"] = native_payload_hash(
                 storage.progress
             )
-        exit_file.write_text(str(1 - rc if fault == "cli_exit" else rc))
+        publish_exit_code(exit_file, 1 - rc if fault == "cli_exit" else rc)
         for _ in range(400):
             if child.poll() is not None:
                 return
@@ -1737,7 +1757,7 @@ async def test_failed_resume_real_session_startup_protocol(tmp_path, capsys, sta
         assert ready.exists()
         if phase_tick == 1:
             if fault == "exit_before_claim":
-                exit_file.write_text(str(rc))
+                publish_exit_code(exit_file, rc)
                 for _ in range(400):
                     if child.poll() is not None:
                         return
@@ -1764,7 +1784,7 @@ async def test_failed_resume_real_session_startup_protocol(tmp_path, capsys, sta
                 session = await asyncio.wait_for(native_task, 2)
                 await finish()
             if fault == "exit_after_acquire":
-                exit_file.write_text(str(rc))
+                publish_exit_code(exit_file, rc)
                 for _ in range(400):
                     if child.poll() is not None:
                         return
