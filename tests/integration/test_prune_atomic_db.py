@@ -453,21 +453,8 @@ async def test_legacy_repair_pages_eight_fibers_once_with_id_only_replies(client
                 metadata={"scope": "foreign", "synthetic_padding": "y" * 4096},
                 fiber_id=f"000000000{index}",
             )
-            # Include the integer ID distinct from the target's same-looking string ID.
-            record = RecordID("fiber", 1234567890 if index == 0 else foreign.id)
-            await second._query(
-                "INSERT INTO fiber $rows RETURN NONE",
-                rows=[
-                    {
-                        "id": record,
-                        "brain_id": foreign_brain.id,
-                        "neuron_ids": list(foreign.neuron_ids),
-                        "anchor_neuron_id": foreign.anchor_neuron_id,
-                        "synapse_ids": list(foreign.synapse_ids),
-                        "metadata": foreign.metadata,
-                    }
-                ],
-            )
+            await second.add_fiber(foreign)
+            record = RecordID("fiber", foreign.id)
             before_foreign = await second._query(
                 "SELECT id, synapse_ids, metadata FROM $record WHERE brain_id = $brain",
                 record=record,
@@ -483,11 +470,12 @@ async def test_legacy_repair_pages_eight_fibers_once_with_id_only_replies(client
     initial_rows = await first._query(_PRUNE_REPAIR_SELECTOR, **plan_params)
     assert len(initial_rows) == 9
     assert all(not row["eligible"] for row in initial_rows[:8])
-    assert type(initial_rows[0]["id"].id) is int
+    assert all(type(row["id"].id) is str for row in initial_rows)
     for phase, selector, cursor in (
         ("initial", _PRUNE_REPAIR_SELECTOR, None),
         ("continuation", _PRUNE_REPAIR_CONTINUATION_SELECTOR, initial_rows[7]["id"].id),
-        ("after_integer", _PRUNE_REPAIR_CONTINUATION_SELECTOR, initial_rows[0]["id"].id),
+        ("after_integer", _PRUNE_REPAIR_CONTINUATION_SELECTOR, 1234567890),
+        ("after_string", _PRUNE_REPAIR_CONTINUATION_SELECTOR, "1234567890"),
     ):
         params = {**plan_params, "cursor": cursor}
         plan = await first._query_response(selector + " EXPLAIN FULL", **params)
@@ -500,6 +488,14 @@ async def test_legacy_repair_pages_eight_fibers_once_with_id_only_replies(client
     )
     assert len(after_integer) == 9
     assert all(type(row["id"].id) is str for row in after_integer)
+    # Integer range bounds are valid even when the string-only schema stores no integer ID.
+    assert [row["id"] for row in after_integer] == [row["id"] for row in initial_rows]
+    after_string = await first._query(
+        _PRUNE_REPAIR_CONTINUATION_SELECTOR, **plan_params, cursor="1234567890"
+    )
+    assert len(after_string) == 9
+    assert all(row["eligible"] for row in after_string)
+    assert all(row["id"] not in [item["id"] for item in after_integer] for row in after_string)
     await second.delete_synapse(edge.id)
     conn, original = first._ensure_conn(), first._ensure_conn().query_raw
     page_counts = []
