@@ -140,3 +140,46 @@ async def test_missing_pending_ids_keep_historical_accounting_without_new_fake_r
     assert report.synapses_pruned == expected_count
     assert report.neurons_pruned == 3
     assert storage.removed_fiber_refs == ([{"historically-missing"}] if not journal_marker else [])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("persistent", [False, True])
+async def test_confirmed_conflict_rereads_and_rechecks_or_cooperatively_pauses(persistent):
+    from surreal_memory.engine.consolidation_progress import ConsolidationPausedError
+    from surreal_memory.storage.errors import PruneTransactionConflictError
+
+    class Storage(_PruneStorage):
+        def __init__(self):
+            super().__init__()
+            self.attempts = 0
+            self.operations = []
+
+        async def prune_synapses_if_unchanged(self, expected, *, operation_id, **kwargs):
+            self.attempts += 1
+            self.operations.append(operation_id)
+            if self.attempts == 1 or persistent:
+                self.synapses["edge-1"] = self.synapses["edge-1"].reinforce(
+                    delta=0.5, now=REFERENCE_TIME
+                )
+                raise PruneTransactionConflictError("confirmed server write conflict")
+            assert expected[0].weight > 0.1
+            assert not kwargs["policy"].eligible(expected[0])
+            return {"edge-1": "protected"}
+
+    storage, progress = Storage(), _Progress()
+    progress.state["run_id"] = "run-conflict"
+    progress.owner_token = _OWNER
+    engine = _engine(storage, progress)
+    report = ConsolidationReport()
+    if persistent:
+        with pytest.raises(ConsolidationPausedError, match="contention"):
+            await engine._prune(report, REFERENCE_TIME, False)
+        assert storage.attempts == 3
+        assert progress.strategy_state("prune")["phase"] == "synapse_pending"
+    else:
+        await engine._prune(report, REFERENCE_TIME, False)
+        assert storage.attempts == 2
+        assert progress.strategy_state("prune")["phase"] == "synapse_scan"
+    assert len(set(storage.operations)) == 1
+    assert storage.synapses["edge-1"].weight > 0.1
+    assert report.synapses_pruned == 0

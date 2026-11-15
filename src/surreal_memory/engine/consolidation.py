@@ -44,7 +44,7 @@ from surreal_memory.engine.consolidation_progress import (
     supports_storage_methods,
 )
 from surreal_memory.engine.prune_policy import PrunePolicy
-from surreal_memory.storage.errors import is_duplicate_key_error
+from surreal_memory.storage.errors import PruneTransactionConflictError, is_duplicate_key_error
 from surreal_memory.utils.timeutils import ensure_naive_utc, utcnow
 
 if TYPE_CHECKING:
@@ -1542,7 +1542,6 @@ class ConsolidationEngine:
 
         async def _finish_synapse_pending(ids: list[str], page_cursor: str | None) -> None:
             nonlocal synapses_pruned
-            current = await storage.get_synapses_by_ids(ids)
             if supports_storage_methods(storage, ("prune_synapses_if_unchanged",)):
                 progress = self._progress_session
                 run_id = str(getattr(progress, "state", {}).get("run_id", ""))
@@ -1550,14 +1549,25 @@ class ConsolidationEngine:
                 operation_id = hashlib.sha256(
                     json.dumps([run_id, page_cursor, sorted(ids)]).encode()
                 ).hexdigest()
-                outcomes = await storage.prune_synapses_if_unchanged(
-                    current,
-                    pending_ids=ids,
-                    policy=policy,
-                    run_id=run_id,
-                    operation_id=operation_id,
-                    lease_owner_token=owner,
-                )
+                for attempt in range(3):
+                    await self._check_progress_budget()
+                    current = await storage.get_synapses_by_ids(ids)
+                    try:
+                        outcomes = await storage.prune_synapses_if_unchanged(
+                            current,
+                            pending_ids=ids,
+                            policy=policy,
+                            run_id=run_id,
+                            operation_id=operation_id,
+                            lease_owner_token=owner,
+                        )
+                        break
+                    except PruneTransactionConflictError as exc:
+                        if attempt == 2:
+                            raise ConsolidationPausedError(
+                                "prune write contention; pending decisions preserved"
+                            ) from exc
+                        await asyncio.sleep(0)
                 if set(outcomes) != set(ids) or any(
                     value not in {"deleted", "protected", "changed", "missing"}
                     for value in outcomes.values()
@@ -1575,10 +1585,24 @@ class ConsolidationEngine:
                             raise RuntimeError(
                                 "legacy prune reconciliation requires absence-guarded fiber repair"
                             )
-                        await storage.repair_prune_synapse_refs_if_absent(
-                            [sid for sid, outcome in outcomes.items() if outcome == "missing"],
-                            lease_owner_token=owner,
-                        )
+                        for attempt in range(3):
+                            await self._check_progress_budget()
+                            try:
+                                await storage.repair_prune_synapse_refs_if_absent(
+                                    [
+                                        sid
+                                        for sid, outcome in outcomes.items()
+                                        if outcome == "missing"
+                                    ],
+                                    lease_owner_token=owner,
+                                )
+                                break
+                            except PruneTransactionConflictError as exc:
+                                if attempt == 2:
+                                    raise ConsolidationPausedError(
+                                        "prune repair contention; pending decisions preserved"
+                                    ) from exc
+                                await asyncio.sleep(0)
                         counters["prune_legacy_missing"] = (
                             int(counters.get("prune_legacy_missing", 0)) + legacy_missing
                         )
@@ -1588,6 +1612,7 @@ class ConsolidationEngine:
                         )
                 synapses_pruned += removed_count
             else:
+                current = await storage.get_synapses_by_ids(ids)
                 eligible_ids = set(await _synapse_candidates(current))
                 if eligible_ids:
                     await storage.delete_synapses_batch(eligible_ids)
@@ -8426,7 +8451,11 @@ class ConsolidationEngine:
         from enum import Enum
 
         from surreal_memory.core.synapse import Direction, SynapseType
-        from surreal_memory.engine.dream import DreamPlanCheckpoint, dream
+        from surreal_memory.engine.dream import (
+            DreamPlanCheckpoint,
+            dream,
+            validate_dream_checkpoint,
+        )
 
         brain_id = self._storage.current_brain_id
         if not brain_id:
@@ -8497,15 +8526,34 @@ class ConsolidationEngine:
             return
 
         if manifest is None:
+            if state.get("pending") or state.get("phase") in {
+                "dream_plan",
+                "dream_pending",
+                "dream_apply",
+                "dream_add",
+            }:
+                raise RuntimeError("legacy dream checkpoint lacks coactivation proof")
             manifest = {"kind": "dream_manifest", "synapses": [], "completed": []}
 
         def load_plan(raw: object) -> DreamPlanCheckpoint | None:
-            if not isinstance(raw, dict):
+            if raw is None:
                 return None
+            if not isinstance(raw, dict):
+                raise RuntimeError("dream planning checkpoint is malformed")
             try:
                 synapses_raw = raw["planned_synapses"]
                 receipts_raw = raw["pair_receipts"]
-                activated_raw = raw["activated_ids"]
+                activated_wrapper = raw["activated_ids"]
+                if (
+                    not isinstance(activated_wrapper, dict)
+                    or type(activated_wrapper.get("format_version")) is not int
+                    or activated_wrapper["format_version"] != 2
+                ):
+                    raise RuntimeError("legacy or unsupported dream coactivation proof")
+                activated_raw = activated_wrapper["ids"]
+                eligible_raw = activated_wrapper["eligible_pair_ordinals"]
+                if not isinstance(eligible_raw, list):
+                    raise TypeError("eligible pair ordinals are not a list")
                 if (
                     any(
                         type(raw[field]) is not int
@@ -8526,7 +8574,7 @@ class ConsolidationEngine:
                     raise TypeError("pair receipt is not text")
                 if not all(isinstance(item, str) for item in activated_raw):
                     raise TypeError("activated neuron ID is not text")
-                return DreamPlanCheckpoint(
+                plan_state = DreamPlanCheckpoint(
                     seed=int(raw["seed"]),
                     activated_ids=tuple(activated_raw),
                     pair_cursor=int(raw["pair_cursor"]),
@@ -8534,16 +8582,24 @@ class ConsolidationEngine:
                     planned_synapses=tuple(load_synapse(item) for item in synapses_raw),
                     pairs_explored=int(raw["pairs_explored"]),
                     complete=bool(raw["complete"]),
+                    eligible_pair_ordinals=tuple(eligible_raw),
                 )
+                validate_dream_checkpoint(plan_state)
+                return plan_state
             except (KeyError, TypeError, ValueError) as exc:
                 raise RuntimeError("dream planning checkpoint is malformed") from exc
 
         plan = load_plan(manifest.get("planning"))
 
         async def checkpoint_plan(plan_state: DreamPlanCheckpoint) -> None:
+            validate_dream_checkpoint(plan_state)
             manifest["planning"] = {
                 "seed": plan_state.seed,
-                "activated_ids": list(plan_state.activated_ids),
+                "activated_ids": {
+                    "format_version": 2,
+                    "ids": list(plan_state.activated_ids),
+                    "eligible_pair_ordinals": list(plan_state.eligible_pair_ordinals or ()),
+                },
                 "pair_cursor": plan_state.pair_cursor,
                 "pair_receipts": list(plan_state.pair_receipts),
                 "planned_synapses": [
@@ -8560,14 +8616,44 @@ class ConsolidationEngine:
             )
 
         raw_synapses = manifest.get("synapses", [])
-        saved_synapses = (
-            [load_synapse(str(item)) for item in raw_synapses]
-            if isinstance(raw_synapses, list)
-            else []
-        )
-        already_planned = pending_op is not None or (plan is None and bool(saved_synapses))
+        if not isinstance(raw_synapses, list) or not all(
+            isinstance(item, str) for item in raw_synapses
+        ):
+            raise RuntimeError("dream apply manifest is malformed")
+        saved_synapses = [load_synapse(item) for item in raw_synapses]
+        raw_completed = manifest.get("completed", [])
+        if not isinstance(raw_completed, list) or not all(
+            isinstance(item, str) for item in raw_completed
+        ):
+            raise RuntimeError("dream completed receipts are malformed")
+        if plan is None and (
+            saved_synapses
+            or raw_completed
+            or pending_op is not None
+            or state.get("phase") in {"dream_plan", "dream_pending", "dream_apply", "dream_add"}
+        ):
+            raise RuntimeError("legacy dream checkpoint lacks coactivation proof")
+        if plan is not None:
+            if (saved_synapses or raw_completed) and not plan.complete:
+                raise RuntimeError("dream apply manifest has an incomplete coactivation plan")
+            planned_ids = {synapse.id for synapse in plan.planned_synapses}
+            if (
+                (saved_synapses and tuple(saved_synapses) != plan.planned_synapses)
+                or not set(raw_completed).issubset(planned_ids)
+                or len(set(raw_completed)) != len(raw_completed)
+            ):
+                raise RuntimeError("dream apply manifest does not match coactivation proof")
+            if pending_op is not None:
+                snapshot = load_synapse(str(pending_op.get("synapse", "")))
+                if not plan.complete or snapshot not in plan.planned_synapses:
+                    raise RuntimeError("dream pending synapse lacks coactivation proof")
+        already_planned = pending_op is not None
         if already_planned:
-            planned_synapses = saved_synapses
+            if plan is None:
+                raise RuntimeError("legacy dream checkpoint lacks coactivation proof")
+            # Revalidate read-only before the pending write can bypass planning.
+            result = await dream(self._storage, brain.config, resume=plan)
+            planned_synapses = result.synapses_created
         else:
             await self._check_progress_budget()
             result = await dream(

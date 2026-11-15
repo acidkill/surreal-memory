@@ -256,6 +256,15 @@ bounded transactions. Reinforcement or another change requires a fresh decision.
 Pin and fiber protection uses the transaction snapshot; it is not a global lock
 on independent concurrent fiber writes.
 
+DREAM creates a new connection only when both neurons were activated during the
+same seed exploration. Independent explorations no longer imply coactivation.
+Its version-2 planning payload preserves eligible pair ordinals across pauses.
+An unfinished legacy DREAM plan without this evidence stops without changing its
+checkpoint; it cannot safely be upgraded by exploring a different graph.
+Completed DREAM strategies remain completed. Older binaries reject the new
+planning payload, so a software rollback must retain the stopped checkpoint
+rather than resetting it to force a resume.
+
 `classic`, `ppr`, `hybrid`, and `auto` are retrieval strategies, not storage schema
 versions. The ordinary `classic` pipeline uses Reflex fiber trails. `hybrid` adds
 PPR and preserves the Reflex branch with dampened gap filling. `auto` selects from

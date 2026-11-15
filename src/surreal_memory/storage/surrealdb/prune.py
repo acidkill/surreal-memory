@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from surreal_memory.core.synapse import Synapse
 from surreal_memory.engine.prune_policy import PrunePolicy
+from surreal_memory.storage.errors import PruneTransactionConflictError
 from surreal_memory.storage.surrealdb._ids import _to_surreal_id
 
 PruneOutcome = Literal["deleted", "protected", "changed", "missing"]
@@ -55,11 +56,11 @@ FOR $item IN $items {
             (SELECT VALUE array::len(array::group(out)) FROM synapse WITH INDEX idx_synapse_in
              WHERE brain_id = $brain_id AND in = $row.in GROUP ALL)
         } ELSE { [2] };
-        LET $protected = NOT $item.eligible OR array::len($refs) > 0
+        LET $protected = !$item.eligible OR array::len($refs) > 0
             OR array::len($source_protection) > 0 OR array::len($target_protection) > 0
             OR ($row.weight >= 0.02 AND ($targets[0] ?? 0) <= 1);
         LET $outcome = IF array::len($rows) = 0 { 'missing' }
-            ELSE IF NOT $same { 'changed' }
+            ELSE IF !$same { 'changed' }
             ELSE IF $protected { 'protected' } ELSE { 'deleted' };
         IF $outcome = 'deleted' {
             DELETE type::record('synapse', $item.record_id) WHERE brain_id = $brain_id;
@@ -74,6 +75,48 @@ LET $final_lease = (UPDATE type::record('consolidation_lease', $lease_id)
 IF array::len($final_lease) != 1 { THROW 'prune lease lost'; };
 COMMIT TRANSACTION;
 """
+
+
+def _checked_prune_results(raw: Any) -> list[dict[str, Any]]:
+    """Check every statement, retaining safe RPC diagnostics without parameters."""
+    from surreal_memory.engine.consolidation_progress import ConsolidationLeaseLostError
+
+    if isinstance(raw, dict) and raw.get("error"):
+        error = raw["error"]
+        if isinstance(error, dict):
+            message = str(error.get("message", "no message"))
+            if "prune lease lost" in message:
+                raise ConsolidationLeaseLostError("prune lease lost")
+            if str(error.get("code")) == "40001" or any(
+                term in message.lower() for term in ("transaction conflict", "write conflict")
+            ):
+                raise PruneTransactionConflictError("prune transaction write conflict")
+            raise RuntimeError(
+                f"prune transaction RPC error {error.get('code', 'unknown')}: "
+                f"{str(error.get('message', 'no message'))[:1000]}"
+            )
+        raise RuntimeError("prune transaction response is unconfirmed (RPC error)")
+    results = raw.get("result") if isinstance(raw, dict) else raw
+    if (
+        not isinstance(results, list)
+        or not results
+        or any(
+            not isinstance(row, dict) or row.get("status") not in {"OK", "ERR"} for row in results
+        )
+    ):
+        raise RuntimeError("prune transaction response is unconfirmed")
+    errors = [row.get("result") for row in results if row["status"] != "OK"]
+    if errors:
+        if any("prune lease lost" in str(error) for error in errors):
+            raise ConsolidationLeaseLostError("prune lease lost")
+        if any(
+            term in str(error).lower()
+            for error in errors
+            for term in ("transaction conflict", "write conflict")
+        ):
+            raise PruneTransactionConflictError("prune transaction write conflict")
+        raise RuntimeError(f"prune transaction failed: {str(errors[0])[:1000]}")
+    return results
 
 
 class SurrealDBPruneMixin:
@@ -127,7 +170,6 @@ class SurrealDBPruneMixin:
         lease_owner_token: str,
     ) -> int:
         """Finish old pending cleanup only for edges absent in the repair snapshot."""
-        from surreal_memory.engine.consolidation_progress import ConsolidationLeaseLostError
         from surreal_memory.storage.surrealdb.store import _row_to_fiber
 
         if not lease_owner_token:
@@ -169,16 +211,10 @@ class SurrealDBPruneMixin:
             )
             await self._ensure_conn_on_current_loop()
             raw = await self._ensure_conn().query_raw("\n".join(statements), params)
-            if not isinstance(raw, dict) or raw.get("error") or not raw.get("result"):
-                raise RuntimeError("prune repair transaction is unconfirmed")
-            errors = [row.get("result") for row in raw["result"] if row.get("status") != "OK"]
-            if errors:
-                if any("prune lease lost" in str(error) for error in errors):
-                    raise ConsolidationLeaseLostError("prune lease lost")
-                raise RuntimeError(f"prune repair transaction failed: {errors}")
+            results = _checked_prune_results(raw)
             updated = [
                 _row_to_fiber(row)
-                for statement in raw["result"]
+                for statement in results
                 for row in (
                     statement["result"] if isinstance(statement.get("result"), list) else []
                 )
@@ -207,7 +243,6 @@ class SurrealDBPruneMixin:
         """
         if not run_id or not operation_id or not lease_owner_token:
             raise ValueError("prune requires a durable run, operation identity and lease owner")
-        from surreal_memory.engine.consolidation_progress import ConsolidationLeaseLostError
         from surreal_memory.storage.surrealdb.store import _change_payload
         from surreal_memory.utils.timeutils import utcnow
 
@@ -304,18 +339,7 @@ class SurrealDBPruneMixin:
                     "items": items,
                 },
             )
-            if (
-                not isinstance(raw, dict)
-                or raw.get("error")
-                or not isinstance(raw.get("result"), list)
-                or not raw["result"]
-            ):
-                raise RuntimeError("prune transaction response is unconfirmed")
-            errors = [row.get("result") for row in raw["result"] if row.get("status") != "OK"]
-            if errors:
-                if any("prune lease lost" in str(error) for error in errors):
-                    raise ConsolidationLeaseLostError("prune lease lost")
-                raise RuntimeError(f"prune transaction failed: {errors}")
+            _checked_prune_results(raw)
             params: dict[str, Any] = {
                 "brain_id": brain_id,
                 "operation_id": operation_id,

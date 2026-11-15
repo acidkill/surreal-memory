@@ -8,7 +8,11 @@ ask it, so the predicate lives here and stays stdlib-only.
 
 from __future__ import annotations
 
-__all__ = ["is_duplicate_key_error"]
+__all__ = ["PruneTransactionConflictError", "is_duplicate_key_error"]
+
+
+class PruneTransactionConflictError(RuntimeError):
+    """The server confirmed a rolled-back prune transaction write conflict."""
 
 
 def is_duplicate_key_error(exc: BaseException) -> bool:

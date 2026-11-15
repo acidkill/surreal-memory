@@ -5,11 +5,10 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from copy import deepcopy
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from surrealdb import RecordID
 from typer.testing import CliRunner
 
 from surreal_memory.cli.main import app
@@ -23,11 +22,23 @@ from surreal_memory.storage.surrealdb.activation_migration import (
 )
 
 
+@dataclass(frozen=True)
+class BrainRecordFixture:
+    """Structural row fixture; real SDK transport is an integration gate."""
+
+    table_name: str
+    id: str
+
+
 class Store(SurrealDBActivationMigrationMixin):
     def __init__(self) -> None:
         self.config = {**asdict(BrainConfig()), "future_knob": {"preserve": [1, 2]}}
         self.rows = [
-            {"id": RecordID("brain", "exact-uuid"), "name": "default", "config": self.config}
+            {
+                "id": BrainRecordFixture("brain", "exact-uuid"),
+                "name": "default",
+                "config": self.config,
+            }
         ]
         self.scope = "default"
         self.lease = False

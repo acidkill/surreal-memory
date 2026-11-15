@@ -18,6 +18,11 @@ from surreal_memory.core.brain import Brain
 from surreal_memory.core.fiber import Fiber
 from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.core.synapse import Synapse, SynapseType
+from surreal_memory.engine.consolidation import (
+    ConsolidationConfig,
+    ConsolidationEngine,
+    ConsolidationStrategy,
+)
 from surreal_memory.engine.consolidation_progress import ConsolidationLeaseLostError
 from surreal_memory.engine.prune_policy import PrunePolicy
 from surreal_memory.storage.surrealdb.store import SurrealDBStorage
@@ -214,14 +219,15 @@ async def test_fiber_reference_explain_uses_array_index(clients):
             anchor_neuron_id=edge.source_id,
         )
     )
-    plan = await first._query(
+    plan = await first._query_response(
         "SELECT id FROM fiber WITH INDEX idx_fiber_synapses WHERE brain_id = $brain AND synapse_ids CONTAINS $edge LIMIT 1 EXPLAIN",
         brain=first.brain_id,
         edge=edge.id,
     )
-    rendered = json.dumps(plan)
+    rendered = json.dumps(plan, default=str)
     assert "idx_fiber_synapses" in rendered
-    assert "Iterate Table" not in rendered
+    assert "TableScan" not in rendered
+    assert "IndexScan" in rendered
 
 
 @pytest.mark.parametrize("interrupt", ["timeout", "cancel"])
@@ -303,3 +309,44 @@ async def test_legacy_absent_edge_repairs_refs_but_recreated_edge_keeps_them(cli
     preserved = await first.get_fiber(fiber.id)
     assert preserved is not None and preserved.synapse_ids == {edge.id}
     assert await first.get_synapses_by_ids([edge.id])
+
+
+async def test_real_conflict_rereads_reinforced_edge_and_completes_or_pauses(clients, monkeypatch):
+    first, second, edge, policy = clients
+    assert await first.release_consolidation_lease(first.brain_id, "owner")
+    conn = first._ensure_conn()
+    original = conn.query_raw
+    started = asyncio.Event()
+    slow_once = True
+
+    async def overlap_once(sql, params=None, **kwargs):
+        nonlocal slow_once
+        if slow_once and "BEGIN TRANSACTION" in sql:
+            slow_once = False
+            sql = sql.replace("IF $outcome = 'deleted' {", "IF $outcome = 'deleted' { SLEEP 500ms;")
+            started.set()
+        return await original(sql, params, **kwargs)
+
+    monkeypatch.setattr(conn, "query_raw", overlap_once)
+    engine = ConsolidationEngine(
+        first,
+        ConsolidationConfig(
+            prune_isolated_neurons=False, strategy_timeout_seconds=30, total_timeout_seconds=60
+        ),
+    )
+    task = asyncio.create_task(
+        engine.run(strategies=[ConsolidationStrategy.PRUNE], reference_time=policy.reference_time)
+    )
+    await asyncio.wait_for(started.wait(), timeout=10)
+    await asyncio.sleep(0.1)
+    await second.update_synapse(edge.reinforce(delta=0.5, now=policy.reference_time))
+    report = await task
+    assert report.extra["consolidation_status"] in {"completed", "paused"}
+    assert not report.extra.get("failed_strategies")
+    assert report.synapses_pruned == 0
+    current = (await first.get_synapses_by_ids([edge.id]))[0]
+    assert current.weight > 0.1
+    if report.extra["consolidation_status"] == "paused":
+        checkpoint = await first.get_consolidation_progress()
+        assert checkpoint["strategy_states"]["prune"]["phase"] == "synapse_pending"
+        assert checkpoint["strategy_states"]["prune"]["pending"] == [edge.id]

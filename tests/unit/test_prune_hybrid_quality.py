@@ -123,3 +123,45 @@ async def test_seeded_runs_have_identical_rankings() -> None:
             )
     receipt = first["consolidation"]["full_cycle"]
     assert receipt["requested_handlers"] == receipt["completed_handlers"]
+
+
+def test_seeded_rankings_match_across_process_hash_seeds(tmp_path) -> None:
+    import os
+    import subprocess
+    import sys
+
+    from scripts.benchmark_prune_hybrid import ROOT
+
+    results = []
+    for hash_seed in ("1", "2"):
+        output = tmp_path / f"quality-{hash_seed}.json"
+        env = {**os.environ, "PYTHONHASHSEED": hash_seed, "PYTHONPATH": str(ROOT / "src")}
+        process = subprocess.run(  # noqa: S603
+            [
+                sys.executable,
+                str(ROOT / "scripts/benchmark_prune_hybrid.py"),
+                "--seed",
+                "42",
+                "--max-rss-mib",
+                "512",
+                "--output",
+                str(output),
+            ],
+            cwd=ROOT,
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
+        assert output.exists(), process.stderr
+        assert process.returncode in (0, 1)
+        result = json.loads(output.read_text())
+        assert result["network_attempts"] == 0
+        results.append(result)
+    for stage in ("before", "prune", "full_cycle"):
+        for strategy in ("classic", "ppr", "hybrid", "auto"):
+            assert (
+                results[0]["stages"][stage][strategy]["rankings"]
+                == results[1]["stages"][stage][strategy]["rankings"]
+            )

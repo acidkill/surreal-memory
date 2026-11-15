@@ -176,12 +176,28 @@ async def test_dream_replays_exact_pending_synapse_after_write_before_checkpoint
     storage = _Storage()
     progress = _Progress()
     engine = _engine(ConsolidationStrategy.DREAM, storage, progress)
-    synapse = Synapse.create("neuron-a", "neuron-b", SynapseType.RELATED_TO, weight=0.1)
+    synapse = Synapse.create(
+        "neuron-a", "neuron-b", SynapseType.RELATED_TO, weight=0.1, metadata={"_dream": True}
+    )
     calls = 0
 
     async def fake_dream(*_args: Any, **_kwargs: Any) -> DreamResult:
         nonlocal calls
         calls += 1
+        state = DreamPlanCheckpoint(
+            19,
+            ("neuron-a", "neuron-b"),
+            1,
+            ("0" * 64,),
+            (synapse,),
+            1,
+            True,
+            eligible_pair_ordinals=(0,),
+        )
+        if "checkpoint" in _kwargs:
+            await _kwargs["checkpoint"](state)
+        else:
+            assert _kwargs["resume"] == state
         return DreamResult([synapse])
 
     monkeypatch.setattr("surreal_memory.engine.dream.dream", fake_dream)
@@ -192,7 +208,7 @@ async def test_dream_replays_exact_pending_synapse_after_write_before_checkpoint
     report = ConsolidationReport()
     await engine._dream(report, dry_run=False)
 
-    assert calls == 1
+    assert calls == 2  # Pending apply revalidates the saved plan before replay.
     assert list(storage.synapses) == [synapse.id]
     assert report.dream_synapses_created == 1
     assert progress.strategy_state("dream")["phase"] == "completed"
@@ -205,24 +221,28 @@ async def test_dream_checkpoints_plan_pages_before_apply_and_resumes_same_units(
     storage = _Storage()
     progress = _Progress(pause_phase="dream_plan")
     engine = _engine(ConsolidationStrategy.DREAM, storage, progress)
-    synapse = Synapse.create("neuron-a", "neuron-b", SynapseType.RELATED_TO, weight=0.1)
+    synapse = Synapse.create(
+        "neuron-a", "neuron-b", SynapseType.RELATED_TO, weight=0.1, metadata={"_dream": True}
+    )
     partial = DreamPlanCheckpoint(
         seed=19,
-        activated_ids=("neuron-a", "neuron-b"),
+        activated_ids=("neuron-a", "neuron-b", *(f"neuron-c{i:02}" for i in range(13))),
         pair_cursor=100,
-        pair_receipts=("receipt-0",),
+        pair_receipts=("0" * 64,),
         planned_synapses=(synapse,),
         pairs_explored=100,
         complete=False,
+        eligible_pair_ordinals=(0,),
     )
     complete = DreamPlanCheckpoint(
         seed=19,
         activated_ids=partial.activated_ids,
-        pair_cursor=101,
-        pair_receipts=("receipt-0", "receipt-1"),
+        pair_cursor=105,
+        pair_receipts=("0" * 64, "1" * 64),
         planned_synapses=(synapse,),
-        pairs_explored=102,
+        pairs_explored=105,
         complete=True,
+        eligible_pair_ordinals=(0,),
     )
     calls = 0
 
@@ -241,7 +261,7 @@ async def test_dream_checkpoints_plan_pages_before_apply_and_resumes_same_units(
             assert resume.pair_cursor == 100
             assert resume.seed == 19
             await checkpoint(complete)
-        return DreamResult([synapse], pairs_explored=102)
+        return DreamResult([synapse], pairs_explored=105)
 
     monkeypatch.setattr("surreal_memory.engine.dream.dream", fake_dream)
     with pytest.raises(ConsolidationPausedError):
@@ -252,6 +272,13 @@ async def test_dream_checkpoints_plan_pages_before_apply_and_resumes_same_units(
     manifest = json.loads(saved["pending"][0])
     assert manifest["planning"]["pair_cursor"] == 100
     assert manifest["planning"]["complete"] is False
+    proof = manifest["planning"]["activated_ids"]
+    assert proof == {
+        "format_version": 2,
+        "ids": list(partial.activated_ids),
+        "eligible_pair_ordinals": [0],
+    }
+    assert not isinstance(proof, list)  # The old loader accepts only a list.
 
     report = ConsolidationReport()
     await engine._dream(report, dry_run=False)
@@ -604,3 +631,140 @@ async def test_habit_learning_resumes_from_first_unfinished_mining_stage(
     assert report.action_events_pruned == 3
     assert report.query_patterns_learned == 5
     assert progress.strategy_state("learn_habits")["phase"] == "completed"
+
+
+@pytest.mark.parametrize("phase", ["dream_plan", "dream_apply", "dream_add"])
+@pytest.mark.asyncio
+async def test_dream_legacy_in_progress_without_proof_is_not_applied(phase: str) -> None:
+    import copy
+
+    storage = _Storage()
+    progress = _Progress()
+    manifest = {
+        "kind": "dream_manifest",
+        "synapses": [],
+        "completed": [],
+        "planning": {
+            "seed": 42,
+            "activated_ids": ["a", "b"],
+            "pair_cursor": 0,
+            "pair_receipts": [],
+            "planned_synapses": [],
+            "pairs_explored": 0,
+            "complete": False,
+        },
+    }
+    state = progress.strategy_state("dream")
+    state.update(phase=phase, pending=[json.dumps(manifest)], counters={"synapses_created": 3})
+    before = copy.deepcopy(progress.state)
+    with pytest.raises(RuntimeError):
+        await _engine(ConsolidationStrategy.DREAM, storage, progress)._dream(
+            ConsolidationReport(), dry_run=False
+        )
+    assert progress.state == before
+    assert progress.writes == []
+    assert storage.add_synapse_calls == []
+
+
+@pytest.mark.parametrize(
+    "proof",
+    [
+        {"format_version": 1, "ids": ["a", "b"], "eligible_pair_ordinals": [0]},
+        {"format_version": 2, "ids": ["a", "b"], "eligible_pair_ordinals": ["0"]},
+        {"format_version": 2, "ids": ["b", "a"], "eligible_pair_ordinals": [0]},
+        {"format_version": 2, "ids": ["a", "b"], "eligible_pair_ordinals": [0, 0]},
+        {"format_version": 2, "ids": ["a", "b"], "eligible_pair_ordinals": [1]},
+    ],
+)
+@pytest.mark.asyncio
+async def test_dream_rejects_corrupt_versioned_proof_before_writes(proof: dict) -> None:
+    import copy
+
+    storage = _Storage()
+    progress = _Progress()
+    manifest = {
+        "kind": "dream_manifest",
+        "synapses": [],
+        "completed": [],
+        "planning": {
+            "seed": 42,
+            "activated_ids": proof,
+            "pair_cursor": 0,
+            "pair_receipts": [],
+            "planned_synapses": [],
+            "pairs_explored": 0,
+            "complete": False,
+        },
+    }
+    state = progress.strategy_state("dream")
+    state.update(
+        phase="dream_plan", pending=[json.dumps(manifest)], counters={"synapses_created": 3}
+    )
+    before = copy.deepcopy(progress.state)
+    with pytest.raises(RuntimeError):
+        await _engine(ConsolidationStrategy.DREAM, storage, progress)._dream(
+            ConsolidationReport(), dry_run=False
+        )
+    assert progress.state == before
+    assert progress.writes == []
+    assert storage.add_synapse_calls == []
+
+
+@pytest.mark.parametrize("phase", ["dream_apply", "dream_add"])
+@pytest.mark.asyncio
+async def test_dream_apply_without_saved_plan_is_rejected(phase: str) -> None:
+    import copy
+
+    storage = _Storage()
+    progress = _Progress()
+    manifest = {"kind": "dream_manifest", "synapses": [], "completed": []}
+    state = progress.strategy_state("dream")
+    state.update(phase=phase, pending=[json.dumps(manifest)], counters={"synapses_created": 3})
+    before = copy.deepcopy(progress.state)
+    with pytest.raises(RuntimeError):
+        await _engine(ConsolidationStrategy.DREAM, storage, progress)._dream(
+            ConsolidationReport(), dry_run=False
+        )
+    assert progress.state == before
+    assert progress.writes == []
+    assert storage.add_synapse_calls == []
+
+
+@pytest.mark.asyncio
+async def test_dream_apply_rejects_incomplete_plan_before_writes() -> None:
+    import copy
+    from dataclasses import asdict
+
+    storage = _Storage()
+    progress = _Progress()
+    synapse = Synapse.create("a", "b", SynapseType.RELATED_TO, metadata={"_dream": True})
+    manifest = {
+        "kind": "dream_manifest",
+        "synapses": [json.dumps(asdict(synapse), default=str)],
+        "completed": [],
+        "planning": {
+            "seed": 42,
+            "activated_ids": {
+                "format_version": 2,
+                "ids": ["a", "b"],
+                "eligible_pair_ordinals": [0],
+            },
+            "pair_cursor": 0,
+            "pair_receipts": [],
+            "planned_synapses": [],
+            "pairs_explored": 0,
+            "complete": False,
+        },
+    }
+    state = progress.strategy_state("dream")
+    state.update(
+        phase="dream_apply", pending=[json.dumps(manifest)], counters={"synapses_created": 3}
+    )
+    before = copy.deepcopy(progress.state)
+    with pytest.raises(RuntimeError):
+        await _engine(ConsolidationStrategy.DREAM, storage, progress)._dream(
+            ConsolidationReport(), dry_run=False
+        )
+    assert progress.state == before
+    assert progress.writes == []
+    assert storage.add_synapse_calls == []

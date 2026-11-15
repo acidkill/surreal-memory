@@ -934,6 +934,30 @@ class NeuralStorage(ABC):
         """Return supplied neuron IDs represented in fibers, when supported."""
         raise NotImplementedError
 
+    async def get_activation_snapshot(self, *, brain_name: str = "default") -> dict[str, Any]:
+        """Optional raw-config snapshot for guarded strategy migration."""
+        raise NotImplementedError
+
+    async def set_activation_strategy(
+        self,
+        *,
+        brain_id: str,
+        expected_config: dict[str, Any],
+        from_strategy: str,
+        to_strategy: str,
+    ) -> dict[str, Any]:
+        """Optional lease-fenced strategy-only CAS; unsupported adapters must fail."""
+        raise NotImplementedError
+
+    async def repair_prune_synapse_refs_if_absent(
+        self,
+        synapse_ids: list[str],
+        *,
+        lease_owner_token: str,
+    ) -> int:
+        """Optional atomic cleanup for missing legacy pending edges under a live lease."""
+        raise NotImplementedError
+
     async def prune_synapses_if_unchanged(
         self,
         expected: list[Synapse],
