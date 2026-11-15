@@ -341,3 +341,20 @@ def test_failed_process_diagnostic_retains_cached_cgroup_peak(monkeypatch, capsy
     assert event["rss_sampled_peak_kib"] is None
     assert event["rss_sampled_peak_delta_kib"] is None
     assert event["rss_sampling_complete"] is False
+
+
+def test_legacy_repair_query_preserves_public_refs_and_storage_record_identity():
+    live_id = "123e4567-e89b-12d3-a456-426614174000"
+    sql, params = bench._legacy_repair_query(
+        "synthetic-brain", "synthetic-owner", ["missing-repair-a", "missing-repair-b", live_id]
+    )
+    assert params["sid_2"] == live_id
+    assert params["record_2"] == "123e4567_e89b_12d3_a456_426614174000"
+    assert params["sid_0"] == "missing-repair-a"
+    assert params["record_0"] == "missing_repair_a"
+    # Existence probes must address the record add_synapse actually creates.
+    stored_record_names = {"123e4567_e89b_12d3_a456_426614174000"}
+    assert params["record_2"] in stored_record_names
+    assert params["record_0"] not in stored_record_names
+    assert "type::record('synapse', $record_2)" in sql
+    assert "RETURN AFTER" in sql

@@ -296,6 +296,47 @@ def _repair_page(statements: list[dict[str, Any]]) -> dict[str, Any]:
     return pages[0]
 
 
+def _legacy_repair_query(
+    brain_id: str, owner: str, synapse_ids: list[str]
+) -> tuple[str, dict[str, Any]]:
+    """Reproduce the original per-edge repair, including storage ID normalization."""
+    from surreal_memory.storage.surrealdb._ids import _to_surreal_id
+
+    statements = [
+        "BEGIN TRANSACTION;",
+        "LET $lease = (UPDATE type::record('consolidation_lease', $lease_id) "
+        "SET sweep_fenced_at = time::now() WHERE brain_id = $brain_id "
+        "AND owner_token = $owner AND expires_at > time::now() RETURN AFTER);",
+        "IF array::len($lease) != 1 { THROW 'prune lease lost'; };",
+    ]
+    params: dict[str, Any] = {
+        "brain_id": brain_id,
+        "owner": owner,
+        "lease_id": hashlib.sha256(brain_id.encode()).hexdigest(),
+    }
+    for i, sid in enumerate(synapse_ids):
+        params[f"sid_{i}"] = sid
+        params[f"record_{i}"] = _to_surreal_id(sid)
+        statements.append(
+            "UPDATE (SELECT VALUE id FROM fiber WITH INDEX idx_fiber_synapses "  # noqa: S608
+            f"WHERE brain_id = $brain_id AND synapse_ids CONTAINS $sid_{i}) "
+            f"SET synapse_ids = array::difference(synapse_ids, [$sid_{i}]) "
+            f"WHERE brain_id = $brain_id AND synapse_ids CONTAINS $sid_{i} "
+            f"AND array::len((SELECT id FROM type::record('synapse', $record_{i}))) = 0 "
+            "RETURN AFTER;"
+        )
+    statements.extend(
+        [
+            "LET $final_lease = (UPDATE type::record('consolidation_lease', $lease_id) "
+            "SET sweep_fenced_at = time::now() WHERE brain_id = $brain_id "
+            "AND owner_token = $owner AND expires_at > time::now() RETURN AFTER);",
+            "IF array::len($final_lease) != 1 { THROW 'prune lease lost'; };",
+            "COMMIT TRANSACTION;",
+        ]
+    )
+    return "\n".join(statements), params
+
+
 async def _run_repair(
     mode: str, version: str, options: dict[str, str], pid: int, *, diagnostic_only: bool = False
 ) -> dict[str, Any]:
@@ -377,8 +418,9 @@ async def _run_repair(
         assert await storage.acquire_consolidation_lease(brain.id, owner, lease_seconds=300)
         if mode == "repair-bounded":
             select_sql = (
-                "SELECT id FROM fiber WITH INDEX idx_fiber_synapses "
-                "WHERE brain_id = $brain_id AND synapse_ids CONTAINSANY $absent LIMIT $probe_limit"
+                "SELECT id, brain_id FROM fiber WITH INDEX idx_fiber_synapses "
+                "WHERE brain_id = $brain_id AND synapse_ids CONTAINSANY $absent "
+                "ORDER BY brain_id LIMIT $probe_limit"
             )
             plan_params: dict[str, Any] = {
                 "brain_id": brain.id,
@@ -413,51 +455,15 @@ async def _run_repair(
         sampler = _RssSampler(pid)
         with sampler:
             if mode == "repair-legacy":
-                # Reproduce the former unbounded per-edge UPDATE and full-row reply.
-                from hashlib import sha256
-
-                statements = [
-                    "BEGIN TRANSACTION;",
-                    "LET $lease = (UPDATE type::record('consolidation_lease', $lease_id) "
-                    "SET sweep_fenced_at = time::now() WHERE brain_id = $brain_id "
-                    "AND owner_token = $owner AND expires_at > time::now() RETURN AFTER);",
-                    "IF array::len($lease) != 1 { THROW 'prune lease lost'; };",
-                ]
-                params: dict[str, Any] = {
-                    "brain_id": brain.id,
-                    "owner": owner,
-                    "lease_id": sha256(brain.id.encode()).hexdigest(),
-                }
-                for i, sid in enumerate(missing + [live.id]):
-                    params[f"sid_{i}"] = sid
-                    params[f"record_{i}"] = sid
-                    statements.append(
-                        "UPDATE (SELECT VALUE id FROM fiber WITH INDEX idx_fiber_synapses "  # noqa: S608
-                        f"WHERE brain_id = $brain_id AND synapse_ids CONTAINS $sid_{i}) "
-                        f"SET synapse_ids = array::difference(synapse_ids, [$sid_{i}]) "
-                        f"WHERE brain_id = $brain_id AND synapse_ids CONTAINS $sid_{i} "
-                        f"AND array::len((SELECT id FROM type::record('synapse', $record_{i}))) = 0 "
-                        "RETURN AFTER;"
-                    )
-                statements.extend(
-                    [
-                        "LET $final_lease = (UPDATE type::record('consolidation_lease', $lease_id) "
-                        "SET sweep_fenced_at = time::now() WHERE brain_id = $brain_id "
-                        "AND owner_token = $owner AND expires_at > time::now() RETURN AFTER);",
-                        "IF array::len($final_lease) != 1 { THROW 'prune lease lost'; };",
-                        "COMMIT TRANSACTION;",
-                    ]
-                )
+                sql, params = _legacy_repair_query(brain.id, owner, missing + [live.id])
                 mark(
                     "transaction_started",
                     transaction_index=1,
-                    transaction_sql_sha256=hashlib.sha256(
-                        "\n".join(statements).encode()
-                    ).hexdigest(),
+                    transaction_sql_sha256=hashlib.sha256(sql.encode()).hexdigest(),
                     inflight_response_wire_bytes=None,
                 )
                 raw, size, transport = await _wire_counted_query(
-                    storage._ensure_conn().query_raw, "\n".join(statements), params
+                    storage._ensure_conn().query_raw, sql, params
                 )
                 response_bytes.append(size)
                 response_transports.append(transport)

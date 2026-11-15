@@ -426,6 +426,30 @@ async def test_legacy_repair_pages_eight_fibers_once_with_id_only_replies(client
             assert before[0]["id"] == numeric_record_id
             assert set(before[0]["synapse_ids"]) == fiber.synapse_ids
             assert before[0]["metadata"] == fiber.metadata
+    target_brain_id = second.brain_id
+    foreign_brain = Brain.create(
+        name="synthetic-foreign-prune", brain_id="00000000-0000-0000-0000-000000000000"
+    )
+    assert foreign_brain.id < target_brain_id
+    await second.save_brain(foreign_brain)
+    foreign_fibers = []
+    second.set_brain(foreign_brain.id)
+    try:
+        for _ in range(10):
+            foreign = Fiber.create(
+                neuron_ids={edge.source_id, edge.target_id},
+                synapse_ids={edge.id, second_missing, "keep-foreign"},
+                anchor_neuron_id=edge.source_id,
+                metadata={"scope": "foreign", "synthetic_padding": "y" * 4096},
+            )
+            await second.add_fiber(foreign)
+            before_foreign = await second.get_fiber(foreign.id)
+            assert before_foreign is not None
+            assert before_foreign.synapse_ids == foreign.synapse_ids
+            assert before_foreign.metadata == foreign.metadata
+            foreign_fibers.append(foreign)
+    finally:
+        second.set_brain(target_brain_id)
     await second.delete_synapse(edge.id)
     conn, original = first._ensure_conn(), first._ensure_conn().query_raw
     page_counts = []
@@ -495,3 +519,18 @@ async def test_legacy_repair_pages_eight_fibers_once_with_id_only_replies(client
     assert len(changes) == 17
     assert {row["entity_id"] for row in changes} == {fiber.id for fiber in fibers}
     assert all(row.get("payload") is None for row in changes)
+    second.set_brain(foreign_brain.id)
+    try:
+        for foreign in foreign_fibers:
+            unchanged = await second.get_fiber(foreign.id)
+            assert unchanged is not None
+            assert unchanged.synapse_ids == foreign.synapse_ids
+            assert unchanged.metadata == foreign.metadata
+    finally:
+        second.set_brain(target_brain_id)
+    foreign_updates = await first._query(
+        "SELECT entity_id FROM change_log WHERE brain_id = $brain "
+        "AND entity_type = 'fiber' AND operation = 'update'",
+        brain=foreign_brain.id,
+    )
+    assert foreign_updates == []

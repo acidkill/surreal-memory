@@ -30,8 +30,9 @@ LET $absent = array::map(
     array::filter($candidates, |$candidate| !(type::record('synapse', $candidate.record_id) IN $present_ids)),
     |$candidate| $candidate.public_id
 );
-LET $matches = (SELECT id FROM fiber WITH INDEX idx_fiber_synapses
-    WHERE brain_id = $brain_id AND synapse_ids CONTAINSANY $absent LIMIT $probe_limit);
+LET $matches = (SELECT id, brain_id FROM fiber WITH INDEX idx_fiber_synapses
+    WHERE brain_id = $brain_id AND synapse_ids CONTAINSANY $absent
+    ORDER BY brain_id LIMIT $probe_limit);
 LET $targets = array::map(array::slice($matches, 0, $fiber_limit), |$row| $row.id);
 LET $updated = (UPDATE $targets SET synapse_ids = array::difference(synapse_ids, $absent)
     WHERE brain_id = $brain_id AND synapse_ids CONTAINSANY $absent RETURN id);
