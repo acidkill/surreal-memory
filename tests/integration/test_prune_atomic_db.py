@@ -87,8 +87,44 @@ async def prune(first, edge, policy, *, operation="op", pending=None):
     )
 
 
-async def test_atomic_delete_receipt_and_replay(clients):
+async def test_atomic_delete_receipt_and_replay(clients, monkeypatch):
     first, _, edge, policy = clients
+    # Probe the exact bound snapshot using only field-comparison booleans.
+    from surreal_memory.storage.surrealdb.prune import _PRUNE_TRANSACTION, _checked_prune_results
+
+    conn, original = first._ensure_conn(), first._ensure_conn().query_raw
+
+    async def checked_snapshot(sql, params=None, **kwargs):
+        if sql == _PRUNE_TRANSACTION:
+            probe = """
+                LET $item = $items[0];
+                LET $rows = (SELECT * FROM type::record('synapse', $item.record_id) WHERE brain_id = $brain_id);
+                LET $row = $rows[0];
+                RETURN {
+                    exists: array::len($rows) = 1,
+                    snapshot_object: type::is_object($item.snapshot),
+                    source: $row.in = type::record('neuron', $item.source_record),
+                    target: $row.out = type::record('neuron', $item.target_record),
+                    edge_type: $row.type = $item.snapshot.type,
+                    direction: $row.direction = $item.snapshot.direction,
+                    weight: $row.weight = $item.snapshot.weight,
+                    created_at: $row.created_at = $item.snapshot.created_at,
+                    created_type: type::is_datetime($item.snapshot.created_at),
+                    last_activated: ($row.last_activated ?? NULL) = ($item.snapshot.last_activated ?? NULL),
+                    last_none: ($row.last_activated ?? NULL) = (NONE ?? NULL),
+                    last_null: ($row.last_activated ?? NULL) = (NULL ?? NULL),
+                    reinforced: $row.reinforced_count = $item.snapshot.reinforced_count,
+                    metadata: $row.metadata = $item.snapshot.metadata,
+                    eligible: $item.eligible
+                };
+            """
+            results = _checked_prune_results(await original(probe, params, **kwargs))
+            flags = results[-1]["result"]
+            assert isinstance(flags, dict) and all(value is True for value in flags.values()), flags
+            monkeypatch.setattr(conn, "query_raw", original)
+        return await original(sql, params, **kwargs)
+
+    monkeypatch.setattr(conn, "query_raw", checked_snapshot)
     assert await prune(first, edge, policy) == {edge.id: "deleted"}
     assert not await first.get_synapses_by_ids([edge.id])
     # Replayed lost response returns the prior decision, not an invented missing result.
@@ -114,12 +150,18 @@ async def test_two_client_reinforcement_rejects_stale_snapshot_and_no_resurrecti
     assert await prune(first, edge, policy) == {edge.id: "changed"}
     current = (await first.get_synapses_by_ids([edge.id]))[0]
     assert current.weight == reinforced.weight
-    # A stale recall update after a real deletion must not recreate the relation.
-    await second.update_synapse(edge)
-    assert await prune(first, edge, policy, operation="delete") == {edge.id: "deleted"}
-    await second.update_synapse(reinforced)
-    await second.update_synapses_batch([reinforced])
-    assert not await first.get_synapses_by_ids([edge.id])
+    # A separate never-activated weak edge supplies the deletion control.
+    # Updating an old snapshot intentionally does not clear last_activated.
+    fresh = replace(edge, id=str(uuid4()))
+    await second.add_synapse(fresh)
+    fresh = (await first.get_synapses_by_ids([fresh.id]))[0]
+    assert await prune(first, fresh, policy, operation="delete") == {fresh.id: "deleted"}
+    stale = fresh.reinforce(delta=0.5, now=policy.reference_time)
+    await second.update_synapse(stale)
+    await second.update_synapses_batch([stale])
+    assert not await first.get_synapses_by_ids([fresh.id])
+    preserved = (await first.get_synapses_by_ids([edge.id]))[0]
+    assert preserved.weight == reinforced.weight
 
 
 @pytest.mark.parametrize(

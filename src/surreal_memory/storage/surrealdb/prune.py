@@ -29,13 +29,13 @@ FOR $item IN $items {
         LET $rows = (SELECT * FROM type::record('synapse', $item.record_id)
             WHERE brain_id = $brain_id);
         LET $row = $rows[0];
-        LET $same = array::len($rows) = 1 AND $item.snapshot != NULL
+        LET $same = array::len($rows) = 1 AND type::is_object($item.snapshot)
             AND $row.in = type::record('neuron', $item.source_record)
             AND $row.out = type::record('neuron', $item.target_record)
             AND $row.type = $item.snapshot.type AND $row.direction = $item.snapshot.direction
             AND $row.weight = $item.snapshot.weight
             AND $row.created_at = $item.snapshot.created_at
-            AND ($row.last_activated ?? NULL) = $item.snapshot.last_activated
+            AND ($row.last_activated ?? NULL) = ($item.snapshot.last_activated ?? NULL)
             AND $row.reinforced_count = $item.snapshot.reinforced_count
             AND $row.metadata = $item.snapshot.metadata;
         LET $refs = IF $same {
