@@ -486,6 +486,83 @@ async def test_engine_resumes_after_strategy_timeout_and_reports_progress(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("limits", [(0.15, 2.0), (2.0, 0.15)])
+async def test_invocation_limits_pause_and_resume_without_changing_fingerprint(monkeypatch, limits):
+    storage = FakeProgressStorage()
+    engine = ConsolidationEngine(storage)
+    original_config = engine._config
+
+    async def strategy(item, report, reference_time, dry_run):
+        if engine._strategy_resume_cursor() is None:
+            await engine._checkpoint_progress("synapse_pending", cursor="synapse:10")
+            await asyncio.sleep(1)
+
+    monkeypatch.setattr(engine, "_run_strategy", strategy)
+    first = await engine.run(
+        [ConsolidationStrategy.PRUNE],
+        strategy_timeout_seconds=limits[0],
+        total_timeout_seconds=limits[1],
+    )
+    assert first.extra["consolidation_status"] == "paused"
+    assert first.extra["timed_out_strategies"] == ["prune"]
+    saved = deepcopy(storage.progress)
+    assert engine._config == original_config
+    second = await engine.run(
+        [ConsolidationStrategy.PRUNE],
+        resume_run_id=saved["run_id"],
+        strategy_timeout_seconds=1800,
+        total_timeout_seconds=3000,
+    )
+    assert second.extra["consolidation_status"] == "completed"
+    assert storage.progress["run_id"] == saved["run_id"]
+    assert storage.progress["options_fingerprint"] == saved["options_fingerprint"]
+    assert storage.progress["reference_time"] == saved["reference_time"]
+    assert engine._config == original_config
+    assert storage.lease_owner is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit", [0, -1, float("inf"), float("nan")])
+async def test_invalid_invocation_limits_do_not_acquire_lease(limit):
+    storage = FakeProgressStorage()
+    with pytest.raises(ValueError, match="finite and positive"):
+        await ConsolidationEngine(storage).run(strategy_timeout_seconds=limit)
+    assert storage.lease_owner is None and storage.progress is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["exception", "cancel"])
+async def test_invocation_limits_restore_config_after_failure(monkeypatch, failure):
+    storage = FakeProgressStorage()
+    engine = ConsolidationEngine(storage)
+    original = engine._config
+
+    async def strategy(*args):
+        assert engine._config.strategy_timeout_seconds == 1800
+        if failure == "cancel":
+            raise asyncio.CancelledError
+        raise RuntimeError("synthetic failure")
+
+    monkeypatch.setattr(engine, "_run_strategy", strategy)
+    if failure == "cancel":
+        with pytest.raises(asyncio.CancelledError):
+            await engine.run(
+                [ConsolidationStrategy.PRUNE],
+                strategy_timeout_seconds=1800,
+                total_timeout_seconds=3000,
+            )
+    else:
+        report = await engine.run(
+            [ConsolidationStrategy.PRUNE],
+            strategy_timeout_seconds=1800,
+            total_timeout_seconds=3000,
+        )
+        assert report.extra["consolidation_status"] == "failed"
+    assert engine._config == original
+    assert storage.lease_owner is None
+
+
+@pytest.mark.asyncio
 async def test_engine_failure_retries_last_committed_phase_without_rescanning(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -145,10 +145,14 @@ def test_explicit_resume_forwards_saved_strategies_for_engine_checkpoint_skip(
         ) as run_with_delta,
     ):
         get_storage.return_value.get_consolidation_progress = AsyncMock(return_value=state)
-        tools.consolidate(resume=True)
+        tools.consolidate(resume=True, strategy_timeout=1800, total_timeout=3000)
 
     get_storage.return_value.get_consolidation_progress.assert_awaited_once_with("test-brain")
     kwargs = run_with_delta.await_args.kwargs
+    assert kwargs["strategy_timeout_seconds"] == 1800
+    assert kwargs["total_timeout_seconds"] == 3000
+    assert kwargs["config"].strategy_timeout_seconds == 600
+    assert kwargs["config"].total_timeout_seconds == 3600
     assert [strategy.value for strategy in kwargs["strategies"]] == [
         "prune",
         "mature",

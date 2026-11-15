@@ -105,6 +105,37 @@ def test_cli_errors_block_even_with_completed_checkpoint(output):
         hourly.terminal(checkpoint(run_id="new"), 0, checkpoint(), False, output)
 
 
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "ERROR database gone",
+        "Traceback",
+        "lease_lost",
+        "failed strategy",
+        "request timed out",
+        "TimeoutError",
+        "OOMKilled",
+        "  Stages timed out: prune, error",
+        "  Stages timed out: all",
+        "  Stages timed out: prune",
+        "  Stages timed out: mature",
+    ],
+)
+def test_strategy_timeout_report_never_masks_independent_error(extra):
+    from surreal_memory.engine.consolidation import ConsolidationReport
+
+    report = ConsolidationReport()
+    report.extra.update(consolidation_status="paused", timed_out_strategies=["prune"])
+    with pytest.raises(hourly.BlockedError):
+        hourly.terminal(
+            checkpoint("paused", "new"),
+            1,
+            checkpoint(),
+            False,
+            report.summary() + "\n" + extra,
+        )
+
+
 def test_resume_requires_same_run_and_fingerprint():
     with pytest.raises(hourly.BlockedError):
         hourly.terminal(checkpoint(run_id="other"), 0, checkpoint(), True, "")
@@ -934,7 +965,17 @@ async def test_operator_recovery_runner_records_actual_terminal_exit(status, rc,
             policy_sha256=hourly.checkpoint_hash({"memory_limit_bytes": 16 * hourly.GIB}),
         )
         assert await hourly.run(api, storage, safety) == 0
-    assert popen.call_args.args[0] == ["smem", "consolidate", "--brain", "default", "--resume"]
+    assert popen.call_args.args[0] == [
+        "smem",
+        "consolidate",
+        "--brain",
+        "default",
+        "--resume",
+        "--strategy-timeout",
+        "1800",
+        "--total-timeout",
+        "3000",
+    ]
     terminal_state = api.cas.call_args.args[1]
     assert terminal_state["phase"] == "terminal"
     assert terminal_state["cli_rc"] == rc
@@ -1626,7 +1667,17 @@ async def test_failed_resume_real_session_startup_protocol(tmp_path, capsys, sta
 
     def popen(command, **kwargs):
         nonlocal child
-        assert command == ["smem", "consolidate", "--brain", "default", "--resume"]
+        assert command == [
+            "smem",
+            "consolidate",
+            "--brain",
+            "default",
+            "--resume",
+            "--strategy-timeout",
+            "1800",
+            "--total-timeout",
+            "3000",
+        ]
         assert storage.lease_owner is None and storage.progress == before
         child = real_popen(
             [sys.executable, "-u", "-c", payload, str(ready), str(exit_file)], **kwargs
@@ -1865,7 +1916,11 @@ async def test_scheduled_cycle_uses_real_cli_timeout_report(monkeypatch, capsys,
 
         def __init__(self, command, stdout, **kwargs):
             commands.append(command)
-            tools.consolidate(resume="--resume" in command)
+            tools.consolidate(
+                resume="--resume" in command,
+                strategy_timeout=float(command[command.index("--strategy-timeout") + 1]),
+                total_timeout=float(command[command.index("--total-timeout") + 1]),
+            )
 
             async def cli():
                 with redirect_stdout(stdout):
@@ -1930,7 +1985,7 @@ async def test_scheduled_cycle_uses_real_cli_timeout_report(monkeypatch, capsys,
                 assert await hourly.run(api, storage, safety) == 2
                 assert len(commands) == 1
                 return
-        assert result == 0
+        assert result == 0, final
         assert final["phase"] == "terminal"
         assert final["cli_rc"] == (1 if attempt in (1, 3) else 0)
         run_ids.append(storage.progress["run_id"])

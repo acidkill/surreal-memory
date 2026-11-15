@@ -12,6 +12,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
@@ -988,8 +989,13 @@ class ConsolidationEngine:
         reference_time: datetime | None = None,
         on_progress: Callable[[str], None] | None = None,
         resume_run_id: str | None = None,
+        strategy_timeout_seconds: float | None = None,
+        total_timeout_seconds: float | None = None,
     ) -> ConsolidationReport:
         """Run consolidation, resuming a compatible durable run when available."""
+        for limit in (strategy_timeout_seconds, total_timeout_seconds):
+            if limit is not None and (not math.isfinite(limit) or limit <= 0):
+                raise ValueError("execution timeouts must be finite and positive")
         self._semantic_source_rebased = False
         if dry_run and resume_run_id is not None:
             raise ValueError("explicit resume cannot be combined with dry_run")
@@ -1024,8 +1030,16 @@ class ConsolidationEngine:
             for strategy in sorted(tier & requested, key=lambda item: item.value)
         ]
 
-        strategy_timeout = self._config.strategy_timeout_seconds
-        total_timeout = self._config.total_timeout_seconds
+        strategy_timeout = (
+            self._config.strategy_timeout_seconds
+            if strategy_timeout_seconds is None
+            else strategy_timeout_seconds
+        )
+        total_timeout = (
+            self._config.total_timeout_seconds
+            if total_timeout_seconds is None
+            else total_timeout_seconds
+        )
         timed_out_strategies: list[str] = []
         paused_strategies: list[str] = []
         failed_strategies: list[str] = []
@@ -1111,6 +1125,13 @@ class ConsolidationEngine:
                 )
                 progress_messages.append(resume_message)
 
+        # Execution limits bound an invocation, without changing saved work's identity.
+        saved_config = self._config
+        self._config = dc_replace(
+            saved_config,
+            strategy_timeout_seconds=strategy_timeout,
+            total_timeout_seconds=total_timeout,
+        )
         self._total_deadline = time.perf_counter() + total_timeout
         paused = False
         lease_lost = False
@@ -1362,6 +1383,7 @@ class ConsolidationEngine:
                     logger.exception("Failed to pause consolidation after task cancellation")
             raise
         finally:
+            self._config = saved_config
             self._active_strategy = None
             self._strategy_deadline = None
             self._total_deadline = None

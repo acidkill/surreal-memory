@@ -605,9 +605,8 @@ def native_handoff_bridge_seed(
     if not isinstance(previous_log, str) or len(previous_log.encode()) > 128 * 1024:
         raise BlockedError("native handoff bridge terminal log missing or oversized")
     markers = [line for line in previous_log.splitlines() if line.startswith(MARKER)]
-    if markers != [MARKER + canonical(previous)] or re.search(
-        r"(?im)(traceback|\berror\b|\bfailed\b|lease.lost|timed.out)",
-        "\n".join(line for line in previous_log.splitlines() if not line.startswith(MARKER)),
+    if markers != [MARKER + canonical(previous)] or cli_log_has_errors(
+        "\n".join(line for line in previous_log.splitlines() if not line.startswith(MARKER)), cp
     ):
         raise BlockedError("native handoff bridge terminal log is not verified")
     approved, blocked, finished = (
@@ -983,6 +982,34 @@ def select_command(receipt: dict[str, Any], cp: dict[str, Any], log: str | None)
     return command
 
 
+def cli_log_has_errors(output: str, cp: dict[str, Any]) -> bool:
+    """Allow the CLI's bounded-stage report only for a verified cooperative pause."""
+    from surreal_memory.engine.consolidation import ConsolidationStrategy
+
+    incomplete = set(cp.get("requested_strategies", [])) - set(cp.get("completed_strategies", []))
+    known = {item.value for item in ConsolidationStrategy if item is not ConsolidationStrategy.ALL}
+    lines = output.splitlines()
+    if (
+        cp.get("status") == "paused"
+        and lines.count("  Consolidation status: paused") == 1
+        and sum(line.startswith("  Stages timed out: ") for line in lines) == 1
+    ):
+        retained = []
+        for line in lines:
+            match = re.fullmatch(r"  Stages timed out: ([a-z_]+(?:, [a-z_]+)*)", line)
+            if match and set(match[1].split(", ")).issubset(incomplete & known):
+                continue
+            retained.append(line)
+        output = "\n".join(retained)
+    return (
+        re.search(
+            r"(?im)(traceback|\berror\b|\bfailed\b|lease.lost|timed.out|TimeoutError|OOMKilled)",
+            output,
+        )
+        is not None
+    )
+
+
 def terminal(
     cp: dict[str, Any], rc: int, before: dict[str, Any], resume: bool, output: str
 ) -> None:
@@ -995,7 +1022,7 @@ def terminal(
         raise BlockedError("ordinary command did not create a fresh run")
     if cp.get("options_fingerprint") != before.get("options_fingerprint"):
         raise BlockedError("options changed or auto-tier ambiguity")
-    if re.search(r"(?im)(traceback|\berror\b|\bfailed\b|lease.lost|timed.out)", output):
+    if cli_log_has_errors(output, cp):
         raise BlockedError("CLI log contains error evidence")
 
 

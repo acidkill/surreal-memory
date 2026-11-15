@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed hourly supervisor; never edits consolidation checkpoints or budgets."""
+"""Fail-closed hourly supervisor with bounded, resumable CLI invocations."""
 
 from __future__ import annotations
 
@@ -599,6 +599,8 @@ async def run(api: Kubernetes, storage: Any, safety: Safety) -> int:
             print("HOURLY_OBSERVATION " + canonical(observed), flush=True)
             return 0
         command = select_command(receipt, cp, decision_log)
+        # Leave 500s below the 3500s Job deadline for setup, health and shutdown.
+        command.extend(["--strategy-timeout", "1800", "--total-timeout", "3000"])
         safety.sample(initial=True)
         runtime_resume = receipt.get("source") == "operator_failed_runtime_resume"
         if runtime_resume:
