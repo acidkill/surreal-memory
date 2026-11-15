@@ -271,9 +271,10 @@ jobs:
               :
             else
               rc=$?
+              if ! docker logs surrealdb-ci; then echo "Benchmark container logs unavailable"; fi
               oom="$(docker inspect --format='{{.State.OOMKilled}}' surrealdb-ci)"
               python -c 'import json,sys; print(json.dumps({"mode":sys.argv[1], "benchmark_exit":int(sys.argv[2]), "container_oom_killed":sys.argv[3] == "true"}))' "$mode" "$rc" "$oom" | tee -a "$report"
-              if [ "$mode" != repair-legacy ] || [ "$oom" != true ]; then failed=1; fi
+              if [ "$mode" != repair-legacy ] || [ "$oom" != true ] || ! grep -Fq '"measurement_started": "repair-legacy"' "$report"; then failed=1; fi
             fi
             docker rm -f surrealdb-ci >/dev/null
           done
@@ -295,7 +296,12 @@ jobs:
 
       - name: SurrealDB logs (on failure)
         if: failure()
-        run: docker logs surrealdb-ci
+        run: |
+          if docker inspect surrealdb-ci >/dev/null 2>&1; then
+            if ! docker logs surrealdb-ci; then echo "SurrealDB container logs unavailable"; fi
+          else
+            echo "SurrealDB container already removed; benchmark failure logs were captured before cleanup."
+          fi
 
   build:
     name: Build Package

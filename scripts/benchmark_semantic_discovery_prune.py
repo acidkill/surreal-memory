@@ -106,42 +106,70 @@ class _RssSampler:
     def __init__(self, pid: int) -> None:
         self.pid = pid
         self.samples_kib: list[int] = []
+        self.sample_error: Exception | None = None
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._sample, daemon=True)
 
     def _sample(self) -> None:
-        while not self._stop.is_set():
-            self.samples_kib.append(_rss_kib(self.pid))
-            self._stop.wait(0.01)
+        try:
+            while not self._stop.is_set():
+                self.samples_kib.append(_rss_kib(self.pid))
+                self._stop.wait(0.01)
+        except Exception as exc:
+            self.sample_error = exc
 
     def __enter__(self) -> _RssSampler:
         self.samples_kib.append(_rss_kib(self.pid))
         self._thread.start()
         return self
 
-    def __exit__(self, *_: object) -> None:
+    def __exit__(self, exc_type: object, *_: object) -> None:
         self._stop.set()
         self._thread.join()
+        if self.sample_error is not None:
+            print(
+                json.dumps(
+                    {
+                        "benchmark_failure": "RSS sampler process unavailable",
+                        "pid": self.pid,
+                        "error_type": type(self.sample_error).__name__,
+                    }
+                ),
+                file=sys.stderr,
+                flush=True,
+            )
+            if exc_type is None:
+                raise RuntimeError(
+                    "RSS sampling failed; peak cannot be confirmed"
+                ) from self.sample_error
 
 
 async def _wire_counted_query(
     query_raw: Any, sql: str, params: Any, **kwargs: Any
-) -> tuple[Any, int]:
-    """Count the HTTP CBOR response bytes before the SDK decodes the reply."""
-    from surrealdb.connections import async_http
+) -> tuple[Any, int, str]:
+    """Count actual CBOR response bytes at the SDK HTTP or WebSocket decoder."""
+    from surrealdb.connections import async_http, async_ws
 
-    decode = async_http.decode
-    sizes: list[int] = []
+    observed: list[tuple[str, int]] = []
+    http_decode, ws_decode = async_http.decode, async_ws.decode
 
-    def capture(raw: bytes) -> Any:
-        sizes.append(len(raw))
-        return decode(raw)
+    def capture_http(raw: bytes) -> Any:
+        observed.append(("http", len(raw)))
+        return http_decode(raw)
 
-    with patch.object(async_http, "decode", side_effect=capture):
+    def capture_ws(raw: bytes) -> Any:
+        observed.append(("websocket", len(raw)))
+        return ws_decode(raw)
+
+    with (
+        patch.object(async_http, "decode", side_effect=capture_http),
+        patch.object(async_ws, "decode", side_effect=capture_ws),
+    ):
         result = await query_raw(sql, params, **kwargs)
-    if len(sizes) != 1:
-        raise RuntimeError("could not prove one HTTP CBOR response for transaction")
-    return result, sizes[0]
+    if len(observed) != 1:
+        raise RuntimeError("could not prove one CBOR response for transaction")
+    transport, size = observed[0]
+    return result, size, transport
 
 
 def _repair_scan_evidence(plan: Any) -> dict[str, Any]:
@@ -244,8 +272,13 @@ async def _run_repair(mode: str, version: str, options: dict[str, str], pid: int
         process_start = _start_ticks(pid)
         baseline = _rss_kib(pid)
         _reset_hwm(pid)
+        print(
+            json.dumps({"measurement_started": mode, "db_version": version}, sort_keys=True),
+            flush=True,
+        )
         transaction_sizes: list[int] = []
         response_bytes: list[int] = []
+        response_transports: list[str] = []
         response_shapes: list[dict[str, Any]] = []
         with _RssSampler(pid) as sampler:
             if mode == "repair-legacy":
@@ -284,10 +317,11 @@ async def _run_repair(mode: str, version: str, options: dict[str, str], pid: int
                         "COMMIT TRANSACTION;",
                     ]
                 )
-                raw, size = await _wire_counted_query(
+                raw, size, transport = await _wire_counted_query(
                     storage._ensure_conn().query_raw, "\n".join(statements), params
                 )
                 response_bytes.append(size)
+                response_transports.append(transport)
                 results = _checked_prune_results(raw)
                 rows = [
                     row
@@ -307,8 +341,11 @@ async def _run_repair(mode: str, version: str, options: dict[str, str], pid: int
                 async def capture(sql: str, params: Any = None, **kwargs: Any) -> Any:
                     if "-- bounded legacy prune repair" not in sql:
                         return await original_query_raw(sql, params, **kwargs)
-                    raw, size = await _wire_counted_query(original_query_raw, sql, params, **kwargs)
+                    raw, size, transport = await _wire_counted_query(
+                        original_query_raw, sql, params, **kwargs
+                    )
                     response_bytes.append(size)
+                    response_transports.append(transport)
                     if "-- bounded legacy prune repair" in sql:
                         statements = _checked_prune_results(raw)
                         page = _repair_page(statements)
@@ -354,7 +391,8 @@ async def _run_repair(mode: str, version: str, options: dict[str, str], pid: int
             "transaction_rows_returned": sum(transaction_sizes),
             "response_shapes": response_shapes,
             "response_wire_bytes": response_bytes,
-            "response_wire_format": "HTTP CBOR body before SDK decode",
+            "response_wire_format": "CBOR message bytes before SDK decode",
+            "response_wire_transports": response_transports,
             "lookup_plan": json.dumps(plan, default=str),
             "lookup_plan_scope": "EXPLAIN FULL for initial selector before repair; physical scope not assumed",
             "logical_probe_limit": 9 if mode == "repair-bounded" else None,
