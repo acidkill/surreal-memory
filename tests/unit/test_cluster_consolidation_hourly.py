@@ -136,6 +136,28 @@ def test_strategy_timeout_report_never_masks_independent_error(extra):
         )
 
 
+@pytest.mark.parametrize(
+    "status,completed,stages",
+    [
+        ("paused", [], ["prune", "prune"]),
+        ("paused", ["prune"], ["prune"]),
+        ("completed", ["prune"], ["prune"]),
+        ("paused", [], ["unknown"]),
+    ],
+)
+def test_timeout_report_must_match_unfinished_checkpoint_stages(status, completed, stages):
+    from surreal_memory.engine.consolidation import ConsolidationReport
+
+    cp = checkpoint(status, "new")
+    cp["completed_strategies"] = completed
+    report = ConsolidationReport()
+    report.extra.update(consolidation_status=status, timed_out_strategies=stages)
+    with pytest.raises(hourly.BlockedError):
+        hourly.terminal(
+            cp, 0 if status == "completed" else 1, checkpoint(), False, report.summary()
+        )
+
+
 def test_resume_requires_same_run_and_fingerprint():
     with pytest.raises(hourly.BlockedError):
         hourly.terminal(checkpoint(run_id="other"), 0, checkpoint(), True, "")

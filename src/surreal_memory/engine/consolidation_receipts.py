@@ -997,8 +997,10 @@ def cli_log_has_errors(output: str, cp: dict[str, Any]) -> bool:
         retained = []
         for line in lines:
             match = re.fullmatch(r"  Stages timed out: ([a-z_]+(?:, [a-z_]+)*)", line)
-            if match and set(match[1].split(", ")).issubset(incomplete & known):
-                continue
+            if match:
+                stages = match[1].split(", ")
+                if len(stages) == len(set(stages)) and set(stages).issubset(incomplete & known):
+                    continue
             retained.append(line)
         output = "\n".join(retained)
     return (
