@@ -16,6 +16,9 @@ if TYPE_CHECKING:
 
 PruneOutcome = Literal["deleted", "protected", "changed", "missing"]
 _REPAIR_FIBERS_PER_TRANSACTION = 8
+_PRUNE_REPAIR_SELECTOR = """SELECT id, brain_id FROM fiber WITH INDEX idx_fiber_synapses
+    WHERE brain_id = $brain_id AND synapse_ids CONTAINS $probe_sid
+    ORDER BY brain_id LIMIT 9"""
 _PRUNE_REPAIR_TRANSACTION = """
 -- bounded legacy prune repair
 BEGIN TRANSACTION;
@@ -30,20 +33,20 @@ LET $absent = array::map(
     array::filter($candidates, |$candidate| !(type::record('synapse', $candidate.record_id) IN $present_ids)),
     |$candidate| $candidate.public_id
 );
-LET $matches = (SELECT id, brain_id FROM fiber WITH INDEX idx_fiber_synapses
-    WHERE brain_id = $brain_id AND synapse_ids CONTAINSANY $absent
-    ORDER BY brain_id LIMIT $probe_limit);
+LET $probe_absent = $probe_sid IN $absent;
+LET $matches = (__PRUNE_REPAIR_SELECTOR__);
 LET $targets = array::map(array::slice($matches, 0, $fiber_limit), |$row| $row.id);
 LET $updated = (UPDATE $targets SET synapse_ids = array::difference(synapse_ids, $absent)
-    WHERE brain_id = $brain_id AND synapse_ids CONTAINSANY $absent RETURN id);
+    WHERE brain_id = $brain_id AND $probe_absent
+      AND synapse_ids CONTAINSANY $absent RETURN id);
 LET $final_lease = (UPDATE type::record('consolidation_lease', $lease_id)
     SET sweep_fenced_at = time::now()
     WHERE brain_id = $brain_id AND owner_token = $owner
       AND expires_at > time::now() RETURN AFTER);
 IF array::len($final_lease) != 1 { THROW 'prune lease lost'; };
-SELECT * FROM [{updated_ids: array::map($updated, |$row| $row.id), has_more: array::len($matches) > $fiber_limit}];
+SELECT * FROM [{updated_ids: array::map($updated, |$row| $row.id), has_more: $probe_absent AND array::len($matches) > $fiber_limit}];
 COMMIT TRANSACTION;
-"""
+""".replace("__PRUNE_REPAIR_SELECTOR__", _PRUNE_REPAIR_SELECTOR)
 
 # Each transaction reads its own coherent protection snapshot. Independently
 # overlapping fiber/pin writes may linearize later; same-edge writes conflict.
@@ -219,7 +222,7 @@ class SurrealDBPruneMixin:
         lease_owner_token: str,
         budget_check: Callable[[], Awaitable[None]] | None = None,
     ) -> int:
-        """Repair at most eight fibers per transaction, once per missing-ID group."""
+        """Probe every candidate with scalar scans; remove absent group refs together."""
         if not lease_owner_token:
             raise ValueError("prune repair requires a lease owner")
         unique_ids = list(dict.fromkeys(synapse_ids))
@@ -230,7 +233,6 @@ class SurrealDBPruneMixin:
                 "owner": lease_owner_token,
                 "lease_id": sha256(self._get_brain_id().encode()).hexdigest(),
                 "fiber_limit": _REPAIR_FIBERS_PER_TRANSACTION,
-                "probe_limit": _REPAIR_FIBERS_PER_TRANSACTION + 1,
             }
             candidates = []
             targets = []
@@ -242,40 +244,46 @@ class SurrealDBPruneMixin:
             sql = _PRUNE_REPAIR_TRANSACTION.replace(
                 "__PRUNE_RECORDS__", "[" + ", ".join(targets) + "]"
             )
-            while True:
-                if budget_check is not None:
-                    await budget_check()
-                await self._ensure_conn_on_current_loop()
-                results = _checked_prune_results(await self._ensure_conn().query_raw(sql, params))
-                pages = [
-                    row
-                    for statement in results
-                    for row in (
-                        statement["result"] if isinstance(statement.get("result"), list) else []
+            for candidate in candidates:
+                params["probe_sid"] = candidate["public_id"]
+                while True:
+                    if budget_check is not None:
+                        await budget_check()
+                    await self._ensure_conn_on_current_loop()
+                    results = _checked_prune_results(
+                        await self._ensure_conn().query_raw(sql, params)
                     )
-                    if isinstance(row, dict) and set(row) == {"updated_ids", "has_more"}
-                ]
-                if len(pages) != 1:
-                    raise RuntimeError("prune repair page response is unconfirmed")
-                page = pages[0]
-                updated_ids = page["updated_ids"]
-                if (
-                    not isinstance(updated_ids, list)
-                    or len(updated_ids) > _REPAIR_FIBERS_PER_TRANSACTION
-                    or type(page["has_more"]) is not bool
-                    or any(not str(rid).startswith("fiber:") for rid in updated_ids)
-                ):
-                    raise RuntimeError("prune repair page response is invalid")
-                public_ids = [_to_public_id(_record_id_part(str(rid))) for rid in updated_ids]
-                if len(set(public_ids)) != len(public_ids) or (page["has_more"] and not public_ids):
-                    raise RuntimeError("prune repair page made no bounded progress")
-                # Fiber updates already have a null journal payload; only IDs are needed.
-                await self._record_changes_bulk(
-                    "fiber", "update", [SimpleNamespace(id=fid) for fid in public_ids]
-                )
-                count += len(public_ids)
-                if not page["has_more"]:
-                    break
+                    pages = [
+                        row
+                        for statement in results
+                        for row in (
+                            statement["result"] if isinstance(statement.get("result"), list) else []
+                        )
+                        if isinstance(row, dict) and set(row) == {"updated_ids", "has_more"}
+                    ]
+                    if len(pages) != 1:
+                        raise RuntimeError("prune repair page response is unconfirmed")
+                    page = pages[0]
+                    updated_ids = page["updated_ids"]
+                    if (
+                        not isinstance(updated_ids, list)
+                        or len(updated_ids) > _REPAIR_FIBERS_PER_TRANSACTION
+                        or type(page["has_more"]) is not bool
+                        or any(not str(rid).startswith("fiber:") for rid in updated_ids)
+                    ):
+                        raise RuntimeError("prune repair page response is invalid")
+                    public_ids = [_to_public_id(_record_id_part(str(rid))) for rid in updated_ids]
+                    if len(set(public_ids)) != len(public_ids) or (
+                        page["has_more"] and not public_ids
+                    ):
+                        raise RuntimeError("prune repair page made no bounded progress")
+                    # Fiber updates already have a null journal payload; only IDs are needed.
+                    await self._record_changes_bulk(
+                        "fiber", "update", [SimpleNamespace(id=fid) for fid in public_ids]
+                    )
+                    count += len(public_ids)
+                    if not page["has_more"]:
+                        break
         return count
 
     async def prune_synapses_if_unchanged(

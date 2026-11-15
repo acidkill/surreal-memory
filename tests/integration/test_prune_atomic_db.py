@@ -397,7 +397,11 @@ async def test_real_conflict_rereads_reinforced_edge_and_completes_or_pauses(cli
 async def test_legacy_repair_pages_eight_fibers_once_with_id_only_replies(clients, monkeypatch):
     from surrealdb import RecordID
 
-    from surreal_memory.storage.surrealdb.prune import _checked_prune_results
+    from scripts.benchmark_semantic_discovery_prune import _repair_scan_evidence
+    from surreal_memory.storage.surrealdb.prune import (
+        _PRUNE_REPAIR_SELECTOR,
+        _checked_prune_results,
+    )
 
     first, second, edge, _ = clients
     owner = "owner"
@@ -407,7 +411,7 @@ async def test_legacy_repair_pages_eight_fibers_once_with_id_only_replies(client
     for index in range(17):
         fiber = Fiber.create(
             neuron_ids={edge.source_id, edge.target_id},
-            synapse_ids={edge.id, second_missing, "keep-synthetic"},
+            synapse_ids={second_missing, "keep-synthetic"} | ({edge.id} if index < 16 else set()),
             anchor_neuron_id=edge.source_id,
             metadata={"synthetic_padding": "x" * 4096},
             fiber_id="1234567890" if index == 0 else None,
@@ -450,6 +454,11 @@ async def test_legacy_repair_pages_eight_fibers_once_with_id_only_replies(client
             foreign_fibers.append(foreign)
     finally:
         second.set_brain(target_brain_id)
+    plan = await first._query_response(
+        _PRUNE_REPAIR_SELECTOR + " EXPLAIN FULL", brain_id=first.brain_id, probe_sid=edge.id
+    )
+    evidence = _repair_scan_evidence(plan)
+    assert evidence["indexed_scan_output_bound"], json.dumps(evidence, default=str)
     await second.delete_synapse(edge.id)
     conn, original = first._ensure_conn(), first._ensure_conn().query_raw
     page_counts = []
@@ -496,7 +505,7 @@ async def test_legacy_repair_pages_eight_fibers_once_with_id_only_replies(client
         )
         == 0
     )
-    assert page_counts == [8, 8, 1, 0]
+    assert page_counts == [8, 8, 1, 0, 0]
     for index, fiber in enumerate(fibers):
         if index == 0:
             after = await first._query(

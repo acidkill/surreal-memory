@@ -10,6 +10,7 @@ import os
 import sys
 import threading
 import uuid
+from collections.abc import Callable
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -337,13 +338,39 @@ def _legacy_repair_query(
     return "\n".join(statements), params
 
 
+async def _verify_repair_fibers(
+    storage: Any,
+    fiber_ids: list[Any],
+    brain_id: str,
+    expected_refs: set[str],
+    padding: str,
+    mark: Callable[..., None],
+) -> None:
+    """Verify every synthetic row without materializing all fat fibers together."""
+    for index, record in enumerate(fiber_ids):
+        mark("verification_fiber_started", verification_index=index)
+        rows = await storage._query(
+            "SELECT id, synapse_ids, metadata FROM $record WHERE brain_id = $brain_id",
+            record=record,
+            brain_id=brain_id,
+        )
+        assert len(rows) == 1
+        assert rows[0]["id"] == record
+        assert set(rows[0]["synapse_ids"]) == expected_refs
+        assert rows[0]["metadata"] == {"padding": padding}
+        mark("verification_fiber_completed", verification_index=index)
+
+
 async def _run_repair(
     mode: str, version: str, options: dict[str, str], pid: int, *, diagnostic_only: bool = False
 ) -> dict[str, Any]:
     """Compare full-row legacy repair with the bounded real storage method."""
     from surrealdb import RecordID
 
-    from surreal_memory.storage.surrealdb.prune import _checked_prune_results
+    from surreal_memory.storage.surrealdb.prune import (
+        _PRUNE_REPAIR_SELECTOR,
+        _checked_prune_results,
+    )
     from surreal_memory.storage.surrealdb.store import SurrealDBStorage
 
     storage = SurrealDBStorage(**options, database=f"repair_{uuid.uuid4().hex[:10]}")
@@ -396,6 +423,7 @@ async def _run_repair(
         expected = set(unrelated) | {live.id}
         refs = unrelated + missing + [live.id]
         fiber_count = 24
+        fiber_ids = []
         for start in range(0, fiber_count, 4):
             rows = [
                 {
@@ -408,6 +436,7 @@ async def _run_repair(
                 }
                 for i in range(start, min(start + 4, fiber_count))
             ]
+            fiber_ids.extend(row["id"] for row in rows)
             mark("fixture_seed_started", seed_batch_start=start, seed_batch_rows=len(rows))
             await storage._query("INSERT INTO fiber $rows RETURN NONE", rows=rows)
             mark(
@@ -417,15 +446,10 @@ async def _run_repair(
             )
         assert await storage.acquire_consolidation_lease(brain.id, owner, lease_seconds=300)
         if mode == "repair-bounded":
-            select_sql = (
-                "SELECT id, brain_id FROM fiber WITH INDEX idx_fiber_synapses "
-                "WHERE brain_id = $brain_id AND synapse_ids CONTAINSANY $absent "
-                "ORDER BY brain_id LIMIT $probe_limit"
-            )
+            select_sql = _PRUNE_REPAIR_SELECTOR
             plan_params: dict[str, Any] = {
                 "brain_id": brain.id,
-                "absent": missing,
-                "probe_limit": 9,
+                "probe_sid": missing[0],
             }
         else:
             select_sql = (
@@ -526,23 +550,36 @@ async def _run_repair(
                     )
                 finally:
                     connection.query_raw = original_query_raw
-                assert transaction_sizes == [8, 8, 8]
-                assert [page["has_more"] for page in response_shapes] == [True, True, False]
+                assert transaction_sizes == [8, 8, 8, 0, 0]
+                assert [page["has_more"] for page in response_shapes] == [
+                    True,
+                    True,
+                    False,
+                    False,
+                    False,
+                ]
                 assert updated == fiber_count
         if mode == "repair-legacy":
             assert updated == fiber_count * len(missing)
         assert _start_ticks(pid) == process_start, "SurrealDB process changed during repair"
         sample_peak = max(sampler.samples_kib)
         kernel_hwm = _hwm_kib(pid)
-        mark("measurement_completed", measurement_complete=True)
-        rows = await storage._query(
-            "SELECT synapse_ids, metadata FROM fiber WHERE brain_id = $brain_id", brain_id=brain.id
+        mark(
+            "measurement_completed",
+            measurement_complete=True,
+            repair_rss_sampled_peak_kib=sample_peak,
+            repair_rss_kernel_hwm_kib=kernel_hwm,
         )
-        assert len(rows) == fiber_count
-        assert all(set(row["synapse_ids"]) == expected for row in rows)
-        assert all(row["metadata"]["padding"] == "x" * (128 * 1024) for row in rows)
+        assert len(fiber_ids) == fiber_count
+        await _verify_repair_fibers(
+            storage, fiber_ids, brain.id, expected, "x" * (128 * 1024), mark
+        )
+        mark("verification_synapse_started")
         assert await storage.get_synapses_by_ids([live.id])
+        mark("verification_completed", verified_fibers=len(fiber_ids))
+        mark("lease_release_started")
         await storage.release_consolidation_lease(brain.id, owner)
+        mark("lease_release_completed")
         return {
             "mode": mode,
             "db_version": version,
@@ -575,8 +612,8 @@ async def _run_repair(
     except BaseException as exc:
         mark(
             None,
-            measurement_failed=True,
-            measurement_complete=False,
+            benchmark_failed=True,
+            measurement_failed=state.get("measurement_complete") is not True,
             failure_error_type=type(exc).__name__,
         )
         raise

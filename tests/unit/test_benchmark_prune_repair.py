@@ -358,3 +358,110 @@ def test_legacy_repair_query_preserves_public_refs_and_storage_record_identity()
     assert params["record_0"] not in stored_record_names
     assert "type::record('synapse', $record_2)" in sql
     assert "RETURN AFTER" in sql
+
+
+@pytest.mark.asyncio
+async def test_repair_verification_reads_each_exact_fixture_id_with_stage_markers():
+    records = [object(), object()]
+    calls, stages = [], []
+
+    class Storage:
+        async def _query(self, sql, **params):
+            calls.append((sql, params))
+            assert params["record"] is records[len(calls) - 1]
+            return [
+                {"id": params["record"], "synapse_ids": ["keep"], "metadata": {"padding": "xxx"}}
+            ]
+
+    await bench._verify_repair_fibers(
+        Storage(),
+        records,
+        "synthetic-brain",
+        {"keep"},
+        "xxx",
+        lambda stage, **fields: stages.append((stage, fields)),
+    )
+    assert len(calls) == 2
+    assert all("FROM $record WHERE brain_id = $brain_id" in sql for sql, _ in calls)
+    assert [stage for stage, _ in stages] == [
+        "verification_fiber_started",
+        "verification_fiber_completed",
+        "verification_fiber_started",
+        "verification_fiber_completed",
+    ]
+    assert [fields["verification_index"] for _, fields in stages] == [0, 0, 1, 1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid", ["missing", "identity", "refs", "metadata"])
+async def test_repair_verification_keeps_all_identity_ref_and_metadata_assertions(invalid):
+    record = object()
+
+    class Storage:
+        async def _query(self, sql, **params):
+            if invalid == "missing":
+                return []
+            return [
+                {
+                    "id": object() if invalid == "identity" else record,
+                    "synapse_ids": ["wrong"] if invalid == "refs" else ["keep"],
+                    "metadata": {"padding": "wrong" if invalid == "metadata" else "xxx"},
+                }
+            ]
+
+    with pytest.raises(AssertionError):
+        await bench._verify_repair_fibers(
+            Storage(), [record], "synthetic-brain", {"keep"}, "xxx", lambda *_args, **_kwargs: None
+        )
+
+
+@pytest.mark.asyncio
+async def test_scalar_repair_probes_every_candidate_and_rechecks_budget_per_transaction():
+    from surreal_memory.storage.surrealdb.prune import SurrealDBPruneMixin
+
+    class Storage(SurrealDBPruneMixin):
+        def __init__(self):
+            self.probes, self.groups, self.changes = [], [], []
+            self.pages = [
+                {"updated_ids": [f"fiber:first_{i}" for i in range(8)], "has_more": True},
+                {"updated_ids": ["fiber:first_last"], "has_more": False},
+                {"updated_ids": ["fiber:disjoint_second"], "has_more": False},
+                {"updated_ids": [], "has_more": False},
+            ]
+
+        def _get_brain_id(self):
+            return "synthetic-brain"
+
+        def _ensure_conn(self):
+            return self
+
+        async def _ensure_conn_on_current_loop(self):
+            pass
+
+        async def query_raw(self, sql, params):
+            self.probes.append(params["probe_sid"])
+            self.groups.append([candidate["public_id"] for candidate in params["candidates"]])
+            return [{"status": "OK", "result": [self.pages.pop(0)]}]
+
+        async def _record_changes_bulk(self, entity, operation, changes):
+            self.changes.extend(change.id for change in changes)
+
+    checks = 0
+
+    async def budget():
+        nonlocal checks
+        checks += 1
+
+    storage = Storage()
+    assert (
+        await storage.repair_prune_synapse_refs_if_absent(
+            ["first-missing", "second-missing", "present"],
+            lease_owner_token="synthetic-owner",  # noqa: S106 - synthetic fixture owner
+            budget_check=budget,
+        )
+        == 10
+    )
+    assert storage.probes == ["first-missing", "first-missing", "second-missing", "present"]
+    assert storage.groups == [["first-missing", "second-missing", "present"]] * 4
+    assert checks == 4
+    assert len(storage.changes) == 10
