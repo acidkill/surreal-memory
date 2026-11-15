@@ -17,6 +17,14 @@ class ActivationMigrationError(RuntimeError):
     """Migration could not prove the requested state transition."""
 
 
+def _is_config_sha256(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
 class SurrealDBActivationMigrationMixin:
     """Use existing consolidation ownership to serialize a full-config CAS.
 
@@ -47,7 +55,11 @@ class SurrealDBActivationMigrationMixin:
         """Read raw persisted config without deserialization losing unknown keys."""
         if brain_name != "default" or self._get_brain_id() != "default":
             raise ActivationMigrationError("Activation migration is restricted to default")
-        rows = await self._query("SELECT * FROM brain WHERE name = $name", name=brain_name)
+        rows = await self._query(
+            "SELECT *, crypto::sha256(type::string(config)) AS config_sha256 "
+            "FROM brain WHERE name = $name",
+            name=brain_name,
+        )
         if len(rows) != 1:
             raise ActivationMigrationError("Expected exactly one default brain")
         row = rows[0]
@@ -56,13 +68,21 @@ class SurrealDBActivationMigrationMixin:
             raise ActivationMigrationError("Expected an exact brain RecordID")
         if row.get("name") != brain_name or not isinstance(row.get("config"), dict):
             raise ActivationMigrationError("Invalid default brain configuration")
-        return {"brain_id": str(rid.id), "name": brain_name, "config": deepcopy(row["config"])}
+        if not _is_config_sha256(row.get("config_sha256")):
+            raise ActivationMigrationError("Invalid server config SHA-256 proof")
+        return {
+            "brain_id": str(rid.id),
+            "name": brain_name,
+            "config": deepcopy(row["config"]),
+            "config_sha256": row["config_sha256"],
+        }
 
     async def set_activation_strategy(
         self,
         *,
         brain_id: str,
         expected_config: dict[str, Any],
+        expected_config_sha256: str,
         from_strategy: str,
         to_strategy: str,
     ) -> dict[str, Any]:
@@ -71,12 +91,18 @@ class SurrealDBActivationMigrationMixin:
         Reversing the command uses the same expected-full-config and lease guards.
         A failed write is never retried; ambiguous outcomes require reconciliation.
         """
+        if not _is_config_sha256(expected_config_sha256):
+            raise ActivationMigrationError("Expected config SHA-256 proof is invalid")
         if {from_strategy, to_strategy} != {"classic", "hybrid"}:
             raise ActivationMigrationError("Only classic <-> hybrid transitions are supported")
         if expected_config.get("activation_strategy") != from_strategy:
             raise ActivationMigrationError("Expected config does not match --from")
         before = await self.get_activation_snapshot()
-        if before["brain_id"] != brain_id or before["config"] != expected_config:
+        if (
+            before["brain_id"] != brain_id
+            or before["config"] != expected_config
+            or before["config_sha256"] != expected_config_sha256
+        ):
             raise ActivationMigrationError("Brain identity or full configuration changed")
         scope = self._get_brain_id()
         token = "activation-" + uuid4().hex
@@ -95,18 +121,19 @@ class SurrealDBActivationMigrationMixin:
                 await self._run_query(
                     "UPDATE type::record('brain', $brain_id) "
                     "SET config.activation_strategy = $to_strategy "
-                    "WHERE name = $name AND config = $expected_config "
+                    "WHERE name = $name "
+                    "AND crypto::sha256(type::string(config)) = $expected_config_sha256 "
                     "AND array::len((SELECT * FROM type::record('consolidation_lease', $lease_id) "
-                    "WHERE brain_id = $scope AND owner_token = $token "
+                    "WHERE brain_id = $scope AND owner_token = $migration_owner "
                     "AND expires_at > time::now())) = 1 RETURN AFTER",
                     {
                         "brain_id": brain_id,
                         "name": "default",
-                        "expected_config": expected_config,
+                        "expected_config_sha256": expected_config_sha256,
                         "to_strategy": to_strategy,
                         "lease_id": sha256(scope.encode("utf-8")).hexdigest(),
                         "scope": scope,
-                        "token": token,
+                        "migration_owner": token,
                     },
                 )
             except Exception as exc:

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from dataclasses import asdict, dataclass
+from hashlib import sha256
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -48,14 +50,25 @@ class Store(SurrealDBActivationMigrationMixin):
         self.lose_response = False
         self.cancel = False
         self.lose_lease = False
+        self.typed_marker = "original server types"
+        self.typed_race = False
 
     def _get_brain_id(self) -> str:
         return self.scope
 
+    def config_hash(self) -> str:
+        # Unit stand-in for server-native hashing; typed NULL/NONE is tested on DB.
+        return sha256(
+            json.dumps([self.config, self.typed_marker], sort_keys=True).encode()
+        ).hexdigest()
+
     async def _query(self, sql: str, **params: object) -> list[dict]:  # type: ignore[type-arg]
-        assert sql == "SELECT * FROM brain WHERE name = $name"
+        assert sql == (
+            "SELECT *, crypto::sha256(type::string(config)) AS config_sha256 "
+            "FROM brain WHERE name = $name"
+        )
         assert params == {"name": "default"}
-        return deepcopy(self.rows)
+        return [{**deepcopy(row), "config_sha256": self.config_hash()} for row in self.rows]
 
     async def acquire_consolidation_lease(
         self, brain_id: str, owner_token: str, *, lease_seconds: int = 120
@@ -65,6 +78,8 @@ class Store(SurrealDBActivationMigrationMixin):
         self.lease = True
         if self.race:
             self.config["future_knob"] = {"drift": True}
+        if self.typed_race:
+            self.typed_marker = "different server types"
         return True
 
     async def release_consolidation_lease(self, brain_id: str, owner_token: str) -> bool:
@@ -78,12 +93,14 @@ class Store(SurrealDBActivationMigrationMixin):
     async def _run_query(self, sql: str, params: dict) -> object:  # type: ignore[type-arg]
         self.update_count += 1
         assert "SET config.activation_strategy = $to_strategy" in sql
-        assert "config = $expected_config" in sql
-        assert "owner_token = $token" in sql and "expires_at > time::now()" in sql
+        assert "crypto::sha256(type::string(config)) = $expected_config_sha256" in sql
+        assert "expected_config" not in params
+        assert "$token" not in sql and "token" not in params
+        assert "owner_token = $migration_owner" in sql and "expires_at > time::now()" in sql
         assert params["brain_id"] == "exact-uuid"
         if self.cancel:
             raise asyncio.CancelledError
-        if self.config == params["expected_config"]:
+        if self.config_hash() == params["expected_config_sha256"]:
             self.config["activation_strategy"] = params["to_strategy"]
         if self.lose_response:
             raise ConnectionResetError("synthetic lost response")
@@ -94,6 +111,7 @@ async def migrate(store: Store, **overrides: object) -> dict:  # type: ignore[ty
     kwargs = {
         "brain_id": "exact-uuid",
         "expected_config": deepcopy(store.config),
+        "expected_config_sha256": store.config_hash(),
         "from_strategy": "classic",
         "to_strategy": "hybrid",
     }
@@ -385,3 +403,30 @@ async def test_new_http_query_pipeline_reads_migrated_config() -> None:
         with pytest.raises(PipelineReachedError):
             await query_memory(QueryRequest(query="synthetic query"), brain, storage)
     factory.assert_called_once()
+
+
+@pytest.mark.parametrize("proof", [None, True, "", "a" * 63, "g" * 64, "A" * 64])
+async def test_config_hash_requires_canonical_sha256_before_writes(proof: object) -> None:
+    store = Store()
+    with pytest.raises(ActivationMigrationError, match="SHA-256"):
+        await migrate(store, expected_config_sha256=proof)
+    assert store.update_count == store.release_count == 0
+
+
+async def test_server_type_drift_rejected_even_when_python_config_matches() -> None:
+    store = Store()
+    before = await store.get_activation_snapshot()
+    store.typed_marker = "server NULL changed to NONE"
+    assert (await store.get_activation_snapshot())["config"] == before["config"]
+    with pytest.raises(ActivationMigrationError, match="changed"):
+        await migrate(store, expected_config_sha256=before["config_sha256"])
+    assert store.update_count == store.release_count == 0
+
+
+async def test_server_type_drift_after_preflight_is_blocked_by_hash_cas() -> None:
+    store = Store()
+    store.typed_race = True
+    with pytest.raises(ActivationMigrationError, match="readback failed"):
+        await migrate(store)
+    assert store.config["activation_strategy"] == "classic"
+    assert store.update_count == store.release_count == 1

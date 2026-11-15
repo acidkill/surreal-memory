@@ -943,6 +943,7 @@ class NeuralStorage(ABC):
         *,
         brain_id: str,
         expected_config: dict[str, Any],
+        expected_config_sha256: str,
         from_strategy: str,
         to_strategy: str,
     ) -> dict[str, Any]:

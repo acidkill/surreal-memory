@@ -20,9 +20,9 @@ async def default_clients(clients):
     brain = Brain.create(name="default", metadata={"marker": "synthetic-migration"})
     await first.save_brain(brain)
     await first._query(
-        "UPDATE type::record('brain', $id) SET config.future_knob = $value",
+        "UPDATE type::record('brain', $id) SET config.future_knob = "
+        "{ nullable: NULL, nested: [1, NULL, NONE, { name: 'synthetic' }] }",
         id=brain.id,
-        value={"nullable": None, "nested": [1, None, {"name": "synthetic"}]},
     )
     first.set_brain("default")
     second.set_brain("default")
@@ -33,6 +33,7 @@ async def migrate(store, snapshot, source="classic", target="hybrid"):
     return await store.set_activation_strategy(
         brain_id=snapshot["brain_id"],
         expected_config=snapshot["config"],
+        expected_config_sha256=snapshot["config_sha256"],
         from_strategy=source,
         to_strategy=target,
     )
@@ -45,13 +46,20 @@ async def test_real_record_id_and_forward_reverse_preserve_full_config(default_c
     record_id = rows[0]["id"]
     assert record_id.table_name == "brain"
     assert str(record_id.id) == brain_id
+    typed_before = (
+        await first._query(
+            "SELECT type::string(config.future_knob) AS typed FROM brain WHERE name = $name",
+            name="default",
+        )
+    )[0]["typed"]
+    assert "NULL" in typed_before and "NONE" in typed_before
     before = await first.get_activation_snapshot()
     assert before["brain_id"] == brain_id
     assert before["config"] == rows[0]["config"]
     assert before["config"]["activation_strategy"] == "classic"
     assert before["config"]["future_knob"] == {
         "nullable": None,
-        "nested": [1, None, {"name": "synthetic"}],
+        "nested": [1, None, None, {"name": "synthetic"}],
     }
     assert rows[0]["metadata"]["marker"] == "synthetic-migration"
     assert (await migrate(first, before))["confirmed"] is True
@@ -59,6 +67,13 @@ async def test_real_record_id_and_forward_reverse_preserve_full_config(default_c
     expected = deepcopy(before["config"])
     expected["activation_strategy"] = "hybrid"
     assert after["config"] == expected
+    typed_after = (
+        await first._query(
+            "SELECT type::string(config.future_knob) AS typed FROM brain WHERE name = $name",
+            name="default",
+        )
+    )[0]["typed"]
+    assert typed_after == typed_before
     full_expected = deepcopy(rows[0])
     full_expected["config"]["activation_strategy"] = "hybrid"
     assert (await first._query("SELECT * FROM brain WHERE name = $name", name="default"))[
@@ -121,3 +136,19 @@ async def test_lost_update_reply_reconciles_from_real_readback(default_clients, 
     expected = deepcopy(before["config"])
     expected["activation_strategy"] = "hybrid"
     assert (await first.get_activation_snapshot())["config"] == expected
+
+
+async def test_null_none_only_drift_rejected_by_server_signature(default_clients):
+    first, second, brain_id = default_clients
+    before = await first.get_activation_snapshot()
+    await second._query(
+        "UPDATE type::record('brain', $id) SET config.future_knob.nested = "
+        "[1, NONE, NULL, { name: 'synthetic' }]",
+        id=brain_id,
+    )
+    drifted = await second.get_activation_snapshot()
+    assert drifted["config"] == before["config"]
+    assert drifted["config_sha256"] != before["config_sha256"]
+    with pytest.raises(ActivationMigrationError):
+        await migrate(first, before)
+    assert await first.get_activation_snapshot() == drifted

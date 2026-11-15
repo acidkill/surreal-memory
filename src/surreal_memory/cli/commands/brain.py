@@ -758,6 +758,7 @@ def brain_set_activation(
             receipt = await storage.set_activation_strategy(
                 brain_id=snapshot["brain_id"],
                 expected_config=snapshot["config"],
+                expected_config_sha256=snapshot["config_sha256"],
                 from_strategy=from_strategy,
                 to_strategy=to_strategy,
             )
