@@ -1793,3 +1793,150 @@ async def test_failed_resume_real_session_startup_protocol(tmp_path, capsys, sta
         if fault == "ordinary_seed":
             assert child is None
     capsys.readouterr()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fault", [None, "error", "lease", "oom", "checkpoint", "exit"])
+async def test_scheduled_cycle_uses_real_cli_timeout_report(monkeypatch, capsys, fault):
+    import asyncio
+    import copy
+    from contextlib import redirect_stdout
+
+    import typer
+
+    from surreal_memory.cli.commands import tools
+    from surreal_memory.engine.consolidation import ConsolidationEngine
+    from surreal_memory.engine.consolidation_delta import HealthSnapshot
+    from tests.unit.test_consolidation_progress import FakeProgressStorage
+
+    class Storage(FakeProgressStorage):
+        async def _query(self, query, **kwargs):
+            return [] if self.lease_owner is None else [{"owner_token": self.lease_owner}]
+
+    storage = Storage()
+    attempt = 2
+
+    async def strategy(engine, item, report, reference_time, dry_run):
+        if item.value == "prune":
+            await engine._checkpoint_progress("synapse_pending", cursor="synapse:10")
+            if attempt != 2:
+                raise TimeoutError
+
+    monkeypatch.setattr(ConsolidationEngine, "_run_strategy", strategy)
+    monkeypatch.setattr(ConsolidationEngine, "_run_auto_tier", AsyncMock())
+    monkeypatch.setattr(ConsolidationEngine, "_prune_semantic_discovery_state", AsyncMock())
+    snapshot = HealthSnapshot(50, "C", 0.5, 0.5, 0.5, 0.5, 0, 0.5, 0.5, 10, 10, 10)
+    monkeypatch.setattr(tools, "get_config", MagicMock())
+    monkeypatch.setattr(tools, "resolve_brain", lambda *args: "default")
+    monkeypatch.setattr(tools, "get_storage", AsyncMock(return_value=storage))
+    monkeypatch.setattr("surreal_memory.engine.diagnostics.DiagnosticsEngine.analyze", AsyncMock())
+    monkeypatch.setattr(
+        "surreal_memory.engine.consolidation_delta._snapshot_from_report",
+        lambda report: snapshot,
+    )
+
+    # Establish the completed predecessor through the real engine/session protocol.
+    engine = ConsolidationEngine(storage)
+    assert (await engine.run()).extra["consolidation_status"] == "completed"
+    before = copy.deepcopy(storage.progress)
+    state = receipt(before)
+    state.update(run_id=before["run_id"], finished_at=hourly.utcnow())
+    cm = {"metadata": {"resourceVersion": "1"}, "data": {"receipt.json": hourly.canonical(state)}}
+    prior_log = hourly.MARKER + hourly.canonical(state)
+    commands = []
+    api = MagicMock()
+    api.state.side_effect = lambda: copy.deepcopy(cm)
+    api.identity.return_value = {"pod_name": "scheduled"}
+    api.previous_log.side_effect = lambda decision: prior_log
+
+    def cas(old, decision, observation=None):
+        assert old["metadata"] == cm["metadata"]
+        cm["metadata"]["resourceVersion"] = str(int(cm["metadata"]["resourceVersion"]) + 1)
+        cm["data"]["receipt.json"] = hourly.canonical(decision)
+        return copy.deepcopy(cm)
+
+    api.cas.side_effect = cas
+    safety = MagicMock(baseline=state["resource_baseline"], policy_sha256="policy")
+    pending = []
+    monkeypatch.setattr(tools, "run_async", lambda coroutine: pending.append(coroutine))
+
+    class Child:
+        returncode = None
+
+        def __init__(self, command, stdout, **kwargs):
+            commands.append(command)
+            tools.consolidate(resume="--resume" in command)
+
+            async def cli():
+                with redirect_stdout(stdout):
+                    try:
+                        await pending.pop()
+                    except typer.Exit as exc:
+                        self.returncode = exc.exit_code
+                    else:
+                        self.returncode = 0
+                    if attempt == 1:
+                        if fault == "error":
+                            print("ERROR database write failed")
+                        elif fault == "lease":
+                            storage.progress["status"] = "lease_lost"
+                        elif fault == "checkpoint":
+                            storage.progress["options_fingerprint"] = ""
+                        elif fault == "exit":
+                            self.returncode = 0
+                if attempt == 1 and fault == "oom":
+                    safety.sample.side_effect = hourly.BlockedError("new OOM")
+
+            self.task = asyncio.create_task(cli())
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, **kwargs):
+            assert self.task.done()
+            self.task.result()
+            return self.returncode
+
+    children = []
+
+    def popen(*args, **kwargs):
+        child = Child(*args, **kwargs)
+        children.append(child)
+        return child
+
+    real_sleep = asyncio.sleep
+
+    async def tick(seconds):
+        if seconds == 10:
+            await children[-1].task
+        else:
+            await real_sleep(seconds)
+
+    monkeypatch.setattr(hourly.subprocess, "Popen", popen)
+    monkeypatch.setattr(hourly.asyncio, "sleep", tick)
+    run_ids = [before["run_id"]]
+    references = []
+    for attempt in (1, 2, 3):
+        result = await hourly.run(api, storage, safety)
+        prior_log = capsys.readouterr().out
+        final = json.loads(cm["data"]["receipt.json"])
+        if attempt == 1:
+            assert "Stages timed out: prune" in prior_log
+            assert "the strategy limit was reached" in prior_log
+            if fault:
+                assert result == 2 and final["phase"] == "blocked"
+                assert "confirmed_success" not in final
+                safety.sample.side_effect = None
+                assert await hourly.run(api, storage, safety) == 2
+                assert len(commands) == 1
+                return
+        assert result == 0
+        assert final["phase"] == "terminal"
+        assert final["cli_rc"] == (1 if attempt in (1, 3) else 0)
+        run_ids.append(storage.progress["run_id"])
+        references.append(storage.progress["reference_time"])
+        if attempt == 2:
+            assert final["confirmed_success"]["run_id"] == storage.progress["run_id"]
+    assert ["--resume" in command for command in commands] == [False, True, False]
+    assert run_ids[0] != run_ids[1] == run_ids[2] != run_ids[3]
+    assert references[0] == references[1]
