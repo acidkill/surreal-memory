@@ -25,12 +25,15 @@ def publish_exit_code(path: Path, code: int) -> None:
     pending.replace(path)
 
 
-def test_exit_code_is_published_after_complete_write(tmp_path, monkeypatch):
+@pytest.mark.parametrize("prior", [None, "0"])
+def test_exit_code_is_published_after_complete_write(tmp_path, monkeypatch, prior):
     target = tmp_path / "exit"
+    if prior is not None:
+        target.write_text(prior)
     original_replace = Path.replace
 
     def checked_replace(source, destination):
-        assert not target.exists()
+        assert target.read_text() == prior if prior is not None else not target.exists()
         assert source.read_text() == "1"
         return original_replace(source, destination)
 
