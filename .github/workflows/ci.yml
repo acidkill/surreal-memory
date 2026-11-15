@@ -244,9 +244,14 @@ jobs:
           report="semantic-discovery-prune-${{ matrix.surrealdb }}.jsonl"
           : > "$report"
           failed=0
-          for mode in legacy bounded repair-legacy repair-bounded; do
+          # Original 1Gi acceptance outcomes stay authoritative. Extra 2Gi
+          # repair runs are diagnostic only and cannot clear a prior failure.
+          for profile in legacy:1g:0 bounded:1g:0 repair-legacy:1g:0 repair-bounded:1g:0 repair-legacy:2g:1 repair-bounded:2g:1; do
+            IFS=: read -r mode memory diagnostic <<< "$profile"
+            diagnostic_args=()
+            if [ "$diagnostic" = 1 ]; then diagnostic_args+=(--diagnostic-only); fi
             docker rm -f surrealdb-ci >/dev/null 2>&1 || true
-            docker run -d --name surrealdb-ci -p 127.0.0.1:8001:8001 --cpus=2 --memory=1g --memory-swap=1g --tmpfs /data --tmpfs /logs \
+            docker run -d --name surrealdb-ci -p 127.0.0.1:8001:8001 --cpus=2 --memory="$memory" --memory-swap="$memory" --tmpfs /data --tmpfs /logs \
               --label "io.surreal-memory.test-run=$(python -c 'import uuid; print(uuid.uuid4().hex)')" \
               surrealdb/surrealdb:v${{ matrix.surrealdb }} \
               start memory --user root --pass root --bind 0.0.0.0:8001 \
@@ -267,14 +272,14 @@ jobs:
             python -m tests._disposable_surrealdb register surrealdb-ci "$RUNNER_TEMP/smem-disposable.json"
             pid="$(docker inspect --format='{{.State.Pid}}' surrealdb-ci)"
             if PYTHONPATH="$GITHUB_WORKSPACE" SURREALDB_CONTAINER_PID="$pid" python scripts/benchmark_semantic_discovery_prune.py \
-              --mode "$mode" --version "${{ matrix.surrealdb }}" | tee -a "$report"; then
+              --mode "$mode" --version "${{ matrix.surrealdb }}" "${diagnostic_args[@]}" | tee -a "$report"; then
               :
             else
               rc=$?
               if ! docker logs surrealdb-ci; then echo "Benchmark container logs unavailable"; fi
               oom="$(docker inspect --format='{{.State.OOMKilled}}' surrealdb-ci)"
-              python -c 'import json,sys; print(json.dumps({"mode":sys.argv[1], "benchmark_exit":int(sys.argv[2]), "container_oom_killed":sys.argv[3] == "true"}))' "$mode" "$rc" "$oom" | tee -a "$report"
-              if [ "$mode" != repair-legacy ] || [ "$oom" != true ] || ! grep -Fq '"measurement_started": "repair-legacy"' "$report"; then failed=1; fi
+              python -c 'import json,sys; print(json.dumps({"mode":sys.argv[1], "benchmark_exit":int(sys.argv[2]), "container_oom_killed":sys.argv[3] == "true", "memory_limit":sys.argv[4], "diagnostic_only":sys.argv[5] == "1"}))' "$mode" "$rc" "$oom" "$memory" "$diagnostic" | tee -a "$report"
+              if [ "$diagnostic" = 0 ] && { [ "$mode" != repair-legacy ] || [ "$oom" != true ] || ! grep -Fq '"measurement_started": "repair-legacy"' "$report"; }; then failed=1; fi
             fi
             docker rm -f surrealdb-ci >/dev/null
           done

@@ -115,7 +115,7 @@ def test_sampler_process_loss_reports_and_preserves_query_error(monkeypatch, cap
 
     with pytest.raises(ConnectionError, match="original query failure"):
         query()
-    diagnostic = capsys.readouterr().err
+    diagnostic = capsys.readouterr().out
     assert "RSS sampler process unavailable" in diagnostic
     assert "Traceback" not in diagnostic
 
@@ -138,7 +138,7 @@ def test_sampler_process_loss_fails_without_query_error(monkeypatch, capsys):
     with pytest.raises(RuntimeError, match="peak cannot be confirmed"):
         with bench._RssSampler(123):
             assert failed.wait(1)
-    assert "RSS sampler process unavailable" in capsys.readouterr().err
+    assert "RSS sampler process unavailable" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(
@@ -168,7 +168,7 @@ def test_legacy_oom_acceptance_requires_measurement_marker(
         [
             "/bin/bash",
             "-c",
-            "mode=$1; oom=$2; report=$3; failed=0\n" + condition + '\nexit "$failed"',
+            "mode=$1; oom=$2; report=$3; diagnostic=0; failed=0\n" + condition + '\nexit "$failed"',
             "synthetic",
             mode,
             oom,
@@ -233,4 +233,111 @@ def test_repair_marker_follows_setup_and_high_water_reset():
 
     source = inspect.getsource(bench._run_repair)
     assert source.index("_reset_hwm(pid)") < source.index('"measurement_started"')
-    assert source.index('"measurement_started"') < source.index("with _RssSampler(pid)")
+    assert source.index('"measurement_started"') < source.index("with sampler:")
+
+
+def test_sampler_preserves_partial_peak_in_json_artifact_on_process_loss(monkeypatch, capsys):
+    import threading
+
+    failed = threading.Event()
+    calls = 0
+
+    def rss(_pid):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return 321
+        failed.set()
+        raise FileNotFoundError("synthetic process vanished")
+
+    monkeypatch.setattr(bench, "_rss_kib", rss)
+
+    def query():
+        with bench._RssSampler(123):
+            assert failed.wait(1)
+            raise ConnectionError("original RPC failure")
+
+    with pytest.raises(ConnectionError, match="original RPC failure"):
+        query()
+    records = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert records[-1]["rss_sampled_peak_kib"] == 321
+    assert records[-1]["rss_sample_count"] == 1
+    assert records[-1]["rss_sampling_complete"] is False
+
+
+def test_failed_repair_diagnostic_retains_stage_baseline_and_partial_peak(monkeypatch, capsys):
+    def disappeared(_pid):
+        raise FileNotFoundError("synthetic dead process")
+
+    monkeypatch.setattr(bench, "_start_ticks", disappeared)
+    sampler = SimpleNamespace(samples_kib=[100, 143], sample_error=FileNotFoundError())
+    state = {
+        "mode": "repair-bounded",
+        "stage": "transaction_started",
+        "transaction_index": 1,
+        "rss_baseline_kib": 100,
+        "memory_limit_bytes": 1024**3,
+        "lookup_scan_evidence": {"scan_output_rows": 9},
+    }
+    bench._repair_diagnostic(
+        state, 123, "original", sampler=sampler, failure_error_type="ConnectionError"
+    )
+    event = json.loads(capsys.readouterr().out)
+    assert event["stage"] == "transaction_started" and event["transaction_index"] == 1
+    assert event["rss_baseline_kib"] == 100
+    assert event["rss_sampled_peak_kib"] == 143
+    assert event["rss_sampled_peak_delta_kib"] == 43
+    assert event["rss_kernel_hwm_kib"] is None
+    assert event["rss_current_kib"] is None
+    assert event["rss_observation_error"] == "FileNotFoundError"
+    assert event["lookup_scan_evidence"] == {"scan_output_rows": 9}
+
+
+@pytest.mark.parametrize("prior_failure", [0, 1])
+def test_diagnostic_failure_preserves_original_acceptance_latch(tmp_path, prior_failure):
+    import subprocess
+    from pathlib import Path
+
+    workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()
+    condition = next(
+        line.strip()
+        for line in workflow.splitlines()
+        if "measurement_started" in line and "failed=1" in line
+    )
+    report = tmp_path / "report.jsonl"
+    report.write_text("")
+    result = subprocess.run(  # noqa: S603 - fixed shell and CI condition from this repository
+        [
+            "/bin/bash",
+            "-c",
+            "mode=repair-bounded; oom=true; diagnostic=1; report=$1; failed=$2\n"
+            + condition
+            + '\nexit "$failed"',
+            "synthetic",
+            str(report),
+            str(prior_failure),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert result.returncode == prior_failure, result.stderr
+
+
+def test_failed_process_diagnostic_retains_cached_cgroup_peak(monkeypatch, capsys, tmp_path):
+    def disappeared(_pid):
+        raise FileNotFoundError("synthetic dead process")
+
+    monkeypatch.setattr(bench, "_start_ticks", disappeared)
+    (tmp_path / "memory.current").write_text("1024\n")
+    (tmp_path / "memory.peak").write_text("1073741824\n")
+    (tmp_path / "memory.events").write_text("oom 1\noom_kill 1\n")
+    bench._repair_diagnostic({}, 123, "original", cgroup=tmp_path)
+    event = json.loads(capsys.readouterr().out)
+    assert event["rss_kernel_hwm_kib"] is None
+    assert event["cgroup_memory_peak_bytes"] == 1024**3
+    assert event["cgroup_memory_events"] == {"oom": 1, "oom_kill": 1}
+    assert event["rss_sampled_peak_kib"] is None
+    assert event["rss_sampled_peak_delta_kib"] is None
+    assert event["rss_sampling_complete"] is False

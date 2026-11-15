@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import sys
@@ -133,15 +134,96 @@ class _RssSampler:
                         "benchmark_failure": "RSS sampler process unavailable",
                         "pid": self.pid,
                         "error_type": type(self.sample_error).__name__,
+                        "rss_sampled_peak_kib": max(self.samples_kib, default=None),
+                        "rss_sample_count": len(self.samples_kib),
+                        "rss_sampling_complete": False,
                     }
                 ),
-                file=sys.stderr,
                 flush=True,
             )
             if exc_type is None:
                 raise RuntimeError(
                     "RSS sampling failed; peak cannot be confirmed"
                 ) from self.sample_error
+
+
+def _cgroup_directory(pid: int) -> Path | None:
+    for line in Path(f"/proc/{pid}/cgroup").read_text().splitlines():
+        if line.startswith("0::"):
+            return Path("/sys/fs/cgroup") / line[3:].lstrip("/")
+    return None
+
+
+def _repair_diagnostic(
+    state: dict[str, Any],
+    pid: int,
+    process_start: str,
+    *,
+    sampler: _RssSampler | None = None,
+    cgroup: Path | None = None,
+    stage: str | None = None,
+    **fields: Any,
+) -> None:
+    """Flush observed values even when the database vanished; missing peaks stay null."""
+    if stage is not None:
+        state["stage"] = stage
+    state.update(fields)
+    memory: dict[str, Any] = {
+        "rss_current_kib": None,
+        "rss_kernel_hwm_kib": None,
+        "rss_observation_error": None,
+        "process_identity_match": None,
+    }
+    try:
+        memory["process_identity_match"] = _start_ticks(pid) == process_start
+        if not memory["process_identity_match"]:
+            raise RuntimeError("measurement process identity changed")
+        memory["rss_current_kib"] = _rss_kib(pid)
+        memory["rss_kernel_hwm_kib"] = _hwm_kib(pid)
+    except (OSError, RuntimeError) as exc:
+        memory["rss_observation_error"] = type(exc).__name__
+    for filename, key in (
+        ("memory.current", "cgroup_memory_current_bytes"),
+        ("memory.peak", "cgroup_memory_peak_bytes"),
+    ):
+        memory[key] = None
+        if cgroup is not None:
+            try:
+                memory[key] = int((cgroup / filename).read_text().strip())
+            except (OSError, ValueError):
+                pass
+    memory["cgroup_memory_events"] = None
+    if cgroup is not None:
+        try:
+            memory["cgroup_memory_events"] = {
+                key: int(value)
+                for key, value in (
+                    line.split() for line in (cgroup / "memory.events").read_text().splitlines()
+                )
+            }
+        except (OSError, ValueError):
+            pass
+    peak = max(sampler.samples_kib, default=None) if sampler is not None else None
+    baseline = state.get("rss_baseline_kib")
+    print(
+        json.dumps(
+            {
+                **state,
+                **memory,
+                "rss_sampled_peak_kib": peak,
+                "rss_sampled_peak_delta_kib": peak - baseline
+                if peak is not None and baseline is not None
+                else None,
+                "rss_sample_count": len(sampler.samples_kib) if sampler is not None else 0,
+                "rss_sampling_complete": sampler is not None
+                and sampler.sample_error is None
+                and state.get("measurement_complete") is True,
+            },
+            sort_keys=True,
+            default=str,
+        ),
+        flush=True,
+    )
 
 
 async def _wire_counted_query(
@@ -214,7 +296,9 @@ def _repair_page(statements: list[dict[str, Any]]) -> dict[str, Any]:
     return pages[0]
 
 
-async def _run_repair(mode: str, version: str, options: dict[str, str], pid: int) -> dict[str, Any]:
+async def _run_repair(
+    mode: str, version: str, options: dict[str, str], pid: int, *, diagnostic_only: bool = False
+) -> dict[str, Any]:
     """Compare full-row legacy repair with the bounded real storage method."""
     from surrealdb import RecordID
 
@@ -222,12 +306,45 @@ async def _run_repair(mode: str, version: str, options: dict[str, str], pid: int
     from surreal_memory.storage.surrealdb.store import SurrealDBStorage
 
     storage = SurrealDBStorage(**options, database=f"repair_{uuid.uuid4().hex[:10]}")
-    await storage.initialize()
-    brain = Brain.create(name="synthetic-repair-benchmark")
-    await storage.save_brain(brain)
-    storage.set_brain(brain.id)
+    process_start = _start_ticks(pid)
+    descriptor = json.loads(Path(os.environ["SMEM_TEST_SURREALDB_TARGET_FILE"]).read_text())
+    instance = _inspect(descriptor["container_id"])
+    assert instance["State"]["Pid"] == pid
+    memory_limit = int(instance["HostConfig"]["Memory"])
+    assert memory_limit == (2 if diagnostic_only else 1) * 1024**3
+    swap_limit = int(instance["HostConfig"]["MemorySwap"])
+    cpu_limit = int(instance["HostConfig"]["NanoCpus"])
+    assert swap_limit == memory_limit, "benchmark must disable extra swap"
+    assert cpu_limit == 2_000_000_000, "benchmark must retain the two-CPU limit"
+    cgroup = _cgroup_directory(pid)
+    state: dict[str, Any] = {
+        "mode": mode,
+        "db_version": version,
+        "diagnostic_only": diagnostic_only,
+        "datastore": "memory",
+        "memory_limit_bytes": memory_limit,
+        "memory_swap_limit_bytes": swap_limit,
+        "cpu_limit_nanos": cpu_limit,
+        "cgroup_peak_scope": "entire disposable container since startup; not reset",
+        "rss_baseline_kib": None,
+        "transaction_index": 0,
+        "completed_transaction_mutations": [],
+        "completed_response_wire_bytes": [],
+    }
+    sampler = None
+
+    def mark(stage: str | None, **fields: Any) -> None:
+        _repair_diagnostic(
+            state, pid, process_start, sampler=sampler, cgroup=cgroup, stage=stage, **fields
+        )
+
     owner = uuid.uuid4().hex
     try:
+        mark("storage_initialization")
+        await storage.initialize()
+        brain = Brain.create(name="synthetic-repair-benchmark")
+        await storage.save_brain(brain)
+        storage.set_brain(brain.id)
         nodes = [Neuron.create(NeuronType.CONCEPT, f"repair-node-{i}") for i in range(2)]
         for node in nodes:
             await storage.add_neuron(node)
@@ -250,7 +367,13 @@ async def _run_repair(mode: str, version: str, options: dict[str, str], pid: int
                 }
                 for i in range(start, min(start + 4, fiber_count))
             ]
+            mark("fixture_seed_started", seed_batch_start=start, seed_batch_rows=len(rows))
             await storage._query("INSERT INTO fiber $rows RETURN NONE", rows=rows)
+            mark(
+                "fixture_seed_completed",
+                seeded_fibers=start + len(rows),
+                indexed_memberships=(start + len(rows)) * len(refs),
+            )
         assert await storage.acquire_consolidation_lease(brain.id, owner, lease_seconds=300)
         if mode == "repair-bounded":
             select_sql = (
@@ -268,19 +391,27 @@ async def _run_repair(mode: str, version: str, options: dict[str, str], pid: int
                 "WHERE brain_id = $brain_id AND synapse_ids CONTAINS $sid"
             )
             plan_params = {"brain_id": brain.id, "sid": missing[0]}
+        mark("selector_explain_started", selector_sql=select_sql)
         plan = await storage._query_response(select_sql + " EXPLAIN FULL", **plan_params)
-        process_start = _start_ticks(pid)
+        mark(
+            "selector_explain_completed",
+            lookup_scan_evidence=_repair_scan_evidence(plan),
+            lookup_plan=plan,
+        )
         baseline = _rss_kib(pid)
         _reset_hwm(pid)
-        print(
-            json.dumps({"measurement_started": mode, "db_version": version}, sort_keys=True),
-            flush=True,
+        mark(
+            "measurement_started",
+            measurement_started=mode,
+            rss_baseline_kib=baseline,
+            rss_headroom_to_cap_kib=memory_limit // 1024 - baseline,
         )
         transaction_sizes: list[int] = []
         response_bytes: list[int] = []
         response_transports: list[str] = []
         response_shapes: list[dict[str, Any]] = []
-        with _RssSampler(pid) as sampler:
+        sampler = _RssSampler(pid)
+        with sampler:
             if mode == "repair-legacy":
                 # Reproduce the former unbounded per-edge UPDATE and full-row reply.
                 from hashlib import sha256
@@ -317,6 +448,14 @@ async def _run_repair(mode: str, version: str, options: dict[str, str], pid: int
                         "COMMIT TRANSACTION;",
                     ]
                 )
+                mark(
+                    "transaction_started",
+                    transaction_index=1,
+                    transaction_sql_sha256=hashlib.sha256(
+                        "\n".join(statements).encode()
+                    ).hexdigest(),
+                    inflight_response_wire_bytes=None,
+                )
                 raw, size, transport = await _wire_counted_query(
                     storage._ensure_conn().query_raw, "\n".join(statements), params
                 )
@@ -333,6 +472,12 @@ async def _run_repair(mode: str, version: str, options: dict[str, str], pid: int
                 ]
                 transaction_sizes.append(len(rows))
                 response_shapes.append({"full_fiber_rows": len(rows)})
+                mark(
+                    "transaction_completed",
+                    completed_transaction_mutations=transaction_sizes,
+                    completed_response_wire_bytes=response_bytes,
+                    inflight_response_wire_bytes=size,
+                )
                 updated = len(rows)
             else:
                 connection = storage._ensure_conn()
@@ -341,6 +486,12 @@ async def _run_repair(mode: str, version: str, options: dict[str, str], pid: int
                 async def capture(sql: str, params: Any = None, **kwargs: Any) -> Any:
                     if "-- bounded legacy prune repair" not in sql:
                         return await original_query_raw(sql, params, **kwargs)
+                    mark(
+                        "transaction_started",
+                        transaction_index=len(transaction_sizes) + 1,
+                        transaction_sql_sha256=hashlib.sha256(sql.encode()).hexdigest(),
+                        inflight_response_wire_bytes=None,
+                    )
                     raw, size, transport = await _wire_counted_query(
                         original_query_raw, sql, params, **kwargs
                     )
@@ -354,6 +505,12 @@ async def _run_repair(mode: str, version: str, options: dict[str, str], pid: int
                         response_shapes.append(
                             {"updated_ids": len(ids), "has_more": page["has_more"]}
                         )
+                    mark(
+                        "transaction_completed",
+                        completed_transaction_mutations=transaction_sizes,
+                        completed_response_wire_bytes=response_bytes,
+                        inflight_response_wire_bytes=size,
+                    )
                     return raw
 
                 connection.query_raw = capture
@@ -371,6 +528,7 @@ async def _run_repair(mode: str, version: str, options: dict[str, str], pid: int
         assert _start_ticks(pid) == process_start, "SurrealDB process changed during repair"
         sample_peak = max(sampler.samples_kib)
         kernel_hwm = _hwm_kib(pid)
+        mark("measurement_completed", measurement_complete=True)
         rows = await storage._query(
             "SELECT synapse_ids, metadata FROM fiber WHERE brain_id = $brain_id", brain_id=brain.id
         )
@@ -382,6 +540,10 @@ async def _run_repair(mode: str, version: str, options: dict[str, str], pid: int
         return {
             "mode": mode,
             "db_version": version,
+            "diagnostic_only": diagnostic_only,
+            "measurement_complete": True,
+            "memory_limit_bytes": memory_limit,
+            "datastore": "memory",
             "fibers": fiber_count,
             "unrelated_refs_per_fiber": len(unrelated),
             "missing_edges": len(missing),
@@ -404,6 +566,14 @@ async def _run_repair(mode: str, version: str, options: dict[str, str], pid: int
             "rss_sample_interval_ms": 10,
             "rss_metric": "VmHWM reset after setup; /proc VmRSS sampled during repair",
         }
+    except BaseException as exc:
+        mark(
+            None,
+            measurement_failed=True,
+            measurement_complete=False,
+            failure_error_type=type(exc).__name__,
+        )
+        raise
     finally:
         await storage.close()
 
@@ -419,10 +589,10 @@ def _benchmark_target() -> tuple[dict[str, str], int]:
     return target.child().storage_kwargs(), pid
 
 
-async def _run(mode: str, version: str) -> dict[str, Any]:
+async def _run(mode: str, version: str, *, diagnostic_only: bool = False) -> dict[str, Any]:
     options, pid = _benchmark_target()
     if mode.startswith("repair-"):
-        return await _run_repair(mode, version, options, pid)
+        return await _run_repair(mode, version, options, pid, diagnostic_only=diagnostic_only)
     from surrealdb import RecordID
 
     from surreal_memory.storage.surrealdb.store import SurrealDBStorage
@@ -664,8 +834,14 @@ def main() -> None:
         "--mode", choices=("legacy", "bounded", "repair-legacy", "repair-bounded"), required=True
     )
     parser.add_argument("--version", required=True)
+    parser.add_argument("--diagnostic-only", action="store_true")
     args = parser.parse_args()
-    result = asyncio.run(_run(args.mode, args.version))
+
+    async def execute() -> dict[str, Any]:
+        work = _run(args.mode, args.version, diagnostic_only=args.diagnostic_only)
+        return await asyncio.wait_for(work, timeout=120) if args.diagnostic_only else await work
+
+    result = asyncio.run(execute())
     print(json.dumps(result, sort_keys=True))
     if (
         args.mode == "repair-bounded"
