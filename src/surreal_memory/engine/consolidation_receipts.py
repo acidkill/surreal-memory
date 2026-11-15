@@ -927,7 +927,264 @@ def failed_runtime_resume_matches(receipt: Any, cp: Any) -> bool:
         return False
 
 
+def capacity_resume_seed(
+    previous_raw: str,
+    previous_log: str,
+    cp: dict[str, Any],
+    *,
+    approval: dict[str, Any],
+    observation_raw: str | None = None,
+    observation_log: str | None = None,
+) -> dict[str, Any]:
+    """Bind one explicit reviewed retry of an actual blocked capacity/CLI130 stop."""
+    from surreal_memory.engine.consolidation import ConsolidationStrategy
+
+    if (
+        not isinstance(previous_raw, str)
+        or not isinstance(previous_log, str)
+        or len(previous_raw.encode()) > 128 * 1024
+        or len(previous_log.encode()) > 128 * 1024
+        or not isinstance(approval, dict)
+    ):
+        raise BlockedError("capacity resume evidence malformed or oversized")
+    try:
+        previous = json.loads(previous_raw)
+    except ValueError as exc:
+        raise BlockedError("capacity resume predecessor is malformed") from exc
+    clean_checkpoint(cp)
+    completed = {"dedup", "learn_habits", "process_reasoning_traces", "process_tool_events"}
+    expected = {s.value for s in ConsolidationStrategy if s is not ConsolidationStrategy.ALL}
+    states = cp.get("strategy_states")
+    prune = states.get("prune") if isinstance(states, dict) else None
+    if (
+        cp.get("status") != "paused"
+        or cp.get("current_strategy") != "prune"
+        or cp.get("phase") != "synapse_pending"
+        or set(cp.get("requested_strategies", [])) != expected
+        or len(cp.get("requested_strategies", [])) != len(expected)
+        or set(cp.get("completed_strategies", [])) != completed
+        or len(cp.get("completed_strategies", [])) != len(completed)
+        or not native_handoff_valid(cp)
+        or timestamp(cp.get("reference_time")) is None
+        or not isinstance(cp.get("owner_token"), str)
+        or not cp["owner_token"]
+        or not isinstance(states, dict)
+        or set(states) != completed | {"prune"}
+        or any(
+            not isinstance(states[name], dict) or states[name].get("phase") != "completed"
+            for name in completed
+        )
+        or not isinstance(prune, dict)
+        or prune.get("phase") != "synapse_pending"
+        or not isinstance(prune.get("pending"), list)
+        or not 0 < len(prune["pending"]) <= 2000
+        or not all(isinstance(sid, str) and sid for sid in prune["pending"])
+        or not isinstance(cp.get("counters"), dict)
+        or cp["counters"].get("prune") != prune.get("counters")
+    ):
+        raise BlockedError("capacity resume retained prune checkpoint differs")
+    capacity = previous.get("capacity_stop_reason") if isinstance(previous, dict) else None
+    disagreement = "CLI exit disagrees with terminal checkpoint"
+    if (
+        not isinstance(previous, dict)
+        or previous.get("phase") != "blocked"
+        or type(previous.get("cli_rc")) is not int
+        or previous["cli_rc"] != 130
+        or previous.get("before_run_id") != cp["run_id"]
+        or capacity
+        not in {"database memory exceeds safety threshold", "node free memory below safety floor"}
+        or previous.get("reason") not in {disagreement, capacity}
+        or (previous.get("reason") == capacity and previous.get("secondary_reason") != disagreement)
+        or (previous.get("reason") == disagreement and previous.get("secondary_reason") is not None)
+        or MARKER in previous_log
+    ):
+        raise BlockedError("capacity resume is not the reviewed blocked CLI130 stop")
+    suffix = "HOURLY_BLOCKED " + previous["reason"] + "\n"
+    if previous.get("secondary_reason"):
+        suffix = "HOURLY_SECONDARY_BLOCKED " + disagreement + "\n" + suffix
+    if not previous_log.endswith(suffix):
+        raise BlockedError("capacity resume predecessor decision log differs")
+    cli_output = previous_log[: -len(suffix)]
+    if (
+        hashlib.sha256(cli_output.encode()).hexdigest() != previous.get("cli_output_sha256")
+        or previous.get("cli_output_tail") != cli_output[-4096:]
+        or cli_log_has_errors(cli_output, cp)
+    ):
+        raise BlockedError("capacity resume CLI evidence differs or reports another failure")
+    bindings = {
+        "checkpoint_sha256": checkpoint_hash(cp),
+        "previous_receipt_raw_sha256": hashlib.sha256(previous_raw.encode()).hexdigest(),
+        "previous_log_sha256": hashlib.sha256(previous_log.encode()).hexdigest(),
+        "first_blocked_sha256": checkpoint_hash(previous),
+        "observation_raw_sha256": (
+            hashlib.sha256(observation_raw.encode()).hexdigest()
+            if isinstance(observation_raw, str)
+            else None
+        ),
+        "observation_log_sha256": (
+            hashlib.sha256(observation_log.encode()).hexdigest()
+            if isinstance(observation_log, str)
+            else None
+        ),
+        "completed_states_sha256": checkpoint_hash({name: states[name] for name in completed}),
+        "prune_state_sha256": checkpoint_hash(prune),
+        "counters_sha256": checkpoint_hash(cp["counters"]),
+        "native_handoff_sha256": checkpoint_hash(cp["native_handoff"]),
+        **{
+            key: cp[key]
+            for key in ("run_id", "owner_token", "options_fingerprint", "reference_time")
+        },
+    }
+    if any(canonical(approval.get(key)) != canonical(value) for key, value in bindings.items()):
+        raise BlockedError("capacity resume approved evidence changed")
+    identity = approval.get("failed_pod")
+    if (
+        not isinstance(identity, dict)
+        or set(identity) != {"pod_name", "pod_uid", "job_name", "job_uid", "exit_code"}
+        or type(identity.get("exit_code")) is not int
+        or identity["exit_code"] != 2
+        or any(
+            not identity.get(key) or identity[key] != previous.get(key)
+            for key in ("pod_name", "pod_uid", "job_name", "job_uid")
+        )
+    ):
+        raise BlockedError("capacity resume failed Pod provenance differs")
+    approved, blocked = (
+        timestamp(approval.get("approved_at")),
+        timestamp(previous.get("blocked_at")),
+    )
+    if approved is None or blocked is None or not blocked <= approved <= datetime.now(UTC):
+        raise BlockedError("capacity resume approval time is invalid")
+    runtime = approval.get("runtime")
+    if (
+        not isinstance(runtime, dict)
+        or re.fullmatch(r"[0-9a-f]{40}", str(runtime.get("source_sha"))) is None
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", str(runtime.get("image_digest"))) is None
+        or any(
+            re.fullmatch(r"[0-9a-f]{64}", str(runtime.get(key))) is None
+            for key in ("runner_sha256", "receipts_sha256")
+        )
+        or any(
+            not isinstance(runtime.get(key), str) or not runtime[key]
+            for key in ("python_version", "numpy_version", "package_version")
+        )
+        or approval.get("reviewed_source_sha") != runtime["source_sha"]
+        or any(
+            approval.get(key) is not True
+            for key in (
+                "source_fix_reviewed",
+                "resource_root_cause_addressed",
+                "no_active_worker_verified",
+                "no_active_lease_verified",
+            )
+        )
+    ):
+        raise BlockedError("capacity resume reviewed runtime or safety proof missing")
+    limit = approval.get("memory_limit_bytes")
+    policy = checkpoint_hash({"memory_limit_bytes": limit})
+    baseline = approval.get("resource_baseline")
+    if (
+        type(limit) is not int
+        or limit <= 3 * 1024**3
+        or limit % 1024**3
+        or approval.get("resource_policy_sha256") != policy
+        or approval.get("previous_resource_policy_sha256") != policy
+        or previous.get("resource_policy_sha256", policy) != policy
+        or canonical(baseline) != canonical(previous.get("before_resources"))
+        or not isinstance(baseline, list)
+        or len(baseline) != 3
+        or not isinstance(baseline[0], list)
+        or len(baseline[0]) != 2
+        or not all(isinstance(value, str) and value for value in baseline[0])
+        or any(type(value) not in {int, float} or value != 0 for value in baseline[1:])
+    ):
+        raise BlockedError("capacity resume database incarnation or resource policy differs")
+    try:
+        containers = json.loads(baseline[0][1])
+    except ValueError as exc:
+        raise BlockedError("capacity resume database container proof malformed") from exc
+    if (
+        not isinstance(containers, list)
+        or not containers
+        or not all(
+            isinstance(item, list)
+            and len(item) == 3
+            and all(isinstance(value, str) and value for value in item[:2])
+            and type(item[2]) is int
+            and item[2] >= 0
+            for item in containers
+        )
+        or len({item[0] for item in containers}) != len(containers)
+    ):
+        raise BlockedError("capacity resume database container proof differs")
+    if observation_raw is not None:
+        try:
+            observation = json.loads(observation_raw)
+        except (TypeError, ValueError) as exc:
+            raise BlockedError("capacity resume observation malformed") from exc
+        if (
+            not isinstance(observation, dict)
+            or not isinstance(observation_log, str)
+            or len(observation_log.encode()) > 128 * 1024
+            or observation.get("outcome") != "blocked"
+            or observation.get("reason") != previous["reason"]
+            or "HOURLY_OBSERVATION " + canonical(observation) not in observation_log.splitlines()
+            or MARKER + canonical(previous) not in observation_log.splitlines()
+        ):
+            raise BlockedError("capacity resume observation proof differs")
+    elif observation_log is not None:
+        raise BlockedError("capacity resume observation is missing")
+    return {
+        "phase": "bootstrap",
+        "source": "operator_capacity_resume",
+        "approved": True,
+        "status": "paused",
+        "cli_rc": None,
+        "next_action": "resume",
+        "observed_at": approval["approved_at"],
+        "run_id": cp["run_id"],
+        "options_fingerprint": cp["options_fingerprint"],
+        "reference_time": cp["reference_time"],
+        "checkpoint_sha256": bindings["checkpoint_sha256"],
+        "resource_baseline": baseline,
+        "resource_policy_sha256": policy,
+        "capacity_resume": {
+            "version": 1,
+            "previous_receipt_raw": previous_raw,
+            "previous_log": previous_log,
+            "approval": approval,
+            "observation_raw": observation_raw,
+            "observation_log": observation_log,
+        },
+    }
+
+
+def capacity_resume_matches(receipt: Any, cp: Any) -> bool:
+    """Validate capacity admission without treating the historical failure as success."""
+    if not isinstance(receipt, dict) or receipt.get("source") != "operator_capacity_resume":
+        return False
+    try:
+        audit = receipt["capacity_resume"]
+        if type(audit["version"]) is not int or audit["version"] != 1:
+            return False
+        expected = capacity_resume_seed(
+            audit["previous_receipt_raw"],
+            audit["previous_log"],
+            cp,
+            approval=audit["approval"],
+            observation_raw=audit["observation_raw"],
+            observation_log=audit["observation_log"],
+        )
+        return canonical(expected) == canonical(receipt)
+    except (BlockedError, KeyError, TypeError, ValueError, AttributeError):
+        return False
+
+
 def select_command(receipt: dict[str, Any], cp: dict[str, Any], log: str | None) -> list[str]:
+    if receipt.get("source") == "operator_capacity_resume":
+        if not capacity_resume_matches(receipt, cp):
+            raise BlockedError("capacity resume approval or checkpoint diverged")
+        return ["smem", "consolidate", "--brain", "default", "--resume"]
     if receipt.get("source") == "operator_failed_runtime_resume":
         if not failed_runtime_resume_matches(receipt, cp):
             raise BlockedError("failed runtime resume approval or checkpoint diverged")

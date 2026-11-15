@@ -156,3 +156,17 @@ async def test_only_confirmed_server_conflicts_have_retryable_type(raw):
 
     with pytest.raises(PruneTransactionConflictError):
         _checked_prune_results(raw)
+
+
+@pytest.mark.parametrize("envelope", [True, False])
+async def test_originating_transaction_error_is_not_masked_by_rollback_placeholders(envelope):
+    from surreal_memory.storage.surrealdb.prune import _checked_prune_results
+
+    rows = [
+        {"status": "ERR", "result": "The query was not executed due to a failed transaction"},
+        {"status": "ERR", "result": "synthetic originating statement error"},
+        {"status": "ERR", "result": "The query was not executed due to a cancelled transaction"},
+    ]
+    raw = {"result": rows} if envelope else rows
+    with pytest.raises(RuntimeError, match="statement 2: synthetic originating statement error"):
+        _checked_prune_results(raw)

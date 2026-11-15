@@ -113,7 +113,9 @@ async def test_missing_pending_ids_keep_historical_accounting_without_new_fake_r
     journal_marker, expected_count
 ):
     class Storage(_PruneStorage):
-        async def repair_prune_synapse_refs_if_absent(self, ids, *, lease_owner_token):
+        async def repair_prune_synapse_refs_if_absent(
+            self, ids, *, lease_owner_token, budget_check=None
+        ):
             assert ids == ["historically-missing"]
             self.removed_fiber_refs.append(set(ids))
             return 1

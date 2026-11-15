@@ -1595,6 +1595,7 @@ class ConsolidationEngine:
                                         if outcome == "missing"
                                     ],
                                     lease_owner_token=owner,
+                                    budget_check=self._check_progress_budget,
                                 )
                                 break
                             except PruneTransactionConflictError as exc:

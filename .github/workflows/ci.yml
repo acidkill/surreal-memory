@@ -222,6 +222,12 @@ jobs:
           python -m tests._disposable_surrealdb register surrealdb-ci "$target_file"
           echo "SMEM_TEST_SURREALDB_TARGET_FILE=$target_file" >> "$GITHUB_ENV"
 
+      - name: Check legacy fiber repair compatibility
+        run: >-
+          pytest -v --timeout=120
+          tests/integration/test_prune_atomic_db.py::test_legacy_absent_edge_repairs_refs_but_recreated_edge_keeps_them
+          tests/integration/test_prune_atomic_db.py::test_legacy_repair_pages_eight_fibers_once_with_id_only_replies
+
       # No -n auto here: parallel workers hammering one shared SurrealDB
       # connection produce connection resets under load unrelated to any real
       # regression. Correctness, not speed, is the point of this job.
@@ -231,14 +237,22 @@ jobs:
       # Run both shapes on fresh DB processes so setup/test history cannot
       # contaminate the sampled RSS interval. The legacy delete loop is
       # intentionally restricted to this disposable, memory-capped container.
-      - name: Benchmark bounded snapshot cleanup
+      - name: Benchmark bounded snapshot and fiber repair
+        id: repair_benchmark
         run: |
           set -euo pipefail
           report="semantic-discovery-prune-${{ matrix.surrealdb }}.jsonl"
           : > "$report"
-          for mode in legacy bounded; do
+          failed=0
+          # Original 1Gi acceptance outcomes stay authoritative. Extra 2Gi
+          # repair runs are diagnostic only and cannot clear a prior failure.
+          for profile in legacy:1g:0 bounded:1g:0 repair-legacy:1g:0 repair-bounded:1g:0 repair-legacy:2g:1 repair-bounded:2g:1; do
+            IFS=: read -r mode memory diagnostic <<< "$profile"
+            diagnostic_args=()
+            if [ "$diagnostic" = 1 ]; then diagnostic_args+=(--diagnostic-only); fi
             docker rm -f surrealdb-ci >/dev/null 2>&1 || true
-            docker run -d --name surrealdb-ci -p 8001:8001 --cpus=2 --memory=1g --memory-swap=1g \
+            docker run -d --name surrealdb-ci -p 127.0.0.1:8001:8001 --cpus=2 --memory="$memory" --memory-swap="$memory" --tmpfs /data --tmpfs /logs \
+              --label "io.surreal-memory.test-run=$(python -c 'import uuid; print(uuid.uuid4().hex)')" \
               surrealdb/surrealdb:v${{ matrix.surrealdb }} \
               start memory --user root --pass root --bind 0.0.0.0:8001 \
               --allow-experimental gql --allow-eval-query >/dev/null
@@ -255,14 +269,30 @@ jobs:
               docker logs surrealdb-ci
               exit 1
             fi
+            python -m tests._disposable_surrealdb register surrealdb-ci "$RUNNER_TEMP/smem-disposable.json"
             pid="$(docker inspect --format='{{.State.Pid}}' surrealdb-ci)"
-            SURREALDB_CONTAINER_PID="$pid" python scripts/benchmark_semantic_discovery_prune.py \
-              --mode "$mode" --version "${{ matrix.surrealdb }}" | tee -a "$report"
+            if PYTHONPATH="$GITHUB_WORKSPACE" SURREALDB_CONTAINER_PID="$pid" python scripts/benchmark_semantic_discovery_prune.py \
+              --mode "$mode" --version "${{ matrix.surrealdb }}" "${diagnostic_args[@]}" | tee -a "$report"; then
+              :
+            else
+              rc=$?
+              if ! docker logs surrealdb-ci; then echo "Benchmark container logs unavailable"; fi
+              oom="$(docker inspect --format='{{.State.OOMKilled}}' surrealdb-ci)"
+              python -c 'import json,sys; print(json.dumps({"mode":sys.argv[1], "benchmark_exit":int(sys.argv[2]), "container_oom_killed":sys.argv[3] == "true", "memory_limit":sys.argv[4], "diagnostic_only":sys.argv[5] == "1"}))' "$mode" "$rc" "$oom" "$memory" "$diagnostic" | tee -a "$report"
+              if [ "$diagnostic" = 0 ] && { [ "$mode" != repair-legacy ] || [ "$oom" != true ] || ! grep -Fq '"measurement_started": "repair-legacy"' "$report"; }; then failed=1; fi
+            fi
             docker rm -f surrealdb-ci >/dev/null
           done
-          cat "$report" >> "$GITHUB_STEP_SUMMARY"
+          exit "$failed"
 
-      - name: Upload snapshot cleanup benchmark metrics
+      - name: Summarize snapshot and fiber repair benchmark metrics
+        if: ${{ always() && steps.repair_benchmark.outcome != 'skipped' && steps.repair_benchmark.outcome != '' }}
+        run: |
+          report="semantic-discovery-prune-${{ matrix.surrealdb }}.jsonl"
+          if [ -f "$report" ]; then cat "$report" >> "$GITHUB_STEP_SUMMARY"; fi
+
+      - name: Upload snapshot and fiber repair benchmark metrics
+        if: ${{ always() && steps.repair_benchmark.outcome != 'skipped' && steps.repair_benchmark.outcome != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: semantic-discovery-prune-${{ matrix.surrealdb }}
@@ -271,7 +301,12 @@ jobs:
 
       - name: SurrealDB logs (on failure)
         if: failure()
-        run: docker logs surrealdb-ci
+        run: |
+          if docker inspect surrealdb-ci >/dev/null 2>&1; then
+            if ! docker logs surrealdb-ci; then echo "SurrealDB container logs unavailable"; fi
+          else
+            echo "SurrealDB container already removed; benchmark failure logs were captured before cleanup."
+          fi
 
   build:
     name: Build Package

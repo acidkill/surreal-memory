@@ -1190,6 +1190,8 @@ def test_optional_empty_recovery_is_absent_but_cannot_authorize_operator_resume(
     "fault",
     [
         None,
+        "capacity-130",
+        "scope-130",
         "pod",
         "container",
         "restart",
@@ -1241,6 +1243,8 @@ async def test_runtime_capacity_sigint_records_actual_terminal_and_next_command(
         after["last_error"] = "backend write failed"
     elif fault == "failed":
         after["status"] = "failed"
+    if fault == "scope-130":
+        after["run_id"] = "different-run"
     ready, saved = tmp_path / "ready", tmp_path / "checkpoint"
     real_popen = subprocess.Popen
     real_sleep = asyncio.sleep
@@ -1266,7 +1270,9 @@ async def test_runtime_capacity_sigint_records_actual_terminal_and_next_command(
                 str(ready),
                 str(saved),
                 json.dumps(after),
-                str(2 if fault == "exit" else rc),
+                str(
+                    130 if fault in {"capacity-130", "scope-130"} else 2 if fault == "exit" else rc
+                ),
             ],
             **kwargs,
         )
@@ -1385,6 +1391,15 @@ async def test_runtime_capacity_sigint_records_actual_terminal_and_next_command(
         assert final["phase"] == "blocked"
         assert "confirmed_success" not in final
         assert final["cli_rc"] == children[0].returncode
+        if fault == "capacity-130":
+            assert final["cli_rc"] == 130
+            assert final["reason"] == "database memory exceeds safety threshold"
+            assert final["secondary_reason"] == "CLI exit disagrees with terminal checkpoint"
+            assert "HOURLY_BLOCKED database memory exceeds safety threshold" in final_log
+        if fault == "scope-130":
+            assert final["cli_rc"] == 130
+            assert final["reason"] == "capacity stop checkpoint scope changed"
+            assert "secondary_reason" not in final
         return
     assert final["phase"] == "terminal" and final["cli_rc"] == rc
     assert children[0].returncode == rc

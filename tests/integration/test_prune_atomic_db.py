@@ -392,3 +392,194 @@ async def test_real_conflict_rereads_reinforced_edge_and_completes_or_pauses(cli
         checkpoint = await first.get_consolidation_progress()
         assert checkpoint["strategy_states"]["prune"]["phase"] == "synapse_pending"
         assert checkpoint["strategy_states"]["prune"]["pending"] == [edge.id]
+
+
+async def test_legacy_repair_pages_eight_fibers_once_with_id_only_replies(clients, monkeypatch):
+    from surrealdb import RecordID
+
+    from scripts.benchmark_semantic_discovery_prune import _repair_scan_evidence
+    from surreal_memory.storage.surrealdb.prune import (
+        _PRUNE_REPAIR_CONTINUATION_SELECTOR,
+        _PRUNE_REPAIR_SELECTOR,
+        _checked_prune_results,
+    )
+
+    first, second, edge, _ = clients
+    owner = "owner"
+    second_missing = str(uuid4())
+    # Exercise the real empty-page SQL (including last([]).id/null) before seeding.
+    assert (
+        await first.repair_prune_synapse_refs_if_absent([second_missing], lease_owner_token=owner)
+        == 0
+    )
+    fibers = []
+    numeric_record_id = None
+    for index in range(17):
+        fiber = Fiber.create(
+            neuron_ids={edge.source_id, edge.target_id},
+            synapse_ids={second_missing, "keep-synthetic"} | ({edge.id} if index < 16 else set()),
+            anchor_neuron_id=edge.source_id,
+            metadata={"synthetic_padding": "x" * 4096},
+            fiber_id="1234567890" if index == 0 else f"aaaaaaaa-aaaa-4aaa-8aaa-{index:012d}",
+        )
+        await second.add_fiber(fiber)
+        fibers.append(fiber)
+        if index == 0:
+            # Bare numeric SurQL literals address integer IDs; this fixture stores a string ID.
+            numeric_record_id = RecordID("fiber", fiber.id)
+            before = await first._query(
+                "SELECT id, synapse_ids, metadata FROM $record WHERE brain_id = $brain",
+                record=numeric_record_id,
+                brain=first.brain_id,
+            )
+            assert len(before) == 1, "numeric-looking string-ID fixture must exist before repair"
+            assert before[0]["id"] == numeric_record_id
+            assert set(before[0]["synapse_ids"]) == fiber.synapse_ids
+            assert before[0]["metadata"] == fiber.metadata
+    target_brain_id = second.brain_id
+    foreign_brain = Brain.create(
+        name="synthetic-foreign-prune", brain_id="00000000-0000-0000-0000-000000000000"
+    )
+    assert foreign_brain.id < target_brain_id
+    await second.save_brain(foreign_brain)
+    foreign_fibers = []
+    second.set_brain(foreign_brain.id)
+    try:
+        for index in range(10):
+            foreign = Fiber.create(
+                neuron_ids={edge.source_id, edge.target_id},
+                synapse_ids={edge.id, second_missing, "keep-foreign"},
+                anchor_neuron_id=edge.source_id,
+                metadata={"scope": "foreign", "synthetic_padding": "y" * 4096},
+                fiber_id=f"000000000{index}",
+            )
+            await second.add_fiber(foreign)
+            record = RecordID("fiber", foreign.id)
+            before_foreign = await second._query(
+                "SELECT id, synapse_ids, metadata FROM $record WHERE brain_id = $brain",
+                record=record,
+                brain=foreign_brain.id,
+            )
+            assert len(before_foreign) == 1 and before_foreign[0]["id"] == record
+            assert set(before_foreign[0]["synapse_ids"]) == foreign.synapse_ids
+            assert before_foreign[0]["metadata"] == foreign.metadata
+            foreign_fibers.append((record, foreign))
+    finally:
+        second.set_brain(target_brain_id)
+    plan_params = {"brain_id": first.brain_id, "absent": [edge.id, second_missing]}
+    initial_rows = await first._query(_PRUNE_REPAIR_SELECTOR, **plan_params)
+    assert len(initial_rows) == 9
+    assert all(not row["eligible"] for row in initial_rows[:8])
+    assert all(type(row["id"].id) is str for row in initial_rows)
+    for phase, selector, cursor in (
+        ("initial", _PRUNE_REPAIR_SELECTOR, None),
+        ("continuation", _PRUNE_REPAIR_CONTINUATION_SELECTOR, initial_rows[7]["id"].id),
+        ("after_integer", _PRUNE_REPAIR_CONTINUATION_SELECTOR, 1234567890),
+        ("after_string", _PRUNE_REPAIR_CONTINUATION_SELECTOR, "1234567890"),
+    ):
+        params = {**plan_params, "cursor": cursor}
+        plan = await first._query_response(selector + " EXPLAIN FULL", **params)
+        evidence = _repair_scan_evidence(plan)
+        assert evidence["primary_scan_output_bound"], json.dumps(
+            {"phase": phase, **evidence}, default=str
+        )
+    after_integer = await first._query(
+        _PRUNE_REPAIR_CONTINUATION_SELECTOR, **plan_params, cursor=1234567890
+    )
+    assert len(after_integer) == 9
+    assert all(type(row["id"].id) is str for row in after_integer)
+    # Integer range bounds are valid even when the string-only schema stores no integer ID.
+    assert [row["id"] for row in after_integer] == [row["id"] for row in initial_rows]
+    after_string = await first._query(
+        _PRUNE_REPAIR_CONTINUATION_SELECTOR, **plan_params, cursor="1234567890"
+    )
+    assert len(after_string) == 9
+    assert all(row["eligible"] for row in after_string)
+    assert all(row["id"] not in [item["id"] for item in after_integer] for row in after_string)
+    await second.delete_synapse(edge.id)
+    conn, original = first._ensure_conn(), first._ensure_conn().query_raw
+    page_counts = []
+
+    async def observe(sql, params=None, **kwargs):
+        raw = await original(sql, params, **kwargs)
+        if "-- bounded legacy prune repair" in sql:
+            results = _checked_prune_results(raw)
+            pages = [
+                row
+                for statement in results
+                for row in (
+                    statement["result"] if isinstance(statement.get("result"), list) else []
+                )
+                if isinstance(row, dict)
+                and set(row) == {"updated_ids", "has_more", "next_cursor", "scanned"}
+            ]
+            assert len(pages) == 1
+            page_counts.append(len(pages[0]["updated_ids"]))
+            assert page_counts[-1] <= 8
+            assert 0 <= pages[0]["scanned"] <= 9
+            assert getattr(pages[0]["next_cursor"], "table_name", None) == "fiber"
+            assert (
+                "RETURN AFTER;"
+                not in sql.split("LET $updated", 1)[1].split("LET $final_lease", 1)[0]
+            )
+        return raw
+
+    monkeypatch.setattr(conn, "query_raw", observe)
+    budget_checks = 0
+
+    async def budget():
+        nonlocal budget_checks
+        budget_checks += 1
+
+    assert (
+        await first.repair_prune_synapse_refs_if_absent(
+            [edge.id, second_missing], lease_owner_token=owner, budget_check=budget
+        )
+        == 17
+    )
+    assert page_counts == [0, 6, 8, 3]
+    assert budget_checks == 4
+    assert (
+        await first.repair_prune_synapse_refs_if_absent(
+            [edge.id, second_missing], lease_owner_token=owner
+        )
+        == 0
+    )
+    assert page_counts == [0, 6, 8, 3, 0, 0, 0, 0]
+    for index, fiber in enumerate(fibers):
+        if index == 0:
+            after = await first._query(
+                "SELECT id, synapse_ids, metadata FROM $record WHERE brain_id = $brain",
+                record=numeric_record_id,
+                brain=first.brain_id,
+            )
+            assert len(after) == 1
+            assert after[0]["id"] == numeric_record_id
+            assert set(after[0]["synapse_ids"]) == {"keep-synthetic"}
+            assert after[0]["metadata"] == fiber.metadata
+        else:
+            repaired = await first.get_fiber(fiber.id)
+            assert repaired is not None and repaired.synapse_ids == {"keep-synthetic"}
+            assert repaired.metadata == fiber.metadata
+    changes = await first._query(
+        "SELECT entity_id, payload FROM change_log WHERE brain_id = $brain AND entity_type = 'fiber' AND operation = 'update'",
+        brain=first.brain_id,
+    )
+    assert len(changes) == 17
+    assert {row["entity_id"] for row in changes} == {fiber.id for fiber in fibers}
+    assert all(row.get("payload") is None for row in changes)
+    for record, foreign in foreign_fibers:
+        unchanged = await second._query(
+            "SELECT id, synapse_ids, metadata FROM $record WHERE brain_id = $brain",
+            record=record,
+            brain=foreign_brain.id,
+        )
+        assert len(unchanged) == 1 and unchanged[0]["id"] == record
+        assert set(unchanged[0]["synapse_ids"]) == foreign.synapse_ids
+        assert unchanged[0]["metadata"] == foreign.metadata
+    foreign_updates = await first._query(
+        "SELECT entity_id FROM change_log WHERE brain_id = $brain "
+        "AND entity_type = 'fiber' AND operation = 'update'",
+        brain=foreign_brain.id,
+    )
+    assert foreign_updates == []
