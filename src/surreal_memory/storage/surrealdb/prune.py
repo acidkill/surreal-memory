@@ -44,7 +44,7 @@ IF $has_cursor AND array::len($processed) > 0
     THROW 'prune repair cursor did not advance';
 };
 LET $targets = array::map(array::filter($processed, |$row| $row.eligible), |$row| $row.id);
-LET $updated = (UPDATE $targets SET synapse_ids = array::difference(synapse_ids, $absent)
+LET $updated = (UPDATE $targets SET synapse_ids = array::complement(synapse_ids, $absent)
     WHERE brain_id = $brain_id AND synapse_ids CONTAINSANY $absent RETURN id);
 LET $final_lease = (UPDATE type::record('consolidation_lease', $lease_id)
     SET sweep_fenced_at = time::now()

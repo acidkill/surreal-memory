@@ -78,7 +78,12 @@ class RepairDB(SurrealDBPruneMixin):
             if fid not in self.foreign and self.fibers[fid] & absent
         ]
         for fid, _ in selected:
-            self.fibers[fid] -= absent
+            # Follow the native SQL operator: SurrealDB difference is symmetric.
+            if "array::complement(synapse_ids, $absent)" in sql:
+                self.fibers[fid] -= absent
+            else:
+                assert "array::difference(synapse_ids, $absent)" in sql
+                self.fibers[fid] ^= absent
         page = {
             "updated_ids": [record for _, record in selected],
             "has_more": len(raw) > 8,
