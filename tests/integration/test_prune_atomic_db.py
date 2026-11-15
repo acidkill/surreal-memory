@@ -458,6 +458,42 @@ async def test_legacy_repair_pages_eight_fibers_once_with_id_only_replies(client
         _PRUNE_REPAIR_SELECTOR + " EXPLAIN FULL", brain_id=first.brain_id, probe_sid=edge.id
     )
     evidence = _repair_scan_evidence(plan)
+    print(
+        json.dumps(
+            {"prune_index_probe": "array-first-wildcard", "plan": plan, "evidence": evidence},
+            default=str,
+            sort_keys=True,
+        ),
+        flush=True,
+    )
+    # Diagnostic DDL is confined to this registered, disposable tiny fixture.
+    for layout, index_name, fields in (
+        ("brain-first-wildcard", "idx_prune_probe_brain_wildcard", "brain_id, synapse_ids.*"),
+        ("brain-first-direct", "idx_prune_probe_brain_direct", "brain_id, synapse_ids"),
+    ):
+        try:
+            _checked_prune_results(
+                await first._ensure_conn().query_raw(
+                    f"DEFINE INDEX {index_name} ON fiber FIELDS {fields};"
+                )
+            )
+            probe_sql = _PRUNE_REPAIR_SELECTOR.replace("idx_fiber_synapses", index_name)
+            probe_plan = await first._query_response(
+                probe_sql + " EXPLAIN FULL", brain_id=first.brain_id, probe_sid=edge.id
+            )
+            diagnostic = {
+                "prune_index_probe": layout,
+                "fields": fields,
+                "plan": probe_plan,
+                "evidence": _repair_scan_evidence(probe_plan),
+            }
+        except Exception as exc:
+            diagnostic = {
+                "prune_index_probe": layout,
+                "error_type": type(exc).__name__,
+                "error": str(exc)[:1000],
+            }
+        print(json.dumps(diagnostic, default=str, sort_keys=True), flush=True)
     assert evidence["indexed_scan_output_bound"], json.dumps(evidence, default=str)
     await second.delete_synapse(edge.id)
     conn, original = first._ensure_conn(), first._ensure_conn().query_raw
