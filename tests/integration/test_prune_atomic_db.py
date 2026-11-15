@@ -395,12 +395,15 @@ async def test_real_conflict_rereads_reinforced_edge_and_completes_or_pauses(cli
 
 
 async def test_legacy_repair_pages_eight_fibers_once_with_id_only_replies(clients, monkeypatch):
+    from surrealdb import RecordID
+
     from surreal_memory.storage.surrealdb.prune import _checked_prune_results
 
     first, second, edge, _ = clients
     owner = "owner"
     second_missing = str(uuid4())
     fibers = []
+    numeric_record_id = None
     for index in range(17):
         fiber = Fiber.create(
             neuron_ids={edge.source_id, edge.target_id},
@@ -411,6 +414,18 @@ async def test_legacy_repair_pages_eight_fibers_once_with_id_only_replies(client
         )
         await second.add_fiber(fiber)
         fibers.append(fiber)
+        if index == 0:
+            # Bare numeric SurQL literals address integer IDs; this fixture stores a string ID.
+            numeric_record_id = RecordID("fiber", fiber.id)
+            before = await first._query(
+                "SELECT id, synapse_ids, metadata FROM $record WHERE brain_id = $brain",
+                record=numeric_record_id,
+                brain=first.brain_id,
+            )
+            assert len(before) == 1, "numeric-looking string-ID fixture must exist before repair"
+            assert before[0]["id"] == numeric_record_id
+            assert set(before[0]["synapse_ids"]) == fiber.synapse_ids
+            assert before[0]["metadata"] == fiber.metadata
     await second.delete_synapse(edge.id)
     conn, original = first._ensure_conn(), first._ensure_conn().query_raw
     page_counts = []
@@ -458,10 +473,21 @@ async def test_legacy_repair_pages_eight_fibers_once_with_id_only_replies(client
         == 0
     )
     assert page_counts == [8, 8, 1, 0]
-    for fiber in fibers:
-        repaired = await first.get_fiber(fiber.id)
-        assert repaired is not None and repaired.synapse_ids == {"keep-synthetic"}
-        assert repaired.metadata == fiber.metadata
+    for index, fiber in enumerate(fibers):
+        if index == 0:
+            after = await first._query(
+                "SELECT id, synapse_ids, metadata FROM $record WHERE brain_id = $brain",
+                record=numeric_record_id,
+                brain=first.brain_id,
+            )
+            assert len(after) == 1
+            assert after[0]["id"] == numeric_record_id
+            assert set(after[0]["synapse_ids"]) == {"keep-synthetic"}
+            assert after[0]["metadata"] == fiber.metadata
+        else:
+            repaired = await first.get_fiber(fiber.id)
+            assert repaired is not None and repaired.synapse_ids == {"keep-synthetic"}
+            assert repaired.metadata == fiber.metadata
     changes = await first._query(
         "SELECT entity_id, payload FROM change_log WHERE brain_id = $brain AND entity_type = 'fiber' AND operation = 'update'",
         brain=first.brain_id,
