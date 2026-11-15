@@ -140,17 +140,33 @@ def _checked_prune_results(raw: Any) -> list[dict[str, Any]]:
         )
     ):
         raise RuntimeError("prune transaction response is unconfirmed")
-    errors = [row.get("result") for row in results if row["status"] != "OK"]
+    errors = [
+        (index, row.get("result")) for index, row in enumerate(results) if row["status"] != "OK"
+    ]
     if errors:
-        if any("prune lease lost" in str(error) for error in errors):
+        if any("prune lease lost" in str(error) for _, error in errors):
             raise ConsolidationLeaseLostError("prune lease lost")
         if any(
             term in str(error).lower()
-            for error in errors
+            for _, error in errors
             for term in ("transaction conflict", "write conflict")
         ):
             raise PruneTransactionConflictError("prune transaction write conflict")
-        raise RuntimeError(f"prune transaction failed: {str(errors[0])[:1000]}")
+        rollback_messages = {
+            "the query was not executed due to a failed transaction",
+            "the query was not executed due to a cancelled transaction",
+        }
+        index, cause = next(
+            (
+                (index, error)
+                for index, error in errors
+                if str(error).strip().lower().rstrip(".") not in rollback_messages
+            ),
+            errors[0],
+        )
+        raise RuntimeError(
+            f"prune transaction failed at statement {index + 1}: {str(cause)[:1000]}"
+        )
     return results
 
 

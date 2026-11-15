@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import importlib.metadata
 import json
 import sys
-from importlib.metadata import version
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -16,6 +16,17 @@ import pytest
 from surreal_memory.engine import consolidation_receipts as receipts
 from surreal_memory.engine.consolidation import ConsolidationStrategy
 from tests.unit.test_cluster_consolidation_hourly import hourly
+
+
+@pytest.fixture(autouse=True)
+def synthetic_runtime_versions(monkeypatch):
+    original = importlib.metadata.version
+    versions = {"numpy": "1.2.3", "surreal-memory": "3.12.2"}
+    monkeypatch.setattr(
+        importlib.metadata,
+        "version",
+        lambda name: versions[name] if name in versions else original(name),
+    )
 
 
 def evidence():
@@ -105,8 +116,8 @@ def evidence():
             "runner_sha256": hashlib.sha256(Path(hourly.__file__).read_bytes()).hexdigest(),
             "receipts_sha256": hashlib.sha256(Path(receipts.__file__).read_bytes()).hexdigest(),
             "python_version": ".".join(map(str, sys.version_info[:3])),
-            "numpy_version": version("numpy"),
-            "package_version": version("surreal-memory"),
+            "numpy_version": "1.2.3",
+            "package_version": "3.12.2",
         },
         "reviewed_source_sha": "c" * 40,
         "source_fix_reviewed": True,
@@ -449,3 +460,14 @@ def test_failed_predecessor_identity_and_actual_wrapper_two_checked(fault):
             api.previous_log(previous, expected_exit_code=2)
     else:
         assert api.previous_log(previous, expected_exit_code=2) == "actual log"
+
+
+@pytest.mark.parametrize("key", ["numpy_version", "package_version"])
+async def test_operator_rejects_installed_runtime_version_mismatch(tmp_path, key):
+    api, storage, safety, args, cm, _, approval = operator_fixture(tmp_path)
+    old = copy.deepcopy(cm)
+    approval["runtime"][key] = "999.0.0"
+    Path(args.approval_file).write_text(json.dumps(approval))
+    with pytest.raises(receipts.BlockedError, match="runtime"):
+        await hourly.admit_capacity_stop(api, storage, safety, args)
+    assert cm == old

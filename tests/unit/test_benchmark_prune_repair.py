@@ -46,7 +46,7 @@ def test_repair_page_rejects_full_rows_and_overlarge_or_non_id_responses():
 
 @pytest.mark.asyncio
 async def test_wire_count_records_original_cbor_bytes(monkeypatch):
-    from surrealdb.connections import async_http
+    async_http = pytest.importorskip("surrealdb.connections.async_http")
 
     monkeypatch.setattr(async_http, "decode", lambda raw: {"decoded": len(raw)})
 
@@ -75,3 +75,30 @@ def test_scan_evidence_requires_measured_index_output_and_discloses_read_gap():
         ]
         is False
     )
+
+
+def test_pure_helpers_import_without_surrealdb_sdk():
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    code = """
+import importlib.abc
+import sys
+class BlockSDK(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == 'surrealdb' or fullname.startswith('surrealdb.'):
+            raise ModuleNotFoundError('SDK intentionally unavailable', name=fullname)
+sys.meta_path.insert(0, BlockSDK())
+from scripts import benchmark_semantic_discovery_prune as benchmark
+assert benchmark._repair_scan_evidence({'operator': 'IndexScan', 'metrics': None})['physical_read_bound'] is None
+"""
+    result = subprocess.run(  # noqa: S603 - fixed interpreter and test code
+        [sys.executable, "-c", code],
+        cwd=Path(__file__).resolve().parents[2],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr

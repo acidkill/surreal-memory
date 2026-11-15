@@ -222,6 +222,12 @@ jobs:
           python -m tests._disposable_surrealdb register surrealdb-ci "$target_file"
           echo "SMEM_TEST_SURREALDB_TARGET_FILE=$target_file" >> "$GITHUB_ENV"
 
+      - name: Check legacy fiber repair compatibility
+        run: >-
+          pytest -v --timeout=120
+          tests/integration/test_prune_atomic_db.py::test_legacy_absent_edge_repairs_refs_but_recreated_edge_keeps_them
+          tests/integration/test_prune_atomic_db.py::test_legacy_repair_pages_eight_fibers_once_with_id_only_replies
+
       # No -n auto here: parallel workers hammering one shared SurrealDB
       # connection produce connection resets under load unrelated to any real
       # regression. Correctness, not speed, is the point of this job.
@@ -232,6 +238,7 @@ jobs:
       # contaminate the sampled RSS interval. The legacy delete loop is
       # intentionally restricted to this disposable, memory-capped container.
       - name: Benchmark bounded snapshot and fiber repair
+        id: repair_benchmark
         run: |
           set -euo pipefail
           report="semantic-discovery-prune-${{ matrix.surrealdb }}.jsonl"
@@ -273,13 +280,13 @@ jobs:
           exit "$failed"
 
       - name: Summarize snapshot and fiber repair benchmark metrics
-        if: always()
+        if: ${{ always() && steps.repair_benchmark.outcome != 'skipped' && steps.repair_benchmark.outcome != '' }}
         run: |
           report="semantic-discovery-prune-${{ matrix.surrealdb }}.jsonl"
           if [ -f "$report" ]; then cat "$report" >> "$GITHUB_STEP_SUMMARY"; fi
 
       - name: Upload snapshot and fiber repair benchmark metrics
-        if: always()
+        if: ${{ always() && steps.repair_benchmark.outcome != 'skipped' && steps.repair_benchmark.outcome != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: semantic-discovery-prune-${{ matrix.surrealdb }}

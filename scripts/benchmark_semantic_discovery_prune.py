@@ -14,12 +14,9 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-from surrealdb import RecordID
-
 from surreal_memory.core.brain import Brain
 from surreal_memory.core.neuron import Neuron, NeuronType
 from surreal_memory.core.synapse import Synapse, SynapseType
-from surreal_memory.storage.surrealdb.store import SurrealDBStorage
 from surreal_memory.utils.timeutils import utcnow
 from tests._disposable_surrealdb import _inspect, load_target
 
@@ -191,7 +188,10 @@ def _repair_page(statements: list[dict[str, Any]]) -> dict[str, Any]:
 
 async def _run_repair(mode: str, version: str, options: dict[str, str], pid: int) -> dict[str, Any]:
     """Compare full-row legacy repair with the bounded real storage method."""
+    from surrealdb import RecordID
+
     from surreal_memory.storage.surrealdb.prune import _checked_prune_results
+    from surreal_memory.storage.surrealdb.store import SurrealDBStorage
 
     storage = SurrealDBStorage(**options, database=f"repair_{uuid.uuid4().hex[:10]}")
     await storage.initialize()
@@ -385,6 +385,10 @@ async def _run(mode: str, version: str) -> dict[str, Any]:
     options, pid = _benchmark_target()
     if mode.startswith("repair-"):
         return await _run_repair(mode, version, options, pid)
+    from surrealdb import RecordID
+
+    from surreal_memory.storage.surrealdb.store import SurrealDBStorage
+
     suffix = uuid.uuid4().hex[:10]
     storage = SurrealDBStorage(**options, database=f"run_{suffix}")
     await storage.initialize()
