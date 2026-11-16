@@ -250,3 +250,42 @@ def test_tmpfs_does_not_authorize_other_backend_paths(container: dict, backend: 
     container["Mounts"] = [{"Type": "tmpfs", "Destination": "/data"}]
     with pytest.raises(isolation.UnsafeTestTargetError, match="disposable"):
         isolation._identity(container)
+
+
+def test_cli_tmpfs_inspect_map_authorizes_exact_rocksdb(container: dict) -> None:
+    container["Config"]["Cmd"][1] = "rocksdb:/data/test"
+    container["HostConfig"] = {"Tmpfs": {"/data": "mode=1777", "/logs": ""}}
+    assert container["Mounts"] == []
+    assert isolation._identity(container)["container_id"] == container["Id"]
+
+
+@pytest.mark.parametrize(
+    "host_config",
+    [
+        {"Tmpfs": {}},
+        {"Tmpfs": {"/logs": ""}},
+        {"Tmpfs": {"/data": None}},
+        {"Tmpfs": {"/data": []}},
+        {"Tmpfs": {"/data": "mode=1777", "/data/test": ""}},
+        {"Tmpfs": {"/data": ""}, "Binds": ["/synthetic/host:/data/test"]},
+        {"Tmpfs": {"/data": ""}, "VolumesFrom": ["synthetic-container"]},
+        {"Tmpfs": {"/data": ""}, "Mounts": [{"Type": "bind", "Target": "/data/test"}]},
+        {"Tmpfs": {"/data": ""}, "Mounts": [{"Type": "volume", "Target": "/data"}]},
+    ],
+)
+def test_tmpfs_map_does_not_hide_unproven_or_persistent_mounts(
+    container: dict, host_config: dict
+) -> None:
+    container["Config"]["Cmd"][1] = "rocksdb:/data/test"
+    container["HostConfig"] = host_config
+    with pytest.raises(isolation.UnsafeTestTargetError, match="disposable"):
+        isolation._identity(container)
+
+
+@pytest.mark.parametrize("mount_type", ["bind", "volume", "unknown"])
+def test_cli_tmpfs_map_cannot_override_runtime_mount_veto(container: dict, mount_type: str) -> None:
+    container["Config"]["Cmd"][1] = "rocksdb:/data/test"
+    container["HostConfig"] = {"Tmpfs": {"/data": "mode=1777"}}
+    container["Mounts"] = [{"Type": mount_type, "Destination": "/data"}]
+    with pytest.raises(isolation.UnsafeTestTargetError, match="disposable"):
+        isolation._identity(container)

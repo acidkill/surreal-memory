@@ -59,11 +59,25 @@ def _identity(info: dict[str, Any]) -> dict[str, str]:
     run_id = labels.get(LABEL, "")
     image = config.get("Image", "")
     ports = info.get("NetworkSettings", {}).get("Ports", {}).get("8001/tcp") or []
+    host_config = info.get("HostConfig") or {}
+    tmpfs = host_config.get("Tmpfs")
+    if tmpfs is None:
+        tmpfs = {}
+    safe_tmpfs = isinstance(tmpfs, dict) and all(
+        path in {"/data", "/logs"} and isinstance(options, str) for path, options in tmpfs.items()
+    )
     safe = (
         re.fullmatch(r"[0-9a-f]{32}", run_id)
         and re.fullmatch(r"[0-9a-f]{64}", info.get("Id", ""))
         and re.fullmatch(r"surrealdb/surrealdb:v3\.2\.(0|4)", image)
         and info.get("State", {}).get("Running") is True
+        and safe_tmpfs
+        and not host_config.get("Binds")
+        and not host_config.get("VolumesFrom")
+        and all(
+            mount.get("Type") == "tmpfs" and mount.get("Target") in {"/data", "/logs"}
+            for mount in host_config.get("Mounts") or []
+        )
         and all(
             mount.get("Type") == "tmpfs" and mount.get("Destination") in {"/data", "/logs"}
             for mount in info.get("Mounts", [])
@@ -72,9 +86,12 @@ def _identity(info: dict[str, Any]) -> dict[str, str]:
             backend == "memory"
             or (
                 backend == "rocksdb:/data/test"
-                and any(
-                    mount.get("Type") == "tmpfs" and mount.get("Destination") == "/data"
-                    for mount in info.get("Mounts", [])
+                and (
+                    "/data" in tmpfs
+                    or any(
+                        mount.get("Type") == "tmpfs" and mount.get("Destination") == "/data"
+                        for mount in info.get("Mounts", [])
+                    )
                 )
             )
         )
