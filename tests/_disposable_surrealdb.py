@@ -1,6 +1,6 @@
 """One fail-closed target contract for pytest and CLI/MCP acceptance children.
 
-Register only a labelled, memory-backed Docker instance without persistent mounts. A localhost
+Register only a labelled Docker instance using memory or RocksDB on verified tmpfs. A localhost
 URL, test brain name or private HOME alone cannot authorize a database connection.
 """
 
@@ -54,6 +54,7 @@ def _identity(info: dict[str, Any]) -> dict[str, str]:
     """Verify actual process, image, credentials and published loopback endpoint."""
     config = info.get("Config", {})
     command = config.get("Cmd") or []
+    backend = command[1] if isinstance(command, list) and len(command) > 1 else None
     labels = config.get("Labels") or {}
     run_id = labels.get(LABEL, "")
     image = config.get("Image", "")
@@ -67,10 +68,20 @@ def _identity(info: dict[str, Any]) -> dict[str, str]:
             mount.get("Type") == "tmpfs" and mount.get("Destination") in {"/data", "/logs"}
             for mount in info.get("Mounts", [])
         )
+        and (
+            backend == "memory"
+            or (
+                backend == "rocksdb:/data/test"
+                and any(
+                    mount.get("Type") == "tmpfs" and mount.get("Destination") == "/data"
+                    for mount in info.get("Mounts", [])
+                )
+            )
+        )
         and command
         == [
             "start",
-            "memory",
+            backend,
             "--user",
             "root",
             "--pass",
