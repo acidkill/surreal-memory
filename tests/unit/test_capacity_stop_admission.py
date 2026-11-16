@@ -128,6 +128,135 @@ def evidence():
     return raw, log, cp, approval
 
 
+def rebind_evidence():
+    """Synthetic reviewed archives and stable identity proofs for v2 consumers."""
+    raw, log, cp, approval = evidence()
+    previous = json.loads(raw)
+    namespace = "test"
+    pod = {
+        "metadata": {
+            "name": previous["pod_name"],
+            "namespace": namespace,
+            "uid": previous["pod_uid"],
+            "creationTimestamp": "2026-01-01T00:00:00Z",
+            "ownerReferences": [
+                {"kind": "Job", "name": previous["job_name"], "uid": previous["job_uid"]}
+            ],
+        },
+        "spec": {"nodeName": "node"},
+        "status": {
+            "phase": "Failed",
+            "containerStatuses": [
+                {
+                    "name": "runner",
+                    "restartCount": 0,
+                    "state": {
+                        "terminated": {
+                            "exitCode": 2,
+                            "reason": "Error",
+                            "finishedAt": "2026-01-01T01:00:00Z",
+                        }
+                    },
+                }
+            ],
+        },
+    }
+    job = {
+        "metadata": {
+            "name": previous["job_name"],
+            "namespace": namespace,
+            "uid": previous["job_uid"],
+        },
+        "status": {
+            "failed": 1,
+            "active": 0,
+            "succeeded": 0,
+            "conditions": [{"type": "Failed", "status": "True"}],
+        },
+    }
+    archive = {
+        "pod_raw": receipts.canonical(pod),
+        "job_raw": receipts.canonical(job),
+        "log": log,
+        "captured_at": "2026-01-01T01:15:00Z",
+    }
+    for field in ("pod", "job", "log"):
+        content = archive[field + "_raw"] if field != "log" else log
+        archive[field + "_sha256"] = hashlib.sha256(content.encode()).hexdigest()
+    incident = {
+        "node_name": "node",
+        "node_not_ready_at": "2026-01-01T01:30:00Z",
+        "eviction_event": {
+            "metadata": {"uid": "event-uid"},
+            "reason": "TaintManagerEviction",
+            "involvedObject": {"kind": "Pod", "namespace": namespace, "name": previous["pod_name"]},
+            "firstTimestamp": "2026-01-01T01:36:00Z",
+            "source": {"component": "taint-eviction-controller"},
+        },
+    }
+    binding = {
+        "namespace": namespace,
+        "pod_name": "replacement-db",
+        "pod_uid": "new-db-uid",
+        "node_name": "node",
+        "image_id": "db@sha256:" + "f" * 64,
+        "replica_set_name": "database-rs",
+        "replica_set_uid": "rs-uid",
+        "deployment_name": "database",
+        "deployment_uid": "deployment-uid",
+        "pvc_name": "database-data",
+        "pvc_uid": "pvc-uid",
+        "pv_name": "database-volume",
+        "pv_uid": "pv-uid",
+    }
+    for field in ("pod", "replica_set", "deployment", "pvc", "pv"):
+        binding[field + "_spec_sha256"] = "e" * 64
+    old_db = {
+        "metadata": {
+            "name": "historical-db",
+            "namespace": namespace,
+            "uid": "same-db-uid",
+            "creationTimestamp": "2025-12-01T00:00:00Z",
+            "ownerReferences": [{"kind": "ReplicaSet", "name": "database-rs", "uid": "rs-uid"}],
+        },
+        "spec": {
+            "nodeName": "node",
+            "containers": [{"name": "surrealdb", "image": "db:version"}],
+            "volumes": [{"name": "data", "persistentVolumeClaim": {"claimName": "database-data"}}],
+        },
+        "status": {
+            "containerStatuses": [
+                {
+                    "name": "surrealdb",
+                    "imageID": binding["image_id"],
+                    "containerID": "same-container",
+                    "restartCount": 2,
+                }
+            ]
+        },
+    }
+    old_db_raw = receipts.canonical(old_db)
+    historical = {
+        "pod_raw": old_db_raw,
+        "pod_sha256": hashlib.sha256(old_db_raw.encode()).hexdigest(),
+    }
+    approval["capacity_resume_version"] = 2
+    approval["resource_baseline"] = [["new-db-uid", '[["surrealdb","new-container",0]]'], 0.0, 0.0]
+    approval["incarnation_rebind"] = {
+        "previous_resource_baseline": json.loads(raw)["before_resources"],
+        "database": binding,
+        "previous_database": historical,
+        "brain": {
+            "brain_id": "synthetic-brain-uuid",
+            "config_sha256": receipts.checkpoint_hash({"activation_strategy": "hybrid"}),
+        },
+        "incident": incident,
+        "incident_sha256": receipts.checkpoint_hash(incident),
+        "archived_predecessor": archive,
+    }
+    return raw, log, cp, approval
+
+
 def seed(raw, log, cp, approval):
     return receipts.capacity_resume_seed(raw, log, cp, approval=approval)
 
@@ -471,3 +600,133 @@ async def test_operator_rejects_installed_runtime_version_mismatch(tmp_path, key
     with pytest.raises(receipts.BlockedError, match="runtime"):
         await hourly.admit_capacity_stop(api, storage, safety, args)
     assert cm == old
+
+
+def test_v2_rebind_preserves_historical130_and_separates_fresh_baseline():
+    raw, log, cp, approval = rebind_evidence()
+    before = copy.deepcopy(cp)
+    admitted = seed(raw, log, cp, approval)
+    assert cp == before
+    assert admitted["capacity_resume"]["version"] == 2
+    assert admitted["resource_baseline"] == approval["resource_baseline"]
+    assert admitted["resource_baseline"] != json.loads(raw)["before_resources"]
+    assert admitted["capacity_resume"]["previous_receipt_raw"] == raw
+    assert json.loads(raw)["cli_rc"] == 130
+    assert receipts.capacity_resume_matches(admitted, cp)
+    assert receipts.select_command(admitted, cp, None)[-1] == "--resume"
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "old-baseline",
+        "new-uid",
+        "restart",
+        "oom",
+        "container-reuse",
+        "archive-hash",
+        "archive-owner",
+        "archive-exit",
+        "archive-oom",
+        "event-name",
+        "event-uid",
+        "event-node",
+        "capture-time",
+        "old-db-uid",
+        "old-db-rs",
+        "old-db-pvc",
+        "old-db-image",
+        "brain-digest",
+        "spec-digest",
+    ],
+)
+def test_v2_rebind_rejects_changed_provenance_and_identity(fault):
+    raw, log, cp, approval = rebind_evidence()
+    before = copy.deepcopy(cp)
+    rb = approval["incarnation_rebind"]
+    archive = rb["archived_predecessor"]
+    if fault == "old-baseline":
+        rb["previous_resource_baseline"][0][0] = "changed"
+    elif fault == "new-uid":
+        approval["resource_baseline"][0][0] = "changed"
+    elif fault == "restart":
+        approval["resource_baseline"][0][1] = '[["surrealdb","new-container",1]]'
+    elif fault == "oom":
+        approval["resource_baseline"][1] = 1
+    elif fault == "container-reuse":
+        approval["resource_baseline"][0][1] = '[["surrealdb","same-container",0]]'
+    elif fault == "archive-hash":
+        archive["pod_raw"] += " "
+    elif fault.startswith("archive-"):
+        pod = json.loads(archive["pod_raw"])
+        if fault == "archive-owner":
+            pod["metadata"]["ownerReferences"][0]["uid"] = "wrong"
+        elif fault == "archive-exit":
+            pod["status"]["containerStatuses"][0]["state"]["terminated"]["exitCode"] = 1
+        else:
+            pod["status"]["containerStatuses"][0]["state"]["terminated"]["reason"] = "OOMKilled"
+        archive["pod_raw"] = receipts.canonical(pod)
+        archive["pod_sha256"] = hashlib.sha256(archive["pod_raw"].encode()).hexdigest()
+    elif fault.startswith("event-"):
+        if fault == "event-name":
+            rb["incident"]["eviction_event"]["involvedObject"]["name"] = "wrong"
+        elif fault == "event-uid":
+            rb["incident"]["eviction_event"]["involvedObject"]["uid"] = "wrong"
+        else:
+            rb["incident"]["node_name"] = "wrong"
+        rb["incident_sha256"] = receipts.checkpoint_hash(rb["incident"])
+    elif fault == "capture-time":
+        archive["captured_at"] = "2026-01-01T01:40:00Z"
+    elif fault.startswith("old-db-"):
+        pod = json.loads(rb["previous_database"]["pod_raw"])
+        if fault == "old-db-uid":
+            pod["metadata"]["uid"] = "wrong"
+        elif fault == "old-db-rs":
+            pod["metadata"]["ownerReferences"][0]["uid"] = "wrong"
+        elif fault == "old-db-pvc":
+            pod["spec"]["volumes"][0]["persistentVolumeClaim"]["claimName"] = "wrong"
+        else:
+            pod["status"]["containerStatuses"][0]["imageID"] = "wrong"
+        rb["previous_database"]["pod_raw"] = receipts.canonical(pod)
+        rb["previous_database"]["pod_sha256"] = hashlib.sha256(
+            rb["previous_database"]["pod_raw"].encode()
+        ).hexdigest()
+    elif fault == "brain-digest":
+        rb["brain"]["config_sha256"] = "invalid"
+    elif fault == "spec-digest":
+        rb["database"]["pod_spec_sha256"] = "invalid"
+    with pytest.raises(receipts.BlockedError):
+        seed(raw, log, cp, approval)
+    assert cp == before
+
+
+@pytest.mark.parametrize("version", [0, 3, "2", True, False])
+def test_capacity_unknown_or_malformed_approval_version_is_rejected(version):
+    raw, log, cp, approval = rebind_evidence()
+    approval["capacity_resume_version"] = version
+    with pytest.raises(receipts.BlockedError):
+        seed(raw, log, cp, approval)
+
+
+async def test_v2_samples_resources_after_identity_and_checkpoint_reads(tmp_path):
+    api, storage, safety, _, _, _, _ = operator_fixture(tmp_path)
+    raw, log, cp, approval = rebind_evidence()
+    admitted = seed(raw, log, cp, approval)
+    safety.baseline = approval["resource_baseline"]
+    order = []
+
+    async def identity(*_args):
+        order.append("identity")
+
+    async def checkpoint(*_args):
+        order.append("checkpoint")
+        return cp
+
+    storage.get_consolidation_progress.side_effect = checkpoint
+    safety.sample.side_effect = lambda **_kwargs: order.append("resources")
+    with (
+        patch.object(hourly, "capacity_predecessor_log", return_value=log),
+        patch.object(hourly, "verify_capacity_rebind", side_effect=identity),
+    ):
+        await hourly.verify_capacity_resume(api, storage, safety, admitted, cp)
+    assert order == ["identity", "checkpoint", "resources"]
