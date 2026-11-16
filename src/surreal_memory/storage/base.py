@@ -971,6 +971,8 @@ class NeuralStorage(ABC):
         run_id: str,
         operation_id: str,
         lease_owner_token: str,
+        budget_check: Callable[[], Awaitable[None]] | None = None,
+        page_guard: Callable[[], AbstractAsyncContextManager[None]] | None = None,
     ) -> dict[str, Literal["deleted", "protected", "changed", "missing"]]:
         """Optional atomic prune with expected snapshots, a live lease and replay receipts."""
         raise NotImplementedError
@@ -2808,7 +2810,12 @@ class NeuralStorage(ABC):
         raise NotImplementedError
 
     async def prune_semantic_discovery_state(
-        self, *, older_than: timedelta, keep_run_ids: Collection[str], owner_token: str
+        self,
+        *,
+        older_than: timedelta,
+        keep_run_ids: Collection[str],
+        owner_token: str,
+        page_guard: Callable[[], AbstractAsyncContextManager[None]] | None = None,
     ) -> dict[str, Any]:
         """Sweep a bounded page and report deletions and whether scanning can continue."""
         raise NotImplementedError

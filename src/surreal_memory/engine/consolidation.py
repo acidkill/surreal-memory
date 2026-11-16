@@ -1371,6 +1371,27 @@ class ConsolidationEngine:
                     report.extra["lease_max_renew_gap_s"] = round(float(renew_gap), 1)
 
             report.duration_ms = (time.perf_counter() - start) * 1000
+            status = report.extra.get("consolidation_status")
+            if on_progress is not None and status in {
+                "failed",
+                "lease_lost",
+                "timed_out",
+                "completion_unconfirmed",
+            }:
+                detail = (
+                    "; ".join(failed_strategies)
+                    if status == "failed"
+                    else progress_messages[-1]
+                    if progress_messages
+                    else ""
+                )
+                message = f"Consolidation engine outcome: {status}"
+                if detail:
+                    message += f"; {detail}"
+                try:
+                    on_progress(message)
+                except Exception:
+                    logger.warning("Consolidation outcome callback failed", exc_info=True)
             return report
         except asyncio.CancelledError:
             if (
@@ -1570,6 +1591,12 @@ class ConsolidationEngine:
                     await self._check_progress_budget()
                     current = await storage.get_synapses_by_ids(ids)
                     try:
+                        page_guard = getattr(progress, "lease_fenced_page", None)
+                        guard_options = (
+                            {"page_guard": page_guard, "budget_check": self._check_progress_budget}
+                            if page_guard is not None
+                            else {}
+                        )
                         outcomes = await storage.prune_synapses_if_unchanged(
                             current,
                             pending_ids=ids,
@@ -1577,6 +1604,7 @@ class ConsolidationEngine:
                             run_id=run_id,
                             operation_id=operation_id,
                             lease_owner_token=owner,
+                            **guard_options,
                         )
                         break
                     except PruneTransactionConflictError as exc:
@@ -11484,10 +11512,13 @@ class ConsolidationEngine:
                 return
             keep = set(await self._storage.get_consolidation_run_ids(statuses=INCOMPLETE_STATUSES))
             keep.add(str(progress_session.state["run_id"]))
+            page_guard = getattr(progress_session, "lease_fenced_page", None)
+            guard_options = {"page_guard": page_guard} if page_guard is not None else {}
             pruned = await self._storage.prune_semantic_discovery_state(
                 older_than=timedelta(days=retention_days),
                 keep_run_ids=keep,
                 owner_token=progress_session.owner_token,
+                **guard_options,
             )
         except Exception as exc:
             logger.warning("Semantic discovery snapshot prune failed", exc_info=True)

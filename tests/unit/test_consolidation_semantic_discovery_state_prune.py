@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Collection
 from dataclasses import replace
 from datetime import datetime, timedelta
@@ -39,7 +40,12 @@ class _PruneStorage(FakeProgressStorage):
         return list(self.unfinished_run_ids)
 
     async def prune_semantic_discovery_state(
-        self, *, older_than: timedelta, keep_run_ids: Collection[str], owner_token: str
+        self,
+        *,
+        older_than: timedelta,
+        keep_run_ids: Collection[str],
+        owner_token: str,
+        page_guard=None,
     ) -> dict[str, int | bool]:
         assert self.progress is not None
         assert self.progress["status"] == "completed"
@@ -53,6 +59,14 @@ class _PruneStorage(FakeProgressStorage):
         )
         if self.prune_error is not None:
             raise self.prune_error
+        assert page_guard is not None
+        session = page_guard.__self__
+        async with page_guard():
+            assert session._renew_lock.locked()
+            renewal = asyncio.create_task(session._renew_once())
+            await asyncio.sleep(0)
+            assert not renewal.done()
+        assert await renewal
         return {"deleted": self.prune_result, "more": self.prune_more}
 
 

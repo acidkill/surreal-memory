@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
+from contextlib import AbstractAsyncContextManager, nullcontext
 from datetime import timedelta
 from hashlib import sha256
 from typing import Any, cast
@@ -457,7 +458,12 @@ class SurrealDBSemanticDiscoveryStateMixin:
         )
 
     async def prune_semantic_discovery_state(
-        self, *, older_than: timedelta, keep_run_ids: Collection[str], owner_token: str
+        self,
+        *,
+        older_than: timedelta,
+        keep_run_ids: Collection[str],
+        owner_token: str,
+        page_guard: Callable[[], AbstractAsyncContextManager[None]] | None = None,
     ) -> dict[str, Any]:
         """Make bounded, durable progress through discovery snapshots for this brain."""
         if not isinstance(older_than, timedelta) or older_than <= timedelta(0):
@@ -512,33 +518,34 @@ class SurrealDBSemanticDiscoveryStateMixin:
                             break
                 more = scanned < len(page) or len(page) == _PRUNE_SCAN_ROWS
                 next_cursor = str(page[scanned - 1]["id"]) if scanned and more else None
-                result = await self._query(
-                    "RETURN { "
-                    "LET $lease = (UPDATE type::record('consolidation_lease', $record_id) "
-                    "SET sweep_fenced_at = time::now() WHERE brain_id = $brain_id "
-                    "AND owner_token = $owner_token AND expires_at > time::now() RETURN AFTER); "
-                    "IF array::len($lease) != 1 { THROW 'discovery prune lease lost'; }; "
-                    "LET $protected = (SELECT VALUE run_id FROM consolidation_progress "
-                    "WHERE brain_id = $brain_id AND status IN ['queued', 'running', 'paused', 'failed']); "
-                    "LET $removed = (DELETE $candidates WHERE brain_id = $brain_id "
-                    "AND created_at < $cutoff AND run_id NOT IN $keep "
-                    "AND run_id NOT IN $protected RETURN VALUE $before.id); "
-                    "UPSERT type::record('semantic_discovery_prune_cursor', $record_id) "
-                    "CONTENT {brain_id: $brain_id, cursor: $next_cursor ?? NONE} RETURN NONE; "
-                    "RETURN [{deleted: array::len($removed)}]; };",
-                    record_id=record_id,
-                    brain_id=brain_id,
-                    owner_token=owner_token,
-                    candidates=candidates,
-                    cutoff=cutoff,
-                    keep=keep,
-                    next_cursor=next_cursor,
-                )
-                count = result[0].get("deleted") if len(result) == 1 else None
-                if type(count) is not int or not 0 <= count <= len(candidates):
-                    raise SemanticDiscoveryStateError(
-                        "invalid discovery prune transaction response"
+                async with page_guard() if page_guard is not None else nullcontext():
+                    result = await self._query(
+                        "RETURN { "
+                        "LET $lease = (UPDATE type::record('consolidation_lease', $record_id) "
+                        "SET sweep_fenced_at = time::now() WHERE brain_id = $brain_id "
+                        "AND owner_token = $owner_token AND expires_at > time::now() RETURN AFTER); "
+                        "IF array::len($lease) != 1 { THROW 'discovery prune lease lost'; }; "
+                        "LET $protected = (SELECT VALUE run_id FROM consolidation_progress "
+                        "WHERE brain_id = $brain_id AND status IN ['queued', 'running', 'paused', 'failed']); "
+                        "LET $removed = (DELETE $candidates WHERE brain_id = $brain_id "
+                        "AND created_at < $cutoff AND run_id NOT IN $keep "
+                        "AND run_id NOT IN $protected RETURN VALUE $before.id); "
+                        "UPSERT type::record('semantic_discovery_prune_cursor', $record_id) "
+                        "CONTENT {brain_id: $brain_id, cursor: $next_cursor ?? NONE} RETURN NONE; "
+                        "RETURN [{deleted: array::len($removed)}]; };",
+                        record_id=record_id,
+                        brain_id=brain_id,
+                        owner_token=owner_token,
+                        candidates=candidates,
+                        cutoff=cutoff,
+                        keep=keep,
+                        next_cursor=next_cursor,
                     )
+                    count = result[0].get("deleted") if len(result) == 1 else None
+                    if type(count) is not int or not 0 <= count <= len(candidates):
+                        raise SemanticDiscoveryStateError(
+                            "invalid discovery prune transaction response"
+                        )
                 deleted += count
             if not more or deleted >= _PRUNE_DELETE_ROWS:
                 break

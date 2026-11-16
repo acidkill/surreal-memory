@@ -83,22 +83,26 @@ class _FixedVectorProvider:
 async def store():
     """A fresh store, scoped to its own throwaway database, with a small-dim
     HNSW index so the 1200+ row seed below stays fast."""
+    database = "it_" + uuid.uuid4().hex[:12]
     storage = SurrealDBStorage(
         url=SURREALDB_URL,
         user=SURREALDB_USER,
         password=SURREALDB_PASS,
         namespace=SURREALDB_NS,
-        database="it_" + uuid.uuid4().hex[:12],
+        database=database,
         embedding_dim=_DIM,
     )
-    await storage.initialize()
-    brain = Brain.create(name="knn-anchors-it")
-    await storage.save_brain(brain)
-    storage.set_brain(brain.id)
     try:
+        await storage.initialize()
+        brain = Brain.create(name="knn-anchors-it")
+        await storage.save_brain(brain)
+        storage.set_brain(brain.id)
         yield storage
     finally:
-        await storage.close()
+        try:
+            await SurrealDBStorage._query_response(storage, f"REMOVE DATABASE `{database}`")
+        finally:
+            await storage.close()
 
 
 async def _seed_filler_and_target(store: SurrealDBStorage) -> None:

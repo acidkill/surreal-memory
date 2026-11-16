@@ -1485,7 +1485,205 @@ def capacity_resume_matches(receipt: Any, cp: Any) -> bool:
         return False
 
 
+def lease_loss_resume_seed(
+    previous_raw: str,
+    previous_log: str,
+    cp: dict[str, Any],
+    *,
+    approval: dict[str, Any],
+) -> dict[str, Any]:
+    """Bind one reviewed interrupted atomic-prune attempt without rewriting its outcome."""
+    from surreal_memory.engine.consolidation import ConsolidationStrategy
+
+    if (
+        not isinstance(previous_raw, str)
+        or not isinstance(previous_log, str)
+        or max(len(previous_raw.encode()), len(previous_log.encode())) > 128 * 1024
+        or not isinstance(approval, dict)
+        or type(approval.get("lease_loss_resume_version")) is not int
+        or approval["lease_loss_resume_version"] != 1
+    ):
+        raise BlockedError("lease loss resume evidence malformed or oversized")
+    try:
+        previous = json.loads(previous_raw)
+    except ValueError as exc:
+        raise BlockedError("lease loss resume predecessor malformed") from exc
+    if not isinstance(cp, dict) or cp.get("status") != "running":
+        raise BlockedError("lease loss resume requires a retained running checkpoint")
+    # This validates a projection only; the actual checkpoint is never changed.
+    clean_checkpoint({**cp, "status": "paused"})
+    expected = {
+        item.value for item in ConsolidationStrategy if item is not ConsolidationStrategy.ALL
+    }
+    requested, completed = cp.get("requested_strategies"), cp.get("completed_strategies")
+    states = cp.get("strategy_states")
+    prune = states.get("prune") if isinstance(states, dict) else None
+    if (
+        not isinstance(requested, list)
+        or len(requested) != len(expected)
+        or not all(isinstance(name, str) and name in expected for name in requested)
+        or set(requested) != expected
+        or not isinstance(completed, list)
+        or not all(isinstance(name, str) and name in expected for name in completed)
+        or len(set(completed)) != len(completed)
+        or "prune" in completed
+        or cp.get("current_strategy") != "prune"
+        or cp.get("phase") != "synapse_pending"
+        or not native_handoff_valid(cp)
+        or timestamp(cp.get("reference_time")) is None
+        or not isinstance(cp.get("owner_token"), str)
+        or not cp["owner_token"]
+        or not isinstance(states, dict)
+        or set(states) != set(completed) | {"prune"}
+        or any(
+            not isinstance(states[name], dict) or states[name].get("phase") != "completed"
+            for name in completed
+        )
+        or not isinstance(prune, dict)
+        or prune.get("phase") != "synapse_pending"
+        or not isinstance(prune.get("pending"), list)
+        or not 0 < len(prune["pending"]) <= 2000
+        or not all(isinstance(sid, str) and sid for sid in prune["pending"])
+        or not isinstance(prune.get("counters"), dict)
+        or type(prune["counters"].get("prune_atomic_journal")) is not int
+        or prune["counters"]["prune_atomic_journal"] != 1
+        or not isinstance(cp.get("counters"), dict)
+        or cp["counters"].get("prune") != prune["counters"]
+    ):
+        raise BlockedError("lease loss resume retained atomic prune scope differs")
+    reason = "engine lease absent or lost"
+    suffix = "HOURLY_BLOCKED " + reason + "\n"
+    if (
+        not isinstance(previous, dict)
+        or previous.get("phase") != "blocked"
+        or previous.get("reason") != reason
+        or previous.get("secondary_reason") is not None
+        or previous.get("capacity_stop_reason") is not None
+        or type(previous.get("cli_rc")) is not int
+        or previous["cli_rc"] != 130
+        or previous.get("before_run_id") != cp["run_id"]
+        or MARKER in previous_log
+        or not previous_log.endswith(suffix)
+    ):
+        raise BlockedError("lease loss resume is not the reviewed blocked CLI130 attempt")
+    output = previous_log[: -len(suffix)]
+    if (
+        hashlib.sha256(output.encode()).hexdigest() != previous.get("cli_output_sha256")
+        or output[-4096:] != previous.get("cli_output_tail")
+        or cli_log_has_errors(output, cp)
+    ):
+        raise BlockedError("lease loss resume predecessor CLI evidence differs")
+    bindings = {
+        "checkpoint_sha256": checkpoint_hash(cp),
+        "previous_receipt_raw_sha256": hashlib.sha256(previous_raw.encode()).hexdigest(),
+        "previous_log_sha256": hashlib.sha256(previous_log.encode()).hexdigest(),
+        "run_id": cp["run_id"],
+        "options_fingerprint": cp["options_fingerprint"],
+    }
+    if any(approval.get(key) != value for key, value in bindings.items()):
+        raise BlockedError("lease loss resume approved evidence changed")
+    pod = approval.get("failed_pod")
+    if (
+        not isinstance(pod, dict)
+        or set(pod) != {"pod_name", "pod_uid", "job_name", "job_uid", "exit_code"}
+        or type(pod.get("exit_code")) is not int
+        or pod["exit_code"] != 2
+        or any(
+            not pod.get(key) or pod[key] != previous.get(key)
+            for key in ("pod_name", "pod_uid", "job_name", "job_uid")
+        )
+    ):
+        raise BlockedError("lease loss resume predecessor identity differs")
+    approved, blocked = (
+        timestamp(approval.get("approved_at")),
+        timestamp(previous.get("blocked_at")),
+    )
+    if approved is None or blocked is None or not blocked <= approved <= datetime.now(UTC):
+        raise BlockedError("lease loss resume approval time is invalid")
+    runtime = approval.get("runtime")
+    if (
+        not isinstance(runtime, dict)
+        or re.fullmatch(r"[0-9a-f]{40}", str(runtime.get("source_sha"))) is None
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", str(runtime.get("image_digest"))) is None
+        or any(
+            re.fullmatch(r"[0-9a-f]{64}", str(runtime.get(key))) is None
+            for key in ("runner_sha256", "receipts_sha256")
+        )
+        or any(
+            not isinstance(runtime.get(key), str) or not runtime[key]
+            for key in ("python_version", "numpy_version", "package_version")
+        )
+        or approval.get("reviewed_source_sha") != runtime["source_sha"]
+        or any(
+            approval.get(key) is not True
+            for key in (
+                "source_fix_reviewed",
+                "original_engine_outcome_unknown",
+                "no_active_worker_verified",
+                "no_active_lease_verified",
+            )
+        )
+        or not isinstance(approval.get("brain_id"), str)
+        or not approval["brain_id"]
+        or re.fullmatch(r"[0-9a-f]{64}", str(approval.get("brain_config_sha256"))) is None
+    ):
+        raise BlockedError("lease loss resume reviewed runtime proof missing")
+    limit = approval.get("memory_limit_bytes")
+    baseline = approval.get("resource_baseline")
+    policy = checkpoint_hash({"memory_limit_bytes": limit})
+    _capacity_resource_identity(baseline, fresh=False)
+    if (
+        type(limit) is not int
+        or limit <= 3 * 1024**3
+        or limit % 1024**3
+        or approval.get("resource_policy_sha256") != policy
+        or ("resource_policy_sha256" in previous and previous["resource_policy_sha256"] != policy)
+        or canonical(baseline) != canonical(previous.get("before_resources"))
+    ):
+        raise BlockedError("lease loss resume resource incarnation or policy differs")
+    return {
+        "phase": "bootstrap",
+        "source": "operator_lease_loss_resume",
+        "approved": True,
+        "status": "running",
+        "cli_rc": None,
+        "next_action": "resume",
+        "observed_at": approval["approved_at"],
+        "run_id": cp["run_id"],
+        "options_fingerprint": cp["options_fingerprint"],
+        "reference_time": cp["reference_time"],
+        "checkpoint_sha256": bindings["checkpoint_sha256"],
+        "resource_baseline": baseline,
+        "resource_policy_sha256": policy,
+        "lease_loss_resume": {
+            "version": 1,
+            "previous_receipt_raw": previous_raw,
+            "previous_log": previous_log,
+            "approval": approval,
+        },
+    }
+
+
+def lease_loss_resume_matches(receipt: Any, cp: Any) -> bool:
+    if not isinstance(receipt, dict) or receipt.get("source") != "operator_lease_loss_resume":
+        return False
+    try:
+        audit = receipt["lease_loss_resume"]
+        if type(audit["version"]) is not int or audit["version"] != 1:
+            return False
+        expected = lease_loss_resume_seed(
+            audit["previous_receipt_raw"], audit["previous_log"], cp, approval=audit["approval"]
+        )
+        return canonical(receipt) == canonical(expected)
+    except (BlockedError, KeyError, TypeError, ValueError, AttributeError):
+        return False
+
+
 def select_command(receipt: dict[str, Any], cp: dict[str, Any], log: str | None) -> list[str]:
+    if receipt.get("source") == "operator_lease_loss_resume":
+        if not lease_loss_resume_matches(receipt, cp):
+            raise BlockedError("lease loss resume approval or checkpoint diverged")
+        return ["smem", "consolidate", "--brain", "default", "--resume"]
     if receipt.get("source") == "operator_capacity_resume":
         if not capacity_resume_matches(receipt, cp):
             raise BlockedError("capacity resume approval or checkpoint diverged")

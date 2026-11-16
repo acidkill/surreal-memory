@@ -44,28 +44,32 @@ _T0 = datetime(2026, 3, 4, 5, 6, 7)
 _VECTOR = [0.6, 0.8, 0.0, 0.0]
 
 
-def _new_store() -> SurrealDBStorage:
+def _new_store(database: str) -> SurrealDBStorage:
     return SurrealDBStorage(
         url=SURREALDB_URL,
         user=SURREALDB_USER,
         password=SURREALDB_PASS,
         namespace=SURREALDB_NS,
-        database="it_" + uuid.uuid4().hex[:12],
+        database=database,
         embedding_dim=4,
     )
 
 
 @pytest_asyncio.fixture
 async def store():
-    storage = _new_store()
-    await storage.initialize()
-    brain = Brain.create(name="fiber-snapshot-src")
-    await storage.save_brain(brain)
-    storage.set_brain(brain.id)
+    database = "it_" + uuid.uuid4().hex[:12]
+    storage = _new_store(database)
     try:
+        await storage.initialize()
+        brain = Brain.create(name="fiber-snapshot-src")
+        await storage.save_brain(brain)
+        storage.set_brain(brain.id)
         yield storage
     finally:
-        await storage.close()
+        try:
+            await SurrealDBStorage._query_response(storage, f"REMOVE DATABASE `{database}`")
+        finally:
+            await storage.close()
 
 
 @pytest_asyncio.fixture
@@ -78,12 +82,16 @@ async def target():
     its own comment. A transplant between databases is both the realistic shape and the
     only one that exercises the writes.
     """
-    storage = _new_store()
-    await storage.initialize()
+    database = "it_" + uuid.uuid4().hex[:12]
+    storage = _new_store(database)
     try:
+        await storage.initialize()
         yield storage
     finally:
-        await storage.close()
+        try:
+            await SurrealDBStorage._query_response(storage, f"REMOVE DATABASE `{database}`")
+        finally:
+            await storage.close()
 
 
 async def _seed_rich_fiber(store: SurrealDBStorage) -> Fiber:
@@ -236,3 +244,20 @@ async def test_a_pre_round_trip_snapshot_still_imports(
     assert loaded is not None
     assert loaded.salience == pytest.approx(original.salience)
     assert loaded.summary is None  # the field simply was not in that snapshot
+
+
+async def test_fixture_failure_removes_only_its_disposable_database(target):
+    """A failed fixture body leaves the independently scoped control database intact."""
+    fixture = store.__wrapped__()
+    temporary = await anext(fixture)
+    temporary_database = temporary._database
+    control_database = target._database
+    assert temporary_database != control_database
+    before = await SurrealDBStorage._query_response(target, "INFO FOR NS")
+    assert temporary_database in before["databases"]
+    assert control_database in before["databases"]
+    with pytest.raises(RuntimeError, match="synthetic body"):
+        await fixture.athrow(RuntimeError("synthetic body"))
+    after = await SurrealDBStorage._query_response(target, "INFO FOR NS")
+    assert temporary_database not in after["databases"]
+    assert control_database in after["databases"]
