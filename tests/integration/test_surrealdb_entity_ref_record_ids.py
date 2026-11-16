@@ -43,21 +43,25 @@ pytestmark = [
 
 @pytest_asyncio.fixture
 async def store():
+    database = "it_" + uuid.uuid4().hex[:12]
     storage = SurrealDBStorage(
         url=SURREALDB_URL,
         user=SURREALDB_USER,
         password=SURREALDB_PASS,
         namespace=SURREALDB_NS,
-        database="it_" + uuid.uuid4().hex[:12],
+        database=database,
     )
-    await storage.initialize()
-    brain = Brain.create(name="entity-ref-record-ids-it")
-    await storage.save_brain(brain)
-    storage.set_brain(brain.id)
     try:
+        await storage.initialize()
+        brain = Brain.create(name="entity-ref-record-ids-it")
+        await storage.save_brain(brain)
+        storage.set_brain(brain.id)
         yield storage
     finally:
-        await storage.close()
+        try:
+            await SurrealDBStorage._query_response(storage, f"REMOVE DATABASE `{database}`")
+        finally:
+            await storage.close()
 
 
 async def _create_ref(

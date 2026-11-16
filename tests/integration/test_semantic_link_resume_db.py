@@ -100,21 +100,25 @@ def _engine(store: SurrealDBStorage, progress: _Progress) -> ConsolidationEngine
 @pytest_asyncio.fixture
 async def store() -> AsyncIterator[SurrealDBStorage]:
     assert TEST_SURREALDB_URL is not None
+    database = "it_" + uuid.uuid4().hex[:12]
     storage = SurrealDBStorage(
         url=TEST_SURREALDB_URL,
         user=TEST_AUTH[0],
         password=TEST_AUTH[1],
         namespace=os.environ["SURREALDB_NS"],
-        database="it_" + uuid.uuid4().hex[:12],
+        database=database,
     )
-    await storage.initialize()
-    brain = Brain.create(name="semantic-link-resume-it")
-    await storage.save_brain(brain)
-    storage.set_brain(brain.id)
     try:
+        await storage.initialize()
+        brain = Brain.create(name="semantic-link-resume-it")
+        await storage.save_brain(brain)
+        storage.set_brain(brain.id)
         yield storage
     finally:
-        await storage.close()
+        try:
+            await SurrealDBStorage._query_response(storage, f"REMOVE DATABASE `{database}`")
+        finally:
+            await storage.close()
 
 
 async def test_semantic_link_resume_after_surreal_id_normalization_is_idempotent(

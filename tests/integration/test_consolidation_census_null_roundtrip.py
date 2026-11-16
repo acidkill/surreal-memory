@@ -58,32 +58,33 @@ pytestmark = [
 
 @pytest.mark.asyncio
 async def test_census_round_trip_restores_fields_surrealdb_omits() -> None:
+    database = "it_" + uuid.uuid4().hex[:12]
     storage = SurrealDBStorage(
         url=TEST_SURREALDB_URL,
         user=TEST_AUTH[0],
         password=TEST_AUTH[1],
         namespace=os.environ["SURREALDB_NS"],
-        database="it_" + uuid.uuid4().hex[:12],
-    )
-    await storage.initialize()
-    brain = Brain.create(name="census-null-roundtrip-it")
-    await storage.save_brain(brain)
-    storage.set_brain(brain.id)
-    reference_time = datetime(2026, 10, 12, 12, 0)
-    fiber = Fiber(
-        id="null-roundtrip-" + uuid.uuid4().hex,
-        neuron_ids={"synthetic-neuron"},
-        synapse_ids=set(),
-        anchor_neuron_id="synthetic-neuron",
-        conductivity=0.75,
-        coherence=0.4,
-        salience=0.6,
-        frequency=3,
-        metadata={"fixture": "synthetic"},
-        created_at=reference_time - timedelta(minutes=1),
+        database=database,
     )
     session: ConsolidationProgressSession | None = None
     try:
+        await storage.initialize()
+        brain = Brain.create(name="census-null-roundtrip-it")
+        await storage.save_brain(brain)
+        storage.set_brain(brain.id)
+        reference_time = datetime(2026, 10, 12, 12, 0)
+        fiber = Fiber(
+            id="null-roundtrip-" + uuid.uuid4().hex,
+            neuron_ids={"synthetic-neuron"},
+            synapse_ids=set(),
+            anchor_neuron_id="synthetic-neuron",
+            conductivity=0.75,
+            coherence=0.4,
+            salience=0.6,
+            frequency=3,
+            metadata={"fixture": "synthetic"},
+            created_at=reference_time - timedelta(minutes=1),
+        )
         await storage.add_fiber(fiber)
         session = await ConsolidationProgressSession.open(
             storage,
@@ -122,6 +123,11 @@ async def test_census_round_trip_restores_fields_surrealdb_omits() -> None:
         reread = await engine._all_fibers_paged(created_before=reference_time)
         assert reread == observed
     finally:
-        if session is not None:
-            await session.close()
-        await storage.close()
+        try:
+            if session is not None:
+                await session.close()
+        finally:
+            try:
+                await SurrealDBStorage._query_response(storage, f"REMOVE DATABASE `{database}`")
+            finally:
+                await storage.close()
