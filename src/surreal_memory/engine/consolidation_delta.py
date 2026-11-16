@@ -259,8 +259,17 @@ async def run_with_delta(
         total_timeout_seconds=total_timeout_seconds,
     )
 
-    # Step 3: After snapshot
-    after = await snapshot("after")
+    # Advisory diagnostics must not hide a native failure after lease release.
+    if report.extra.get("consolidation_status") in {
+        "failed",
+        "lease_lost",
+        "timed_out",
+        "completion_unconfirmed",
+        "blocked",
+    }:
+        after = None
+    else:
+        after = await snapshot("after")
     if diagnostic_errors:
         report.extra["diagnostic_errors"] = diagnostic_errors
 

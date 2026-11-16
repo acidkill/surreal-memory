@@ -337,6 +337,8 @@ class SurrealDBPruneMixin:
         run_id: str,
         operation_id: str,
         lease_owner_token: str,
+        budget_check: Callable[[], Awaitable[None]] | None = None,
+        page_guard: Callable[[], AbstractAsyncContextManager[None]] | None = None,
     ) -> dict[str, PruneOutcome]:
         """Delete up to 32 edges per atomic decision/journal transaction.
 
@@ -356,6 +358,8 @@ class SurrealDBPruneMixin:
             raise ValueError("prune snapshot contains IDs outside pending operation")
         outcomes: dict[str, PruneOutcome] = {}
         for start in range(0, len(ids), 32):
+            if budget_check is not None:
+                await budget_check()
             batch = ids[start : start + 32]
             items = []
             for sid in batch:
@@ -431,18 +435,19 @@ class SurrealDBPruneMixin:
                 )
             await self._ensure_conn_on_current_loop()
             # SDK query() checks only its first statement; inspect every result.
-            raw = await self._ensure_conn().query_raw(
-                _PRUNE_TRANSACTION,
-                {
-                    "brain_id": brain_id,
-                    "lease_id": sha256(brain_id.encode()).hexdigest(),
-                    "owner": lease_owner_token,
-                    "run_id": run_id,
-                    "operation_id": operation_id,
-                    "items": items,
-                },
-            )
-            _checked_prune_results(raw)
+            async with page_guard() if page_guard is not None else nullcontext():
+                raw = await self._ensure_conn().query_raw(
+                    _PRUNE_TRANSACTION,
+                    {
+                        "brain_id": brain_id,
+                        "lease_id": sha256(brain_id.encode()).hexdigest(),
+                        "owner": lease_owner_token,
+                        "run_id": run_id,
+                        "operation_id": operation_id,
+                        "items": items,
+                    },
+                )
+                _checked_prune_results(raw)
             params: dict[str, Any] = {
                 "brain_id": brain_id,
                 "operation_id": operation_id,
