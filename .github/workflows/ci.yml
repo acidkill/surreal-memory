@@ -229,6 +229,7 @@ jobs:
           tests/integration/test_prune_atomic_db.py::test_legacy_repair_pages_eight_fibers_once_with_id_only_replies
           tests/integration/test_prune_page_lease_db.py
           tests/integration/test_atomic_lease_full_cycle_db.py
+          tests/integration/test_lease_loss_admission_db.py
 
       - name: Start fresh SurrealDB memory profile for full suite
         run: |
@@ -329,10 +330,14 @@ jobs:
         if: failure()
         run: |
           if docker inspect surrealdb-ci >/dev/null 2>&1; then
+            docker inspect --format 'OOMKilled={{.State.OOMKilled}} ExitCode={{.State.ExitCode}} Error={{.State.Error}} Running={{.State.Running}} Memory={{.HostConfig.Memory}}' surrealdb-ci || true
             if ! docker logs surrealdb-ci; then echo "SurrealDB container logs unavailable"; fi
           else
             echo "SurrealDB container already removed; benchmark failure logs were captured before cleanup."
           fi
+          timeout 10s docker events --since 30m --until "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --filter container=surrealdb-ci --filter event=oom --filter event=die \
+            --format '{{.Time}} {{.Action}} {{.Actor.ID}}' || echo "SurrealDB event history unavailable"
 
   build:
     name: Build Package

@@ -244,6 +244,34 @@ A bootstrap seed cannot serve as a predecessor for another rebaseline. Preserve
 all evidence; never rewrite a terminal receipt baseline.
 
 
+A separate `--admit-lease-loss-resume --approval-file PATH` operator mode admits
+one reviewed interrupted atomic-prune attempt. It accepts only a retained
+`running` / `prune` / `synapse_pending` checkpoint with atomic journaling and a
+blocked predecessor recording actual CLI exit `130` and the exact supervisor
+reason `engine lease absent or lost`. Its approval explicitly acknowledges that
+the original engine outcome was unavailable; unrelated errors and known native
+failures require investigation rather than this admission.
+
+The approval binds the complete checkpoint hash, original receipt bytes and log,
+predecessor Job/Pod identity and exit, reviewed source and immutable worker image,
+current brain configuration, resource policy and unchanged database baseline.
+The operator archives the original failure unchanged and saves a distinct
+one-shot resume intent through resourceVersion CAS. It rechecks live proofs
+before and after that CAS; it neither edits native state nor launches the CLI.
+If the old blocked receipt has no policy hash, it remains absent: the current
+live policy must still match the reviewed approval, and a present historical
+mismatch is rejected.
+
+The next guarded worker revalidates the archived intent before ownership and
+launch, then invokes the native `--resume`. Only that approved intent permits
+the exact unchanged checkpoint during native lease acquisition and claim.
+Once a lease or claim is observed, owner changes, loss of a required running
+lease and rollback to the pre-claim checkpoint stop the worker. A real CLI result and clean terminal
+checkpoint are required for the next terminal receipt. An uncertain admission
+or another blocked attempt requires inspection; the intent is not an automatic
+retry permission. Ordinary workers retain their existing lease checks.
+
+
 ## Conservative pruning and activation evaluation
 
 Pruning protects stored synapse weights of at least `0.1`, every synapse referenced

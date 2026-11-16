@@ -34,6 +34,8 @@ from surreal_memory.engine.consolidation_receipts import (
     checkpoint_hash,
     confirmed_success,
     failed_runtime_resume_matches,
+    lease_loss_resume_matches,
+    lease_loss_resume_seed,
     native_handoff_anchor,
     resource_rebaseline_seed,
     select_command,
@@ -616,17 +618,19 @@ async def verify_capacity_rebind(api: Kubernetes, storage: Any, approval: dict[s
         raise BlockedError("capacity default brain identity or effective configuration changed")
 
 
-async def verify_capacity_resume(
-    api: Kubernetes, storage: Any, safety: Safety, receipt: dict[str, Any], cp: dict[str, Any]
+def _verify_reviewed_resume_runtime(
+    api: Kubernetes,
+    safety: Safety,
+    receipt: dict[str, Any],
+    approval: dict[str, Any],
+    *,
+    label: str,
 ) -> None:
-    """Recheck deployed source parity and unchanged resource guards before admission/use."""
+    """Shared source/image/resource checks for reviewed operator intents."""
     from importlib.metadata import version
 
     from surreal_memory.engine import consolidation_receipts
 
-    if not capacity_resume_matches(receipt, cp):
-        raise BlockedError("capacity resume seed is invalid")
-    approval = receipt["capacity_resume"]["approval"]
     runtime = approval["runtime"]
     if (
         ".".join(map(str, sys.version_info[:3])) != runtime["python_version"]
@@ -639,7 +643,7 @@ async def verify_capacity_resume(
         or safety.memory_limit_bytes != approval["memory_limit_bytes"]
         or canonical(safety.baseline) != canonical(receipt["resource_baseline"])
     ):
-        raise BlockedError("capacity resume runtime source or resource policy differs")
+        raise BlockedError(f"{label} runtime source or resource policy differs")
     identity = api.identity()
     api.no_other_jobs(identity["job_uid"])
     pod = api.request(api.path("pods/" + identity["pod_name"]))
@@ -653,7 +657,17 @@ async def verify_capacity_resume(
         or not specs[0].get("image", "").endswith("@" + digest)
         or not statuses[0].get("imageID", "").endswith(digest)
     ):
-        raise BlockedError("capacity resume worker image differs")
+        raise BlockedError(f"{label} worker image differs")
+
+
+async def verify_capacity_resume(
+    api: Kubernetes, storage: Any, safety: Safety, receipt: dict[str, Any], cp: dict[str, Any]
+) -> None:
+    """Recheck deployed source parity and unchanged resource guards before admission/use."""
+    if not capacity_resume_matches(receipt, cp):
+        raise BlockedError("capacity resume seed is invalid")
+    approval = receipt["capacity_resume"]["approval"]
+    _verify_reviewed_resume_runtime(api, safety, receipt, approval, label="capacity resume")
     if receipt["capacity_resume"]["version"] == 2:
         previous = json.loads(receipt["capacity_resume"]["previous_receipt_raw"])
         if (
@@ -670,62 +684,120 @@ async def verify_capacity_resume(
         safety.sample(initial=True)
 
 
+async def verify_lease_loss_resume(
+    api: Kubernetes, storage: Any, safety: Safety, receipt: dict[str, Any], cp: dict[str, Any]
+) -> None:
+    """Revalidate one immutable lease-loss intent without writing native state."""
+    if not lease_loss_resume_matches(receipt, cp):
+        raise BlockedError("lease loss resume seed is invalid")
+    audit = receipt["lease_loss_resume"]
+    approval = audit["approval"]
+    _verify_reviewed_resume_runtime(api, safety, receipt, approval, label="lease loss resume")
+    previous = json.loads(audit["previous_receipt_raw"])
+    if api.previous_log(previous, expected_exit_code=2) != audit["previous_log"]:
+        raise BlockedError("lease loss resume predecessor changed")
+    brain = await storage.get_brain("default")
+    config = getattr(brain, "config", None)
+    if (
+        brain is None
+        or getattr(brain, "id", None) != approval["brain_id"]
+        or not is_dataclass(config)
+        or isinstance(config, type)
+        or checkpoint_hash(asdict(config)) != approval["brain_config_sha256"]
+    ):
+        raise BlockedError("lease loss resume brain config differs")
+    latest, leases = await live(storage)
+    if leases or checkpoint_hash(latest) != checkpoint_hash(cp):
+        raise BlockedError("lease loss resume checkpoint or active lease changed")
+    safety.sample(initial=True)
+
+
+async def admit_lease_loss_resume(
+    api: Kubernetes, storage: Any, safety: Safety, args: argparse.Namespace
+) -> int:
+    return await _admit_reviewed_resume(api, storage, safety, args, lease_loss=True)
+
+
 async def admit_capacity_stop(
     api: Kubernetes, storage: Any, safety: Safety, args: argparse.Namespace
 ) -> int:
+    return await _admit_reviewed_resume(api, storage, safety, args, lease_loss=False)
+
+
+async def _admit_reviewed_resume(
+    api: Kubernetes, storage: Any, safety: Safety, args: argparse.Namespace, *, lease_loss: bool
+) -> int:
     """Archive one failed receipt and CAS a reviewed resume intent; never launch a CLI."""
+    label = "lease loss resume" if lease_loss else "capacity resume"
+    verifier = verify_lease_loss_resume if lease_loss else verify_capacity_resume
+    prefix = "lease_loss_resume_" if lease_loss else "capacity_resume_"
     cm = api.state()
     raw = cm["data"]["receipt.json"]
     previous = json.loads(raw)
     approval_raw = Path(args.approval_file).read_text(encoding="utf-8")
     if len(approval_raw.encode()) > 128 * 1024:
-        raise BlockedError("capacity resume approval is oversized")
+        raise BlockedError(f"{label} approval is oversized")
     approval = json.loads(approval_raw)
     cp, leases = await live(storage)
     if leases:
-        raise BlockedError("capacity resume requires zero active leases")
+        raise BlockedError(f"{label} requires zero active leases")
     identity = api.identity()
     api.no_other_jobs(identity["job_uid"])
-    log = capacity_predecessor_log(api, previous, approval)
+    log = (
+        api.previous_log(previous, expected_exit_code=2)
+        if lease_loss
+        else capacity_predecessor_log(api, previous, approval)
+    )
     observation_raw = cm["data"].get("last_observation.json")
     observation_log = (
         api.previous_log(json.loads(observation_raw), expected_exit_code=2)
-        if observation_raw is not None
+        if observation_raw is not None and not lease_loss
         else None
     )
     safety.sample(initial=True)
-    seed = capacity_resume_seed(
-        raw,
-        log,
-        cp,
-        approval=approval,
-        observation_raw=observation_raw,
-        observation_log=observation_log,
+    seed = (
+        lease_loss_resume_seed(raw, log, cp, approval=approval)
+        if lease_loss
+        else capacity_resume_seed(
+            raw,
+            log,
+            cp,
+            approval=approval,
+            observation_raw=observation_raw,
+            observation_log=observation_log,
+        )
     )
-    await verify_capacity_resume(api, storage, safety, seed, cp)
-    key = "capacity_resume_" + checkpoint_hash(seed) + ".json"
+    await verifier(api, storage, safety, seed, cp)
+    key = prefix + checkpoint_hash(seed) + ".json"
     if key in cm["data"]:
-        raise BlockedError("capacity resume archive already exists")
+        raise BlockedError(f"{label} archive already exists")
     data = dict(cm["data"], **{key: canonical(seed)})
+    if lease_loss and observation_raw is not None:
+        observation_key = (
+            "lease_loss_observation_"
+            + hashlib.sha256(observation_raw.encode()).hexdigest()
+            + ".json"
+        )
+        if observation_key in data and data[observation_key] != observation_raw:
+            raise BlockedError("lease loss observation archive differs")
+        data[observation_key] = observation_raw
     data.pop("last_observation.json", None)
     expected_data = dict(data, **{"receipt.json": canonical(seed)})
     if len(canonical(expected_data).encode()) > 900 * 1024:
-        raise BlockedError("capacity resume archive exceeds bounded state capacity")
+        raise BlockedError(f"{label} archive exceeds bounded state capacity")
     safety.sample(initial=True)
-    await verify_capacity_resume(api, storage, safety, seed, cp)
+    await verifier(api, storage, safety, seed, cp)
     try:
         api.cas(dict(cm, data=data), seed)
         readback = api.state()
         safety.sample(initial=True)
-        await verify_capacity_resume(api, storage, safety, seed, cp)
+        await verifier(api, storage, safety, seed, cp)
         if readback.get("data") != expected_data:
-            raise BlockedError("capacity resume readback differs")
+            raise BlockedError(f"{label} readback differs")
     except Exception as exc:
-        raise BlockedError(
-            "capacity resume outcome uncertain; inspect state without retry"
-        ) from exc
+        raise BlockedError(f"{label} outcome uncertain; inspect state without retry") from exc
     print(
-        "HOURLY_CAPACITY_ADMISSION "
+        ("HOURLY_LEASE_LOSS_ADMISSION " if lease_loss else "HOURLY_CAPACITY_ADMISSION ")
         + canonical(
             {
                 "checkpoint_sha256": checkpoint_hash(cp),
@@ -950,7 +1022,11 @@ async def run(api: Kubernetes, storage: Any, safety: Safety) -> int:
         # Leave 500s below the 3500s Job deadline for setup, health and shutdown.
         command.extend(["--strategy-timeout", "1800", "--total-timeout", "3000"])
         safety.sample(initial=True)
-        runtime_resume = receipt.get("source") == "operator_failed_runtime_resume"
+        failed_runtime = receipt.get("source") == "operator_failed_runtime_resume"
+        lease_authorization = (
+            receipt if receipt.get("source") == "operator_lease_loss_resume" else None
+        )
+        runtime_resume = failed_runtime or lease_authorization is not None
         capacity_authorization = (
             receipt if receipt.get("source") == "operator_capacity_resume" else None
         )
@@ -959,11 +1035,16 @@ async def run(api: Kubernetes, storage: Any, safety: Safety) -> int:
             if cm["data"].get(archive) != canonical(receipt):
                 raise BlockedError("capacity resume archive missing or stale")
             await verify_capacity_resume(api, storage, safety, receipt, cp)
-        if runtime_resume:
+        if failed_runtime:
             archive = "failed_runtime_resume_" + checkpoint_hash(receipt) + ".json"
             if cm["data"].get(archive) != canonical(receipt):
                 raise BlockedError("failed runtime resume archive missing or stale")
             await verify_failed_runtime_resume(api, storage, safety, receipt, cp)
+        if lease_authorization is not None:
+            archive = "lease_loss_resume_" + checkpoint_hash(lease_authorization) + ".json"
+            if cm["data"].get(archive) != canonical(lease_authorization):
+                raise BlockedError("lease loss resume archive missing or stale")
+            await verify_lease_loss_resume(api, storage, safety, lease_authorization, cp)
         if (
             receipt.get("source") == "operator_resource_rebaseline"
             and receipt.get("resource_policy_sha256") != safety.policy_sha256
@@ -993,12 +1074,17 @@ async def run(api: Kubernetes, storage: Any, safety: Safety) -> int:
         if runtime_resume or capacity_authorization is not None:
             safety.sample(initial=True)
             api.no_other_jobs(api.identity()["job_uid"])
-        resume_seed_sha256 = checkpoint_hash(receipt) if runtime_resume else None
+        resume_seed_sha256 = checkpoint_hash(receipt) if failed_runtime else None
         capacity_seed_sha256 = (
             checkpoint_hash(receipt) if capacity_authorization is not None else None
         )
         receipt = {
-            **({"failed_runtime_resume_sha256": resume_seed_sha256} if runtime_resume else {}),
+            **({"failed_runtime_resume_sha256": resume_seed_sha256} if failed_runtime else {}),
+            **(
+                {"lease_loss_resume_sha256": checkpoint_hash(lease_authorization)}
+                if lease_authorization is not None
+                else {}
+            ),
             **(
                 {"capacity_resume_sha256": capacity_seed_sha256}
                 if capacity_authorization is not None
@@ -1021,6 +1107,8 @@ async def run(api: Kubernetes, storage: Any, safety: Safety) -> int:
             api.no_other_jobs(api.identity()["job_uid"])
         if capacity_authorization is not None:
             await verify_capacity_resume(api, storage, safety, capacity_authorization, cp)
+        if lease_authorization is not None:
+            await verify_lease_loss_resume(api, storage, safety, lease_authorization, cp)
         awaiting_native_claim = runtime_resume
         native_owner = None
         observed_lease_owner = None
@@ -1078,7 +1166,8 @@ async def run(api: Kubernetes, storage: Any, safety: Safety) -> int:
                     ):
                         raise BlockedError("live checkpoint reports failure")
                     if (
-                        current
+                        not pending
+                        and current
                         and current.get("status") == "running"
                         and (
                             len(active) != 1
@@ -1235,7 +1324,8 @@ async def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Archive an approved blocked CLI130 capacity stop and seed one native resume",
     )
-    parser.add_argument("--approval-file", help="Reviewed exact-state capacity admission JSON")
+    operator.add_argument("--admit-lease-loss-resume", action="store_true")
+    parser.add_argument("--approval-file", help="Reviewed exact-state operator admission JSON")
     parser.add_argument("--confirm-run-id")
     parser.add_argument("--checkpoint-sha256")
     parser.add_argument("--previous-receipt-sha256")
@@ -1251,12 +1341,14 @@ async def main(argv: list[str] | None = None) -> int:
         not args.rebaseline_resources and any(value is not None for value in proof)
     ):
         parser.error("resource rebaseline requires all explicit predecessor proof arguments")
-    if args.admit_capacity_stop != (args.approval_file is not None):
-        parser.error("capacity admission requires --admit-capacity-stop and --approval-file")
+    if (args.admit_capacity_stop or args.admit_lease_loss_resume) != (
+        args.approval_file is not None
+    ):
+        parser.error("operator admission requires its mode and --approval-file")
     api = Kubernetes()
     safety = Safety(api)
     storage: Any
-    if args.rebaseline_resources or args.admit_capacity_stop:
+    if args.rebaseline_resources or args.admit_capacity_stop or args.admit_lease_loss_resume:
         # A normal storage factory initializes schema and can migrate brain data.
         # The operator path must only authenticate/select the existing database.
         from surreal_memory.storage.surrealdb import SurrealDBStorage
@@ -1267,6 +1359,8 @@ async def main(argv: list[str] | None = None) -> int:
             await storage._reconnect()
             if args.admit_capacity_stop:
                 return await admit_capacity_stop(api, storage, safety, args)
+            if args.admit_lease_loss_resume:
+                return await admit_lease_loss_resume(api, storage, safety, args)
             return await rebaseline_resources(api, storage, safety, args)
         finally:
             await storage.close()
