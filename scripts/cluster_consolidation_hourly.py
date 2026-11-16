@@ -453,46 +453,11 @@ def capacity_predecessor_log(
     return cast("str", rebind["archived_predecessor"]["log"])
 
 
-def _capacity_workload_spec(value: dict[str, Any]) -> dict[str, Any]:
-    """Ignore only Kubernetes' generated service-account access volume/mount names."""
-    spec = json.loads(canonical(value))
-    injected = set()
-    for volume in spec.get("volumes", []):
-        sources = volume.get("projected", {}).get("sources", [])
-        if (
-            str(volume.get("name", "")).startswith("kube-api-access-")
-            and len(sources) == 3
-            and any(s.get("serviceAccountToken", {}).get("path") == "token" for s in sources)
-            and any(s.get("configMap", {}).get("name") == "kube-root-ca.crt" for s in sources)
-            and any(
-                any(
-                    i.get("fieldRef", {}).get("fieldPath") == "metadata.namespace"
-                    for i in s.get("downwardAPI", {}).get("items", [])
-                )
-                for s in sources
-            )
-        ):
-            injected.add(volume["name"])
-    spec["volumes"] = [v for v in spec.get("volumes", []) if v.get("name") not in injected]
-    for container in spec.get("containers", []):
-        if "volumeMounts" in container:
-            container["volumeMounts"] = [
-                m
-                for m in container["volumeMounts"]
-                if not (
-                    m.get("name") in injected
-                    and m.get("mountPath") == "/var/run/secrets/kubernetes.io/serviceaccount"
-                    and m.get("readOnly") is True
-                )
-            ]
-    return cast("dict[str, Any]", spec)
-
-
 def _capacity_database_binding(
     api: Kubernetes,
     binding: dict[str, Any],
     *,
-    previous_pod: dict[str, Any] | None = None,
+    historical_started_at: datetime | None = None,
     incident_at: datetime | None = None,
 ) -> dict[str, Any]:
     """Read exact current objects; pin stable identity/spec, recheck live readiness."""
@@ -575,16 +540,12 @@ def _capacity_database_binding(
     created = timestamp(meta.get("creationTimestamp"))
     if created is None or (incident_at is not None and created < incident_at):
         raise BlockedError("capacity replacement database predates approved incident")
-    if previous_pod is not None:
-        old_created = timestamp(previous_pod.get("metadata", {}).get("creationTimestamp"))
-        if old_created is None or any(
-            timestamp(obj.get("metadata", {}).get("creationTimestamp")) is None
-            or timestamp(obj["metadata"]["creationTimestamp"]) > old_created
-            for obj in (rs, deployment, pvc, pv)
-        ):
-            raise BlockedError("capacity persistent objects do not predate historical database")
-        if _capacity_workload_spec(previous_pod["spec"]) != _capacity_workload_spec(spec):
-            raise BlockedError("capacity historical database workload changed")
+    if historical_started_at is not None and any(
+        timestamp(obj.get("metadata", {}).get("creationTimestamp")) is None
+        or timestamp(obj["metadata"]["creationTimestamp"]) > historical_started_at
+        for obj in (rs, deployment, pvc, pv)
+    ):
+        raise BlockedError("capacity persistent objects do not predate the historical failed Job")
     return {
         "namespace": namespace,
         "pod_name": meta["name"],
@@ -611,13 +572,13 @@ def capacity_database_binding(
     api: Kubernetes,
     binding: dict[str, Any],
     *,
-    previous_pod: dict[str, Any] | None = None,
+    historical_started_at: datetime | None = None,
     incident_at: datetime | None = None,
 ) -> dict[str, Any]:
     """Return the stable projection, failing closed on malformed API object shapes."""
     try:
         return _capacity_database_binding(
-            api, binding, previous_pod=previous_pod, incident_at=incident_at
+            api, binding, historical_started_at=historical_started_at, incident_at=incident_at
         )
     except (KeyError, TypeError, ValueError, AttributeError, IndexError) as exc:
         raise BlockedError("capacity database identity response malformed") from exc
@@ -626,11 +587,20 @@ def capacity_database_binding(
 async def verify_capacity_rebind(api: Kubernetes, storage: Any, approval: dict[str, Any]) -> None:
     """Verify current persistent incarnation and parsed full brain config, never write them."""
     rebind = approval["incarnation_rebind"]
-    previous_pod = json.loads(rebind["previous_database"]["pod_raw"])
+    historical = rebind["previous_database"]
+    if (
+        historical.get("proof_kind") != "reviewed_observed_database_continuity"
+        or historical.get("unavailable_owner_mount_spec_acknowledged") is not True
+    ):
+        raise BlockedError("capacity historical-gap review is missing")
+    historical_job = json.loads(rebind["archived_predecessor"]["job_raw"])
+    historical_started_at = timestamp(historical_job.get("status", {}).get("startTime"))
+    if historical_started_at is None:
+        raise BlockedError("capacity historical failed Job start time missing")
     observed = capacity_database_binding(
         api,
         rebind["database"],
-        previous_pod=previous_pod,
+        historical_started_at=historical_started_at,
         incident_at=timestamp(rebind["incident"]["node_not_ready_at"]),
     )
     if canonical(observed) != canonical(rebind["database"]):

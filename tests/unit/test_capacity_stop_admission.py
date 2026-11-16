@@ -7,6 +7,7 @@ import hashlib
 import importlib.metadata
 import json
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -171,6 +172,7 @@ def rebind_evidence():
             "failed": 1,
             "active": 0,
             "succeeded": 0,
+            "startTime": "2026-01-01T00:00:00Z",
             "conditions": [{"type": "Failed", "status": "True"}],
         },
     }
@@ -211,34 +213,34 @@ def rebind_evidence():
     }
     for field in ("pod", "replica_set", "deployment", "pvc", "pv"):
         binding[field + "_spec_sha256"] = "e" * 64
-    old_db = {
-        "metadata": {
-            "name": "historical-db",
-            "namespace": namespace,
+    observed = [
+        {
+            "name": "database-rs-historical",
             "uid": "same-db-uid",
-            "creationTimestamp": "2025-12-01T00:00:00Z",
-            "ownerReferences": [{"kind": "ReplicaSet", "name": "database-rs", "uid": "rs-uid"}],
-        },
-        "spec": {
-            "nodeName": "node",
-            "containers": [{"name": "surrealdb", "image": "db:version"}],
-            "volumes": [{"name": "data", "persistentVolumeClaim": {"claimName": "database-data"}}],
-        },
-        "status": {
-            "containerStatuses": [
-                {
-                    "name": "surrealdb",
-                    "imageID": binding["image_id"],
-                    "containerID": "same-container",
-                    "restartCount": 2,
-                }
-            ]
-        },
+            "ready": [True],
+            "restarts": [2],
+            "imageIDs": [binding["image_id"]],
+            "oom": ["Error"],
+        }
+    ]
+    observation_raw = receipts.canonical(observed)
+    historical_safety = {
+        "status": "passed",
+        "baseline": previous["before_resources"],
+        "memory_limit_bytes": approval["memory_limit_bytes"],
+        "active_jobs": 0,
+        "cron_suspended": True,
+        "at_epoch": datetime(2026, 1, 1, 1, 20, tzinfo=UTC).timestamp(),
     }
-    old_db_raw = receipts.canonical(old_db)
+    safety_raw = receipts.canonical(historical_safety)
     historical = {
-        "pod_raw": old_db_raw,
-        "pod_sha256": hashlib.sha256(old_db_raw.encode()).hexdigest(),
+        "proof_kind": "reviewed_observed_database_continuity",
+        "observation_raw": observation_raw,
+        "observation_sha256": hashlib.sha256(observation_raw.encode()).hexdigest(),
+        "captured_at": "2026-01-01T01:10:00Z",
+        "safety_raw": safety_raw,
+        "safety_sha256": hashlib.sha256(safety_raw.encode()).hexdigest(),
+        "unavailable_owner_mount_spec_acknowledged": True,
     }
     approval["capacity_resume_version"] = 2
     approval["resource_baseline"] = [["new-db-uid", '[["surrealdb","new-container",0]]'], 0.0, 0.0]
@@ -633,8 +635,8 @@ def test_v2_rebind_preserves_historical130_and_separates_fresh_baseline():
         "event-node",
         "capture-time",
         "old-db-uid",
-        "old-db-rs",
-        "old-db-pvc",
+        "old-db-name",
+        "old-db-cid",
         "old-db-image",
         "brain-digest",
         "spec-digest",
@@ -678,19 +680,26 @@ def test_v2_rebind_rejects_changed_provenance_and_identity(fault):
     elif fault == "capture-time":
         archive["captured_at"] = "2026-01-01T01:40:00Z"
     elif fault.startswith("old-db-"):
-        pod = json.loads(rb["previous_database"]["pod_raw"])
-        if fault == "old-db-uid":
-            pod["metadata"]["uid"] = "wrong"
-        elif fault == "old-db-rs":
-            pod["metadata"]["ownerReferences"][0]["uid"] = "wrong"
-        elif fault == "old-db-pvc":
-            pod["spec"]["volumes"][0]["persistentVolumeClaim"]["claimName"] = "wrong"
+        historical = rb["previous_database"]
+        if fault == "old-db-cid":
+            captured = json.loads(historical["safety_raw"])
+            captured["baseline"][0][1] = '[["surrealdb","wrong-container",2]]'
+            historical["safety_raw"] = receipts.canonical(captured)
+            historical["safety_sha256"] = hashlib.sha256(
+                historical["safety_raw"].encode()
+            ).hexdigest()
         else:
-            pod["status"]["containerStatuses"][0]["imageID"] = "wrong"
-        rb["previous_database"]["pod_raw"] = receipts.canonical(pod)
-        rb["previous_database"]["pod_sha256"] = hashlib.sha256(
-            rb["previous_database"]["pod_raw"].encode()
-        ).hexdigest()
+            captured = json.loads(historical["observation_raw"])
+            if fault == "old-db-uid":
+                captured[0]["uid"] = "wrong"
+            elif fault == "old-db-name":
+                captured[0]["name"] = "wrong-prefix"
+            else:
+                captured[0]["imageIDs"] = ["wrong-image"]
+            historical["observation_raw"] = receipts.canonical(captured)
+            historical["observation_sha256"] = hashlib.sha256(
+                historical["observation_raw"].encode()
+            ).hexdigest()
     elif fault == "brain-digest":
         rb["brain"]["config_sha256"] = "invalid"
     elif fault == "spec-digest":
@@ -730,3 +739,73 @@ async def test_v2_samples_resources_after_identity_and_checkpoint_reads(tmp_path
     ):
         await hourly.verify_capacity_resume(api, storage, safety, admitted, cp)
     assert order == ["identity", "checkpoint", "resources"]
+
+
+@pytest.mark.parametrize("ack", [None, False, 0, "true"])
+def test_observed_continuity_never_infers_historical_gap_acknowledgement(ack):
+    raw, log, cp, approval = rebind_evidence()
+    historical = approval["incarnation_rebind"]["previous_database"]
+    if ack is None:
+        del historical["unavailable_owner_mount_spec_acknowledged"]
+    else:
+        historical["unavailable_owner_mount_spec_acknowledged"] = ack
+    with pytest.raises(receipts.BlockedError):
+        seed(raw, log, cp, approval)
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "kind",
+        "observation-hash",
+        "safety-hash",
+        "duplicate-uid",
+        "not-ready",
+        "safety-oom",
+        "safety-limit",
+        "active-job",
+        "cron-enabled",
+        "stale-safety",
+        "late-safety",
+        "late-capture",
+    ],
+)
+def test_observed_continuity_rejects_changed_capture_or_safety(fault):
+    raw, log, cp, approval = rebind_evidence()
+    historical = approval["incarnation_rebind"]["previous_database"]
+    if fault == "kind":
+        historical["proof_kind"] = "unknown"
+    elif fault == "observation-hash":
+        historical["observation_raw"] += " "
+    elif fault == "safety-hash":
+        historical["safety_raw"] += " "
+    elif fault == "late-capture":
+        historical["captured_at"] = "2026-01-01T01:40:00Z"
+    elif fault in {"duplicate-uid", "not-ready"}:
+        capture = json.loads(historical["observation_raw"])
+        if fault == "duplicate-uid":
+            capture.append(copy.deepcopy(capture[0]))
+        else:
+            capture[0]["ready"] = [1]
+        historical["observation_raw"] = receipts.canonical(capture)
+        historical["observation_sha256"] = hashlib.sha256(
+            historical["observation_raw"].encode()
+        ).hexdigest()
+    else:
+        captured = json.loads(historical["safety_raw"])
+        if fault == "safety-oom":
+            captured["baseline"][1] = 1
+        elif fault == "safety-limit":
+            captured["memory_limit_bytes"] = 20 * 1024**3
+        elif fault == "active-job":
+            captured["active_jobs"] = 1
+        elif fault == "cron-enabled":
+            captured["cron_suspended"] = False
+        elif fault == "stale-safety":
+            captured["at_epoch"] = 0
+        else:
+            captured["at_epoch"] = datetime(2026, 1, 1, 1, 40, tzinfo=UTC).timestamp()
+        historical["safety_raw"] = receipts.canonical(captured)
+        historical["safety_sha256"] = hashlib.sha256(historical["safety_raw"].encode()).hexdigest()
+    with pytest.raises(receipts.BlockedError):
+        seed(raw, log, cp, approval)

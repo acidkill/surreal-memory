@@ -172,16 +172,6 @@ def database_objects(approval):
         obj["metadata"]["creationTimestamp"] = "2025-12-01T00:00:00Z"
         binding[name + "_spec_sha256"] = receipts.checkpoint_hash(obj["spec"])
     pod["metadata"]["creationTimestamp"] = "2026-01-01T01:40:00Z"
-    old_pod = copy.deepcopy(pod)
-    old_pod["metadata"].update(
-        name="historical-db", uid="same-db-uid", creationTimestamp="2026-01-01T00:00:00Z"
-    )
-    old_pod["status"]["containerStatuses"][0].update(containerID="same-container", restartCount=2)
-    old_raw = receipts.canonical(old_pod)
-    approval["incarnation_rebind"]["previous_database"] = {
-        "pod_raw": old_raw,
-        "pod_sha256": hashlib.sha256(old_raw.encode()).hexdigest(),
-    }
     return objects
 
 
@@ -358,7 +348,17 @@ async def test_full_v2_admission_and_single_native_resume(
 
 @pytest.mark.parametrize(
     "fault",
-    ["brain", "checkpoint", "runtime", "owner", "unready", "restart", "oom", "stale_metrics"],
+    [
+        "brain",
+        "checkpoint",
+        "runtime",
+        "owner",
+        "recent_pvc",
+        "unready",
+        "restart",
+        "oom",
+        "stale_metrics",
+    ],
 )
 async def test_v2_admission_refuses_drift_before_cas(
     tmp_path, monkeypatch, synthetic_runtime_versions, fault
@@ -378,6 +378,8 @@ async def test_v2_admission_refuses_drift_before_cas(
         Path(args.approval_file).write_text(json.dumps(approval))
     elif fault == "owner":
         objects["pod"]["metadata"]["ownerReferences"][0]["uid"] = "different"
+    elif fault == "recent_pvc":
+        objects["pvc"]["metadata"]["creationTimestamp"] = "2026-01-01T01:15:00Z"
     elif fault == "unready":
         objects["pod"]["status"]["containerStatuses"][0]["ready"] = False
     elif fault == "restart":
@@ -483,3 +485,49 @@ async def test_v2_binding_drift_between_preflight_checks_prevents_cas(
     assert reads >= 4
     api.cas.assert_not_called()
     assert cm == original_state
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "missing_attestation",
+        "false_attestation",
+        "observation_uid",
+        "observation_hash",
+        "late_safety",
+    ],
+)
+async def test_observed_continuity_evidence_rejected_before_cas(
+    tmp_path, monkeypatch, synthetic_runtime_versions, fault
+):
+    from pathlib import Path
+    from unittest.mock import patch
+
+    api, storage, safety, args, cm, _, approval, _ = rebind_operator(tmp_path, monkeypatch)
+    original = copy.deepcopy(cm)
+    previous = approval["incarnation_rebind"]["previous_database"]
+    if fault == "missing_attestation":
+        previous.pop("unavailable_owner_mount_spec_acknowledged")
+    elif fault == "false_attestation":
+        previous["unavailable_owner_mount_spec_acknowledged"] = False
+    elif fault == "observation_uid":
+        observations = json.loads(previous["observation_raw"])
+        observations[0]["uid"] = "different"
+        previous["observation_raw"] = receipts.canonical(observations)
+        previous["observation_sha256"] = hashlib.sha256(
+            previous["observation_raw"].encode()
+        ).hexdigest()
+    elif fault == "observation_hash":
+        previous["observation_sha256"] = "0" * 64
+    else:
+        evidence = json.loads(previous["safety_raw"])
+        evidence["at_epoch"] = 4102444800
+        previous["safety_raw"] = receipts.canonical(evidence)
+        previous["safety_sha256"] = hashlib.sha256(previous["safety_raw"].encode()).hexdigest()
+    Path(args.approval_file).write_text(json.dumps(approval))
+    with patch.object(hourly.subprocess, "Popen") as launch:
+        with pytest.raises(receipts.BlockedError):
+            await hourly.admit_capacity_stop(api, storage, safety, args)
+    launch.assert_not_called()
+    api.cas.assert_not_called()
+    assert cm == original

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from datetime import UTC, datetime
 from typing import Any
@@ -1014,43 +1015,90 @@ def _capacity_rebind_evidence(previous: dict[str, Any], approval: dict[str, Any]
         if key.endswith("_name") or key == "namespace":
             if len(value) > 253 or re.fullmatch(r"[a-z0-9][a-z0-9.-]*", value) is None:
                 raise BlockedError("capacity database object name invalid")
-    if not isinstance(historical, dict) or set(historical) != {"pod_raw", "pod_sha256"}:
-        raise BlockedError("capacity historical database Pod proof missing")
-    old_raw = historical.get("pod_raw")
+    expected_historical = {
+        "proof_kind",
+        "observation_raw",
+        "observation_sha256",
+        "captured_at",
+        "safety_raw",
+        "safety_sha256",
+        "unavailable_owner_mount_spec_acknowledged",
+    }
     if (
-        not isinstance(old_raw, str)
-        or len(old_raw.encode()) > 64 * 1024
-        or hashlib.sha256(old_raw.encode()).hexdigest() != historical["pod_sha256"]
+        not isinstance(historical, dict)
+        or set(historical) != expected_historical
+        or historical.get("proof_kind") != "reviewed_observed_database_continuity"
+        or historical.get("unavailable_owner_mount_spec_acknowledged") is not True
     ):
-        raise BlockedError("capacity historical database Pod archive differs")
-    old_pod = json.loads(old_raw)
-    old_meta = old_pod["metadata"]
-    old_status = old_pod["status"]["containerStatuses"]
-    old_spec = old_pod["spec"]
-    if (
-        current["pod_uid"] != new_uid
-        or old_meta.get("uid") != old_uid
-        or old_meta.get("namespace") != current["namespace"]
-        or old_spec.get("nodeName") != current["node_name"]
-        or len(old_status) != 1
-        or old_status[0].get("name") != "surrealdb"
-        or old_status[0].get("imageID") != current["image_id"]
-        or [old_status[0]["name"], old_status[0]["containerID"], old_status[0]["restartCount"]]
-        not in old_containers
-        or not any(
-            o.get("kind") == "ReplicaSet"
-            and o.get("name") == current["replica_set_name"]
-            and o.get("uid") == current["replica_set_uid"]
-            for o in old_meta.get("ownerReferences", [])
+        raise BlockedError(
+            "capacity observed database continuity requires explicit historical-gap review"
         )
+    for kind in ("observation", "safety"):
+        raw = historical[kind + "_raw"]
+        if (
+            not isinstance(raw, str)
+            or len(raw.encode()) > 64 * 1024
+            or hashlib.sha256(raw.encode()).hexdigest() != historical[kind + "_sha256"]
+        ):
+            raise BlockedError("capacity historical database observation bytes differ")
+    observations = json.loads(historical["observation_raw"])
+    safety = json.loads(historical["safety_raw"])
+    if not isinstance(observations, list) or not 0 < len(observations) <= 100:
+        raise BlockedError("capacity historical database observation list invalid")
+    matches = [
+        item for item in observations if isinstance(item, dict) and item.get("uid") == old_uid
+    ]
+    if len(matches) != 1:
+        raise BlockedError("capacity historical database UID missing or ambiguous")
+    observed = matches[0]
+    if (
+        set(observed) != {"name", "uid", "ready", "restarts", "imageIDs", "oom"}
+        or current["pod_uid"] != new_uid
+        or len(old_containers) != 1
+        or old_containers[0][0] != "surrealdb"
+        or not isinstance(observed.get("name"), str)
+        or not observed["name"].startswith(current["replica_set_name"] + "-")
+        or observed["name"] == current["replica_set_name"] + "-"
         or not current["replica_set_name"].startswith(current["deployment_name"] + "-")
-        or not any(
-            v.get("persistentVolumeClaim", {}).get("claimName") == current["pvc_name"]
-            for v in old_spec.get("volumes", [])
-        )
-        or timestamp(old_meta.get("creationTimestamp")) is None
+        or not isinstance(observed.get("ready"), list)
+        or len(observed["ready"]) != 1
+        or observed["ready"][0] is not True
+        or not isinstance(observed.get("restarts"), list)
+        or len(observed["restarts"]) != 1
+        or type(observed["restarts"][0]) is not int
+        or observed["restarts"][0] != old_containers[0][2]
+        or observed.get("imageIDs") != [current["image_id"]]
+        or not isinstance(observed.get("oom"), list)
+        or len(observed["oom"]) != 1
+        or not isinstance(observed["oom"][0], str)
+        or observed["oom"][0] == "OOMKilled"
     ):
-        raise BlockedError("capacity persistent database continuity differs")
+        raise BlockedError("capacity historical observed database identity differs")
+    # The legacy 'oom' observation is a termination reason, not a counter.
+    # Counter/CID continuity comes from the separately captured Safety baseline.
+    if (
+        not isinstance(safety, dict)
+        or safety.get("status") != "passed"
+        or type(safety.get("memory_limit_bytes")) is not int
+        or safety["memory_limit_bytes"] != approval.get("memory_limit_bytes")
+        or canonical(safety.get("baseline")) != canonical(previous.get("before_resources"))
+        or type(safety.get("active_jobs")) is not int
+        or safety["active_jobs"] != 0
+        or safety.get("cron_suspended") is not True
+        or type(safety.get("at_epoch")) not in {int, float}
+        or not math.isfinite(safety["at_epoch"])
+        or not 0 < safety["at_epoch"] <= datetime.now(UTC).timestamp()
+    ):
+        raise BlockedError("capacity historical Safety proof differs")
+    observed_at = timestamp(historical.get("captured_at"))
+    historical_safety_at = datetime.fromtimestamp(safety["at_epoch"], UTC)
+    blocked_at = timestamp(previous.get("blocked_at"))
+    if (
+        observed_at is None
+        or blocked_at is None
+        or not blocked_at <= observed_at <= historical_safety_at
+    ):
+        raise BlockedError("capacity historical observation chronology differs")
     brain = rebind.get("brain")
     if (
         not isinstance(brain, dict)
@@ -1132,6 +1180,11 @@ def _capacity_rebind_evidence(previous: dict[str, Any], approval: dict[str, Any]
         timestamp(approval.get("approved_at")),
         timestamp(terminated.get("finishedAt")),
     )
+    job_started = timestamp(job_status.get("startTime"))
+    if job_started is None or (finished is not None and job_started > finished):
+        raise BlockedError("capacity historical failed Job start time invalid")
+    if not_ready is None or historical_safety_at >= not_ready:
+        raise BlockedError("capacity historical Safety proof is not before the incident")
     if any(value is None for value in (captured, not_ready, evicted, approved, finished)):
         raise BlockedError("capacity incident timestamps missing")
     assert captured is not None
@@ -1149,7 +1202,7 @@ def _capacity_rebind_evidence(previous: dict[str, Any], approval: dict[str, Any]
         or ref.get("name") != previous["pod_name"]
         or ref.get("uid") not in (None, previous["pod_uid"])
         or incident.get("node_name") != pod.get("spec", {}).get("nodeName")
-        or incident.get("node_name") != old_spec["nodeName"]
+        or incident.get("node_name") != current["node_name"]
         or not (finished <= captured < not_ready <= evicted <= approved)
     ):
         raise BlockedError("capacity archive capture or incident corroboration invalid")
