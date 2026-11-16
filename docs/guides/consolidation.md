@@ -245,12 +245,11 @@ all evidence; never rewrite a terminal receipt baseline.
 
 
 A separate `--admit-lease-loss-resume --approval-file PATH` operator mode admits
-one reviewed interrupted atomic-prune attempt. It accepts only a retained
+one reviewed interrupted atomic-prune attempt. Version 1 accepts only a retained
 `running` / `prune` / `synapse_pending` checkpoint with atomic journaling and a
 blocked predecessor recording actual CLI exit `130` and the exact supervisor
 reason `engine lease absent or lost`. Its approval explicitly acknowledges that
-the original engine outcome was unavailable; unrelated errors and known native
-failures require investigation rather than this admission.
+the original engine outcome was unavailable.
 
 The approval binds the complete checkpoint hash, original receipt bytes and log,
 predecessor Job/Pod identity and exit, reviewed source and immutable worker image,
@@ -261,6 +260,22 @@ before and after that CAS; it neither edits native state nor launches the CLI.
 If the old blocked receipt has no policy hash, it remains absent: the current
 live policy must still match the reviewed approval, and a present historical
 mismatch is rejected.
+
+Version 2 covers only the recorded CLI exit `1`, native `lease_lost` /
+`ConsolidationCheckpointUnconfirmedError` atomic-prune failure, followed by
+wrapper exit `2` with reason `failed runtime resume native claim differs`.
+The original receipt and exact failure/report lines remain unchanged; missing,
+duplicated or additional error evidence is rejected. Its approval records
+`known_engine_status`, `known_engine_error`, `transaction_commit_outcome_unknown`
+and `original_cause_unknown`; it does not use version 1's
+`original_engine_outcome_unknown` acknowledgment. `prior_admission_sha256` binds
+the prior canonical version 1 intent archive to the failed attempt's recorded
+intent hash and pre-attempt checkpoint hash. Continuity uses that hash link,
+the separately approved full current checkpoint hash, and matching run ID,
+options and reference time. The archive is retained and rechecked at admission
+and worker startup. Reviewed runtime, brain configuration, resource policy and
+database baseline remain required.
+Neither zero deletion receipts nor an unchanged work cursor establishes success.
 
 The next guarded worker revalidates the archived intent before ownership and
 launch, then invokes the native `--resume`. Only that approved intent permits

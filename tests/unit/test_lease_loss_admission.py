@@ -245,3 +245,272 @@ async def test_admission_arguments_fail_before_database_access(argv, monkeypatch
     with pytest.raises(SystemExit) as exc:
         await hourly.main(argv)
     assert exc.value.code == 2
+
+
+def lease_loss_v2_evidence():
+    old = lease_loss_evidence()
+    prior = seed(old)
+    prior_raw = receipts.canonical(prior)
+    prior_hash = receipts.checkpoint_hash(prior)
+    raw, _, original_cp, approval, brain = old
+    cp = copy.deepcopy(original_cp)
+    cp["owner_token"] = "synthetic-new-owner"  # noqa: S105 - synthetic identity
+    cp["native_handoff"]["attempt_seq"] += 1
+    cp["native_handoff"]["payload_sha256"] = receipts.native_payload_hash(cp)
+    previous = json.loads(raw)
+    previous.update(
+        reason="failed runtime resume native claim differs",
+        cli_rc=1,
+        before_sha256=receipts.checkpoint_hash(original_cp),
+        lease_loss_resume_sha256=prior_hash,
+        blocked_at="2026-01-01T02:30:00Z",
+        pod_name="synthetic-v2-pod",
+        pod_uid="synthetic-v2-pod-uid",
+        job_name="synthetic-v2-job",
+        job_uid="synthetic-v2-job-uid",
+    )
+    message = (
+        "Consolidation stopped safely in prune: lease-fenced page outcome is unconfirmed; "
+        "this session cannot replay or checkpoint"
+    )
+    output = (
+        f"Consolidation engine outcome: lease_lost; {message}\n"
+        f"  {message}\n"
+        "  Consolidation status: lease_lost\n"
+        "  Stages failed: prune (progress coordination: ConsolidationCheckpointUnconfirmedError)\n"
+    )
+    previous["cli_output_tail"] = output
+    previous["cli_output_sha256"] = hashlib.sha256(output.encode()).hexdigest()
+    raw = receipts.canonical(previous)
+    log = output + "HOURLY_BLOCKED failed runtime resume native claim differs\n"
+    approval.pop("original_engine_outcome_unknown")
+    approval.update(
+        lease_loss_resume_version=2,
+        approved_at="2026-01-01T03:00:00Z",
+        checkpoint_sha256=receipts.checkpoint_hash(cp),
+        previous_receipt_raw_sha256=hashlib.sha256(raw.encode()).hexdigest(),
+        previous_log_sha256=hashlib.sha256(log.encode()).hexdigest(),
+        known_engine_status="lease_lost",
+        known_engine_error="ConsolidationCheckpointUnconfirmedError",
+        transaction_commit_outcome_unknown=True,
+        original_cause_unknown=True,
+        prior_admission_sha256=prior_hash,
+        failed_pod={
+            **{k: previous[k] for k in ("pod_name", "pod_uid", "job_name", "job_uid")},
+            "exit_code": 2,
+        },
+    )
+    return raw, log, cp, approval, brain, prior_raw
+
+
+def v2_seed(evidence):
+    raw, log, cp, approval, _, prior_raw = evidence
+    return receipts.lease_loss_resume_seed(
+        raw, log, cp, approval=approval, previous_intent_raw=prior_raw
+    )
+
+
+def test_v2_preserves_known_failure_and_unchanged_checkpoint():
+    evidence = lease_loss_v2_evidence()
+    cp_before = copy.deepcopy(evidence[2])
+    result = v2_seed(evidence)
+    assert evidence[2] == cp_before
+    assert receipts.lease_loss_resume_matches(result, cp_before)
+    assert result["lease_loss_resume"]["version"] == 2
+    assert result["lease_loss_resume"]["previous_intent_raw"] == evidence[5]
+    assert json.loads(result["lease_loss_resume"]["previous_receipt_raw"])["cli_rc"] == 1
+    assert result["cli_rc"] is None
+    assert receipts.select_command(result, cp_before, None)[-1] == "--resume"
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("known_engine_status", "failed"),
+        ("known_engine_error", "OtherError"),
+        ("transaction_commit_outcome_unknown", False),
+        ("original_cause_unknown", False),
+        ("prior_admission_sha256", "0" * 64),
+        ("checkpoint_sha256", "0" * 64),
+        ("run_id", "other"),
+        ("options_fingerprint", "other"),
+    ],
+)
+def test_v2_rejects_mismatched_review_or_bindings(field, value):
+    evidence = lease_loss_v2_evidence()
+    evidence[3][field] = value
+    with pytest.raises(receipts.BlockedError):
+        v2_seed(evidence)
+
+
+@pytest.mark.parametrize("fault", ["missing", "noncanonical", "tampered", "v1_ack"])
+def test_v2_rejects_broken_prior_intent_and_v1_ack(fault):
+    evidence = list(lease_loss_v2_evidence())
+    if fault == "missing":
+        evidence[5] = None
+    elif fault == "noncanonical":
+        evidence[5] += " "
+    elif fault == "tampered":
+        prior = json.loads(evidence[5])
+        prior["run_id"] = "different"
+        evidence[5] = receipts.canonical(prior)
+    else:
+        evidence[3]["original_engine_outcome_unknown"] = True
+    with pytest.raises(receipts.BlockedError):
+        v2_seed(evidence)
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "cli130",
+        "wrong_reason",
+        "missing_line",
+        "duplicate",
+        "extra_error",
+        "status_completed",
+        "status_paused",
+        "outcome_completed",
+    ],
+)
+def test_v2_rejects_other_failures_even_if_hashes_are_reapproved(fault):
+    evidence = list(lease_loss_v2_evidence())
+    previous = json.loads(evidence[0])
+    output = previous["cli_output_tail"]
+    if fault == "cli130":
+        previous["cli_rc"] = 130
+    elif fault == "wrong_reason":
+        previous["reason"] = "other failure"
+    elif fault == "missing_line":
+        output = output.replace("  Consolidation status: lease_lost\n", "")
+    elif fault == "duplicate":
+        output += "  Consolidation status: lease_lost\n"
+    elif fault == "status_completed":
+        output += "  Consolidation status: completed\n"
+    elif fault == "status_paused":
+        output += "  Consolidation status: paused\n"
+    elif fault == "outcome_completed":
+        output += "Consolidation engine outcome: completed\n"
+    else:
+        output += "RuntimeError: unrelated synthetic error\n"
+    previous["cli_output_tail"] = output
+    previous["cli_output_sha256"] = hashlib.sha256(output.encode()).hexdigest()
+    evidence[0] = receipts.canonical(previous)
+    evidence[1] = output + "HOURLY_BLOCKED " + previous["reason"] + "\n"
+    evidence[3]["previous_receipt_raw_sha256"] = hashlib.sha256(evidence[0].encode()).hexdigest()
+    evidence[3]["previous_log_sha256"] = hashlib.sha256(evidence[1].encode()).hexdigest()
+    with pytest.raises(receipts.BlockedError):
+        v2_seed(evidence)
+
+
+def v2_operator(tmp_path):
+    api, storage, safety, args, cm, _, _ = operator(tmp_path)
+    raw, log, cp, approval, brain, prior_raw = lease_loss_v2_evidence()
+    cm["data"]["receipt.json"] = raw
+    cm["data"]["lease_loss_resume_" + approval["prior_admission_sha256"] + ".json"] = prior_raw
+    api.previous_log.return_value = log
+    storage.get_consolidation_progress.return_value = cp
+    storage.get_brain.return_value = brain
+    Path(args.approval_file).write_text(json.dumps(approval))
+    return api, storage, safety, args, cm, cp, approval
+
+
+async def test_v2_operator_admission_cas_preserves_known_failure_and_prior(tmp_path):
+    api, storage, safety, args, cm, cp, approval = v2_operator(tmp_path)
+    previous = cm["data"]["receipt.json"]
+    prior_key = "lease_loss_resume_" + approval["prior_admission_sha256"] + ".json"
+    prior = cm["data"][prior_key]
+    before = copy.deepcopy(cp)
+    assert await hourly.admit_lease_loss_resume(api, storage, safety, args) == 0
+    assert cp == before
+    admitted = json.loads(cm["data"]["receipt.json"])
+    assert admitted["lease_loss_resume"]["previous_receipt_raw"] == previous
+    assert admitted["lease_loss_resume"]["previous_intent_raw"] == prior
+    assert cm["data"][prior_key] == prior
+    assert cm["data"][
+        "lease_loss_resume_" + receipts.checkpoint_hash(admitted) + ".json"
+    ] == receipts.canonical(admitted)
+    assert json.loads(previous)["cli_rc"] == 1 and admitted["cli_rc"] is None
+    saved = copy.deepcopy(cm)
+    with pytest.raises(receipts.BlockedError):
+        await hourly.admit_lease_loss_resume(api, storage, safety, args)
+    assert cm == saved
+
+
+@pytest.mark.parametrize(
+    "fault", ["prior_missing", "prior_changed", "lease", "worker", "brain", "runtime", "cas"]
+)
+async def test_v2_operator_rejects_stale_or_contended_admission(tmp_path, fault):
+    api, storage, safety, args, cm, _, approval = v2_operator(tmp_path)
+    key = "lease_loss_resume_" + approval["prior_admission_sha256"] + ".json"
+    if fault == "prior_missing":
+        del cm["data"][key]
+    elif fault == "prior_changed":
+        cm["data"][key] += " "
+    elif fault == "lease":
+        storage._query.return_value = [{"owner_token": "other"}]
+    elif fault == "worker":
+        api.no_other_jobs.side_effect = receipts.BlockedError("active worker")
+    elif fault == "brain":
+        brain = storage.get_brain.return_value
+        storage.get_brain.return_value = replace(brain, id="other")
+    elif fault == "runtime":
+        approval["runtime"]["runner_sha256"] = "0" * 64
+        Path(args.approval_file).write_text(json.dumps(approval))
+    else:
+        api.cas.side_effect = RuntimeError("synthetic CAS conflict")
+    before = copy.deepcopy(cm)
+    with pytest.raises(receipts.BlockedError):
+        await hourly.admit_lease_loss_resume(api, storage, safety, args)
+    assert cm == before
+
+
+async def test_v2_inconsistent_readback_reports_uncertainty_without_retry(tmp_path):
+    api, storage, safety, args, cm, cp, _ = v2_operator(tmp_path)
+    before = copy.deepcopy(cp)
+    reads = 0
+
+    def state():
+        nonlocal reads
+        reads += 1
+        result = copy.deepcopy(cm)
+        if reads == 4:
+            result["data"]["unexpected.json"] = "synthetic drift"
+        return result
+
+    api.state.side_effect = state
+    with pytest.raises(receipts.BlockedError, match="uncertain"):
+        await hourly.admit_lease_loss_resume(api, storage, safety, args)
+    assert api.cas.call_count == 1
+    assert cp == before
+
+
+async def test_v2_worker_rejects_missing_prior_archive_before_start(tmp_path, monkeypatch):
+    api, storage, safety, args, cm, _, approval = v2_operator(tmp_path)
+    assert await hourly.admit_lease_loss_resume(api, storage, safety, args) == 0
+    del cm["data"]["lease_loss_resume_" + approval["prior_admission_sha256"] + ".json"]
+    launches = []
+    monkeypatch.setattr(hourly.subprocess, "Popen", lambda *a, **k: launches.append(a))
+    assert await hourly.run(api, storage, safety) == 2
+    assert launches == []
+
+
+@pytest.mark.parametrize("fault", ["prior_run", "prior_checkpoint", "mixed_origin"])
+def test_v2_rejects_rehashed_broken_intent_chain(fault):
+    evidence = list(lease_loss_v2_evidence())
+    previous = json.loads(evidence[0])
+    prior = json.loads(evidence[5])
+    if fault == "prior_run":
+        prior["run_id"] = "different"
+    elif fault == "prior_checkpoint":
+        prior["checkpoint_sha256"] = "0" * 64
+    else:
+        previous["capacity_resume_sha256"] = "0" * 64
+    prior_hash = receipts.checkpoint_hash(prior)
+    evidence[5] = receipts.canonical(prior)
+    previous["lease_loss_resume_sha256"] = prior_hash
+    evidence[0] = receipts.canonical(previous)
+    evidence[3]["prior_admission_sha256"] = prior_hash
+    evidence[3]["previous_receipt_raw_sha256"] = hashlib.sha256(evidence[0].encode()).hexdigest()
+    with pytest.raises(receipts.BlockedError):
+        v2_seed(evidence)

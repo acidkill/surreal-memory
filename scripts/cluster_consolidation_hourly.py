@@ -692,6 +692,10 @@ async def verify_lease_loss_resume(
         raise BlockedError("lease loss resume seed is invalid")
     audit = receipt["lease_loss_resume"]
     approval = audit["approval"]
+    if audit["version"] == 2:
+        prior_key = "lease_loss_resume_" + approval["prior_admission_sha256"] + ".json"
+        if api.state().get("data", {}).get(prior_key) != audit["previous_intent_raw"]:
+            raise BlockedError("lease loss resume prior approved intent archive changed")
     _verify_reviewed_resume_runtime(api, safety, receipt, approval, label="lease loss resume")
     previous = json.loads(audit["previous_receipt_raw"])
     if api.previous_log(previous, expected_exit_code=2) != audit["previous_log"]:
@@ -756,7 +760,19 @@ async def _admit_reviewed_resume(
     )
     safety.sample(initial=True)
     seed = (
-        lease_loss_resume_seed(raw, log, cp, approval=approval)
+        lease_loss_resume_seed(
+            raw,
+            log,
+            cp,
+            approval=approval,
+            previous_intent_raw=(
+                cm["data"].get(
+                    "lease_loss_resume_" + str(approval.get("prior_admission_sha256")) + ".json"
+                )
+                if approval.get("lease_loss_resume_version") == 2
+                else None
+            ),
+        )
         if lease_loss
         else capacity_resume_seed(
             raw,
@@ -803,7 +819,7 @@ async def _admit_reviewed_resume(
                 "checkpoint_sha256": checkpoint_hash(cp),
                 "archive_key": key,
                 "seed_sha256": checkpoint_hash(seed),
-                "historical_cli_rc": 130,
+                "historical_cli_rc": previous["cli_rc"],
             }
         ),
         flush=True,

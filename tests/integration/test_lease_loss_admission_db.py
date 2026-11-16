@@ -28,12 +28,13 @@ from tests.unit.test_capacity_stop_admission import (
     synthetic_runtime_versions as synthetic_runtime_versions,
 )
 from tests.unit.test_cluster_consolidation_hourly import hourly
-from tests.unit.test_lease_loss_admission import operator
+from tests.unit.test_lease_loss_admission import lease_loss_v2_evidence, operator
 
 pytestmark = pytest.mark.integration
 
 
-async def test_admit_then_real_cli_resumes_same_running_checkpoint(tmp_path, monkeypatch):
+@pytest.mark.parametrize("version", [1, 2])
+async def test_admit_then_real_cli_resumes_same_running_checkpoint(tmp_path, monkeypatch, version):
     target = load_target()
     if target is None:
         pytest.skip("requires registered disposable SurrealDB target")
@@ -117,6 +118,42 @@ async def test_admit_then_real_cli_resumes_same_running_checkpoint(tmp_path, mon
             brain_id=brain.id,
             brain_config_sha256=receipts.checkpoint_hash(asdict(brain.config)),
         )
+        if version == 2:
+            prior = receipts.lease_loss_resume_seed(
+                raw, api.previous_log.return_value, cp, approval=approval
+            )
+            prior_raw = receipts.canonical(prior)
+            prior_hash = receipts.checkpoint_hash(prior)
+            claimed = await ConsolidationProgressSession.open(
+                storage, strategies, fingerprint, utcnow(), resume_run_id=cp["run_id"]
+            )
+            assert claimed is not None
+            await claimed.close()
+            current = await storage.get_consolidation_progress("default")
+            assert current is not None and current["status"] == "running"
+            v2raw, v2log, _, v2approval, _, _ = lease_loss_v2_evidence()
+            failed = json.loads(v2raw)
+            failed.update(
+                before_run_id=cp["run_id"],
+                before_sha256=receipts.checkpoint_hash(cp),
+                lease_loss_resume_sha256=prior_hash,
+            )
+            raw = receipts.canonical(failed)
+            v2approval.update(
+                checkpoint_sha256=receipts.checkpoint_hash(current),
+                previous_receipt_raw_sha256=hashlib.sha256(raw.encode()).hexdigest(),
+                run_id=current["run_id"],
+                options_fingerprint=current["options_fingerprint"],
+                prior_admission_sha256=prior_hash,
+                brain_id=brain.id,
+                brain_config_sha256=receipts.checkpoint_hash(asdict(brain.config)),
+            )
+            approval = v2approval
+            cp = current
+            before = copy.deepcopy(cp)
+            cm["data"]["receipt.json"] = raw
+            cm["data"]["lease_loss_resume_" + prior_hash + ".json"] = prior_raw
+            api.previous_log.return_value = v2log
         Path(args.approval_file).write_text(json.dumps(approval))
         assert await hourly.admit_lease_loss_resume(api, storage, safety, args) == 0
         assert await storage.get_consolidation_progress("default") == before

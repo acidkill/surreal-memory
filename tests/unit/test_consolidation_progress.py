@@ -1168,7 +1168,7 @@ async def test_lease_fenced_page_renews_then_excludes_only_own_heartbeat() -> No
     assert not session.lease_lost
 
 
-@pytest.mark.parametrize("failure", ["conflict", "transport", "cancel", "timeout"])
+@pytest.mark.parametrize("failure", ["conflict", "transport", "runtime", "cancel", "timeout"])
 async def test_lease_fenced_page_releases_lock_and_fences_uncertain_outcomes(
     failure: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1192,13 +1192,27 @@ async def test_lease_fenced_page_releases_lock_and_fences_uncertain_outcomes(
             if failure == "conflict":
                 raise PruneTransactionConflictError("confirmed rollback")
             if failure == "transport":
-                raise ConnectionError("reply lost")
+                raise ConnectionError("synthetic-secret-transport")
+            if failure == "runtime":
+                raise RuntimeError("synthetic-secret-query")
             if failure == "cancel":
                 raise asyncio.CancelledError
             await asyncio.sleep(1)
 
-    with pytest.raises(expected):
+    with pytest.raises(expected) as caught:
         await run_page()
+    if failure in {"transport", "runtime", "timeout"}:
+        cause = {
+            "transport": "ConnectionError",
+            "runtime": "RuntimeError",
+            "timeout": "TimeoutError",
+        }[failure]
+        assert str(caught.value) == (
+            "lease-fenced page outcome is unconfirmed; this session cannot replay or checkpoint"
+            f"; cause={cause}"
+        )
+        assert "synthetic-secret" not in str(caught.value)
+        assert type(caught.value.__cause__).__name__ == cause
     assert not session._renew_lock.locked()
     assert session.lease_lost == (failure != "conflict")
     assert session._checkpoint_unconfirmed == (failure != "conflict")

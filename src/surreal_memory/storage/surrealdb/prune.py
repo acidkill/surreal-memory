@@ -75,6 +75,11 @@ FOR $item IN $items {
         LET $rows = (SELECT * FROM type::record('synapse', $item.record_id)
             WHERE brain_id = $brain_id);
         LET $row = $rows[0];
+        -- Indexed predicates need scalar bindings on SurrealDB 3.2.
+        LET $public_id = $item.public_id;
+        LET $source_id = $item.source_id;
+        LET $target_id = $item.target_id;
+        LET $source_record = $row.in;
         LET $same = array::len($rows) = 1 AND type::is_object($item.snapshot)
             AND $row.in = type::record('neuron', $item.source_record)
             AND $row.out = type::record('neuron', $item.target_record)
@@ -86,21 +91,21 @@ FOR $item IN $items {
             AND $row.metadata = $item.snapshot.metadata;
         LET $refs = IF $same {
             (SELECT id FROM fiber WITH INDEX idx_fiber_synapses
-             WHERE brain_id = $brain_id AND synapse_ids CONTAINS $item.public_id LIMIT 1)
+             WHERE brain_id = $brain_id AND synapse_ids CONTAINS $public_id LIMIT 1)
         } ELSE { [] };
         LET $source_protection = IF $same {
             (SELECT id FROM fiber WITH INDEX idx_fiber_neurons
-             WHERE brain_id = $brain_id AND neuron_ids CONTAINS $item.source_id
+             WHERE brain_id = $brain_id AND neuron_ids CONTAINS $source_id
              AND (pinned = true OR salience > 0.8) LIMIT 1)
         } ELSE { [] };
         LET $target_protection = IF $same {
             (SELECT id FROM fiber WITH INDEX idx_fiber_neurons
-             WHERE brain_id = $brain_id AND neuron_ids CONTAINS $item.target_id
+             WHERE brain_id = $brain_id AND neuron_ids CONTAINS $target_id
              AND (pinned = true OR salience > 0.8) LIMIT 1)
         } ELSE { [] };
         LET $targets = IF $same AND $row.weight >= 0.02 {
             (SELECT VALUE array::len(array::group(out)) FROM synapse WITH INDEX idx_synapse_in
-             WHERE brain_id = $brain_id AND in = $row.in GROUP ALL)
+             WHERE brain_id = $brain_id AND in = $source_record GROUP ALL)
         } ELSE { [2] };
         LET $protected = !$item.eligible OR array::len($refs) > 0
             OR array::len($source_protection) > 0 OR array::len($target_protection) > 0
