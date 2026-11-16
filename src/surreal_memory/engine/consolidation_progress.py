@@ -2259,6 +2259,7 @@ class ConsolidationProgressSession:
                     raise
                 raise ConsolidationCheckpointUnconfirmedError(
                     "lease-fenced page outcome is unconfirmed; this session cannot replay or checkpoint"
+                    f"; cause={type(exc).__name__}"
                 ) from exc
 
     async def renew_if_due(self) -> None:

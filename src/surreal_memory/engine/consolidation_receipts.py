@@ -1491,6 +1491,7 @@ def lease_loss_resume_seed(
     cp: dict[str, Any],
     *,
     approval: dict[str, Any],
+    previous_intent_raw: str | None = None,
 ) -> dict[str, Any]:
     """Bind one reviewed interrupted atomic-prune attempt without rewriting its outcome."""
     from surreal_memory.engine.consolidation import ConsolidationStrategy
@@ -1501,9 +1502,12 @@ def lease_loss_resume_seed(
         or max(len(previous_raw.encode()), len(previous_log.encode())) > 128 * 1024
         or not isinstance(approval, dict)
         or type(approval.get("lease_loss_resume_version")) is not int
-        or approval["lease_loss_resume_version"] != 1
+        or approval["lease_loss_resume_version"] not in {1, 2}
     ):
         raise BlockedError("lease loss resume evidence malformed or oversized")
+    version = approval["lease_loss_resume_version"]
+    if version == 1 and previous_intent_raw is not None:
+        raise BlockedError("lease loss resume v1 does not accept a prior intent")
     try:
         previous = json.loads(previous_raw)
     except ValueError as exc:
@@ -1551,7 +1555,12 @@ def lease_loss_resume_seed(
         or cp["counters"].get("prune") != prune["counters"]
     ):
         raise BlockedError("lease loss resume retained atomic prune scope differs")
-    reason = "engine lease absent or lost"
+    reason = (
+        "engine lease absent or lost"
+        if version == 1
+        else "failed runtime resume native claim differs"
+    )
+    expected_cli_rc = 130 if version == 1 else 1
     suffix = "HOURLY_BLOCKED " + reason + "\n"
     if (
         not isinstance(previous, dict)
@@ -1560,19 +1569,103 @@ def lease_loss_resume_seed(
         or previous.get("secondary_reason") is not None
         or previous.get("capacity_stop_reason") is not None
         or type(previous.get("cli_rc")) is not int
-        or previous["cli_rc"] != 130
+        or previous["cli_rc"] != expected_cli_rc
         or previous.get("before_run_id") != cp["run_id"]
         or MARKER in previous_log
         or not previous_log.endswith(suffix)
     ):
-        raise BlockedError("lease loss resume is not the reviewed blocked CLI130 attempt")
+        raise BlockedError(
+            f"lease loss resume is not the reviewed blocked CLI{expected_cli_rc} attempt"
+        )
     output = previous_log[: -len(suffix)]
-    if (
-        hashlib.sha256(output.encode()).hexdigest() != previous.get("cli_output_sha256")
-        or output[-4096:] != previous.get("cli_output_tail")
-        or cli_log_has_errors(output, cp)
-    ):
+    if hashlib.sha256(output.encode()).hexdigest() != previous.get("cli_output_sha256") or output[
+        -4096:
+    ] != previous.get("cli_output_tail"):
         raise BlockedError("lease loss resume predecessor CLI evidence differs")
+    if version == 1:
+        if cli_log_has_errors(output, cp):
+            raise BlockedError("lease loss resume predecessor CLI evidence differs")
+    else:
+        message = (
+            "Consolidation stopped safely in prune: lease-fenced page outcome is unconfirmed; "
+            "this session cannot replay or checkpoint"
+        )
+        required_lines = (
+            "Consolidation engine outcome: lease_lost; " + message,
+            "  " + message,
+            "  Consolidation status: lease_lost",
+            "  Stages failed: prune (progress coordination: ConsolidationCheckpointUnconfirmedError)",
+        )
+        diagnostic_line = "  Health delta unavailable: diagnostic snapshot failed"
+        lines = output.splitlines()
+        if (
+            any(lines.count(line) != 1 for line in required_lines)
+            or any(
+                sum(line.lstrip().startswith(prefix) for line in lines) != 1
+                for prefix in ("Consolidation engine outcome:", "Consolidation status:")
+            )
+            or lines.count(diagnostic_line) > 1
+            or cli_log_has_errors(
+                "\n".join(
+                    line for line in lines if line not in required_lines and line != diagnostic_line
+                ),
+                cp,
+            )
+            or approval.get("known_engine_status") != "lease_lost"
+            or approval.get("known_engine_error") != "ConsolidationCheckpointUnconfirmedError"
+            or "original_engine_outcome_unknown" in approval
+        ):
+            raise BlockedError("lease loss resume v2 native failure evidence differs")
+        if (
+            not isinstance(previous_intent_raw, str)
+            or len(previous_intent_raw.encode()) > 128 * 1024
+            or re.fullmatch(r"[0-9a-f]{64}", str(approval.get("prior_admission_sha256"))) is None
+        ):
+            raise BlockedError("lease loss resume v2 prior intent is missing or malformed")
+        try:
+            prior = json.loads(previous_intent_raw)
+        except ValueError as exc:
+            raise BlockedError("lease loss resume v2 prior intent is malformed") from exc
+        prior_audit = prior.get("lease_loss_resume") if isinstance(prior, dict) else None
+        prior_approval = prior_audit.get("approval") if isinstance(prior_audit, dict) else None
+        if (
+            not isinstance(prior, dict)
+            or previous_intent_raw != canonical(prior)
+            or checkpoint_hash(prior) != approval["prior_admission_sha256"]
+            or previous.get("lease_loss_resume_sha256") != approval["prior_admission_sha256"]
+            or any(
+                previous.get(key) is not None
+                for key in ("failed_runtime_resume_sha256", "capacity_resume_sha256")
+            )
+            or prior.get("phase") != "bootstrap"
+            or prior.get("source") != "operator_lease_loss_resume"
+            or prior.get("approved") is not True
+            or prior.get("status") != "running"
+            or prior.get("cli_rc") is not None
+            or prior.get("next_action") != "resume"
+            or any(prior.get(key) != cp[key] for key in ("run_id", "options_fingerprint"))
+            or timestamp(prior.get("reference_time")) != timestamp(cp["reference_time"])
+            or re.fullmatch(r"[0-9a-f]{64}", str(prior.get("checkpoint_sha256"))) is None
+            or prior.get("checkpoint_sha256") != previous.get("before_sha256")
+            or prior.get("resource_policy_sha256") != approval.get("resource_policy_sha256")
+            or canonical(prior.get("resource_baseline"))
+            != canonical(approval.get("resource_baseline"))
+            or not isinstance(prior_audit, dict)
+            or type(prior_audit.get("version")) is not int
+            or prior_audit["version"] != 1
+            or not isinstance(prior_approval, dict)
+            or type(prior_approval.get("lease_loss_resume_version")) is not int
+            or prior_approval["lease_loss_resume_version"] != 1
+            or prior_approval.get("original_engine_outcome_unknown") is not True
+            or prior_approval.get("source_fix_reviewed") is not True
+            or prior_approval.get("checkpoint_sha256") != prior["checkpoint_sha256"]
+            or prior_approval.get("approved_at") != prior.get("observed_at")
+            or any(
+                prior_approval.get(key) != approval.get(key)
+                for key in ("brain_id", "brain_config_sha256")
+            )
+        ):
+            raise BlockedError("lease loss resume v2 prior approved intent chain differs")
     bindings = {
         "checkpoint_sha256": checkpoint_hash(cp),
         "previous_receipt_raw_sha256": hashlib.sha256(previous_raw.encode()).hexdigest(),
@@ -1618,7 +1711,11 @@ def lease_loss_resume_seed(
             approval.get(key) is not True
             for key in (
                 "source_fix_reviewed",
-                "original_engine_outcome_unknown",
+                *(
+                    ("original_engine_outcome_unknown",)
+                    if version == 1
+                    else ("transaction_commit_outcome_unknown", "original_cause_unknown")
+                ),
                 "no_active_worker_verified",
                 "no_active_lease_verified",
             )
@@ -1656,7 +1753,8 @@ def lease_loss_resume_seed(
         "resource_baseline": baseline,
         "resource_policy_sha256": policy,
         "lease_loss_resume": {
-            "version": 1,
+            "version": version,
+            **({"previous_intent_raw": previous_intent_raw} if version == 2 else {}),
             "previous_receipt_raw": previous_raw,
             "previous_log": previous_log,
             "approval": approval,
@@ -1669,10 +1767,14 @@ def lease_loss_resume_matches(receipt: Any, cp: Any) -> bool:
         return False
     try:
         audit = receipt["lease_loss_resume"]
-        if type(audit["version"]) is not int or audit["version"] != 1:
+        if type(audit["version"]) is not int or audit["version"] not in {1, 2}:
             return False
         expected = lease_loss_resume_seed(
-            audit["previous_receipt_raw"], audit["previous_log"], cp, approval=audit["approval"]
+            audit["previous_receipt_raw"],
+            audit["previous_log"],
+            cp,
+            approval=audit["approval"],
+            previous_intent_raw=audit.get("previous_intent_raw"),
         )
         return canonical(receipt) == canonical(expected)
     except (BlockedError, KeyError, TypeError, ValueError, AttributeError):

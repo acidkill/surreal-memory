@@ -228,6 +228,7 @@ jobs:
           tests/integration/test_prune_atomic_db.py::test_legacy_absent_edge_repairs_refs_but_recreated_edge_keeps_them
           tests/integration/test_prune_atomic_db.py::test_legacy_repair_pages_eight_fibers_once_with_id_only_replies
           tests/integration/test_prune_page_lease_db.py
+          tests/integration/test_prune_indexed_transaction_db.py
           tests/integration/test_atomic_lease_full_cycle_db.py
           tests/integration/test_lease_loss_admission_db.py
 
