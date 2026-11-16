@@ -15,8 +15,10 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
+from dataclasses import asdict, is_dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -26,6 +28,7 @@ from surreal_memory.engine.consolidation_receipts import (
     STATE,
     BlockedError,
     canonical,
+    capacity_rebind_evidence,
     capacity_resume_matches,
     capacity_resume_seed,
     checkpoint_hash,
@@ -414,6 +417,205 @@ async def rebaseline_resources(
     return 0
 
 
+def capacity_predecessor_log(
+    api: Kubernetes, previous: dict[str, Any], approval: dict[str, Any]
+) -> str:
+    """Use reviewed archives only after typed 404 for the exact historical Pod."""
+    if approval.get("capacity_resume_version", 1) != 2:
+        return api.previous_log(previous, expected_exit_code=2)
+    rebind = capacity_rebind_evidence(previous, approval)
+    namespace = rebind["database"]["namespace"]
+    if api.namespace != namespace:
+        raise BlockedError("capacity archive namespace differs")
+    try:
+        api.request(api.path("pods/" + previous["pod_name"]))
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404:
+            raise
+    else:
+        raise BlockedError("capacity archived predecessor requires the recorded Pod to be absent")
+    job = api.request(f"/apis/batch/v1/namespaces/{namespace}/jobs/{previous['job_name']}")
+    meta, status = job.get("metadata", {}), job.get("status", {})
+    if (
+        meta.get("uid") != previous["job_uid"]
+        or meta.get("name") != previous["job_name"]
+        or meta.get("namespace") != namespace
+        or meta.get("deletionTimestamp")
+        or status.get("active", 0)
+        or status.get("failed") != 1
+        or status.get("succeeded", 0)
+        or not any(
+            c.get("type") == "Failed" and c.get("status") == "True"
+            for c in status.get("conditions", [])
+        )
+    ):
+        raise BlockedError("capacity archived predecessor retained Job differs")
+    return cast("str", rebind["archived_predecessor"]["log"])
+
+
+def _capacity_database_binding(
+    api: Kubernetes,
+    binding: dict[str, Any],
+    *,
+    historical_started_at: datetime | None = None,
+    incident_at: datetime | None = None,
+) -> dict[str, Any]:
+    """Read exact current objects; pin stable identity/spec, recheck live readiness."""
+    namespace = binding["namespace"]
+    if api.namespace != namespace or os.environ.get("DB_POD") != binding["pod_name"]:
+        raise BlockedError("capacity replacement database target differs")
+    pod = api.request(api.path("pods/" + binding["pod_name"]))
+    meta, spec, status = pod.get("metadata", {}), pod.get("spec", {}), pod.get("status", {})
+    statuses = status.get("containerStatuses", [])
+    if (
+        meta.get("deletionTimestamp")
+        or status.get("phase") != "Running"
+        or len(statuses) != 1
+        or statuses[0].get("name") != "surrealdb"
+        or statuses[0].get("ready") is not True
+        or type(statuses[0].get("restartCount")) is not int
+        or statuses[0]["restartCount"] != 0
+        or statuses[0].get("state", {}).get("terminated")
+        or statuses[0].get("lastState", {}).get("terminated", {}).get("reason") == "OOMKilled"
+    ):
+        raise BlockedError("capacity replacement database is unready or restarted")
+
+    def owner(obj: dict[str, Any], kind: str) -> dict[str, Any]:
+        owners = [
+            o
+            for o in obj.get("metadata", {}).get("ownerReferences", [])
+            if o.get("kind") == kind and o.get("controller") is True
+        ]
+        if len(owners) != 1:
+            raise BlockedError("capacity database controller chain invalid")
+        return cast("dict[str, Any]", owners[0])
+
+    rs_owner = owner(pod, "ReplicaSet")
+    rs = api.request(
+        f"/apis/apps/v1/namespaces/{namespace}/replicasets/{binding['replica_set_name']}"
+    )
+    dep_owner = owner(rs, "Deployment")
+    deployment = api.request(
+        f"/apis/apps/v1/namespaces/{namespace}/deployments/{binding['deployment_name']}"
+    )
+    claims = [
+        v["persistentVolumeClaim"]["claimName"]
+        for v in spec.get("volumes", [])
+        if "persistentVolumeClaim" in v
+    ]
+    if claims != [binding["pvc_name"]]:
+        raise BlockedError("capacity database persistent claim differs")
+    pvc = api.request(api.path("persistentvolumeclaims/" + binding["pvc_name"]))
+    pv = api.request("/api/v1/persistentvolumes/" + binding["pv_name"])
+    node = api.request("/api/v1/nodes/" + binding["node_name"])
+    if (
+        node.get("metadata", {}).get("name") != spec.get("nodeName")
+        or node.get("metadata", {}).get("deletionTimestamp")
+        or not any(
+            c.get("type") == "Ready" and c.get("status") == "True"
+            for c in node.get("status", {}).get("conditions", [])
+        )
+    ):
+        raise BlockedError("capacity database node is not ready")
+    if any(
+        obj.get("metadata", {}).get("namespace") != namespace for obj in (pod, rs, deployment, pvc)
+    ):
+        raise BlockedError("capacity database dependency namespace differs")
+    for obj in (rs, deployment, pvc, pv):
+        if obj.get("metadata", {}).get("deletionTimestamp"):
+            raise BlockedError("capacity database dependency is deleting")
+    if (
+        rs_owner.get("name") != rs.get("metadata", {}).get("name")
+        or rs_owner.get("uid") != rs.get("metadata", {}).get("uid")
+        or dep_owner.get("name") != deployment.get("metadata", {}).get("name")
+        or dep_owner.get("uid") != deployment.get("metadata", {}).get("uid")
+        or pvc.get("status", {}).get("phase") != "Bound"
+        or pv.get("status", {}).get("phase") != "Bound"
+        or pvc.get("spec", {}).get("volumeName") != pv.get("metadata", {}).get("name")
+        or pv.get("spec", {}).get("claimRef", {}).get("uid") != pvc.get("metadata", {}).get("uid")
+        or pv.get("spec", {}).get("claimRef", {}).get("name") != pvc.get("metadata", {}).get("name")
+        or pv.get("spec", {}).get("claimRef", {}).get("namespace") != namespace
+    ):
+        raise BlockedError("capacity database controller or bound volume identity differs")
+    created = timestamp(meta.get("creationTimestamp"))
+    if created is None or (incident_at is not None and created < incident_at):
+        raise BlockedError("capacity replacement database predates approved incident")
+    if historical_started_at is not None and any(
+        timestamp(obj.get("metadata", {}).get("creationTimestamp")) is None
+        or timestamp(obj["metadata"]["creationTimestamp"]) > historical_started_at
+        for obj in (rs, deployment, pvc, pv)
+    ):
+        raise BlockedError("capacity persistent objects do not predate the historical failed Job")
+    return {
+        "namespace": namespace,
+        "pod_name": meta["name"],
+        "pod_uid": meta["uid"],
+        "node_name": spec["nodeName"],
+        "image_id": statuses[0]["imageID"],
+        "pod_spec_sha256": checkpoint_hash(spec),
+        "replica_set_name": rs["metadata"]["name"],
+        "replica_set_uid": rs["metadata"]["uid"],
+        "replica_set_spec_sha256": checkpoint_hash(rs["spec"]),
+        "deployment_name": deployment["metadata"]["name"],
+        "deployment_uid": deployment["metadata"]["uid"],
+        "deployment_spec_sha256": checkpoint_hash(deployment["spec"]),
+        "pvc_name": pvc["metadata"]["name"],
+        "pvc_uid": pvc["metadata"]["uid"],
+        "pvc_spec_sha256": checkpoint_hash(pvc["spec"]),
+        "pv_name": pv["metadata"]["name"],
+        "pv_uid": pv["metadata"]["uid"],
+        "pv_spec_sha256": checkpoint_hash(pv["spec"]),
+    }
+
+
+def capacity_database_binding(
+    api: Kubernetes,
+    binding: dict[str, Any],
+    *,
+    historical_started_at: datetime | None = None,
+    incident_at: datetime | None = None,
+) -> dict[str, Any]:
+    """Return the stable projection, failing closed on malformed API object shapes."""
+    try:
+        return _capacity_database_binding(
+            api, binding, historical_started_at=historical_started_at, incident_at=incident_at
+        )
+    except (KeyError, TypeError, ValueError, AttributeError, IndexError) as exc:
+        raise BlockedError("capacity database identity response malformed") from exc
+
+
+async def verify_capacity_rebind(api: Kubernetes, storage: Any, approval: dict[str, Any]) -> None:
+    """Verify current persistent incarnation and parsed full brain config, never write them."""
+    rebind = approval["incarnation_rebind"]
+    historical = rebind["previous_database"]
+    if (
+        historical.get("proof_kind") != "reviewed_observed_database_continuity"
+        or historical.get("unavailable_owner_mount_spec_acknowledged") is not True
+    ):
+        raise BlockedError("capacity historical-gap review is missing")
+    historical_job = json.loads(rebind["archived_predecessor"]["job_raw"])
+    historical_started_at = timestamp(historical_job.get("status", {}).get("startTime"))
+    if historical_started_at is None:
+        raise BlockedError("capacity historical failed Job start time missing")
+    observed = capacity_database_binding(
+        api,
+        rebind["database"],
+        historical_started_at=historical_started_at,
+        incident_at=timestamp(rebind["incident"]["node_not_ready_at"]),
+    )
+    if canonical(observed) != canonical(rebind["database"]):
+        raise BlockedError("capacity approved database identity or specification changed")
+    brain = await storage.get_brain("default")
+    config = getattr(brain, "config", None)
+    if (
+        getattr(brain, "id", None) != rebind["brain"]["brain_id"]
+        or not is_dataclass(config)
+        or isinstance(config, type)
+        or checkpoint_hash(asdict(config)) != rebind["brain"]["config_sha256"]
+    ):
+        raise BlockedError("capacity default brain identity or effective configuration changed")
+
+
 async def verify_capacity_resume(
     api: Kubernetes, storage: Any, safety: Safety, receipt: dict[str, Any], cp: dict[str, Any]
 ) -> None:
@@ -452,9 +654,20 @@ async def verify_capacity_resume(
         or not statuses[0].get("imageID", "").endswith(digest)
     ):
         raise BlockedError("capacity resume worker image differs")
+    if receipt["capacity_resume"]["version"] == 2:
+        previous = json.loads(receipt["capacity_resume"]["previous_receipt_raw"])
+        if (
+            capacity_predecessor_log(api, previous, approval)
+            != receipt["capacity_resume"]["previous_log"]
+        ):
+            raise BlockedError("capacity archived predecessor log changed")
+        await verify_capacity_rebind(api, storage, approval)
     latest, leases = await live(storage)
     if leases or checkpoint_hash(latest) != checkpoint_hash(cp):
         raise BlockedError("capacity resume checkpoint or active lease changed")
+    if receipt["capacity_resume"]["version"] == 2:
+        # Close resource sampling after the comparatively expensive identity proof reads.
+        safety.sample(initial=True)
 
 
 async def admit_capacity_stop(
@@ -473,7 +686,7 @@ async def admit_capacity_stop(
         raise BlockedError("capacity resume requires zero active leases")
     identity = api.identity()
     api.no_other_jobs(identity["job_uid"])
-    log = api.previous_log(previous, expected_exit_code=2)
+    log = capacity_predecessor_log(api, previous, approval)
     observation_raw = cm["data"].get("last_observation.json")
     observation_log = (
         api.previous_log(json.loads(observation_raw), expected_exit_code=2)

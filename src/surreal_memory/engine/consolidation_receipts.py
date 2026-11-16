@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from datetime import UTC, datetime
 from typing import Any
@@ -927,6 +928,295 @@ def failed_runtime_resume_matches(receipt: Any, cp: Any) -> bool:
         return False
 
 
+_CAPACITY_DATABASE_FIELDS = {
+    "namespace",
+    "pod_name",
+    "pod_uid",
+    "node_name",
+    "image_id",
+    "pod_spec_sha256",
+    "replica_set_name",
+    "replica_set_uid",
+    "replica_set_spec_sha256",
+    "deployment_name",
+    "deployment_uid",
+    "deployment_spec_sha256",
+    "pvc_name",
+    "pvc_uid",
+    "pvc_spec_sha256",
+    "pv_name",
+    "pv_uid",
+    "pv_spec_sha256",
+}
+
+
+def _capacity_resource_identity(value: Any, *, fresh: bool) -> tuple[str, list[Any]]:
+    if not (
+        isinstance(value, list)
+        and len(value) == 3
+        and isinstance(value[0], list)
+        and len(value[0]) == 2
+        and all(isinstance(v, str) and v for v in value[0])
+        and all(type(v) in {int, float} and v == 0 for v in value[1:])
+    ):
+        raise BlockedError("capacity rebind resource identity invalid")
+    try:
+        containers = json.loads(value[0][1])
+    except ValueError as exc:
+        raise BlockedError("capacity rebind container proof malformed") from exc
+    if not (
+        isinstance(containers, list)
+        and containers
+        and all(
+            isinstance(c, list)
+            and len(c) == 3
+            and all(isinstance(v, str) and v for v in c[:2])
+            and type(c[2]) is int
+            and c[2] >= 0
+            and (not fresh or c[2] == 0)
+            for c in containers
+        )
+        and len({c[0] for c in containers}) == len(containers)
+    ):
+        raise BlockedError("capacity rebind container identity invalid")
+    return value[0][0], containers
+
+
+def _capacity_rebind_evidence(previous: dict[str, Any], approval: dict[str, Any]) -> dict[str, Any]:
+    """Validate explicit reviewed archives; hashes bind inputs, not their capture authenticity."""
+    rebind = approval.get("incarnation_rebind")
+    if not isinstance(rebind, dict):
+        raise BlockedError("capacity incarnation rebind proof missing")
+    if canonical(rebind.get("previous_resource_baseline")) != canonical(
+        previous.get("before_resources")
+    ):
+        raise BlockedError("capacity historical baseline changed")
+    old_uid, old_containers = _capacity_resource_identity(
+        previous.get("before_resources"), fresh=False
+    )
+    new_uid, new_containers = _capacity_resource_identity(
+        approval.get("resource_baseline"), fresh=True
+    )
+    if (
+        old_uid == new_uid
+        or {c[0] for c in old_containers} != {c[0] for c in new_containers}
+        or {c[1] for c in old_containers} & {c[1] for c in new_containers}
+    ):
+        raise BlockedError("capacity rebind requires a distinct database incarnation")
+    current = rebind.get("database")
+    historical = rebind.get("previous_database")
+    if not isinstance(current, dict) or set(current) != _CAPACITY_DATABASE_FIELDS:
+        raise BlockedError("capacity database binding missing or malformed")
+    for key, value in current.items():
+        if not isinstance(value, str) or not value:
+            raise BlockedError("capacity database binding value invalid")
+        if key.endswith("_sha256") and re.fullmatch(r"[0-9a-f]{64}", value) is None:
+            raise BlockedError("capacity database specification digest invalid")
+        if key.endswith("_name") or key == "namespace":
+            if len(value) > 253 or re.fullmatch(r"[a-z0-9][a-z0-9.-]*", value) is None:
+                raise BlockedError("capacity database object name invalid")
+    expected_historical = {
+        "proof_kind",
+        "observation_raw",
+        "observation_sha256",
+        "captured_at",
+        "safety_raw",
+        "safety_sha256",
+        "unavailable_owner_mount_spec_acknowledged",
+    }
+    if (
+        not isinstance(historical, dict)
+        or set(historical) != expected_historical
+        or historical.get("proof_kind") != "reviewed_observed_database_continuity"
+        or historical.get("unavailable_owner_mount_spec_acknowledged") is not True
+    ):
+        raise BlockedError(
+            "capacity observed database continuity requires explicit historical-gap review"
+        )
+    for kind in ("observation", "safety"):
+        raw = historical[kind + "_raw"]
+        if (
+            not isinstance(raw, str)
+            or len(raw.encode()) > 64 * 1024
+            or hashlib.sha256(raw.encode()).hexdigest() != historical[kind + "_sha256"]
+        ):
+            raise BlockedError("capacity historical database observation bytes differ")
+    observations = json.loads(historical["observation_raw"])
+    safety = json.loads(historical["safety_raw"])
+    if not isinstance(observations, list) or not 0 < len(observations) <= 100:
+        raise BlockedError("capacity historical database observation list invalid")
+    matches = [
+        item for item in observations if isinstance(item, dict) and item.get("uid") == old_uid
+    ]
+    if len(matches) != 1:
+        raise BlockedError("capacity historical database UID missing or ambiguous")
+    observed = matches[0]
+    if (
+        set(observed) != {"name", "uid", "ready", "restarts", "imageIDs", "oom"}
+        or current["pod_uid"] != new_uid
+        or len(old_containers) != 1
+        or old_containers[0][0] != "surrealdb"
+        or not isinstance(observed.get("name"), str)
+        or not observed["name"].startswith(current["replica_set_name"] + "-")
+        or observed["name"] == current["replica_set_name"] + "-"
+        or not current["replica_set_name"].startswith(current["deployment_name"] + "-")
+        or not isinstance(observed.get("ready"), list)
+        or len(observed["ready"]) != 1
+        or observed["ready"][0] is not True
+        or not isinstance(observed.get("restarts"), list)
+        or len(observed["restarts"]) != 1
+        or type(observed["restarts"][0]) is not int
+        or observed["restarts"][0] != old_containers[0][2]
+        or observed.get("imageIDs") != [current["image_id"]]
+        or not isinstance(observed.get("oom"), list)
+        or len(observed["oom"]) != 1
+        or not isinstance(observed["oom"][0], str)
+        or observed["oom"][0] == "OOMKilled"
+    ):
+        raise BlockedError("capacity historical observed database identity differs")
+    # The legacy 'oom' observation is a termination reason, not a counter.
+    # Counter/CID continuity comes from the separately captured Safety baseline.
+    if (
+        not isinstance(safety, dict)
+        or safety.get("status") != "passed"
+        or type(safety.get("memory_limit_bytes")) is not int
+        or safety["memory_limit_bytes"] != approval.get("memory_limit_bytes")
+        or canonical(safety.get("baseline")) != canonical(previous.get("before_resources"))
+        or type(safety.get("active_jobs")) is not int
+        or safety["active_jobs"] != 0
+        or safety.get("cron_suspended") is not True
+        or type(safety.get("at_epoch")) not in {int, float}
+        or not math.isfinite(safety["at_epoch"])
+        or not 0 < safety["at_epoch"] <= datetime.now(UTC).timestamp()
+    ):
+        raise BlockedError("capacity historical Safety proof differs")
+    observed_at = timestamp(historical.get("captured_at"))
+    historical_safety_at = datetime.fromtimestamp(safety["at_epoch"], UTC)
+    blocked_at = timestamp(previous.get("blocked_at"))
+    if (
+        observed_at is None
+        or blocked_at is None
+        or not blocked_at <= observed_at <= historical_safety_at
+    ):
+        raise BlockedError("capacity historical observation chronology differs")
+    brain = rebind.get("brain")
+    if (
+        not isinstance(brain, dict)
+        or set(brain) != {"brain_id", "config_sha256"}
+        or not isinstance(brain.get("brain_id"), str)
+        or not brain["brain_id"]
+        or re.fullmatch(r"[0-9a-f]{64}", str(brain.get("config_sha256"))) is None
+    ):
+        raise BlockedError("capacity default brain proof invalid")
+    archive = rebind.get("archived_predecessor")
+    if not isinstance(archive, dict):
+        raise BlockedError("capacity archived predecessor missing")
+    for key in ("pod", "job", "log"):
+        raw = archive.get(key + "_raw") if key != "log" else archive.get("log")
+        if (
+            not isinstance(raw, str)
+            or len(raw.encode()) > 64 * 1024
+            or hashlib.sha256(raw.encode()).hexdigest() != archive.get(key + "_sha256")
+        ):
+            raise BlockedError("capacity archived predecessor bytes changed or oversized")
+    try:
+        pod, job = json.loads(archive["pod_raw"]), json.loads(archive["job_raw"])
+    except ValueError as exc:
+        raise BlockedError("capacity archived predecessor malformed") from exc
+    if not isinstance(pod, dict) or not isinstance(job, dict):
+        raise BlockedError("capacity archived predecessor object invalid")
+    metadata, job_metadata = pod.get("metadata", {}), job.get("metadata", {})
+    namespace = current["namespace"]
+    if (
+        not isinstance(metadata, dict)
+        or not isinstance(job_metadata, dict)
+        or any(metadata.get(key) != previous.get("pod_" + key) for key in ("name", "uid"))
+        or metadata.get("namespace") != namespace
+        or job_metadata.get("namespace") != namespace
+        or any(job_metadata.get(key) != previous.get("job_" + key) for key in ("name", "uid"))
+        or not any(
+            isinstance(o, dict)
+            and o.get("kind") == "Job"
+            and o.get("name") == previous["job_name"]
+            and o.get("uid") == previous["job_uid"]
+            for o in metadata.get("ownerReferences", [])
+        )
+    ):
+        raise BlockedError("capacity archived predecessor owner identity differs")
+    status = pod.get("status", {})
+    job_status = job.get("status", {})
+    containers = status.get("containerStatuses", []) if isinstance(status, dict) else []
+    terminated = (
+        containers[0].get("state", {}).get("terminated", {})
+        if len(containers) == 1 and isinstance(containers[0], dict)
+        else {}
+    )
+    if (
+        status.get("phase") != "Failed"
+        or len(containers) != 1
+        or type(terminated.get("exitCode")) is not int
+        or terminated["exitCode"] != 2
+        or terminated.get("reason") == "OOMKilled"
+        or type(containers[0].get("restartCount")) is not int
+        or containers[0]["restartCount"] != 0
+        or job_status.get("failed") != 1
+        or job_status.get("active", 0)
+        or job_status.get("succeeded", 0)
+        or not any(
+            c.get("type") == "Failed" and c.get("status") == "True"
+            for c in job_status.get("conditions", [])
+        )
+    ):
+        raise BlockedError("capacity archived predecessor is not failed wrapper2")
+    incident = rebind.get("incident")
+    if not isinstance(incident, dict) or checkpoint_hash(incident) != rebind.get("incident_sha256"):
+        raise BlockedError("capacity reviewed incident proof differs")
+    event = incident.get("eviction_event", {})
+    ref = event.get("involvedObject", {}) if isinstance(event, dict) else {}
+    captured, not_ready, evicted, approved, finished = (
+        timestamp(archive.get("captured_at")),
+        timestamp(incident.get("node_not_ready_at")),
+        timestamp(event.get("firstTimestamp")),
+        timestamp(approval.get("approved_at")),
+        timestamp(terminated.get("finishedAt")),
+    )
+    job_started = timestamp(job_status.get("startTime"))
+    if job_started is None or (finished is not None and job_started > finished):
+        raise BlockedError("capacity historical failed Job start time invalid")
+    if not_ready is None or historical_safety_at >= not_ready:
+        raise BlockedError("capacity historical Safety proof is not before the incident")
+    if any(value is None for value in (captured, not_ready, evicted, approved, finished)):
+        raise BlockedError("capacity incident timestamps missing")
+    assert captured is not None
+    assert not_ready is not None
+    assert evicted is not None
+    assert approved is not None
+    assert finished is not None
+    if (
+        not isinstance(event, dict)
+        or event.get("reason") != "TaintManagerEviction"
+        or not event.get("metadata", {}).get("uid")
+        or event.get("source", {}).get("component") != "taint-eviction-controller"
+        or ref.get("kind") != "Pod"
+        or ref.get("namespace") != namespace
+        or ref.get("name") != previous["pod_name"]
+        or ref.get("uid") not in (None, previous["pod_uid"])
+        or incident.get("node_name") != pod.get("spec", {}).get("nodeName")
+        or incident.get("node_name") != current["node_name"]
+        or not (finished <= captured < not_ready <= evicted <= approved)
+    ):
+        raise BlockedError("capacity archive capture or incident corroboration invalid")
+    return rebind
+
+
+def capacity_rebind_evidence(previous: dict[str, Any], approval: dict[str, Any]) -> dict[str, Any]:
+    """Fail closed on malformed reviewed input without exposing archived contents."""
+    try:
+        return _capacity_rebind_evidence(previous, approval)
+    except (KeyError, TypeError, ValueError, AttributeError, IndexError) as exc:
+        raise BlockedError("capacity incarnation evidence malformed") from exc
+
+
 def capacity_resume_seed(
     previous_raw: str,
     previous_log: str,
@@ -951,6 +1241,13 @@ def capacity_resume_seed(
         previous = json.loads(previous_raw)
     except ValueError as exc:
         raise BlockedError("capacity resume predecessor is malformed") from exc
+    version = approval.get("capacity_resume_version", 1)
+    if (
+        type(version) is not int
+        or version not in {1, 2}
+        or (version == 1 and "incarnation_rebind" in approval)
+    ):
+        raise BlockedError("capacity admission version is unsupported")
     clean_checkpoint(cp)
     completed = {"dedup", "learn_habits", "process_reasoning_traces", "process_tool_events"}
     expected = {s.value for s in ConsolidationStrategy if s is not ConsolidationStrategy.ALL}
@@ -1090,7 +1387,7 @@ def capacity_resume_seed(
         or approval.get("resource_policy_sha256") != policy
         or approval.get("previous_resource_policy_sha256") != policy
         or previous.get("resource_policy_sha256", policy) != policy
-        or canonical(baseline) != canonical(previous.get("before_resources"))
+        or (version == 1 and canonical(baseline) != canonical(previous.get("before_resources")))
         or not isinstance(baseline, list)
         or len(baseline) != 3
         or not isinstance(baseline[0], list)
@@ -1117,6 +1414,10 @@ def capacity_resume_seed(
         or len({item[0] for item in containers}) != len(containers)
     ):
         raise BlockedError("capacity resume database container proof differs")
+    if version == 2:
+        rebind = capacity_rebind_evidence(previous, approval)
+        if rebind["archived_predecessor"]["log"] != previous_log:
+            raise BlockedError("capacity archived log differs from predecessor")
     if observation_raw is not None:
         try:
             observation = json.loads(observation_raw)
@@ -1149,7 +1450,7 @@ def capacity_resume_seed(
         "resource_baseline": baseline,
         "resource_policy_sha256": policy,
         "capacity_resume": {
-            "version": 1,
+            "version": version,
             "previous_receipt_raw": previous_raw,
             "previous_log": previous_log,
             "approval": approval,
@@ -1165,7 +1466,11 @@ def capacity_resume_matches(receipt: Any, cp: Any) -> bool:
         return False
     try:
         audit = receipt["capacity_resume"]
-        if type(audit["version"]) is not int or audit["version"] != 1:
+        if (
+            type(audit["version"]) is not int
+            or audit["version"] not in {1, 2}
+            or audit["version"] != audit["approval"].get("capacity_resume_version", 1)
+        ):
             return False
         expected = capacity_resume_seed(
             audit["previous_receipt_raw"],
