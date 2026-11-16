@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from hashlib import sha256
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Literal
@@ -13,6 +14,7 @@ from surreal_memory.storage.surrealdb._ids import _record_id_part, _to_public_id
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
+    from contextlib import AbstractAsyncContextManager
 
 PruneOutcome = Literal["deleted", "protected", "changed", "missing"]
 _REPAIR_FIBERS_PER_TRANSACTION = 8
@@ -229,6 +231,7 @@ class SurrealDBPruneMixin:
         *,
         lease_owner_token: str,
         budget_check: Callable[[], Awaitable[None]] | None = None,
+        page_guard: Callable[[], AbstractAsyncContextManager[None]] | None = None,
     ) -> int:
         """Scan raw primary pages per group; cancellation safely restarts the prefix.
 
@@ -269,48 +272,51 @@ class SurrealDBPruneMixin:
                 )
                 sql = transaction.replace("__PRUNE_REPAIR_SELECTOR__", selector)
                 await self._ensure_conn_on_current_loop()
-                results = _checked_prune_results(await self._ensure_conn().query_raw(sql, params))
-                pages = [
-                    row
-                    for statement in results
-                    for row in (
-                        statement["result"] if isinstance(statement.get("result"), list) else []
+                async with page_guard() if page_guard is not None else nullcontext():
+                    results = _checked_prune_results(
+                        await self._ensure_conn().query_raw(sql, params)
                     )
-                    if isinstance(row, dict)
-                    and set(row) == {"updated_ids", "has_more", "next_cursor", "scanned"}
-                ]
-                if len(pages) != 1:
-                    raise RuntimeError("prune repair page response is unconfirmed")
-                page = pages[0]
-                updated_ids, scanned, next_cursor = (
-                    page["updated_ids"],
-                    page["scanned"],
-                    page["next_cursor"],
-                )
-                if (
-                    type(scanned) is not int
-                    or not 0 <= scanned <= 9
-                    or not isinstance(updated_ids, list)
-                    or len(updated_ids) > min(scanned, _REPAIR_FIBERS_PER_TRANSACTION)
-                    or type(page["has_more"]) is not bool
-                    or page["has_more"] != (scanned > _REPAIR_FIBERS_PER_TRANSACTION)
-                    or any(getattr(rid, "table_name", None) != "fiber" for rid in updated_ids)
-                ):
-                    raise RuntimeError("prune repair page response is invalid")
-                if scanned:
+                    pages = [
+                        row
+                        for statement in results
+                        for row in (
+                            statement["result"] if isinstance(statement.get("result"), list) else []
+                        )
+                        if isinstance(row, dict)
+                        and set(row) == {"updated_ids", "has_more", "next_cursor", "scanned"}
+                    ]
+                    if len(pages) != 1:
+                        raise RuntimeError("prune repair page response is unconfirmed")
+                    page = pages[0]
+                    updated_ids, scanned, next_cursor = (
+                        page["updated_ids"],
+                        page["scanned"],
+                        page["next_cursor"],
+                    )
                     if (
-                        getattr(next_cursor, "table_name", None) != "fiber"
-                        or not hasattr(next_cursor, "id")
-                        or next_cursor.id is None
-                        or isinstance(next_cursor.id, bool)
-                        or next_cursor == cursor
+                        type(scanned) is not int
+                        or not 0 <= scanned <= 9
+                        or not isinstance(updated_ids, list)
+                        or len(updated_ids) > min(scanned, _REPAIR_FIBERS_PER_TRANSACTION)
+                        or type(page["has_more"]) is not bool
+                        or page["has_more"] != (scanned > _REPAIR_FIBERS_PER_TRANSACTION)
+                        or any(getattr(rid, "table_name", None) != "fiber" for rid in updated_ids)
                     ):
-                        raise RuntimeError("prune repair cursor made no bounded progress")
-                elif next_cursor is not None:
-                    raise RuntimeError("prune repair empty page has a cursor")
-                public_ids = [_to_public_id(_record_id_part(str(rid))) for rid in updated_ids]
-                if len(set(public_ids)) != len(public_ids):
-                    raise RuntimeError("prune repair returned duplicate updates")
+                        raise RuntimeError("prune repair page response is invalid")
+                    if scanned:
+                        if (
+                            getattr(next_cursor, "table_name", None) != "fiber"
+                            or not hasattr(next_cursor, "id")
+                            or next_cursor.id is None
+                            or isinstance(next_cursor.id, bool)
+                            or next_cursor == cursor
+                        ):
+                            raise RuntimeError("prune repair cursor made no bounded progress")
+                    elif next_cursor is not None:
+                        raise RuntimeError("prune repair empty page has a cursor")
+                    public_ids = [_to_public_id(_record_id_part(str(rid))) for rid in updated_ids]
+                    if len(set(public_ids)) != len(public_ids):
+                        raise RuntimeError("prune repair returned duplicate updates")
                 if public_ids:
                     # Existing fiber-update journal payloads are null; only IDs are needed.
                     await self._record_changes_bulk(

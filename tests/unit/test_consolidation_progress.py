@@ -1149,3 +1149,61 @@ async def test_structural_metadata_and_phase_changes_are_not_work() -> None:
     await session.checkpoint("prune", "neuron_scan", cursor="synapse:10")
     assert session.state["work_progress_seq"] == seq
     await session.close()
+
+
+async def test_lease_fenced_page_renews_then_excludes_only_own_heartbeat() -> None:
+    storage = FakeProgressStorage()
+    storage.lease_owner = "page-owner"
+    storage.renew_consolidation_lease = AsyncMock(return_value=True)
+    session = ConsolidationProgressSession(storage, "default", "page-owner", {})
+    async with session.lease_fenced_page():
+        assert storage.renew_consolidation_lease.await_count == 1
+        renewal = asyncio.create_task(session._renew_once())
+        await asyncio.sleep(0)
+        assert not renewal.done()
+        assert storage.renew_consolidation_lease.await_count == 1
+    assert await renewal
+    assert storage.renew_consolidation_lease.await_count == 2
+    assert not session._renew_lock.locked()
+    assert not session.lease_lost
+
+
+@pytest.mark.parametrize("failure", ["conflict", "transport", "cancel", "timeout"])
+async def test_lease_fenced_page_releases_lock_and_fences_uncertain_outcomes(
+    failure: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from surreal_memory.engine.consolidation_progress import ConsolidationCheckpointUnconfirmedError
+    from surreal_memory.storage.errors import PruneTransactionConflictError
+
+    storage = FakeProgressStorage()
+    storage.lease_owner = "page-owner"
+    session = ConsolidationProgressSession(storage, "default", "page-owner", {})
+    monkeypatch.setattr(progress_module, "_LEASE_FENCED_PAGE_MAX_SECONDS", 0.01)
+    expected = (
+        PruneTransactionConflictError
+        if failure == "conflict"
+        else asyncio.CancelledError
+        if failure == "cancel"
+        else ConsolidationCheckpointUnconfirmedError
+    )
+
+    async def run_page() -> None:
+        async with session.lease_fenced_page():
+            if failure == "conflict":
+                raise PruneTransactionConflictError("confirmed rollback")
+            if failure == "transport":
+                raise ConnectionError("reply lost")
+            if failure == "cancel":
+                raise asyncio.CancelledError
+            await asyncio.sleep(1)
+
+    with pytest.raises(expected):
+        await run_page()
+    assert not session._renew_lock.locked()
+    assert session.lease_lost == (failure != "conflict")
+    assert session._checkpoint_unconfirmed == (failure != "conflict")
+    if failure != "conflict":
+        assert not await session._renew_once()
+        with pytest.raises(ConsolidationCheckpointUnconfirmedError):
+            await session._save()
+        assert storage.progress is None

@@ -1,6 +1,6 @@
 """One fail-closed target contract for pytest and CLI/MCP acceptance children.
 
-Register only a labelled, memory-backed Docker instance without persistent mounts. A localhost
+Register only a labelled Docker instance using memory or RocksDB on verified tmpfs. A localhost
 URL, test brain name or private HOME alone cannot authorize a database connection.
 """
 
@@ -54,23 +54,51 @@ def _identity(info: dict[str, Any]) -> dict[str, str]:
     """Verify actual process, image, credentials and published loopback endpoint."""
     config = info.get("Config", {})
     command = config.get("Cmd") or []
+    backend = command[1] if isinstance(command, list) and len(command) > 1 else None
     labels = config.get("Labels") or {}
     run_id = labels.get(LABEL, "")
     image = config.get("Image", "")
     ports = info.get("NetworkSettings", {}).get("Ports", {}).get("8001/tcp") or []
+    host_config = info.get("HostConfig") or {}
+    tmpfs = host_config.get("Tmpfs")
+    if tmpfs is None:
+        tmpfs = {}
+    safe_tmpfs = isinstance(tmpfs, dict) and all(
+        path in {"/data", "/logs"} and isinstance(options, str) for path, options in tmpfs.items()
+    )
     safe = (
         re.fullmatch(r"[0-9a-f]{32}", run_id)
         and re.fullmatch(r"[0-9a-f]{64}", info.get("Id", ""))
         and re.fullmatch(r"surrealdb/surrealdb:v3\.2\.(0|4)", image)
         and info.get("State", {}).get("Running") is True
+        and safe_tmpfs
+        and not host_config.get("Binds")
+        and not host_config.get("VolumesFrom")
+        and all(
+            mount.get("Type") == "tmpfs" and mount.get("Target") in {"/data", "/logs"}
+            for mount in host_config.get("Mounts") or []
+        )
         and all(
             mount.get("Type") == "tmpfs" and mount.get("Destination") in {"/data", "/logs"}
             for mount in info.get("Mounts", [])
         )
+        and (
+            backend == "memory"
+            or (
+                backend == "rocksdb:/data/test"
+                and (
+                    "/data" in tmpfs
+                    or any(
+                        mount.get("Type") == "tmpfs" and mount.get("Destination") == "/data"
+                        for mount in info.get("Mounts", [])
+                    )
+                )
+            )
+        )
         and command
         == [
             "start",
-            "memory",
+            backend,
             "--user",
             "root",
             "--pass",

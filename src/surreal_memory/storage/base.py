@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
+    from contextlib import AbstractAsyncContextManager
     from datetime import timedelta
 
     from surreal_memory.core.alert import Alert
@@ -956,6 +957,7 @@ class NeuralStorage(ABC):
         *,
         lease_owner_token: str,
         budget_check: Callable[[], Awaitable[None]] | None = None,
+        page_guard: Callable[[], AbstractAsyncContextManager[None]] | None = None,
     ) -> int:
         """Optional atomic cleanup for missing legacy pending edges under a live lease."""
         raise NotImplementedError

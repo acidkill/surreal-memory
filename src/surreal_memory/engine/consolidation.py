@@ -1541,7 +1541,24 @@ class ConsolidationEngine:
             return candidates
 
         async def _finish_synapse_pending(ids: list[str], page_cursor: str | None) -> None:
+            if not counters.get("prune_atomic_journal") and supports_storage_methods(
+                storage, ("prune_synapses_if_unchanged",)
+            ):
+                # Legacy pending can span many full fiber scans. Publish each
+                # confirmed group so the next invocation need not repeat it.
+                remaining_ids = list(ids)
+                while remaining_ids:
+                    chunk, remaining_ids = remaining_ids[:32], remaining_ids[32:]
+                    await _finish_synapse_chunk(chunk, page_cursor, remaining_ids=remaining_ids)
+            else:
+                # Preserve the existing whole-operation journal IDs and replay.
+                await _finish_synapse_chunk(ids, page_cursor)
+
+        async def _finish_synapse_chunk(
+            ids: list[str], page_cursor: str | None, *, remaining_ids: list[str] | None = None
+        ) -> None:
             nonlocal synapses_pruned
+            pruned_before = synapses_pruned
             if supports_storage_methods(storage, ("prune_synapses_if_unchanged",)):
                 progress = self._progress_session
                 run_id = str(getattr(progress, "state", {}).get("run_id", ""))
@@ -1588,6 +1605,8 @@ class ConsolidationEngine:
                         for attempt in range(3):
                             await self._check_progress_budget()
                             try:
+                                page_guard = getattr(progress, "lease_fenced_page", None)
+                                guard_options = {"page_guard": page_guard} if page_guard else {}
                                 await storage.repair_prune_synapse_refs_if_absent(
                                     [
                                         sid
@@ -1596,6 +1615,7 @@ class ConsolidationEngine:
                                     ],
                                     lease_owner_token=owner,
                                     budget_check=self._check_progress_budget,
+                                    **guard_options,
                                 )
                                 break
                             except PruneTransactionConflictError as exc:
@@ -1629,11 +1649,28 @@ class ConsolidationEngine:
                 synapse_pages=synapse_pages,
                 neuron_pages=neuron_pages,
             )
+            checkpoint_options: dict[str, Any] = {}
+            if remaining_ids is not None and synapses_pruned == pruned_before:
+                # Verified zero-effect decisions also consume pending work.
+                # Use existing coverage metadata, never invented prune counts.
+                scope = hashlib.sha256(json.dumps([run_id, page_cursor]).encode()).hexdigest()
+                previous = (
+                    self._strategy_progress_state()
+                    .get("work_progress", {})
+                    .get("prune_legacy_pending", {})
+                )
+                position = previous.get("position") if previous.get("scope") == scope else 0
+                if type(position) is not int or position < 0:
+                    position = 0
+                checkpoint_options["work"] = {
+                    "prune_legacy_pending": (scope, position, position + len(ids))
+                }
             await _save_checkpoint(
-                "synapse_scan",
+                "synapse_pending" if remaining_ids else "synapse_scan",
                 cursor=page_cursor,
-                pending=[],
+                pending=remaining_ids or [],
                 counters=counters,
+                **checkpoint_options,
             )
 
         resume_neurons = phase.startswith(("neuron_", "retention_"))

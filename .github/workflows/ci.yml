@@ -190,15 +190,14 @@ jobs:
       # default CMD (no command == prints help and exits), and `services:` only
       # accepts `options:` (docker-create flags), never a container command. A
       # plain `docker run` step is the only way to pass the required `start …`
-      # arguments. Command mirrors docker-compose.surrealdb.yml, minus the
-      # persistence path: an in-memory datastore is enough for a run that's
-      # thrown away afterward and needs no root-owned named volume.
-      - name: Start SurrealDB
+      # arguments. Use RocksDB for production backend parity; /data is an
+      # ephemeral tmpfs and needs no root-owned named volume.
+      - name: Start SurrealDB RocksDB profile
         run: |
-          docker run -d --name surrealdb-ci -p 127.0.0.1:8001:8001 --cpus=2 --memory=1g --memory-swap=1g --tmpfs /data --tmpfs /logs \
+          docker run -d --name surrealdb-ci -p 127.0.0.1:8001:8001 --cpus=2 --memory=1g --memory-swap=1g --tmpfs /data:mode=1777 --tmpfs /logs \
             --label "io.surreal-memory.test-run=$(python -c 'import uuid; print(uuid.uuid4().hex)')" \
             surrealdb/surrealdb:v${{ matrix.surrealdb }} \
-            start memory --user root --pass root --bind 0.0.0.0:8001 \
+            start rocksdb:/data/test --user root --pass root --bind 0.0.0.0:8001 \
             --allow-experimental gql --allow-eval-query
 
       - name: Wait for SurrealDB to be ready
@@ -218,15 +217,41 @@ jobs:
 
       - name: Register disposable database identity
         run: |
+          docker inspect --format 'mounts={{json .Mounts}} tmpfs={{json .HostConfig.Tmpfs}} cmd={{json .Config.Cmd}} image={{json .Config.Image}} running={{json .State.Running}} ports={{json .NetworkSettings.Ports}} labels={{json .Config.Labels}}' surrealdb-ci
           target_file="$RUNNER_TEMP/smem-disposable.json"
           python -m tests._disposable_surrealdb register surrealdb-ci "$target_file"
           echo "SMEM_TEST_SURREALDB_TARGET_FILE=$target_file" >> "$GITHUB_ENV"
 
-      - name: Check legacy fiber repair compatibility
+      - name: Check legacy fiber repair compatibility on RocksDB
         run: >-
           pytest -v --timeout=120
           tests/integration/test_prune_atomic_db.py::test_legacy_absent_edge_repairs_refs_but_recreated_edge_keeps_them
           tests/integration/test_prune_atomic_db.py::test_legacy_repair_pages_eight_fibers_once_with_id_only_replies
+          tests/integration/test_prune_page_lease_db.py
+
+      - name: Start fresh SurrealDB memory profile for full suite
+        run: |
+          docker rm -f surrealdb-ci >/dev/null
+          docker run -d --name surrealdb-ci -p 127.0.0.1:8001:8001 --cpus=2 --memory=1g --memory-swap=1g --tmpfs /data --tmpfs /logs \
+            --label "io.surreal-memory.test-run=$(python -c 'import uuid; print(uuid.uuid4().hex)')" \
+            surrealdb/surrealdb:v${{ matrix.surrealdb }} \
+            start memory --user root --pass root --bind 0.0.0.0:8001 \
+            --allow-experimental gql --allow-eval-query
+          ready=false
+          for _ in $(seq 1 30); do
+            if docker exec surrealdb-ci /surreal isready --endpoint http://localhost:8001; then
+              ready=true
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ready" != true ]; then
+            docker logs surrealdb-ci
+            exit 1
+          fi
+          target_file="$RUNNER_TEMP/smem-disposable.json"
+          python -m tests._disposable_surrealdb register surrealdb-ci "$target_file"
+          echo "SMEM_TEST_SURREALDB_TARGET_FILE=$target_file" >> "$GITHUB_ENV"
 
       # No -n auto here: parallel workers hammering one shared SurrealDB
       # connection produce connection resets under load unrelated to any real
