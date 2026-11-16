@@ -130,6 +130,22 @@ def _plan_has_operator(plan, operator):
     )
 
 
+def _index_accesses(plan, index):
+    if isinstance(plan, list):
+        return [access for item in plan for access in _index_accesses(item, index)]
+    if not isinstance(plan, dict):
+        return []
+    attributes = None
+    if plan.get("operator") == "IndexScan":
+        attributes = plan.get("attributes")
+    elif plan.get("operation") == "Iterate Index":
+        attributes = (plan.get("detail") or {}).get("plan")
+    own = []
+    if isinstance(attributes, dict) and attributes.get("index") == index:
+        own.append(attributes.get("access"))
+    return own + [access for value in plan.values() for access in _index_accesses(value, index)]
+
+
 @pytest.mark.parametrize(
     "name,index,scalar,old_expression",
     [
@@ -187,11 +203,17 @@ async def test_actual_for_selector_plan_uses_index(clients, name, index, scalar,
         elif name == "targets":
             assert _plan_has_operator(plan, "IndexScan") and index in str(plan), plan
             assert _plan_has_operator(plan, "Filter"), plan
-            assert _to_surreal_id(edge.source_id) not in str(plan), plan
+            accesses = _index_accesses(plan, index)
+            assert accesses and all(
+                access is not None and _to_surreal_id(edge.source_id) not in str(access)
+                for access in accesses
+            ), plan
         else:
             assert _plan_has_operator(plan, "TableScan"), plan
         if label == "new" and name == "targets":
-            assert str(first.brain_id) in str(plan) and _to_surreal_id(edge.source_id) in str(
-                plan
+            accesses = _index_accesses(plan, index)
+            assert any(
+                str(first.brain_id) in str(access) and _to_surreal_id(edge.source_id) in str(access)
+                for access in accesses
             ), plan
             assert not _plan_has_operator(plan, "Filter"), plan
