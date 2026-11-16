@@ -7,13 +7,15 @@ import inspect
 import json
 import logging
 import time
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from contextlib import asynccontextmanager
 from datetime import datetime
 from hashlib import sha256
 from typing import Any
 from uuid import uuid4
 
 from surreal_memory.storage.base import NeuralStorage
+from surreal_memory.storage.errors import PruneTransactionConflictError
 from surreal_memory.storage.surrealdb.schema import SCHEMA_VERSION
 from surreal_memory.utils.timeutils import ensure_naive_utc, utcnow
 
@@ -24,6 +26,7 @@ PROGRESS_FORMAT_VERSION = 1
 # when checkpoint semantics become incompatible.
 CONSOLIDATION_ENGINE_VERSION = "3.11.0:checkpoint-v1"
 LEASE_SECONDS = 180
+_LEASE_FENCED_PAGE_MAX_SECONDS = 60.0
 INCOMPLETE_STATUSES = {"queued", "running", "paused", "failed"}
 
 
@@ -2200,21 +2203,63 @@ class ConsolidationProgressSession:
         self.state = dict(saved)
         self._native_handoff = self.state["native_handoff"]
 
+    async def _renew_once_locked(self) -> bool:
+        """Renew while the caller holds the shared renewal/page lock."""
+        if self._lease_lost:
+            return False
+        renewed = await self.storage.renew_consolidation_lease(
+            self.brain_id,
+            self.owner_token,
+            lease_seconds=self.lease_seconds,
+        )
+        if renewed:
+            now = time.monotonic()
+            self._max_renew_gap_s = max(self._max_renew_gap_s, now - self._last_renewed)
+            self._last_renewed = now
+        return bool(renewed)
+
     async def _renew_once(self) -> bool:
-        """Renew the lease once, serialised with other renewals, and record the gap."""
+        """Renew the lease once, serialised with renewals and fenced pages."""
         async with self._renew_lock:
-            if self._lease_lost:
-                return False
-            renewed = await self.storage.renew_consolidation_lease(
-                self.brain_id,
-                self.owner_token,
-                lease_seconds=self.lease_seconds,
-            )
-            if renewed:
-                now = time.monotonic()
-                self._max_renew_gap_s = max(self._max_renew_gap_s, now - self._last_renewed)
-                self._last_renewed = now
-            return bool(renewed)
+            return await self._renew_once_locked()
+
+    @asynccontextmanager
+    async def lease_fenced_page(self) -> AsyncIterator[None]:
+        """Exclude our heartbeat from one page; uncertain completion fences us out.
+
+        The client bound includes a fresh renewal and is at most a third of
+        the lease. It is not a server-side transaction deadline: SQL owner and
+        expiry fences remain required if cancellation outlives this client.
+        """
+        async with self._renew_lock:
+            if self._closed or self._lease_lost or self._checkpoint_unconfirmed:
+                raise ConsolidationLeaseLostError("cannot start a page without a confirmed lease")
+            limit = min(_LEASE_FENCED_PAGE_MAX_SECONDS, self.lease_seconds / 3)
+            started = time.monotonic()
+            try:
+                async with asyncio.timeout(limit) as deadline:
+                    if not await self._renew_once_locked():
+                        self._lease_lost = True
+                        raise ConsolidationLeaseLostError("lease rejected before fenced page")
+                    yield
+                    # A transport must not turn swallowed cancellation into a
+                    # confirmed page or a subsequent checkpoint publication.
+                    if deadline.expired() or time.monotonic() - started >= limit:
+                        raise TimeoutError("lease-fenced page exceeded its client bound")
+            except PruneTransactionConflictError:
+                # A confirmed server rollback may be reevaluated by the caller.
+                raise
+            except ConsolidationLeaseLostError:
+                self._lease_lost = True
+                raise
+            except BaseException as exc:
+                self._checkpoint_unconfirmed = True
+                self._lease_lost = True
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
+                raise ConsolidationCheckpointUnconfirmedError(
+                    "lease-fenced page outcome is unconfirmed; this session cannot replay or checkpoint"
+                ) from exc
 
     async def renew_if_due(self) -> None:
         """Renew the lease when the heartbeat has not done so for a third of its length.
