@@ -235,7 +235,7 @@ jobs:
       - name: Start fresh SurrealDB memory profile for full suite
         run: |
           docker rm -f surrealdb-ci >/dev/null
-          docker run -d --name surrealdb-ci -p 127.0.0.1:8001:8001 --cpus=2 --memory=1g --memory-swap=1g --tmpfs /data --tmpfs /logs \
+          docker run -d --name surrealdb-ci -p 127.0.0.1:8001:8001 --cpus=2 --memory=2g --memory-swap=2g --tmpfs /data --tmpfs /logs \
             --label "io.surreal-memory.test-run=$(python -c 'import uuid; print(uuid.uuid4().hex)')" \
             surrealdb/surrealdb:v${{ matrix.surrealdb }} \
             start memory --user root --pass root --bind 0.0.0.0:8001 \
