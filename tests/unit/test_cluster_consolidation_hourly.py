@@ -181,6 +181,103 @@ def test_timeout_report_must_match_unfinished_checkpoint_stages(status, complete
         )
 
 
+def test_hourly_all_fingerprint_matches_cli_configuration():
+    from dataclasses import asdict
+
+    from surreal_memory.engine import consolidation_receipts as receipts
+    from surreal_memory.engine.consolidation import ConsolidationConfig, ConsolidationStrategy
+    from surreal_memory.engine.consolidation_progress import options_fingerprint
+
+    cli_config = ConsolidationConfig(
+        prune_weight_threshold=0.05, prune_min_inactive_days=7.0, merge_overlap_threshold=0.5
+    )
+    actual = options_fingerprint(
+        {
+            "requested_strategies": sorted(
+                s.value for s in ConsolidationStrategy if s is not ConsolidationStrategy.ALL
+            ),
+            "config": asdict(cli_config),
+            "dream_decay_multiplier": 10.0,
+            "tier_config": None,
+        }
+    )
+    assert receipts.hourly_options_fingerprint() == actual
+
+
+def test_completed_semantic_handoff_admits_only_expected_fresh_all():
+    from surreal_memory.engine import consolidation_receipts as receipts
+    from surreal_memory.engine.consolidation import ConsolidationStrategy
+
+    before = checkpoint(run_id="synthetic-semantic")
+    before.update(
+        requested_strategies=["semantic_link"],
+        completed_strategies=["semantic_link"],
+        reference_time="2026-01-01T00:00:00Z",
+        phase="completed",
+        current_strategy=None,
+        schema_version=12,
+        format_version=1,
+        engine_version="3.11.0:checkpoint-v1",
+        strategy_states={"semantic_link": {"phase": "completed", "counters": {}}},
+    )
+    before["native_handoff"] = {
+        "version": 1,
+        "lineage_root_sha256": "a" * 64,
+        "attempt_seq": 1,
+        "run_seq": 0,
+        "payload_sha256": receipts.native_payload_hash(before),
+    }
+    after = checkpoint(run_id="synthetic-all")
+    all_strategies = [s.value for s in ConsolidationStrategy if s is not ConsolidationStrategy.ALL]
+    expected = receipts.hourly_options_fingerprint()
+    after.update(
+        requested_strategies=all_strategies,
+        completed_strategies=all_strategies,
+        reference_time="2026-01-01T01:00:00Z",
+        phase="completed",
+        options_fingerprint=expected,
+        schema_version=12,
+        format_version=1,
+        engine_version="3.11.0:checkpoint-v1",
+    )
+    after["native_handoff"] = {
+        "version": 1,
+        "lineage_root_sha256": "b" * 64,
+        "attempt_seq": 1,
+        "run_seq": 0,
+        "payload_sha256": receipts.native_payload_hash(after),
+    }
+    hourly.terminal(after, 0, before, False, "", fresh_all_options_fingerprint=expected)
+
+    for mutation in (
+        {"options_fingerprint": "wrong"},
+        {"requested_strategies": ["semantic_link"]},
+        {"run_id": before["run_id"]},
+        {"reference_time": before["reference_time"]},
+    ):
+        invalid = dict(after, **mutation)
+        invalid["native_handoff"] = dict(
+            after["native_handoff"], payload_sha256=receipts.native_payload_hash(invalid)
+        )
+        with pytest.raises(hourly.BlockedError):
+            hourly.terminal(invalid, 0, before, False, "", fresh_all_options_fingerprint=expected)
+    for mutation in (
+        {"status": "paused", "completed_strategies": []},
+        {"completed_strategies": []},
+        {"requested_strategies": ["prune"]},
+    ):
+        invalid = dict(before, **mutation)
+        invalid["native_handoff"] = dict(
+            before["native_handoff"], payload_sha256=receipts.native_payload_hash(invalid)
+        )
+        with pytest.raises(hourly.BlockedError):
+            hourly.terminal(after, 0, invalid, False, "", fresh_all_options_fingerprint=expected)
+    with pytest.raises(hourly.BlockedError):
+        hourly.terminal(after, 0, before, False, "", fresh_all_options_fingerprint="arbitrary")
+    with pytest.raises(hourly.BlockedError):
+        hourly.terminal(after, 0, before, True, "", fresh_all_options_fingerprint=expected)
+
+
 def test_resume_requires_same_run_and_fingerprint():
     with pytest.raises(hourly.BlockedError):
         hourly.terminal(checkpoint(run_id="other"), 0, checkpoint(), True, "")
@@ -188,6 +285,28 @@ def test_resume_requires_same_run_and_fingerprint():
     cp["options_fingerprint"] = "changed"
     with pytest.raises(hourly.BlockedError):
         hourly.terminal(cp, 0, checkpoint(), True, "")
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("run_id", "different-run"),
+        ("options_fingerprint", "different-options"),
+        ("reference_time", "2026-01-01T01:00:00Z"),
+        ("brain_id", "different-brain"),
+        ("requested_strategies", ["merge"]),
+    ],
+)
+def test_resume_rejects_changed_work_identity(field, value):
+    before = checkpoint("paused", "synthetic-run")
+    before.update(
+        reference_time="2026-01-01T00:00:00Z",
+        requested_strategies=["prune"],
+        completed_strategies=[],
+    )
+    after = dict(before, **{field: value})
+    with pytest.raises(hourly.BlockedError):
+        hourly.terminal(after, 1, before, True, "ordinary budget pause")
 
 
 @pytest.mark.asyncio
@@ -2055,3 +2174,46 @@ async def test_scheduled_cycle_uses_real_cli_timeout_report(monkeypatch, capsys,
     assert ["--resume" in command for command in commands] == [False, True, False]
     assert run_ids[0] != run_ids[1] == run_ids[2] != run_ids[3]
     assert references[0] == references[1]
+
+
+@pytest.mark.parametrize(
+    ("response", "accepted"),
+    [
+        ([], True),
+        ([{"owner_token": "synthetic-owner"}], True),
+        (None, False),
+        ({}, False),
+        ([{"status": "OK", "result": []}], False),
+        ([{}], False),
+        ([{"owner_token": ""}], False),
+        ([{"owner_token": "synthetic-owner"}, {}], False),
+        (["unknown"], False),
+    ],
+)
+def test_live_requires_definitive_raw_lease_rows(response, accepted):
+    import asyncio
+
+    storage = MagicMock()
+    cp = {"run_id": "synthetic"}
+    storage.get_consolidation_progress = AsyncMock(return_value=cp)
+    storage._query_response = AsyncMock(return_value=response)
+    storage._query = AsyncMock(return_value=[])
+    if accepted:
+        assert asyncio.run(hourly.live(storage)) == (cp, response)
+    else:
+        with pytest.raises(hourly.BlockedError):
+            asyncio.run(hourly.live(storage))
+    storage._query_response.assert_awaited_once()
+    storage._query.assert_not_awaited()
+
+
+@pytest.mark.parametrize("rows", [[], [{"owner_token": "synthetic-owner"}]])
+def test_sdk_query_unwraps_valid_statement_result_without_network(rows):
+    import asyncio
+
+    from surrealdb.connections.async_ws import AsyncWsSurrealConnection
+
+    connection = object.__new__(AsyncWsSurrealConnection)
+    connection.query_raw = AsyncMock(return_value={"result": [{"status": "OK", "result": rows}]})
+    assert asyncio.run(connection.query("SELECT synthetic")) == rows
+    connection.query_raw.assert_awaited_once()

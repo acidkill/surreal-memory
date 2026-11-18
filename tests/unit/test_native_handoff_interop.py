@@ -1,5 +1,8 @@
 """Offline native session to scheduled receipt handoff regressions."""
 
+import asyncio
+import hashlib
+import json
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -332,3 +335,487 @@ async def test_failed_runtime_approval_remains_failed_until_native_claim_clears_
         assert running.get(key) == failed.get(key)
     assert receipts.native_handoff_valid(running)
     await resumed.close()
+
+
+def completed_semantic_fixture():
+    cp = {
+        "brain_id": "default",
+        "run_id": "synthetic-semantic",
+        "status": "completed",
+        "phase": "completed",
+        "last_error": None,
+        "current_strategy": None,
+        "cursor": None,
+        "options_fingerprint": "synthetic-semantic-options",
+        "reference_time": "2026-01-01T00:00:00Z",
+        "requested_strategies": ["semantic_link"],
+        "completed_strategies": ["semantic_link"],
+        "schema_version": 12,
+        "format_version": 1,
+        "engine_version": "3.11.0:checkpoint-v1",
+        "strategy_states": {"semantic_link": {"phase": "completed", "counters": {}}},
+        "counters": {},
+    }
+    cp["native_handoff"] = {
+        "version": 1,
+        "lineage_root_sha256": "a" * 64,
+        "attempt_seq": 1,
+        "run_seq": 0,
+        "payload_sha256": receipts.native_payload_hash(cp),
+    }
+    identity = {
+        k: cp[k]
+        for k in (
+            "brain_id",
+            "run_id",
+            "options_fingerprint",
+            "reference_time",
+            "schema_version",
+            "engine_version",
+            "format_version",
+        )
+    }
+    cp_hash = receipts._native_digest(cp)
+    tail = "[frozen candidate coverage complete]"
+    semantic_receipt = {
+        "mode": "semantic_link",
+        "status": "completed",
+        "phase": "terminal",
+        "identity": identity,
+        "checkpoint_sha256": cp_hash,
+        "finished_at": "2026-01-01T01:00:00Z",
+        "attempts": [
+            {
+                "cli_rc": 0,
+                "status": "completed",
+                "checkpoint_sha256": cp_hash,
+                "output_tail": tail,
+                "output_sha256": hashlib.sha256(tail.encode()).hexdigest(),
+            }
+        ],
+    }
+    previous = {"phase": "blocked", "cli_rc": 130, "reason": "synthetic first failure"}
+    observation = {"outcome": "blocked", "reason": "synthetic observation"}
+    previous_raw = json.dumps(previous, sort_keys=True)
+    observation_raw = json.dumps(observation, sort_keys=True)
+    semantic_raw = json.dumps(semantic_receipt, sort_keys=True)
+    log = "synthetic terminal output\n" + tail
+
+    def sha(value):
+        return hashlib.sha256(value.encode()).hexdigest()
+
+    approval = {
+        "version": 1,
+        "kind": "completed_semantic_to_fresh_all",
+        "approved_at": "2026-01-01T02:00:00Z",
+        "previous_receipt_sha256": sha(previous_raw),
+        "observation_sha256": sha(observation_raw),
+        "checkpoint_sha256": cp_hash,
+        "identity_sha256": receipts._native_digest(identity),
+        "semantic_receipt_sha256": sha(semantic_raw),
+        "semantic_log_sha256": sha(log),
+        "resource_baseline": [["synthetic-db", '[["db","container",0]]'], 0, 0],
+        "memory_limit_bytes": 18 * 1024**3,
+        "brain_uuid": "synthetic-brain",
+        "brain_config_sha256": "b" * 64,
+        "state_resource_version": "synthetic-rv",
+        "runtime": {
+            "source_sha": "c" * 40,
+            "image_digest": "sha256:" + "d" * 64,
+            "package_version": "1.0",
+            "numpy_version": "2.5.4",
+            "python_version": "3.12.1",
+            "selected_backend": "numpy_float32:2.5.4",
+        },
+        "semantic_source": {
+            "state_name": "synthetic-state",
+            "state_uid": "synthetic-state-uid",
+            "job_name": "synthetic-job",
+            "job_uid": "synthetic-job-uid",
+            "pod_name": "synthetic-pod",
+            "pod_uid": "synthetic-pod-uid",
+            "image_digest": "sha256:" + "e" * 64,
+        },
+    }
+    return cp, previous_raw, observation_raw, semantic_raw, log, approval
+
+
+def test_completed_semantic_seed_archives_history_and_cannot_be_replayed_with_drift():
+    cp, previous_raw, observation_raw, semantic_raw, log, approval = completed_semantic_fixture()
+    original = deepcopy(cp)
+    seed = receipts.completed_semantic_handoff_seed(
+        previous_raw,
+        cp,
+        approval=approval,
+        observation_raw=observation_raw,
+        semantic_receipt_raw=semantic_raw,
+        semantic_log=log,
+    )
+    assert cp == original
+    assert seed["phase"] == "bootstrap"
+    assert seed["status"] == "completed"
+    assert seed["cli_rc"] is None
+    assert seed["next_action"] == "fresh_all"
+    assert seed["expected_all_options_fingerprint"] == receipts.hourly_options_fingerprint()
+    assert receipts.completed_semantic_handoff_matches(seed, cp)
+    archive = seed["completed_semantic_handoff"]
+    assert archive["previous_raw"] == previous_raw
+    assert archive["observation_raw"] == observation_raw
+    altered = deepcopy(cp)
+    altered["run_id"] = "synthetic-other"
+    assert not receipts.completed_semantic_handoff_matches(seed, altered)
+
+
+@pytest.mark.parametrize(
+    "fault", ["prior", "observation", "receipt", "log", "checkpoint", "approval"]
+)
+def test_completed_semantic_seed_refuses_stale_evidence(fault):
+    cp, previous, observation, semantic, log, approval = completed_semantic_fixture()
+    if fault == "prior":
+        previous += " "
+    elif fault == "observation":
+        observation += " "
+    elif fault == "receipt":
+        semantic += " "
+    elif fault == "log":
+        log += " "
+    elif fault == "checkpoint":
+        cp["run_id"] = "synthetic-drift"
+    else:
+        approval["resource_baseline"] = None
+    with pytest.raises(receipts.BlockedError):
+        receipts.completed_semantic_handoff_seed(
+            previous,
+            cp,
+            approval=approval,
+            observation_raw=observation,
+            semantic_receipt_raw=semantic,
+            semantic_log=log,
+        )
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "cli_rc",
+        "receipt_status",
+        "mode",
+        "coverage",
+        "tail",
+        "log_error",
+        "paused_checkpoint",
+        "native_handoff",
+    ],
+)
+def test_semantic_handoff_refuses_invalid_completion_even_with_matching_approval(fault):
+    cp, previous, observation, semantic_raw, log, approval = completed_semantic_fixture()
+    semantic = json.loads(semantic_raw)
+    if fault == "cli_rc":
+        semantic["attempts"][-1]["cli_rc"] = 1
+    elif fault == "receipt_status":
+        semantic["status"] = "paused"
+    elif fault == "mode":
+        semantic["mode"] = "all"
+    elif fault == "coverage":
+        log = "synthetic log without coverage marker"
+    elif fault == "tail":
+        semantic["attempts"][-1]["output_tail"] = "absent from log"
+    elif fault == "log_error":
+        semantic["attempts"][-1]["output_tail"] += "\nERROR synthetic failure"
+        log += "\nERROR synthetic failure"
+        semantic["attempts"][-1]["output_sha256"] = hashlib.sha256(
+            semantic["attempts"][-1]["output_tail"].encode()
+        ).hexdigest()
+    elif fault == "paused_checkpoint":
+        cp.update(status="paused", completed_strategies=[], phase="semantic_link_discovery")
+        cp["native_handoff"]["payload_sha256"] = receipts.native_payload_hash(cp)
+        approval["checkpoint_sha256"] = receipts._native_digest(cp)
+    else:
+        cp["native_handoff"]["payload_sha256"] = "0" * 64
+        approval["checkpoint_sha256"] = receipts._native_digest(cp)
+    semantic_raw = json.dumps(semantic, sort_keys=True)
+    approval["semantic_receipt_sha256"] = hashlib.sha256(semantic_raw.encode()).hexdigest()
+    approval["semantic_log_sha256"] = hashlib.sha256(log.encode()).hexdigest()
+    with pytest.raises(receipts.BlockedError):
+        receipts.completed_semantic_handoff_seed(
+            previous,
+            cp,
+            approval=approval,
+            observation_raw=observation,
+            semantic_receipt_raw=semantic_raw,
+            semantic_log=log,
+        )
+
+
+@pytest.mark.parametrize("outcome", ["success", "cas_conflict", "lost_response"])
+def test_completed_semantic_admission_cas_preserves_history_without_retry(tmp_path, outcome):
+    cp, previous, observation, semantic, log, approval = completed_semantic_fixture()
+    approval_file = tmp_path / "approval.json"
+    approval_file.write_text(json.dumps(approval))
+    history = '{"synthetic":"previous-success"}'
+    original = {
+        "metadata": {"resourceVersion": approval["state_resource_version"]},
+        "data": {
+            "receipt.json": previous,
+            "last_observation.json": observation,
+            "last_confirmed_success.json": history,
+        },
+    }
+    stored = deepcopy(original)
+    api = MagicMock(namespace="synthetic")
+    api.path.side_effect = lambda resource: resource
+    api.request.side_effect = lambda path: (
+        {"spec": {"suspend": True}} if "cronjobs/" in path else {"data": {"receipt.json": semantic}}
+    )
+    api.previous_log.return_value = log
+    api.state.side_effect = lambda: deepcopy(stored)
+
+    def cas(cm, seed):
+        if outcome == "cas_conflict":
+            stored["data"]["receipt.json"] = '{"phase":"blocked","reason":"competing writer"}'
+            raise RuntimeError("synthetic conflict")
+        stored["data"] = dict(cm["data"], **{"receipt.json": hourly.canonical(seed)})
+        if outcome == "lost_response":
+            raise TimeoutError("synthetic lost acknowledgement")
+
+    api.cas.side_effect = cas
+    safety = MagicMock()
+    args = SimpleNamespace(approval_file=str(approval_file))
+    with (
+        patch.object(hourly, "live", AsyncMock(return_value=(cp, []))),
+        patch.object(hourly, "verify_completed_semantic_handoff", AsyncMock()),
+    ):
+        if outcome == "success":
+            assert (
+                asyncio.run(hourly.admit_completed_semantic_handoff(api, None, safety, args)) == 0
+            )
+            assert stored["data"]["last_confirmed_success.json"] == history
+            assert "last_observation.json" not in stored["data"]
+            assert any(key.startswith("completed_semantic_observation_") for key in stored["data"])
+            assert any(key.startswith("completed_semantic_handoff_") for key in stored["data"])
+        else:
+            with pytest.raises(hourly.BlockedError, match="outcome uncertain"):
+                asyncio.run(hourly.admit_completed_semantic_handoff(api, None, safety, args))
+            if outcome == "cas_conflict":
+                assert (
+                    stored["data"]["receipt.json"]
+                    == '{"phase":"blocked","reason":"competing writer"}'
+                )
+                assert stored["data"]["last_confirmed_success.json"] == history
+            else:
+                assert stored["data"]["last_confirmed_success.json"] == history
+                with pytest.raises(hourly.BlockedError):
+                    asyncio.run(hourly.admit_completed_semantic_handoff(api, None, safety, args))
+        assert api.cas.call_count == 1
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "none",
+        "state_uid",
+        "state_receipt",
+        "log",
+        "image",
+        "image_id",
+        "exit",
+        "restart",
+        "checkpoint",
+        "lease",
+    ],
+)
+def test_completed_semantic_verifier_rechecks_source_and_current_state(change):
+    cp, previous, observation, semantic, log, approval = completed_semantic_fixture()
+    seed = receipts.completed_semantic_handoff_seed(
+        previous,
+        cp,
+        approval=approval,
+        semantic_receipt_raw=semantic,
+        semantic_log=log,
+        observation_raw=observation,
+    )
+    source = approval["semantic_source"]
+    state = {"metadata": {"uid": source["state_uid"]}, "data": {"receipt.json": semantic}}
+    pod = {
+        "spec": {"containers": [{"image": "example@" + source["image_digest"]}]},
+        "status": {
+            "containerStatuses": [
+                {
+                    "imageID": "example@" + source["image_digest"],
+                    "restartCount": 0,
+                    "state": {"terminated": {"exitCode": 0}},
+                }
+            ]
+        },
+    }
+    current, leases = deepcopy(cp), []
+    if change == "state_uid":
+        state["metadata"]["uid"] = "changed"
+    if change == "state_receipt":
+        state["data"]["receipt.json"] = "changed"
+    if change == "log":
+        log += " changed"
+    if change == "image":
+        pod["spec"]["containers"][0]["image"] = "changed"
+    status = pod["status"]["containerStatuses"][0]
+    if change == "image_id":
+        status["imageID"] = "changed"
+    if change == "exit":
+        status["state"]["terminated"]["exitCode"] = 1
+    if change == "restart":
+        status["restartCount"] = 1
+    if change == "checkpoint":
+        current["run_id"] = "changed"
+    if change == "lease":
+        leases = [{"owner": "synthetic"}]
+    api = MagicMock()
+    api.path.side_effect = lambda value: value
+    api.request.side_effect = lambda value: state if value.startswith("configmaps/") else pod
+    api.previous_log.return_value = log
+    safety = MagicMock()
+    with (
+        patch.object(hourly, "live", AsyncMock(return_value=(current, leases))),
+        patch.object(hourly, "_verify_handoff_brain", AsyncMock()),
+        patch.object(hourly, "_verify_reviewed_resume_runtime") as runtime,
+    ):
+        if change == "none":
+            asyncio.run(hourly.verify_completed_semantic_handoff(api, None, safety, seed, cp))
+            runtime.assert_called_once_with(
+                api, safety, seed, approval, label="completed semantic handoff"
+            )
+            api.previous_log.assert_called_once_with(source)
+        else:
+            with pytest.raises(hourly.BlockedError):
+                asyncio.run(hourly.verify_completed_semantic_handoff(api, None, safety, seed, cp))
+
+
+def test_handoff_brain_rejects_config_drift():
+    from dataclasses import dataclass
+
+    @dataclass
+    class Config:
+        enabled: bool = True
+
+    config = Config()
+    approval = {
+        "brain_uuid": "synthetic",
+        "brain_config_sha256": receipts._native_digest({"enabled": True}),
+    }
+    storage = SimpleNamespace(
+        get_brain=AsyncMock(
+            return_value=SimpleNamespace(name="default", id="synthetic", config=config)
+        )
+    )
+    asyncio.run(hourly._verify_handoff_brain(storage, approval))
+    config.enabled = False
+    with pytest.raises(hourly.BlockedError):
+        asyncio.run(hourly._verify_handoff_brain(storage, approval))
+
+
+def test_handoff_flag_uses_operator_storage_and_never_runs_cli():
+    storage = MagicMock()
+    storage._reconnect = AsyncMock()
+    storage.close = AsyncMock()
+    with (
+        patch("surreal_memory.storage.surrealdb.SurrealDBStorage", return_value=storage),
+        patch.object(hourly, "Kubernetes"),
+        patch.object(hourly, "Safety"),
+        patch("surreal_memory.unified_config.get_shared_storage", AsyncMock()) as shared,
+        patch("surreal_memory.unified_config.get_config"),
+        patch.dict("os.environ", {"SURREAL_MEMORY_STORAGE": "surrealdb"}),
+        patch.object(hourly, "run", AsyncMock()) as run,
+        patch.object(
+            hourly, "admit_completed_semantic_handoff", AsyncMock(return_value=0)
+        ) as admit,
+    ):
+        assert (
+            asyncio.run(
+                hourly.main(
+                    ["--admit-completed-semantic-handoff", "--approval-file", "synthetic.json"]
+                )
+            )
+            == 0
+        )
+        admit.assert_awaited_once()
+        shared.assert_not_awaited()
+        run.assert_not_awaited()
+        storage._reconnect.assert_awaited_once()
+        storage.close.assert_awaited_once()
+
+
+def test_semantic_final_attempt_allows_only_exact_health_advisory():
+    cp, previous, observation, raw, _, approval = completed_semantic_fixture()
+    semantic = json.loads(raw)
+    output = "[frozen candidate coverage complete]\n  Health delta unavailable: diagnostic snapshot failed"
+    semantic["attempts"][-1]["output_tail"] = output
+    semantic["attempts"][-1]["output_sha256"] = hashlib.sha256(output.encode()).hexdigest()
+    raw = json.dumps(semantic, sort_keys=True)
+    log = "prior attempt: ERROR synthetic prior failure\n" + output
+    approval["semantic_receipt_sha256"] = hashlib.sha256(raw.encode()).hexdigest()
+    approval["semantic_log_sha256"] = hashlib.sha256(log.encode()).hexdigest()
+    seed = receipts.completed_semantic_handoff_seed(
+        previous,
+        cp,
+        approval=approval,
+        observation_raw=observation,
+        semantic_receipt_raw=raw,
+        semantic_log=log,
+    )
+    assert seed["next_action"] == "fresh_all"
+
+
+def test_hourly_cli_native_engine_fingerprint_at_progress_open():
+    from surreal_memory.cli.commands import tools as cli_tools
+    from surreal_memory.engine import consolidation as engine_module
+    from surreal_memory.engine import consolidation_delta
+
+    class StopBeforeProgress(BaseException):
+        pass
+
+    captured = []
+    budgets = []
+    storage = FakeProgressStorage()
+
+    async def capture_open(store, strategies, fingerprint, reference_time, **kwargs):
+        assert store is storage
+        captured.append((strategies, fingerprint))
+        raise StopBeforeProgress()
+
+    async def run_delta(store, brain_id, **kwargs):
+        assert store is storage and brain_id == "default"
+        assert kwargs["strategies"] == [ConsolidationStrategy.ALL]
+        budgets.append((kwargs["strategy_timeout_seconds"], kwargs["total_timeout_seconds"]))
+        config = kwargs["config"]
+        assert (
+            config.prune_weight_threshold,
+            config.prune_min_inactive_days,
+            config.merge_overlap_threshold,
+        ) == (0.05, 7.0, 0.5)
+        engine = engine_module.ConsolidationEngine(store, config)
+        assert engine._dream_decay_multiplier == 10.0 and engine._tier_config is None
+        await engine.run(
+            strategies=kwargs["strategies"],
+            dry_run=kwargs["dry_run"],
+            strategy_timeout_seconds=kwargs["strategy_timeout_seconds"],
+            total_timeout_seconds=kwargs["total_timeout_seconds"],
+        )
+        pytest.fail("engine continued beyond progress-open boundary")
+
+    with (
+        patch.object(cli_tools, "get_config", return_value=object()),
+        patch.object(cli_tools, "resolve_brain", return_value="default"),
+        patch.object(cli_tools, "get_storage", AsyncMock(return_value=storage)),
+        patch.object(cli_tools, "run_async", side_effect=asyncio.run),
+        patch.object(consolidation_delta, "run_with_delta", side_effect=run_delta),
+        patch.object(engine_module.ConsolidationProgressSession, "open", side_effect=capture_open),
+    ):
+        for strategy_timeout, total_timeout in [(1800, 3000), (17, 31)]:
+            with pytest.raises(StopBeforeProgress):
+                cli_tools.consolidate(
+                    brain="default", strategy_timeout=strategy_timeout, total_timeout=total_timeout
+                )
+    expected_names = sorted(
+        x.value for x in ConsolidationStrategy if x != ConsolidationStrategy.ALL
+    )
+    assert [item[0] for item in captured] == [expected_names, expected_names]
+    assert [item[1] for item in captured] == [receipts.hourly_options_fingerprint()] * 2

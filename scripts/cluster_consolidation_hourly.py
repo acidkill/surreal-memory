@@ -32,6 +32,8 @@ from surreal_memory.engine.consolidation_receipts import (
     capacity_resume_matches,
     capacity_resume_seed,
     checkpoint_hash,
+    completed_semantic_handoff_matches,
+    completed_semantic_handoff_seed,
     confirmed_success,
     failed_runtime_resume_matches,
     lease_loss_resume_matches,
@@ -316,10 +318,18 @@ class Safety:
 
 async def live(storage: Any) -> tuple[dict[str, Any], list[Any]]:
     cp = await storage.get_consolidation_progress("default")
-    leases = await storage._query(
+    query = getattr(storage, "_query_response", None) or storage._query
+    leases = await query(
         "SELECT * FROM consolidation_lease WHERE brain_id = $brain_id AND expires_at > time::now()",
         brain_id="default",
     )
+    if not isinstance(leases, list) or any(
+        not isinstance(row, dict)
+        or not isinstance(row.get("owner_token"), str)
+        or not row["owner_token"]
+        for row in leases
+    ):
+        raise BlockedError("native active-lease response is ambiguous")
     return cp, leases
 
 
@@ -827,6 +837,146 @@ async def _admit_reviewed_resume(
     return 0
 
 
+async def _verify_handoff_brain(storage: Any, approval: dict[str, Any]) -> None:
+    from surreal_memory.engine.consolidation_receipts import _native_digest
+
+    brain = await storage.get_brain("default")
+    if (
+        brain is None
+        or brain.name != "default"
+        or brain.id != approval["brain_uuid"]
+        or not is_dataclass(brain.config)
+        or _native_digest(asdict(brain.config)) != approval["brain_config_sha256"]
+    ):
+        raise BlockedError("completed semantic handoff brain/configuration changed")
+
+
+async def verify_completed_semantic_handoff(
+    api: Kubernetes, storage: Any, safety: Safety, seed: dict[str, Any], cp: dict[str, Any]
+) -> None:
+    """Re-read the exact closed-run evidence and current native/resource fences."""
+    from surreal_memory.engine.consolidation_receipts import _native_digest
+
+    if not completed_semantic_handoff_matches(seed, cp):
+        raise BlockedError("completed semantic handoff checkpoint or approval differs")
+    audit = seed["completed_semantic_handoff"]
+    approval = audit["approval"]
+    _verify_reviewed_resume_runtime(api, safety, seed, approval, label="completed semantic handoff")
+    await _verify_handoff_brain(storage, approval)
+    current, leases = await live(storage)
+    if leases != [] or _native_digest(current) != approval["checkpoint_sha256"]:
+        raise BlockedError("completed semantic checkpoint or lease changed")
+    source = approval["semantic_source"]
+    state = api.request(api.path("configmaps/" + source["state_name"]))
+    if (
+        state.get("metadata", {}).get("uid") != source["state_uid"]
+        or state.get("data", {}).get("receipt.json") != audit["semantic_receipt_raw"]
+    ):
+        raise BlockedError("semantic completion ConfigMap evidence changed")
+    log = api.previous_log(source)
+    pod = api.request(api.path("pods/" + source["pod_name"]))
+    specs = pod.get("spec", {}).get("containers", [])
+    statuses = pod.get("status", {}).get("containerStatuses", [])
+    if (
+        log != audit["semantic_log"]
+        or len(specs) != 1
+        or len(statuses) != 1
+        or not specs[0].get("image", "").endswith("@" + source["image_digest"])
+        or not statuses[0].get("imageID", "").endswith(source["image_digest"])
+        or type(statuses[0].get("state", {}).get("terminated", {}).get("exitCode")) is not int
+        or statuses[0]["state"]["terminated"]["exitCode"] != 0
+        or statuses[0].get("restartCount") != 0
+    ):
+        raise BlockedError("semantic completion Pod/CLI-zero evidence changed")
+
+
+async def admit_completed_semantic_handoff(
+    api: Kubernetes, storage: Any, safety: Safety, args: argparse.Namespace
+) -> int:
+    """CAS one audited fresh-ALL intent; preserve history and never launch a CLI."""
+    import re
+
+    cm = api.state()
+    raw = cm["data"]["receipt.json"]
+    approval_raw = Path(args.approval_file).read_text(encoding="utf-8")
+    if len(approval_raw.encode()) > 128 * 1024:
+        raise BlockedError("completed semantic handoff approval is oversized")
+    approval = json.loads(approval_raw)
+    if cm.get("metadata", {}).get("resourceVersion") != approval.get("state_resource_version"):
+        raise BlockedError("hourly state changed since handoff approval")
+    cron = api.request(
+        f"/apis/batch/v1/namespaces/{api.namespace}/cronjobs/smem-consolidate-hourly"
+    )
+    if cron.get("spec", {}).get("suspend") is not True:
+        raise BlockedError("completed semantic admission requires hourly still suspended")
+    cp, leases = await live(storage)
+    if leases != []:
+        raise BlockedError("completed semantic handoff requires zero active leases")
+    source = approval.get("semantic_source", {})
+    for key in ("state_name", "job_name", "pod_name"):
+        if (
+            not isinstance(source.get(key), str)
+            or re.fullmatch(r"[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?", source[key]) is None
+        ):
+            raise BlockedError("semantic source Kubernetes name is invalid")
+    state = api.request(api.path("configmaps/" + source["state_name"]))
+    semantic_raw = state.get("data", {}).get("receipt.json")
+    log = api.previous_log(source)
+    observation_raw = cm["data"].get("last_observation.json")
+    safety.sample(initial=True)
+    seed = completed_semantic_handoff_seed(
+        raw,
+        cp,
+        approval=approval,
+        semantic_receipt_raw=semantic_raw,
+        semantic_log=log,
+        observation_raw=observation_raw,
+    )
+    await verify_completed_semantic_handoff(api, storage, safety, seed, cp)
+    key = "completed_semantic_handoff_" + checkpoint_hash(seed) + ".json"
+    if key in cm["data"]:
+        raise BlockedError("completed semantic handoff archive already exists")
+    data = dict(cm["data"], **{key: canonical(seed)})
+    if observation_raw is not None:
+        observation_key = (
+            "completed_semantic_observation_"
+            + hashlib.sha256(observation_raw.encode()).hexdigest()
+            + ".json"
+        )
+        if observation_key in data and data[observation_key] != observation_raw:
+            raise BlockedError("completed semantic observation archive differs")
+        data[observation_key] = observation_raw
+    data.pop("last_observation.json", None)
+    expected_data = dict(data, **{"receipt.json": canonical(seed)})
+    if len(canonical(expected_data).encode()) > 900 * 1024:
+        raise BlockedError("completed semantic handoff archive exceeds bounded state capacity")
+    safety.sample(initial=True)
+    await verify_completed_semantic_handoff(api, storage, safety, seed, cp)
+    try:
+        api.cas(dict(cm, data=data), seed)
+        readback = api.state()
+        safety.sample(initial=True)
+        await verify_completed_semantic_handoff(api, storage, safety, seed, cp)
+        if readback.get("data") != expected_data:
+            raise BlockedError("completed semantic handoff readback differs")
+    except Exception as exc:
+        raise BlockedError(
+            "completed semantic handoff outcome uncertain; inspect state without retry"
+        ) from exc
+    print(
+        "HOURLY_COMPLETED_SEMANTIC_ADMISSION "
+        + canonical(
+            {
+                "archive_key": key,
+                "seed_sha256": checkpoint_hash(seed),
+                "next_action": "fresh_all",
+            }
+        ),
+        flush=True,
+    )
+    return 0
+
+
 def stop(child: subprocess.Popen[Any]) -> bool:
     if child.poll() is None:
         child.send_signal(signal.SIGINT)
@@ -1035,9 +1185,22 @@ async def run(api: Kubernetes, storage: Any, safety: Safety) -> int:
             print("HOURLY_OBSERVATION " + canonical(observed), flush=True)
             return 0
         command = select_command(receipt, cp, decision_log)
+        handoff_authorization = (
+            receipt if receipt.get("source") == "operator_completed_semantic_handoff" else None
+        )
+        fresh_all_options = (
+            receipt["expected_all_options_fingerprint"]
+            if handoff_authorization is not None
+            else None
+        )
         # Leave 500s below the 3500s Job deadline for setup, health and shutdown.
         command.extend(["--strategy-timeout", "1800", "--total-timeout", "3000"])
         safety.sample(initial=True)
+        if handoff_authorization is not None:
+            archive = "completed_semantic_handoff_" + checkpoint_hash(receipt) + ".json"
+            if cm["data"].get(archive) != canonical(receipt):
+                raise BlockedError("completed semantic handoff archive missing or stale")
+            await verify_completed_semantic_handoff(api, storage, safety, receipt, cp)
         failed_runtime = receipt.get("source") == "operator_failed_runtime_resume"
         lease_authorization = (
             receipt if receipt.get("source") == "operator_lease_loss_resume" else None
@@ -1087,7 +1250,11 @@ async def run(api: Kubernetes, storage: Any, safety: Safety) -> int:
             return 0
         if checkpoint_hash(latest) != checkpoint_hash(cp):
             raise BlockedError("checkpoint changed during preflight")
-        if runtime_resume or capacity_authorization is not None:
+        if (
+            runtime_resume
+            or capacity_authorization is not None
+            or handoff_authorization is not None
+        ):
             safety.sample(initial=True)
             api.no_other_jobs(api.identity()["job_uid"])
         resume_seed_sha256 = checkpoint_hash(receipt) if failed_runtime else None
@@ -1106,6 +1273,11 @@ async def run(api: Kubernetes, storage: Any, safety: Safety) -> int:
                 if capacity_authorization is not None
                 else {}
             ),
+            **(
+                {"completed_semantic_handoff_sha256": checkpoint_hash(handoff_authorization)}
+                if handoff_authorization is not None
+                else {}
+            ),
             "phase": "started",
             "started_at": utcnow(),
             "before_sha256": checkpoint_hash(cp),
@@ -1118,13 +1290,19 @@ async def run(api: Kubernetes, storage: Any, safety: Safety) -> int:
         latest, leases = await live(storage)
         if leases or checkpoint_hash(latest) != checkpoint_hash(cp):
             raise BlockedError("checkpoint or lease changed after ownership CAS")
-        if runtime_resume or capacity_authorization is not None:
+        if (
+            runtime_resume
+            or capacity_authorization is not None
+            or handoff_authorization is not None
+        ):
             safety.sample(initial=True)
             api.no_other_jobs(api.identity()["job_uid"])
         if capacity_authorization is not None:
             await verify_capacity_resume(api, storage, safety, capacity_authorization, cp)
         if lease_authorization is not None:
             await verify_lease_loss_resume(api, storage, safety, lease_authorization, cp)
+        if handoff_authorization is not None:
+            await verify_completed_semantic_handoff(api, storage, safety, handoff_authorization, cp)
         awaiting_native_claim = runtime_resume
         native_owner = None
         observed_lease_owner = None
@@ -1265,7 +1443,18 @@ async def run(api: Kubernetes, storage: Any, safety: Safety) -> int:
             )
         ):
             raise BlockedError("capacity stop checkpoint scope changed")
-        terminal(after, rc, cp, "--resume" in command, text)
+        if handoff_authorization is not None:
+            await _verify_handoff_brain(
+                storage, handoff_authorization["completed_semantic_handoff"]["approval"]
+            )
+        terminal(
+            after,
+            rc,
+            cp,
+            "--resume" in command,
+            text,
+            fresh_all_options_fingerprint=fresh_all_options,
+        )
         receipt.update(
             phase="terminal",
             status=after["status"],
@@ -1341,6 +1530,7 @@ async def main(argv: list[str] | None = None) -> int:
         help="Archive an approved blocked CLI130 capacity stop and seed one native resume",
     )
     operator.add_argument("--admit-lease-loss-resume", action="store_true")
+    operator.add_argument("--admit-completed-semantic-handoff", action="store_true")
     parser.add_argument("--approval-file", help="Reviewed exact-state operator admission JSON")
     parser.add_argument("--confirm-run-id")
     parser.add_argument("--checkpoint-sha256")
@@ -1357,14 +1547,21 @@ async def main(argv: list[str] | None = None) -> int:
         not args.rebaseline_resources and any(value is not None for value in proof)
     ):
         parser.error("resource rebaseline requires all explicit predecessor proof arguments")
-    if (args.admit_capacity_stop or args.admit_lease_loss_resume) != (
-        args.approval_file is not None
-    ):
+    if (
+        args.admit_capacity_stop
+        or args.admit_lease_loss_resume
+        or args.admit_completed_semantic_handoff
+    ) != (args.approval_file is not None):
         parser.error("operator admission requires its mode and --approval-file")
     api = Kubernetes()
     safety = Safety(api)
     storage: Any
-    if args.rebaseline_resources or args.admit_capacity_stop or args.admit_lease_loss_resume:
+    if (
+        args.rebaseline_resources
+        or args.admit_capacity_stop
+        or args.admit_lease_loss_resume
+        or args.admit_completed_semantic_handoff
+    ):
         # A normal storage factory initializes schema and can migrate brain data.
         # The operator path must only authenticate/select the existing database.
         from surreal_memory.storage.surrealdb import SurrealDBStorage
@@ -1373,6 +1570,8 @@ async def main(argv: list[str] | None = None) -> int:
         storage.set_brain("default")
         try:
             await storage._reconnect()
+            if args.admit_completed_semantic_handoff:
+                return await admit_completed_semantic_handoff(api, storage, safety, args)
             if args.admit_capacity_stop:
                 return await admit_capacity_stop(api, storage, safety, args)
             if args.admit_lease_loss_resume:
