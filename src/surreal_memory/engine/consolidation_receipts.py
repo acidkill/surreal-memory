@@ -1781,7 +1781,222 @@ def lease_loss_resume_matches(receipt: Any, cp: Any) -> bool:
         return False
 
 
+def hourly_options_fingerprint() -> str:
+    """Fingerprint the unchanged default ALL CLI configuration, excluding runtime limits."""
+    from dataclasses import asdict
+
+    from surreal_memory.engine.consolidation import ConsolidationConfig, ConsolidationStrategy
+    from surreal_memory.engine.consolidation_progress import options_fingerprint
+
+    return options_fingerprint(
+        {
+            "requested_strategies": sorted(
+                item.value
+                for item in ConsolidationStrategy
+                if item is not ConsolidationStrategy.ALL
+            ),
+            "config": asdict(ConsolidationConfig()),
+            "dream_decay_multiplier": 10.0,
+            "tier_config": None,
+        }
+    )
+
+
+def _completed_semantic_identity(cp: dict[str, Any]) -> dict[str, Any]:
+    clean_checkpoint(cp)
+    if (
+        cp["status"] != "completed"
+        or cp.get("requested_strategies") != ["semantic_link"]
+        or cp.get("completed_strategies") != ["semantic_link"]
+        or not native_handoff_valid(cp)
+        or timestamp(cp.get("reference_time")) is None
+    ):
+        raise BlockedError("handoff requires a proved completed semantic-only checkpoint")
+    return {
+        key: cp.get(key)
+        for key in (
+            "brain_id",
+            "run_id",
+            "options_fingerprint",
+            "reference_time",
+            "schema_version",
+            "engine_version",
+            "format_version",
+        )
+    }
+
+
+def _semantic_final_output(last: dict[str, Any], log: str) -> str:
+    """Recover one exact final CLI output by its digest, not earlier attempt logs."""
+    tail, digest = last.get("output_tail"), last.get("output_sha256")
+    if (
+        not isinstance(tail, str)
+        or not tail
+        or not isinstance(digest, str)
+        or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+    ):
+        raise BlockedError("semantic final CLI output evidence is missing")
+    position = log.rfind(tail)
+    if position < 0:
+        raise BlockedError("semantic final CLI tail is absent from retained log")
+    end = position + len(tail)
+    starts = [0, *(match.end() for match in re.finditer("\n", log[:position]))]
+    if len(starts) > 4096:
+        raise BlockedError("semantic final CLI log has too many candidate boundaries")
+    for start in reversed(starts):
+        output = log[start:end]
+        if hashlib.sha256(output.encode()).hexdigest() == digest:
+            return output
+    raise BlockedError("semantic final CLI output digest does not match retained log")
+
+
+def completed_semantic_handoff_seed(
+    previous_raw: str,
+    cp: dict[str, Any],
+    *,
+    approval: dict[str, Any],
+    semantic_receipt_raw: str,
+    semantic_log: str,
+    observation_raw: str | None = None,
+) -> dict[str, Any]:
+    """Archive a reviewed closed semantic run as predecessor, never as an ALL success."""
+    for raw in (previous_raw, semantic_receipt_raw, semantic_log, observation_raw):
+        if raw is not None and (not isinstance(raw, str) or len(raw.encode()) > 128 * 1024):
+            raise BlockedError("completed semantic handoff evidence missing or oversized")
+    try:
+        previous = json.loads(previous_raw)
+        semantic = json.loads(semantic_receipt_raw)
+    except (ValueError, TypeError) as exc:
+        raise BlockedError("completed semantic handoff evidence is malformed") from exc
+    identity = _completed_semantic_identity(cp)
+    cp_hash = _native_digest(cp)
+
+    def raw_hash(raw: str | None) -> str | None:
+        return hashlib.sha256(raw.encode()).hexdigest() if raw is not None else None
+
+    if not isinstance(approval, dict) or (
+        type(approval.get("version")) is not int
+        or approval["version"] != 1
+        or approval.get("kind") != "completed_semantic_to_fresh_all"
+        or approval.get("previous_receipt_sha256") != raw_hash(previous_raw)
+        or approval.get("observation_sha256") != raw_hash(observation_raw)
+        or approval.get("checkpoint_sha256") != cp_hash
+        or approval.get("identity_sha256") != _native_digest(identity)
+        or approval.get("semantic_receipt_sha256") != raw_hash(semantic_receipt_raw)
+        or approval.get("semantic_log_sha256") != raw_hash(semantic_log)
+    ):
+        raise BlockedError("completed semantic handoff approval or evidence changed")
+    if not isinstance(previous, dict) or previous.get("phase") not in {"blocked", "terminal"}:
+        raise BlockedError("hourly predecessor is not a reviewed historical receipt")
+    if not isinstance(semantic, dict):
+        raise BlockedError("semantic completion receipt is malformed")
+    attempts = semantic.get("attempts")
+    last = attempts[-1] if isinstance(attempts, list) and attempts else None
+    if (
+        semantic.get("mode") != "semantic_link"
+        or semantic.get("status") != "completed"
+        or semantic.get("phase") != "terminal"
+        or semantic.get("checkpoint_sha256") != cp_hash
+        or _native_digest(semantic.get("identity")) != _native_digest(identity)
+        or not isinstance(last, dict)
+        or type(last.get("cli_rc")) is not int
+        or last["cli_rc"] != 0
+        or last.get("status") != "completed"
+        or last.get("checkpoint_sha256") != cp_hash
+        or not isinstance(last.get("output_tail"), str)
+        or not last["output_tail"]
+        or last["output_tail"] not in semantic_log
+        or "[frozen candidate coverage complete]" not in semantic_log
+    ):
+        raise BlockedError("semantic CLI-zero or full-coverage evidence is missing")
+    final_output = _semantic_final_output(last, semantic_log)
+    if "[frozen candidate coverage complete]" not in final_output or cli_log_has_errors(
+        final_output, cp
+    ):
+        raise BlockedError("semantic final CLI coverage or outcome evidence is invalid")
+    approved, finished = (
+        timestamp(approval.get("approved_at")),
+        timestamp(semantic.get("finished_at")),
+    )
+    if approved is None or finished is None or not finished <= approved <= datetime.now(UTC):
+        raise BlockedError("completed semantic handoff approval time is invalid")
+    limit = approval.get("memory_limit_bytes")
+    baseline = approval.get("resource_baseline")
+    source = approval.get("semantic_source")
+    required_source = {
+        "state_name",
+        "state_uid",
+        "job_name",
+        "job_uid",
+        "pod_name",
+        "pod_uid",
+        "image_digest",
+    }
+    if (
+        type(limit) is not int
+        or limit <= 3 * 1024**3
+        or limit % (1024**3)
+        or not isinstance(baseline, list)
+        or not baseline
+        or not isinstance(approval.get("runtime"), dict)
+        or not isinstance(source, dict)
+        or set(source) != required_source
+        or any(not isinstance(value, str) or not value for value in source.values())
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", source["image_digest"]) is None
+        or not approval.get("brain_uuid")
+        or not approval.get("state_resource_version")
+        or not isinstance(approval.get("brain_config_sha256"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", approval["brain_config_sha256"]) is None
+    ):
+        raise BlockedError("completed semantic handoff runtime/resource binding is missing")
+    return {
+        "phase": "bootstrap",
+        "source": "operator_completed_semantic_handoff",
+        "approved": True,
+        "status": "completed",
+        "cli_rc": None,
+        "next_action": "fresh_all",
+        "observed_at": approval["approved_at"],
+        "run_id": cp["run_id"],
+        "options_fingerprint": cp["options_fingerprint"],
+        "reference_time": cp["reference_time"],
+        "checkpoint_sha256": checkpoint_hash(cp),
+        "expected_all_options_fingerprint": hourly_options_fingerprint(),
+        "resource_baseline": baseline,
+        "resource_policy_sha256": checkpoint_hash({"memory_limit_bytes": limit}),
+        "completed_semantic_handoff": {
+            "previous_raw": previous_raw,
+            "observation_raw": observation_raw,
+            "semantic_receipt_raw": semantic_receipt_raw,
+            "semantic_log": semantic_log,
+            "approval": approval,
+        },
+    }
+
+
+def completed_semantic_handoff_matches(receipt: Any, cp: Any) -> bool:
+    if not isinstance(receipt, dict) or not isinstance(cp, dict):
+        return False
+    try:
+        audit = receipt["completed_semantic_handoff"]
+        expected = completed_semantic_handoff_seed(
+            audit["previous_raw"],
+            cp,
+            approval=audit["approval"],
+            semantic_receipt_raw=audit["semantic_receipt_raw"],
+            semantic_log=audit["semantic_log"],
+            observation_raw=audit["observation_raw"],
+        )
+        return canonical(receipt) == canonical(expected)
+    except (BlockedError, KeyError, TypeError, ValueError):
+        return False
+
+
 def select_command(receipt: dict[str, Any], cp: dict[str, Any], log: str | None) -> list[str]:
+    if receipt.get("source") == "operator_completed_semantic_handoff":
+        if not completed_semantic_handoff_matches(receipt, cp):
+            raise BlockedError("completed semantic handoff approval or checkpoint diverged")
+        return ["smem", "consolidate", "--brain", "default"]
     if receipt.get("source") == "operator_lease_loss_resume":
         if not lease_loss_resume_matches(receipt, cp):
             raise BlockedError("lease loss resume approval or checkpoint diverged")
@@ -1851,6 +2066,15 @@ def cli_log_has_errors(output: str, cp: dict[str, Any]) -> bool:
     incomplete = set(cp.get("requested_strategies", [])) - set(cp.get("completed_strategies", []))
     known = {item.value for item in ConsolidationStrategy if item is not ConsolidationStrategy.ALL}
     lines = output.splitlines()
+    advisory = "Health delta unavailable: diagnostic snapshot failed"
+    if (
+        cp.get("status") == "completed"
+        and cp.get("requested_strategies")
+        and not incomplete
+        and sum(line.strip() == advisory for line in lines) == 1
+    ):
+        lines = [line for line in lines if line.strip() != advisory]
+        output = "\n".join(lines)
     if (
         cp.get("status") == "paused"
         and lines.count("  Consolidation status: paused") == 1
@@ -1875,7 +2099,13 @@ def cli_log_has_errors(output: str, cp: dict[str, Any]) -> bool:
 
 
 def terminal(
-    cp: dict[str, Any], rc: int, before: dict[str, Any], resume: bool, output: str
+    cp: dict[str, Any],
+    rc: int,
+    before: dict[str, Any],
+    resume: bool,
+    output: str,
+    *,
+    fresh_all_options_fingerprint: str | None = None,
 ) -> None:
     clean_checkpoint(cp)
     if type(rc) is not int or rc != (0 if cp["status"] == "completed" else 1):
@@ -1884,8 +2114,47 @@ def terminal(
         raise BlockedError("resume changed run identity")
     if not resume and cp["run_id"] == before["run_id"]:
         raise BlockedError("ordinary command did not create a fresh run")
-    if cp.get("options_fingerprint") != before.get("options_fingerprint"):
+    if fresh_all_options_fingerprint is not None:
+        from surreal_memory.engine.consolidation import ConsolidationStrategy
+
+        _completed_semantic_identity(before)
+        requested = cp.get("requested_strategies")
+        completed = cp.get("completed_strategies")
+        before_reference = timestamp(before.get("reference_time"))
+        after_reference = timestamp(cp.get("reference_time"))
+        expected = {
+            item.value for item in ConsolidationStrategy if item is not ConsolidationStrategy.ALL
+        }
+        if (
+            resume
+            or fresh_all_options_fingerprint != hourly_options_fingerprint()
+            or cp.get("options_fingerprint") != fresh_all_options_fingerprint
+            or not isinstance(requested, list)
+            or len(requested) != len(expected)
+            or not all(isinstance(item, str) for item in requested)
+            or set(requested) != expected
+            or not isinstance(completed, list)
+            or not all(isinstance(item, str) for item in completed)
+            or len(completed) != len(set(completed))
+            or not set(completed) <= expected
+            or not native_handoff_valid(cp)
+            or before_reference is None
+            or after_reference is None
+            or after_reference <= before_reference
+            or any(
+                cp.get(key) != before.get(key)
+                for key in ("brain_id", "schema_version", "engine_version", "format_version")
+            )
+        ):
+            raise BlockedError("fresh ALL handoff scope or expected configuration changed")
+    elif cp.get("options_fingerprint") != before.get("options_fingerprint"):
         raise BlockedError("options changed or auto-tier ambiguity")
+    if resume and (
+        _native_digest(_native_scope(cp)) != _native_digest(_native_scope(before))
+        or _native_normalize(cp.get("reference_time"), "reference_time")
+        != _native_normalize(before.get("reference_time"), "reference_time")
+    ):
+        raise BlockedError("resume scope or reference changed")
     if cli_log_has_errors(output, cp):
         raise BlockedError("CLI log contains error evidence")
 
