@@ -228,3 +228,137 @@ async def test_semantic_recovery_cas_rejects_unapproved_status_transition() -> N
         )
 
     assert storage.calls == []
+
+
+def _native_transport_checkpoint(brain_id: str) -> dict[str, Any]:
+    from datetime import UTC, datetime
+
+    from surreal_memory.engine import consolidation_receipts as receipts
+
+    state = {
+        "brain_id": brain_id,
+        "run_id": "synthetic-transport-run",
+        "options_fingerprint": "a" * 64,
+        "reference_time": datetime(2030, 1, 1, tzinfo=UTC),
+        "schema_version": 12,
+        "engine_version": "3.11.0:checkpoint-v1",
+        "format_version": 1,
+        "status": "paused",
+        "current_strategy": "semantic_link",
+        "phase": "semantic_link_apply",
+        "requested_strategies": ["semantic_link"],
+        "completed_strategies": [],
+        "strategy_states": {},
+        "counters": {},
+        "work_progress_seq": 1,
+        "owner_token": "synthetic-transport-owner",
+    }
+    state["native_handoff"] = receipts.prepare_native_handoff(None, state, fresh=False)
+    return state
+
+
+def _record_id_type() -> Any:
+    sdk = pytest.importorskip(
+        "surrealdb.data.types.record_id",
+        reason="optional SurrealDB SDK required for typed transport",
+    )
+    return sdk.RecordID
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("brain_id", ["default", None])
+async def test_progress_read_projects_sdk_id_for_native_and_hourly_digest(
+    brain_id: str | None,
+) -> None:
+    import json
+
+    from surreal_memory.engine import consolidation_receipts as receipts
+
+    resolved = brain_id or "test-brain"
+    raw = _native_transport_checkpoint(resolved)
+    record_id = _record_id_type()(
+        "consolidation_progress", ScriptedStateStorage._consolidation_record_id(resolved)
+    )
+    raw["id"] = record_id
+    storage = ScriptedStateStorage([raw])
+    assert receipts.native_handoff_valid(raw)
+    with pytest.raises(TypeError, match="RecordID"):
+        receipts._native_digest(raw)
+
+    result = await storage.get_consolidation_progress(brain_id)
+
+    assert result is not None and result is not raw
+    digest = receipts._native_digest(result)
+    assert result["id"] == str(record_id) and isinstance(result["id"], str)
+    assert raw["id"] is record_id
+    assert {key: value for key, value in result.items() if key != "id"} == {
+        key: value for key, value in raw.items() if key != "id"
+    }
+    assert receipts.native_handoff_valid(result)
+    assert receipts.native_payload_hash(result) == receipts.native_payload_hash(raw)
+    assert receipts.checkpoint_hash(result) == receipts.checkpoint_hash(raw)
+    json_result = json.loads(json.dumps(receipts._native_normalize(result)))
+    assert receipts._native_digest(json_result) == digest
+    assert receipts._native_digest({**result, "work_progress_seq": 2}) != digest
+    assert len(storage.calls) == 1
+    assert storage.calls[0][0].startswith("SELECT * FROM consolidation_progress")
+    assert storage.calls[0][1] == {"brain_id": resolved}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["table", "key", "nonstring_key"])
+async def test_progress_read_rejects_wrong_actual_sdk_record_identity(case: str) -> None:
+    record_id = _record_id_type()
+    table = "consolidation_lease" if case == "table" else "consolidation_progress"
+    key: Any = ScriptedStateStorage._consolidation_record_id("default")
+    if case == "key":
+        key = "synthetic-wrong-key"
+    elif case == "nonstring_key":
+        key = 123
+    storage = ScriptedStateStorage([{"id": record_id(table, key), "brain_id": "default"}])
+
+    with pytest.raises(ValueError, match="checkpoint transport record identity"):
+        await storage.get_consolidation_progress("default")
+
+    assert len(storage.calls) == 1 and storage.calls[0][0].startswith("SELECT")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_id", [True, False])
+async def test_progress_read_preserves_existing_json_or_absent_id_without_sdk(
+    with_id: bool,
+) -> None:
+    row: dict[str, Any] = {"brain_id": "test-brain", "run_id": "synthetic-json-run"}
+    if with_id:
+        row["id"] = "consolidation_progress:json-fixture"
+    storage = ScriptedStateStorage([row])
+
+    assert await storage.get_consolidation_progress() == row
+    assert len(storage.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_progress_read_preserves_absent_checkpoint() -> None:
+    storage = ScriptedStateStorage([])
+    assert await storage.get_consolidation_progress("default") is None
+    assert len(storage.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("nested", ["unknown", "sdk_record"])
+async def test_progress_projection_does_not_coerce_nested_payload_values(nested: str) -> None:
+    from surreal_memory.engine import consolidation_receipts as receipts
+
+    record_id = _record_id_type()
+    row = _native_transport_checkpoint("default")
+    row["id"] = record_id(
+        "consolidation_progress", ScriptedStateStorage._consolidation_record_id("default")
+    )
+    value = object() if nested == "unknown" else record_id("neuron", "synthetic-nested")
+    row["strategy_states"] = {"semantic_link": {"unexpected": value}}
+    result = await ScriptedStateStorage([row]).get_consolidation_progress("default")
+    assert result is not None
+    assert result["strategy_states"]["semantic_link"]["unexpected"] is value
+    assert not receipts.native_handoff_valid(result)
+    with pytest.raises(TypeError):
+        receipts._native_digest(result)
