@@ -2211,9 +2211,10 @@ def test_live_requires_definitive_raw_lease_rows(response, accepted):
 def test_sdk_query_unwraps_valid_statement_result_without_network(rows):
     import asyncio
 
-    from surrealdb.connections.async_ws import AsyncWsSurrealConnection
-
-    connection = object.__new__(AsyncWsSurrealConnection)
+    sdk = pytest.importorskip(
+        "surrealdb.connections.async_ws", reason="optional surrealdb SDK is not installed"
+    )
+    connection = object.__new__(sdk.AsyncWsSurrealConnection)
     connection.query_raw = AsyncMock(return_value={"result": [{"status": "OK", "result": rows}]})
     assert asyncio.run(connection.query("SELECT synthetic")) == rows
     connection.query_raw.assert_awaited_once()
