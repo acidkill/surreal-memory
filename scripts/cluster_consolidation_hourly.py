@@ -9,6 +9,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import signal
 import ssl
 import subprocess
@@ -42,6 +43,8 @@ from surreal_memory.engine.consolidation_receipts import (
     resource_rebaseline_seed,
     select_command,
     success_timestamp,
+    supervision_timeout_resume_matches,
+    supervision_timeout_resume_seed,
     terminal,
     timestamp,
 )
@@ -61,6 +64,23 @@ class DeferredError(BlockedError):
 
 class CapacityError(BlockedError):
     """Runtime capacity requires a graceful, verified child stop."""
+
+
+class SupervisionTimeoutError(BlockedError):
+    """The bounded DB-Pod identity read failed; this is not a capacity finding."""
+
+    def __init__(self, path: str, db_uid: str | None) -> None:
+        super().__init__("database pod supervision read timed out")
+        self.provenance = {
+            "version": 1,
+            "guard": "database_pod",
+            "method": "GET",
+            "path": path,
+            "timeout_seconds": 15,
+            "observed_at": utcnow(),
+            "db_uid": db_uid,
+            "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        }
 
 
 def utcnow() -> str:
@@ -240,7 +260,12 @@ class Safety:
         self.policy_sha256 = checkpoint_hash({"memory_limit_bytes": self.memory_limit_bytes})
 
     def sample(self, initial: bool = False) -> None:
-        pod = self.api.request(self.api.path("pods/" + os.environ["DB_POD"]))
+        path = self.api.path("pods/" + os.environ["DB_POD"])
+        try:
+            pod = self.api.request(path)
+        except TimeoutError as exc:
+            db_uid = self.baseline[0][0] if self.baseline is not None else None
+            raise SupervisionTimeoutError(path, db_uid) from exc
         containers = pod.get("spec", {}).get("containers", [])
         limits = [
             c.get("resources", {}).get("limits", {}).get("memory")
@@ -738,13 +763,153 @@ async def admit_capacity_stop(
     return await _admit_reviewed_resume(api, storage, safety, args, lease_loss=False)
 
 
+async def admit_supervision_timeout(
+    api: Kubernetes, storage: Any, safety: Safety, args: argparse.Namespace
+) -> int:
+    return await _admit_reviewed_resume(
+        api, storage, safety, args, lease_loss=False, supervision_timeout=True
+    )
+
+
+async def verify_supervision_timeout_resume(
+    api: Kubernetes, storage: Any, safety: Safety, receipt: dict[str, Any], cp: dict[str, Any]
+) -> None:
+    from surreal_memory.engine.consolidation_receipts import _native_digest
+
+    if not supervision_timeout_resume_matches(receipt, cp):
+        raise BlockedError("supervision timeout resume seed is invalid")
+    audit = receipt["supervision_timeout_resume"]
+    approval = audit["approval"]
+    _verify_reviewed_resume_runtime(
+        api, safety, receipt, approval, label="supervision timeout resume"
+    )
+    await _verify_handoff_brain(storage, approval)
+    current, leases = await live(storage)
+    if (
+        leases != []
+        or _native_digest(current) != approval["native_checkpoint_sha256"]
+        or checkpoint_hash(current) != approval["checkpoint_sha256"]
+    ):
+        raise BlockedError("supervision timeout checkpoint or lease changed")
+    incident = approval["incident_evidence"]
+    if incident["path"] != api.path("pods/" + os.environ["DB_POD"]):
+        raise BlockedError("supervision timeout database endpoint changed")
+    previous = json.loads(audit["previous_raw"])
+    if api.previous_log(previous, expected_exit_code=2) != audit["previous_log"]:
+        raise BlockedError("supervision timeout previous log changed")
+    pod = api.request(api.path("pods/" + previous["pod_name"]))
+    specs, statuses = (
+        pod.get("spec", {}).get("containers", []),
+        pod.get("status", {}).get("containerStatuses", []),
+    )
+    if (
+        pod.get("metadata", {}).get("uid") != previous["pod_uid"]
+        or len(specs) != 1
+        or len(statuses) != 1
+        or not specs[0].get("image", "").endswith("@" + approval["previous_image_digest"])
+        or not statuses[0].get("imageID", "").endswith(approval["previous_image_digest"])
+        or statuses[0].get("restartCount") != 0
+    ):
+        raise BlockedError("supervision timeout previous runtime changed")
+    db_env = [e.get("value") for e in specs[0].get("env", []) if e.get("name") == "DB_POD"]
+    if db_env != [os.environ["DB_POD"]]:
+        raise BlockedError("supervision timeout previous database target differs")
+    old_runner = (
+        (previous.get("supervision_timeout") or {}).get("runner_sha256")
+        if previous.get("reason") != "TimeoutError"
+        else incident["previous_runner_sha256"]
+    )
+    if not isinstance(old_runner, str) or re.fullmatch(r"[0-9a-f]{64}", old_runner) is None:
+        raise BlockedError("supervision timeout previous runner identity missing")
+    volumes = pod.get("spec", {}).get("volumes", [])
+    if (
+        len(
+            [
+                v
+                for v in volumes
+                if v.get("configMap", {}).get("name")
+                == "smem-consolidate-hourly-runner-" + old_runner[:8]
+            ]
+        )
+        != 1
+    ):
+        raise BlockedError("supervision timeout previous runner source differs")
+    if audit.get("terminal_predecessor") is not None:
+        parent = audit["terminal_predecessor"]
+        log = api.previous_log(parent)
+        markers = [line[len(MARKER) :] for line in log.splitlines() if line.startswith(MARKER)]
+        if len(markers) != 1:
+            raise BlockedError("supervision timeout terminal predecessor marker missing")
+        try:
+            terminal_parent = json.loads(markers[0])
+        except ValueError as exc:
+            raise BlockedError("supervision timeout terminal predecessor marker malformed") from exc
+        if (
+            terminal_parent.get("phase") != "terminal"
+            or checkpoint_hash(terminal_parent) != parent["receipt_sha256"]
+            or any(
+                terminal_parent.get(key) != parent.get(key)
+                for key in (
+                    "job_name",
+                    "job_uid",
+                    "pod_name",
+                    "pod_uid",
+                    "status",
+                    "cli_rc",
+                    "run_id",
+                    "checkpoint_sha256",
+                    "finished_at",
+                )
+            )
+        ):
+            raise BlockedError("supervision timeout terminal predecessor changed")
+        return
+    state = api.state()
+    parent_raw = state.get("data", {}).get(audit["predecessor_archive_key"])
+    try:
+        parent = json.loads(parent_raw)
+    except (TypeError, ValueError) as exc:
+        raise BlockedError("supervision timeout predecessor archive missing") from exc
+    suffix = audit["predecessor_archive_key"].rsplit("_", 1)[-1][:-5]
+    if (
+        checkpoint_hash(parent) != suffix
+        or parent.get("run_id") != previous["before_run_id"]
+        or parent.get("checkpoint_sha256") != previous["before_sha256"]
+    ):
+        raise BlockedError("supervision timeout predecessor archive changed")
+
+
 async def _admit_reviewed_resume(
-    api: Kubernetes, storage: Any, safety: Safety, args: argparse.Namespace, *, lease_loss: bool
+    api: Kubernetes,
+    storage: Any,
+    safety: Safety,
+    args: argparse.Namespace,
+    *,
+    lease_loss: bool,
+    supervision_timeout: bool = False,
 ) -> int:
     """Archive one failed receipt and CAS a reviewed resume intent; never launch a CLI."""
-    label = "lease loss resume" if lease_loss else "capacity resume"
-    verifier = verify_lease_loss_resume if lease_loss else verify_capacity_resume
-    prefix = "lease_loss_resume_" if lease_loss else "capacity_resume_"
+    label = (
+        "supervision timeout resume"
+        if supervision_timeout
+        else "lease loss resume"
+        if lease_loss
+        else "capacity resume"
+    )
+    verifier = (
+        verify_supervision_timeout_resume
+        if supervision_timeout
+        else verify_lease_loss_resume
+        if lease_loss
+        else verify_capacity_resume
+    )
+    prefix = (
+        "supervision_timeout_resume_"
+        if supervision_timeout
+        else "lease_loss_resume_"
+        if lease_loss
+        else "capacity_resume_"
+    )
     cm = api.state()
     raw = cm["data"]["receipt.json"]
     previous = json.loads(raw)
@@ -752,25 +917,33 @@ async def _admit_reviewed_resume(
     if len(approval_raw.encode()) > 128 * 1024:
         raise BlockedError(f"{label} approval is oversized")
     approval = json.loads(approval_raw)
+    if supervision_timeout and cm.get("metadata", {}).get("resourceVersion") != approval.get(
+        "state_resource_version"
+    ):
+        raise BlockedError("supervision timeout state changed since approval")
     cp, leases = await live(storage)
-    if leases:
+    if leases or (supervision_timeout and leases != []):
         raise BlockedError(f"{label} requires zero active leases")
     identity = api.identity()
     api.no_other_jobs(identity["job_uid"])
     log = (
         api.previous_log(previous, expected_exit_code=2)
-        if lease_loss
+        if lease_loss or supervision_timeout
         else capacity_predecessor_log(api, previous, approval)
     )
     observation_raw = cm["data"].get("last_observation.json")
     observation_log = (
         api.previous_log(json.loads(observation_raw), expected_exit_code=2)
-        if observation_raw is not None and not lease_loss
+        if observation_raw is not None and not lease_loss and not supervision_timeout
         else None
     )
     safety.sample(initial=True)
     seed = (
-        lease_loss_resume_seed(
+        supervision_timeout_resume_seed(
+            raw, log, cp, approval=approval, observation_raw=observation_raw
+        )
+        if supervision_timeout
+        else lease_loss_resume_seed(
             raw,
             log,
             cp,
@@ -798,9 +971,13 @@ async def _admit_reviewed_resume(
     if key in cm["data"]:
         raise BlockedError(f"{label} archive already exists")
     data = dict(cm["data"], **{key: canonical(seed)})
-    if lease_loss and observation_raw is not None:
+    if (lease_loss or supervision_timeout) and observation_raw is not None:
         observation_key = (
-            "lease_loss_observation_"
+            (
+                "supervision_timeout_observation_"
+                if supervision_timeout
+                else "lease_loss_observation_"
+            )
             + hashlib.sha256(observation_raw.encode()).hexdigest()
             + ".json"
         )
@@ -823,7 +1000,13 @@ async def _admit_reviewed_resume(
     except Exception as exc:
         raise BlockedError(f"{label} outcome uncertain; inspect state without retry") from exc
     print(
-        ("HOURLY_LEASE_LOSS_ADMISSION " if lease_loss else "HOURLY_CAPACITY_ADMISSION ")
+        (
+            "HOURLY_SUPERVISION_TIMEOUT_ADMISSION "
+            if supervision_timeout
+            else "HOURLY_LEASE_LOSS_ADMISSION "
+            if lease_loss
+            else "HOURLY_CAPACITY_ADMISSION "
+        )
         + canonical(
             {
                 "checkpoint_sha256": checkpoint_hash(cp),
@@ -1201,11 +1384,23 @@ async def run(api: Kubernetes, storage: Any, safety: Safety) -> int:
             if cm["data"].get(archive) != canonical(receipt):
                 raise BlockedError("completed semantic handoff archive missing or stale")
             await verify_completed_semantic_handoff(api, storage, safety, receipt, cp)
+        supervision_authorization = (
+            receipt if receipt.get("source") == "operator_supervision_timeout_resume" else None
+        )
+        if supervision_authorization is not None:
+            archive = "supervision_timeout_resume_" + checkpoint_hash(receipt) + ".json"
+            if cm["data"].get(archive) != canonical(receipt):
+                raise BlockedError("supervision timeout admission archive missing or stale")
+            await verify_supervision_timeout_resume(api, storage, safety, receipt, cp)
         failed_runtime = receipt.get("source") == "operator_failed_runtime_resume"
         lease_authorization = (
             receipt if receipt.get("source") == "operator_lease_loss_resume" else None
         )
-        runtime_resume = failed_runtime or lease_authorization is not None
+        runtime_resume = (
+            failed_runtime
+            or lease_authorization is not None
+            or supervision_authorization is not None
+        )
         capacity_authorization = (
             receipt if receipt.get("source") == "operator_capacity_resume" else None
         )
@@ -1254,6 +1449,7 @@ async def run(api: Kubernetes, storage: Any, safety: Safety) -> int:
             runtime_resume
             or capacity_authorization is not None
             or handoff_authorization is not None
+            or supervision_authorization is not None
         ):
             safety.sample(initial=True)
             api.no_other_jobs(api.identity()["job_uid"])
@@ -1261,7 +1457,57 @@ async def run(api: Kubernetes, storage: Any, safety: Safety) -> int:
         capacity_seed_sha256 = (
             checkpoint_hash(receipt) if capacity_authorization is not None else None
         )
+        terminal_parent = None
+        parent_fields = (
+            "job_name",
+            "job_uid",
+            "pod_name",
+            "pod_uid",
+            "status",
+            "cli_rc",
+            "run_id",
+            "checkpoint_sha256",
+            "finished_at",
+        )
+        if (
+            receipt.get("phase") == "terminal"
+            and all(key in receipt for key in parent_fields)
+            and all(
+                isinstance(receipt.get(key), str) and receipt[key]
+                for key in parent_fields
+                if key != "cli_rc"
+            )
+            and type(receipt.get("cli_rc")) is int
+            and timestamp(receipt.get("finished_at")) is not None
+        ):
+            terminal_parent = {key: receipt[key] for key in parent_fields}
+            terminal_parent.update(
+                version=1,
+                receipt_sha256=checkpoint_hash(receipt),
+                before_sha256=checkpoint_hash(cp),
+                options_fingerprint=cp["options_fingerprint"],
+                reference_time=cp["reference_time"],
+                scope_sha256=checkpoint_hash(
+                    {
+                        key: cp.get(key)
+                        for key in (
+                            "brain_id",
+                            "options_fingerprint",
+                            "requested_strategies",
+                            "engine_version",
+                            "schema_version",
+                            "format_version",
+                        )
+                    }
+                ),
+            )
         receipt = {
+            **({"terminal_predecessor": terminal_parent} if terminal_parent is not None else {}),
+            **(
+                {"supervision_timeout_resume_sha256": checkpoint_hash(supervision_authorization)}
+                if supervision_authorization is not None
+                else {}
+            ),
             **({"failed_runtime_resume_sha256": resume_seed_sha256} if failed_runtime else {}),
             **(
                 {"lease_loss_resume_sha256": checkpoint_hash(lease_authorization)}
@@ -1294,6 +1540,7 @@ async def run(api: Kubernetes, storage: Any, safety: Safety) -> int:
             runtime_resume
             or capacity_authorization is not None
             or handoff_authorization is not None
+            or supervision_authorization is not None
         ):
             safety.sample(initial=True)
             api.no_other_jobs(api.identity()["job_uid"])
@@ -1303,6 +1550,10 @@ async def run(api: Kubernetes, storage: Any, safety: Safety) -> int:
             await verify_lease_loss_resume(api, storage, safety, lease_authorization, cp)
         if handoff_authorization is not None:
             await verify_completed_semantic_handoff(api, storage, safety, handoff_authorization, cp)
+        if supervision_authorization is not None:
+            await verify_supervision_timeout_resume(
+                api, storage, safety, supervision_authorization, cp
+            )
         awaiting_native_claim = runtime_resume
         native_owner = None
         observed_lease_owner = None
@@ -1323,6 +1574,11 @@ async def run(api: Kubernetes, storage: Any, safety: Safety) -> int:
                         safety.sample()
                     except CapacityError as exc:
                         capacity_error = exc
+                    except SupervisionTimeoutError as exc:
+                        receipt["supervision_timeout"] = dict(
+                            exc.provenance, child_was_running=child.poll() is None
+                        )
+                        raise
                     current, active = await live(storage)
                     pending = False
                     if runtime_resume:
@@ -1392,7 +1648,11 @@ async def run(api: Kubernetes, storage: Any, safety: Safety) -> int:
                 receipt["cli_rc"] = rc
             finally:
                 if child is not None:
-                    stop(child)
+                    graceful = stop(child)
+                    if "supervision_timeout" in receipt:
+                        receipt["supervision_timeout"].update(
+                            stop_graceful=graceful, actual_child_rc=child.returncode
+                        )
                 for sig, handler in previous.items():
                     signal.signal(sig, handler)
                 output.seek(0)
@@ -1531,6 +1791,7 @@ async def main(argv: list[str] | None = None) -> int:
     )
     operator.add_argument("--admit-lease-loss-resume", action="store_true")
     operator.add_argument("--admit-completed-semantic-handoff", action="store_true")
+    operator.add_argument("--admit-supervision-timeout", action="store_true")
     parser.add_argument("--approval-file", help="Reviewed exact-state operator admission JSON")
     parser.add_argument("--confirm-run-id")
     parser.add_argument("--checkpoint-sha256")
@@ -1551,6 +1812,7 @@ async def main(argv: list[str] | None = None) -> int:
         args.admit_capacity_stop
         or args.admit_lease_loss_resume
         or args.admit_completed_semantic_handoff
+        or args.admit_supervision_timeout
     ) != (args.approval_file is not None):
         parser.error("operator admission requires its mode and --approval-file")
     api = Kubernetes()
@@ -1561,6 +1823,7 @@ async def main(argv: list[str] | None = None) -> int:
         or args.admit_capacity_stop
         or args.admit_lease_loss_resume
         or args.admit_completed_semantic_handoff
+        or args.admit_supervision_timeout
     ):
         # A normal storage factory initializes schema and can migrate brain data.
         # The operator path must only authenticate/select the existing database.
@@ -1570,6 +1833,8 @@ async def main(argv: list[str] | None = None) -> int:
         storage.set_brain("default")
         try:
             await storage._reconnect()
+            if args.admit_supervision_timeout:
+                return await admit_supervision_timeout(api, storage, safety, args)
             if args.admit_completed_semantic_handoff:
                 return await admit_completed_semantic_handoff(api, storage, safety, args)
             if args.admit_capacity_stop:
