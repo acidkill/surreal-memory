@@ -555,6 +555,549 @@ async def test_signal_stops_child_and_persists_blocked():
 
 
 @pytest.mark.asyncio
+async def test_running_database_pod_get_timeout_preserves_provenance(monkeypatch):
+    import datetime
+
+    monkeypatch.setenv("DB_POD", "db")
+    cp = checkpoint()
+    state = receipt(cp, "bootstrap")
+    cm = {"metadata": {"resourceVersion": "1"}, "data": {"receipt.json": json.dumps(state)}}
+    api = MagicMock()
+    api.state.return_value = cm
+    api.cas.return_value = cm
+    api.identity.return_value = {}
+    api.path.side_effect = lambda path: "/api/" + path
+    api.request.side_effect = TimeoutError("synthetic timeout")
+    storage = SimpleNamespace(
+        get_consolidation_progress=AsyncMock(return_value=cp), _query=AsyncMock(return_value=[])
+    )
+    safety = hourly.Safety(api)
+    safety.baseline = state["resource_baseline"]
+    sample = safety.sample
+    child = MagicMock()
+    child.poll.side_effect = [None, None, None, 130, 130]
+    child.wait.return_value = 130
+    child.returncode = 130
+    with (
+        patch.object(hourly, "datetime") as clock,
+        patch.object(hourly.subprocess, "Popen", return_value=child),
+        patch.object(hourly.asyncio, "sleep", new_callable=AsyncMock),
+        patch.object(
+            safety, "sample", side_effect=lambda initial=False: None if initial else sample()
+        ),
+    ):
+        clock.now.return_value = datetime.datetime(2026, 11, 5, 14, tzinfo=hourly.UTC)
+        clock.fromisoformat.side_effect = datetime.datetime.fromisoformat
+        assert await hourly.run(api, storage, safety) == 2
+    api.request.assert_called_once_with("/api/pods/db")
+    child.send_signal.assert_called_once_with(hourly.signal.SIGINT)
+    final = api.cas.call_args.args[1]
+    assert final["phase"] == "blocked"
+    assert final["cli_rc"] == 130
+    assert final["reason"] == "database pod supervision read timed out"
+    proof = final["supervision_timeout"]
+    assert proof["path"] == "/api/pods/db"
+    assert proof["child_was_running"] is True
+    assert proof["stop_graceful"] is True
+    assert proof["actual_child_rc"] == 130
+
+
+def test_prometheus_timeout_is_not_database_pod_timeout(monkeypatch):
+    monkeypatch.setenv("DB_POD", "db")
+    monkeypatch.setenv("PROMETHEUS_URL", "http://prometheus.invalid")
+    monkeypatch.setenv("PROM_QUERY_CURRENT", "current")
+    api = MagicMock()
+    api.request.return_value = {
+        "metadata": {"uid": "uid"},
+        "spec": {
+            "containers": [{"name": "surrealdb", "resources": {"limits": {"memory": "16Gi"}}}]
+        },
+        "status": {
+            "phase": "Running",
+            "containerStatuses": [{"name": "db", "ready": True, "restartCount": 0}],
+        },
+    }
+    with patch.object(hourly.urllib.request, "urlopen", side_effect=TimeoutError("metric")):
+        with pytest.raises(TimeoutError, match="metric"):
+            hourly.Safety(api).sample()
+
+
+def test_database_pod_get_timeout_carries_exact_provenance(monkeypatch):
+    monkeypatch.setenv("DB_POD", "db")
+    api = MagicMock()
+    api.path.return_value = "/api/pods/db"
+    api.request.side_effect = TimeoutError("synthetic timeout")
+    with pytest.raises(hourly.SupervisionTimeoutError) as caught:
+        hourly.Safety(api).sample()
+    assert str(caught.value) == "database pod supervision read timed out"
+    provenance = caught.value.provenance
+    assert {
+        key: provenance[key] for key in ("version", "guard", "method", "path", "timeout_seconds")
+    } == {
+        "version": 1,
+        "guard": "database_pod",
+        "method": "GET",
+        "path": "/api/pods/db",
+        "timeout_seconds": 15,
+    }
+    assert hourly.timestamp(provenance["observed_at"]) is not None
+    api.request.assert_called_once_with("/api/pods/db")
+
+
+def supervision_timeout_evidence():
+    from surreal_memory.engine import consolidation_receipts as receipts
+    from tests.unit.test_capacity_stop_admission import evidence
+
+    _, _, cp, approval = evidence()
+    approval["resource_baseline"][0][1] = '[["surrealdb","same-container",0]]'
+    cp["requested_strategies"] = sorted(cp["requested_strategies"])
+    cp["work_progress_seq"] = 822
+    cp["native_handoff"]["payload_sha256"] = receipts.native_payload_hash(cp)
+    parent = {"run_id": "completed-semantic-run", "checkpoint_sha256": "b" * 64}
+    previous = {
+        "phase": "blocked",
+        "cli_rc": 130,
+        "reason": "TimeoutError",
+        "before_resources": approval["resource_baseline"],
+        "before_run_id": "completed-semantic-run",
+        "before_sha256": "b" * 64,
+        "completed_semantic_handoff_sha256": receipts.checkpoint_hash(parent),
+        "pod_name": "failed-pod",
+        "pod_uid": "failed-pod-uid",
+        "job_name": "failed-job",
+        "job_uid": "failed-job-uid",
+        "started_at": "2026-01-01T00:30:00Z",
+        "blocked_at": "2026-01-01T01:00:00Z",
+        "cli_output_tail": "",
+        "cli_output_sha256": hourly.hashlib.sha256(b"").hexdigest(),
+    }
+    raw = receipts.canonical(previous)
+    log = "HOURLY_BLOCKED TimeoutError\n"
+    path = "/api/v1/namespaces/test/pods/db"
+    record = {
+        "method": "GET",
+        "path": path,
+        "started_at": "2026-01-01T00:59:30Z",
+        "finished_at": "2026-01-01T00:59:45Z",
+        "raw_sha256": "e" * 64,
+    }
+    incident = {
+        "version": 1,
+        "guard": "database_pod",
+        "method": "GET",
+        "path": path,
+        "timeout_seconds": 15,
+        "job_uid": previous["job_uid"],
+        "pod_uid": previous["pod_uid"],
+        "db_uid": approval["resource_baseline"][0][0],
+        "observed_at": record["finished_at"],
+        "legacy_fault_record": record,
+        "legacy_fault_record_sha256": receipts.checkpoint_hash(record),
+        "previous_runner_sha256": "7d66fb20ad6b935cf848c2819a4313896c3eeeb37045586b9759481e5bd3b47e",
+        "previous_getter_sha256": "d1b0de663e958624fbaf86fdfd3b1e388a776e1b70c4df89abc05d3ff48af8f9",
+    }
+    approval.update(
+        version=1,
+        kind="supervision_timeout_resume",
+        previous_receipt_raw_sha256=hourly.hashlib.sha256(raw.encode()).hexdigest(),
+        previous_log_sha256=hourly.hashlib.sha256(log.encode()).hexdigest(),
+        observation_raw_sha256=None,
+        checkpoint_sha256=receipts.checkpoint_hash(cp),
+        native_checkpoint_sha256=receipts._native_digest(cp),
+        identity_sha256=receipts._native_digest(receipts._native_scope(cp)),
+        states_sha256=receipts.checkpoint_hash(cp["strategy_states"]),
+        counters_sha256=receipts.checkpoint_hash(cp["counters"]),
+        brain_uuid="synthetic-brain-uuid",
+        brain_config_sha256="f" * 64,
+        previous_image_digest="sha256:" + "d" * 64,
+        state_resource_version="1",
+        incident_evidence=incident,
+        incident_evidence_sha256=receipts.checkpoint_hash(incident),
+    )
+    return raw, log, cp, approval
+
+
+def test_legacy_supervision_timeout_requires_bound_fault_record():
+    import copy
+
+    from surreal_memory.engine import consolidation_receipts as receipts
+
+    raw, log, cp, approval = supervision_timeout_evidence()
+    before = copy.deepcopy(cp)
+    seed = receipts.supervision_timeout_resume_seed(raw, log, cp, approval=approval)
+    assert cp == before
+    assert seed["source"] == "operator_supervision_timeout_resume"
+    assert seed["cli_rc"] is None
+    assert seed["next_action"] == "resume"
+    assert json.loads(raw)["cli_rc"] == 130
+    assert receipts.supervision_timeout_resume_matches(seed, cp)
+    assert receipts.select_command(seed, cp, None) == [
+        "smem",
+        "consolidate",
+        "--brain",
+        "default",
+        "--resume",
+    ]
+    with pytest.raises(receipts.BlockedError):
+        receipts.select_command(json.loads(raw), cp, log)
+    altered = copy.deepcopy(approval)
+    altered["incident_evidence"].pop("legacy_fault_record")
+    altered["incident_evidence_sha256"] = receipts.checkpoint_hash(altered["incident_evidence"])
+    with pytest.raises(receipts.BlockedError):
+        receipts.supervision_timeout_resume_seed(raw, log, cp, approval=altered)
+
+
+@pytest.mark.parametrize("fault", ["receipt", "log", "checkpoint", "incident_path", "old_runner"])
+def test_supervision_timeout_rejects_changed_evidence(fault):
+    from surreal_memory.engine import consolidation_receipts as receipts
+
+    raw, log, cp, approval = supervision_timeout_evidence()
+    if fault == "receipt":
+        raw += " "
+    elif fault == "log":
+        log += "changed\n"
+    elif fault == "checkpoint":
+        cp["run_id"] = "changed-run"
+    else:
+        incident = approval["incident_evidence"]
+        if fault == "incident_path":
+            incident["legacy_fault_record"]["path"] = "/api/v1/namespaces/test/pods/other"
+            incident["legacy_fault_record_sha256"] = receipts.checkpoint_hash(
+                incident["legacy_fault_record"]
+            )
+        else:
+            incident["previous_runner_sha256"] = "0" * 64
+        approval["incident_evidence_sha256"] = receipts.checkpoint_hash(incident)
+    with pytest.raises(receipts.BlockedError):
+        receipts.supervision_timeout_resume_seed(raw, log, cp, approval=approval)
+
+
+def test_typed_supervision_timeout_requires_graceful_actual_130():
+    from surreal_memory.engine import consolidation_receipts as receipts
+
+    raw, _, cp, approval = supervision_timeout_evidence()
+    previous = json.loads(raw)
+    incident = approval["incident_evidence"]
+    common = ("version", "guard", "method", "path", "timeout_seconds", "observed_at", "db_uid")
+    previous["reason"] = "database pod supervision read timed out"
+    previous["supervision_timeout"] = {
+        **{key: incident[key] for key in common},
+        "child_was_running": True,
+        "stop_graceful": True,
+        "actual_child_rc": 130,
+    }
+    raw = receipts.canonical(previous)
+    log = "HOURLY_BLOCKED database pod supervision read timed out\n"
+    approval["previous_receipt_raw_sha256"] = hourly.hashlib.sha256(raw.encode()).hexdigest()
+    approval["previous_log_sha256"] = hourly.hashlib.sha256(log.encode()).hexdigest()
+    seed = receipts.supervision_timeout_resume_seed(raw, log, cp, approval=approval)
+    assert receipts.supervision_timeout_resume_matches(seed, cp)
+    previous["supervision_timeout"]["stop_graceful"] = False
+    raw = receipts.canonical(previous)
+    approval["previous_receipt_raw_sha256"] = hourly.hashlib.sha256(raw.encode()).hexdigest()
+    with pytest.raises(receipts.BlockedError):
+        receipts.supervision_timeout_resume_seed(raw, log, cp, approval=approval)
+
+
+@pytest.mark.parametrize("status", ["completed", "paused"])
+def test_typed_timeout_accepts_terminal_predecessor_with_valid_lineage(status):
+    from surreal_memory.engine import consolidation_receipts as receipts
+
+    raw, _, cp, approval = supervision_timeout_evidence()
+    previous = json.loads(raw)
+    incident = approval["incident_evidence"]
+    common = ("version", "guard", "method", "path", "timeout_seconds", "observed_at", "db_uid")
+    previous.pop("completed_semantic_handoff_sha256")
+    previous["reason"] = "database pod supervision read timed out"
+    previous["started_at"] = "2026-01-01T00:30:00Z"
+    previous["before_run_id"] = cp["run_id"] if status == "paused" else "earlier-all-run"
+    previous["supervision_timeout"] = {
+        **{key: incident[key] for key in common},
+        "child_was_running": True,
+        "stop_graceful": True,
+        "actual_child_rc": 130,
+    }
+    parent = {
+        "version": 1,
+        "receipt_sha256": "1" * 64,
+        "job_name": "earlier-job",
+        "job_uid": "earlier-job-uid",
+        "pod_name": "earlier-pod",
+        "pod_uid": "earlier-pod-uid",
+        "status": status,
+        "cli_rc": 1 if status == "paused" else 0,
+        "run_id": previous["before_run_id"],
+        "checkpoint_sha256": "2" * 64,
+        "finished_at": "2026-01-01T00:20:00Z",
+        "before_sha256": previous["before_sha256"],
+        "options_fingerprint": cp["options_fingerprint"],
+        "reference_time": cp["reference_time"] if status == "paused" else "2025-12-31T00:00:00Z",
+        "scope_sha256": receipts.checkpoint_hash(receipts._native_scope(cp)),
+    }
+    previous["terminal_predecessor"] = parent
+    raw = receipts.canonical(previous)
+    log = "HOURLY_BLOCKED database pod supervision read timed out\n"
+    approval["previous_receipt_raw_sha256"] = hourly.hashlib.sha256(raw.encode()).hexdigest()
+    approval["previous_log_sha256"] = hourly.hashlib.sha256(log.encode()).hexdigest()
+    seed = receipts.supervision_timeout_resume_seed(raw, log, cp, approval=approval)
+    assert receipts.supervision_timeout_resume_matches(seed, cp)
+    parent["run_id"] = "changed-run"
+    raw = receipts.canonical(previous)
+    approval["previous_receipt_raw_sha256"] = hourly.hashlib.sha256(raw.encode()).hexdigest()
+    with pytest.raises(receipts.BlockedError):
+        receipts.supervision_timeout_resume_seed(raw, log, cp, approval=approval)
+
+
+def supervision_operator_fixture(tmp_path, monkeypatch):
+    import copy
+    import importlib.metadata
+    from dataclasses import dataclass
+
+    from surreal_memory.engine import consolidation_receipts as receipts
+
+    raw, log, cp, approval = supervision_timeout_evidence()
+    monkeypatch.setenv("DB_POD", "db")
+    monkeypatch.setattr(
+        importlib.metadata,
+        "version",
+        lambda name: {"numpy": "1.2.3", "surreal-memory": "3.12.2"}[name],
+    )
+
+    @dataclass
+    class Config:
+        value: int = 1
+
+    approval["brain_config_sha256"] = receipts._native_digest({"value": 1})
+    observation = receipts.canonical({"outcome": "blocked", "reason": "TimeoutError"})
+    approval["observation_raw_sha256"] = hourly.hashlib.sha256(observation.encode()).hexdigest()
+    approval_file = tmp_path / "approval.json"
+    approval_file.write_text(json.dumps(approval))
+    parent = {"run_id": "completed-semantic-run", "checkpoint_sha256": "b" * 64}
+    parent_key = "completed_semantic_handoff_" + receipts.checkpoint_hash(parent) + ".json"
+    cm = {
+        "metadata": {"resourceVersion": "1"},
+        "data": {
+            "receipt.json": raw,
+            "last_observation.json": observation,
+            parent_key: receipts.canonical(parent),
+        },
+    }
+    api = MagicMock()
+    api.state.side_effect = lambda: copy.deepcopy(cm)
+    api.identity.return_value = {
+        "pod_name": "operator",
+        "pod_uid": "operator-pod",
+        "job_uid": "operator-job",
+    }
+    api.path.side_effect = lambda path: "/api/v1/namespaces/test/" + path
+    api.previous_log.return_value = log
+    digest = approval["previous_image_digest"]
+
+    def pod(path):
+        name = path.rsplit("/", 1)[-1]
+        return {
+            "metadata": {"uid": "operator-pod" if name == "operator" else "failed-pod-uid"},
+            "spec": {
+                "containers": [
+                    {"image": "registry/smem@" + digest, "env": [{"name": "DB_POD", "value": "db"}]}
+                ],
+                "volumes": [{"configMap": {"name": "smem-consolidate-hourly-runner-7d66fb20"}}],
+            },
+            "status": {"containerStatuses": [{"imageID": digest, "restartCount": 0}]},
+        }
+
+    api.request.side_effect = pod
+
+    def cas(old, decision, observation=None):
+        assert old["metadata"]["resourceVersion"] == cm["metadata"]["resourceVersion"]
+        cm["data"] = {**old["data"], "receipt.json": receipts.canonical(decision)}
+        cm["metadata"]["resourceVersion"] = str(int(cm["metadata"]["resourceVersion"]) + 1)
+        return copy.deepcopy(cm)
+
+    api.cas.side_effect = cas
+    storage = SimpleNamespace(
+        get_consolidation_progress=AsyncMock(return_value=cp),
+        get_brain=AsyncMock(
+            return_value=SimpleNamespace(name="default", id=approval["brain_uuid"], config=Config())
+        ),
+        _query=AsyncMock(return_value=[]),
+    )
+    safety = MagicMock(
+        baseline=approval["resource_baseline"],
+        policy_sha256=approval["resource_policy_sha256"],
+        memory_limit_bytes=approval["memory_limit_bytes"],
+    )
+    return (
+        api,
+        storage,
+        safety,
+        SimpleNamespace(approval_file=str(approval_file)),
+        cm,
+        cp,
+        observation,
+    )
+
+
+@pytest.mark.asyncio
+async def test_supervision_operator_admission_and_next_run(tmp_path, monkeypatch):
+    import copy
+
+    from surreal_memory.engine import consolidation_receipts as receipts
+
+    api, storage, safety, args, cm, cp, observation = supervision_operator_fixture(
+        tmp_path, monkeypatch
+    )
+    before = copy.deepcopy(cp)
+    previous_raw = cm["data"]["receipt.json"]
+    with patch.object(hourly.subprocess, "Popen") as launch:
+        assert await hourly.admit_supervision_timeout(api, storage, safety, args) == 0
+    launch.assert_not_called()
+    assert cp == before
+    seed = json.loads(cm["data"]["receipt.json"])
+    archive = "supervision_timeout_resume_" + receipts.checkpoint_hash(seed) + ".json"
+    assert cm["data"][archive] == receipts.canonical(seed)
+    assert seed["supervision_timeout_resume"]["previous_raw"] == previous_raw
+    assert json.loads(previous_raw)["cli_rc"] == 130
+    assert seed["supervision_timeout_resume"]["observation_raw"] == observation
+    assert "last_observation.json" not in cm["data"]
+    with pytest.raises(hourly.BlockedError):
+        await hourly.admit_supervision_timeout(api, storage, safety, args)
+    child = MagicMock(returncode=1)
+    child.poll.return_value = child.wait.return_value = 1
+    after = copy.deepcopy(cp)
+    after["owner_token"] = "resumed-owner"  # noqa: S105 - synthetic test identity.
+    after["native_handoff"] = receipts.prepare_native_handoff(cp, after, fresh=False)
+
+    def launch_child(*args, **kwargs):
+        storage.get_consolidation_progress.return_value = after
+        return child
+
+    with patch.object(hourly.subprocess, "Popen", side_effect=launch_child) as launch:
+        assert await hourly.run(api, storage, safety) == 0
+    launch.assert_called_once()
+    assert launch.call_args.args[0] == [
+        "smem",
+        "consolidate",
+        "--brain",
+        "default",
+        "--resume",
+        "--strategy-timeout",
+        "1800",
+        "--total-timeout",
+        "3000",
+    ]
+    final = json.loads(cm["data"]["receipt.json"])
+    assert final["cli_rc"] == 1 and final["status"] == "paused"
+    assert final["supervision_timeout_resume_sha256"] == receipts.checkpoint_hash(seed)
+    assert cm["data"][archive] == receipts.canonical(seed)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fault", ["lease", "other_job", "oom", "archive", "cas_conflict", "readback"]
+)
+async def test_supervision_operator_fails_closed(tmp_path, monkeypatch, fault):
+    api, storage, safety, args, cm, cp, _ = supervision_operator_fixture(tmp_path, monkeypatch)
+    old_raw = cm["data"]["receipt.json"]
+    if fault == "lease":
+        storage._query.return_value = [{"owner_token": "other"}]
+    elif fault == "other_job":
+        api.no_other_jobs.side_effect = hourly.BlockedError("other active job")
+    elif fault == "oom":
+        safety.sample.side_effect = hourly.BlockedError("new OOM")
+    elif fault == "archive":
+        key = next(key for key in cm["data"] if key.startswith("completed_semantic_handoff_"))
+        cm["data"][key] = "{}"
+    elif fault == "cas_conflict":
+        api.cas.side_effect = RuntimeError("conflicting resource version")
+    else:
+        original = api.cas.side_effect
+
+        def bad_readback(*args):
+            result = original(*args)
+            cm["data"]["unexpected"] = "changed"
+            return result
+
+        api.cas.side_effect = bad_readback
+    with patch.object(hourly.subprocess, "Popen") as launch:
+        with pytest.raises(hourly.BlockedError):
+            await hourly.admit_supervision_timeout(api, storage, safety, args)
+    launch.assert_not_called()
+    if fault not in {"readback", "cas_conflict"}:
+        api.cas.assert_not_called()
+    else:
+        assert api.cas.call_count == 1
+    if fault != "readback":
+        assert cm["data"]["receipt.json"] == old_raw
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["completed", "paused"])
+async def test_typed_terminal_predecessor_verified_from_real_marker(tmp_path, monkeypatch, status):
+    from surreal_memory.engine import consolidation_receipts as receipts
+
+    api, storage, safety, args, cm, cp, _ = supervision_operator_fixture(tmp_path, monkeypatch)
+    approval = json.loads(Path(args.approval_file).read_text())
+    previous = json.loads(cm["data"]["receipt.json"])
+    previous.pop("completed_semantic_handoff_sha256")
+    previous["reason"] = "database pod supervision read timed out"
+    previous["started_at"] = "2026-01-01T00:30:00Z"
+    previous["before_run_id"] = cp["run_id"] if status == "paused" else "earlier-all-run"
+    incident = approval["incident_evidence"]
+    common = ("version", "guard", "method", "path", "timeout_seconds", "observed_at", "db_uid")
+    previous["supervision_timeout"] = {
+        **{key: incident[key] for key in common},
+        "child_was_running": True,
+        "stop_graceful": True,
+        "actual_child_rc": 130,
+        "runner_sha256": incident["previous_runner_sha256"],
+    }
+    terminal = {
+        "phase": "terminal",
+        "status": status,
+        "cli_rc": 1 if status == "paused" else 0,
+        "run_id": previous["before_run_id"],
+        "checkpoint_sha256": "2" * 64,
+        "finished_at": "2026-01-01T00:20:00Z",
+        "job_name": "earlier-job",
+        "job_uid": "earlier-job-uid",
+        "pod_name": "earlier-pod",
+        "pod_uid": "earlier-pod-uid",
+    }
+    previous["terminal_predecessor"] = {
+        **terminal,
+        "version": 1,
+        "receipt_sha256": receipts.checkpoint_hash(terminal),
+        "before_sha256": previous["before_sha256"],
+        "options_fingerprint": cp["options_fingerprint"],
+        "reference_time": cp["reference_time"] if status == "paused" else "2025-12-31T00:00:00Z",
+        "scope_sha256": receipts.checkpoint_hash(receipts._native_scope(cp)),
+    }
+    raw = receipts.canonical(previous)
+    log = "HOURLY_BLOCKED database pod supervision read timed out\n"
+    approval["previous_receipt_raw_sha256"] = hourly.hashlib.sha256(raw.encode()).hexdigest()
+    approval["previous_log_sha256"] = hourly.hashlib.sha256(log.encode()).hexdigest()
+    cm["data"]["receipt.json"] = raw
+    Path(args.approval_file).write_text(json.dumps(approval))
+    marker = hourly.MARKER + receipts.canonical(terminal)
+    api.previous_log.side_effect = lambda receipt, **kwargs: (
+        marker if receipt.get("job_name") == "earlier-job" else log
+    )
+    with patch.object(hourly.subprocess, "Popen") as launch:
+        assert await hourly.admit_supervision_timeout(api, storage, safety, args) == 0
+    launch.assert_not_called()
+    seed = json.loads(cm["data"]["receipt.json"])
+    assert seed["supervision_timeout_resume"]["terminal_predecessor"][
+        "receipt_sha256"
+    ] == receipts.checkpoint_hash(terminal)
+    api.previous_log.side_effect = lambda receipt, **kwargs: (
+        "missing marker" if receipt.get("job_name") == "earlier-job" else log
+    )
+    with pytest.raises(hourly.BlockedError, match="marker missing"):
+        await hourly.verify_supervision_timeout_resume(api, storage, safety, seed, cp)
+
+
+@pytest.mark.asyncio
 async def test_active_started_owner_never_changes_cas_version():
     import datetime
 

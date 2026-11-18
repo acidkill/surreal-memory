@@ -1802,6 +1802,333 @@ def hourly_options_fingerprint() -> str:
     )
 
 
+def supervision_timeout_resume_seed(
+    previous_raw: str,
+    previous_log: str,
+    cp: dict[str, Any],
+    *,
+    approval: dict[str, Any],
+    observation_raw: str | None = None,
+) -> dict[str, Any]:
+    """Approve one exact paused ALL after a proved DB-Pod supervision read stop."""
+    from surreal_memory.engine.consolidation import ConsolidationStrategy
+
+    if any(
+        not isinstance(raw, str) or len(raw.encode()) > 128 * 1024
+        for raw in (previous_raw, previous_log)
+    ) or not isinstance(approval, dict):
+        raise BlockedError("supervision timeout evidence malformed or oversized")
+    if observation_raw is not None and (
+        not isinstance(observation_raw, str) or len(observation_raw.encode()) > 128 * 1024
+    ):
+        raise BlockedError("supervision timeout observation malformed or oversized")
+    try:
+        previous = json.loads(previous_raw)
+        if observation_raw is not None:
+            if not isinstance(json.loads(observation_raw), dict):
+                raise ValueError("observation is not an object")
+    except (ValueError, TypeError) as exc:
+        raise BlockedError("supervision timeout evidence is malformed") from exc
+    clean_checkpoint(cp)
+    expected = sorted(
+        item.value for item in ConsolidationStrategy if item is not ConsolidationStrategy.ALL
+    )
+    completed, states, current = (
+        cp.get("completed_strategies"),
+        cp.get("strategy_states"),
+        cp.get("current_strategy"),
+    )
+    if (
+        cp.get("status") != "paused"
+        or cp.get("requested_strategies") != expected
+        or not isinstance(completed, list)
+        or any(not isinstance(name, str) or name not in expected for name in completed)
+        or len(set(completed)) != len(completed)
+        or current not in expected
+        or current in completed
+        or not isinstance(states, dict)
+        or set(states) != set(completed) | {current}
+        or any(
+            not isinstance(states[name], dict) or states[name].get("phase") != "completed"
+            for name in completed
+        )
+        or not isinstance(states.get(current), dict)
+        or states[current].get("phase") != cp.get("phase")
+        or not isinstance(cp.get("phase"), str)
+        or not cp["phase"]
+        or not isinstance(cp.get("counters"), dict)
+        or not native_handoff_valid(cp)
+        or timestamp(cp.get("reference_time")) is None
+        or type(cp.get("work_progress_seq")) is not int
+        or cp["work_progress_seq"] < 1
+    ):
+        raise BlockedError("supervision timeout requires the exact clean paused ALL checkpoint")
+    if (
+        not isinstance(previous, dict)
+        or previous.get("phase") != "blocked"
+        or type(previous.get("cli_rc")) is not int
+        or previous["cli_rc"] != 130
+    ):
+        raise BlockedError("supervision timeout requires the retained blocked CLI130")
+    reason = previous.get("reason")
+    typed_reason = "database pod supervision read timed out"
+    if reason not in {"TimeoutError", typed_reason}:
+        raise BlockedError("supervision timeout stop classification differs")
+    suffix = "HOURLY_BLOCKED " + reason + "\n"
+    if not previous_log.endswith(suffix) or MARKER in previous_log:
+        raise BlockedError("supervision timeout decision log differs")
+    output = previous_log[: -len(suffix)]
+    if (
+        hashlib.sha256(output.encode()).hexdigest() != previous.get("cli_output_sha256")
+        or previous.get("cli_output_tail") != output[-4096:]
+        or cli_log_has_errors(output, cp)
+    ):
+        raise BlockedError("supervision timeout CLI evidence differs")
+    baseline = approval.get("resource_baseline")
+    try:
+        db_uid, _ = _capacity_resource_identity(baseline, fresh=True)
+    except BlockedError as exc:
+        raise BlockedError("supervision timeout resource identity invalid") from exc
+    if canonical(previous.get("before_resources")) != canonical(baseline):
+        raise BlockedError("supervision timeout database incarnation or OOM changed")
+    incident = approval.get("incident_evidence")
+    if not isinstance(incident, dict):
+        raise BlockedError("supervision timeout incident evidence missing")
+    path = incident.get("path")
+    if (
+        incident.get("version") != 1
+        or type(incident.get("version")) is not int
+        or incident.get("guard") != "database_pod"
+        or incident.get("method") != "GET"
+        or type(incident.get("timeout_seconds")) is not int
+        or incident["timeout_seconds"] != 15
+        or not isinstance(path, str)
+        or re.fullmatch(r"/api/v1/namespaces/[a-z0-9][-a-z0-9]*/pods/[a-z0-9][-a-z0-9.]*", path)
+        is None
+        or incident.get("db_uid") != db_uid
+        or any(
+            not isinstance(previous.get(key), str) or not previous[key]
+            for key in ("job_uid", "pod_uid", "job_name", "pod_name")
+        )
+        or any(incident.get(key) != previous.get(key) for key in ("job_uid", "pod_uid"))
+    ):
+        raise BlockedError("supervision timeout endpoint or source binding differs")
+    observed, blocked, approved = (
+        timestamp(incident.get("observed_at")),
+        timestamp(previous.get("blocked_at")),
+        timestamp(approval.get("approved_at")),
+    )
+    if (
+        observed is None
+        or blocked is None
+        or approved is None
+        or not observed <= blocked <= approved <= datetime.now(UTC)
+    ):
+        raise BlockedError("supervision timeout approval chronology differs")
+    if reason == typed_reason:
+        proof = previous.get("supervision_timeout")
+        common = ("version", "guard", "method", "path", "timeout_seconds", "observed_at", "db_uid")
+        if (
+            not isinstance(proof, dict)
+            or any(proof.get(key) != incident.get(key) for key in common)
+            or proof.get("child_was_running") is not True
+            or proof.get("stop_graceful") is not True
+            or type(proof.get("actual_child_rc")) is not int
+            or proof["actual_child_rc"] != 130
+        ):
+            raise BlockedError("supervision timeout typed interruption proof differs")
+    else:
+        fault = incident.get("legacy_fault_record")
+        if (
+            previous.get("supervision_timeout") is not None
+            or not isinstance(fault, dict)
+            or fault.get("method") != "GET"
+            or fault.get("path") != path
+            or not isinstance(fault.get("raw_sha256"), str)
+            or re.fullmatch(r"[0-9a-f]{64}", fault["raw_sha256"]) is None
+            or incident.get("legacy_fault_record_sha256") != checkpoint_hash(fault)
+            or incident.get("previous_runner_sha256")
+            != "7d66fb20ad6b935cf848c2819a4313896c3eeeb37045586b9759481e5bd3b47e"
+            or incident.get("previous_getter_sha256")
+            != "d1b0de663e958624fbaf86fdfd3b1e388a776e1b70c4df89abc05d3ff48af8f9"
+        ):
+            raise BlockedError("legacy supervision timeout requires reviewed fault evidence")
+        started, finished = timestamp(fault.get("started_at")), timestamp(fault.get("finished_at"))
+        invocation_started = timestamp(previous.get("started_at"))
+        if (
+            started is None
+            or finished is None
+            or invocation_started is None
+            or not invocation_started <= started
+            or not 15 <= (finished - started).total_seconds() <= 60
+            or not finished <= observed
+            or not 0 <= (blocked - observed).total_seconds() <= 20
+        ):
+            raise BlockedError("legacy supervision timeout fault chronology differs")
+
+    def raw_hash(raw: str | None) -> str | None:
+        return hashlib.sha256(raw.encode()).hexdigest() if raw is not None else None
+
+    bindings = {
+        "previous_receipt_raw_sha256": raw_hash(previous_raw),
+        "previous_log_sha256": raw_hash(previous_log),
+        "observation_raw_sha256": raw_hash(observation_raw),
+        "checkpoint_sha256": checkpoint_hash(cp),
+        "native_checkpoint_sha256": _native_digest(cp),
+        "identity_sha256": _native_digest(_native_scope(cp)),
+        "states_sha256": checkpoint_hash(states),
+        "counters_sha256": checkpoint_hash(cp["counters"]),
+        "incident_evidence_sha256": checkpoint_hash(incident),
+    }
+    limit, runtime = approval.get("memory_limit_bytes"), approval.get("runtime")
+    if (
+        approval.get("version") != 1
+        or type(approval.get("version")) is not int
+        or approval.get("kind") != "supervision_timeout_resume"
+        or any(approval.get(key) != value for key, value in bindings.items())
+        or type(limit) is not int
+        or limit <= 3 * 1024**3
+        or limit % (1024**3)
+        or not isinstance(runtime, dict)
+        or any(
+            not isinstance(runtime.get(key), str) or not runtime[key]
+            for key in ("python_version", "numpy_version", "package_version")
+        )
+        or any(
+            not isinstance(runtime.get(key), str)
+            or re.fullmatch(r"[0-9a-f]{64}", runtime[key]) is None
+            for key in ("runner_sha256", "receipts_sha256")
+        )
+        or not isinstance(runtime.get("image_digest"), str)
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", runtime["image_digest"]) is None
+        or not approval.get("brain_uuid")
+        or not isinstance(approval.get("brain_config_sha256"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", approval["brain_config_sha256"]) is None
+        or not isinstance(approval.get("previous_image_digest"), str)
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", approval["previous_image_digest"]) is None
+    ):
+        raise BlockedError("supervision timeout approval or runtime binding differs")
+    parents = [
+        (key, prefix)
+        for key, prefix in (
+            ("completed_semantic_handoff_sha256", "completed_semantic_handoff_"),
+            ("supervision_timeout_resume_sha256", "supervision_timeout_resume_"),
+        )
+        if key in previous
+    ]
+    terminal_parent = previous.get("terminal_predecessor")
+    parent_archive = None
+    if (
+        not isinstance(previous.get("before_run_id"), str)
+        or not previous["before_run_id"]
+        or not isinstance(previous.get("before_sha256"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", previous["before_sha256"]) is None
+    ):
+        raise BlockedError("supervision timeout predecessor checkpoint binding missing")
+    if terminal_parent is not None:
+        if (
+            reason != typed_reason
+            or parents
+            or not isinstance(terminal_parent, dict)
+            or type(terminal_parent.get("version")) is not int
+            or terminal_parent["version"] != 1
+            or terminal_parent.get("run_id") != previous["before_run_id"]
+            or terminal_parent.get("before_sha256") != previous["before_sha256"]
+            or terminal_parent.get("options_fingerprint") != cp["options_fingerprint"]
+            or terminal_parent.get("scope_sha256") != checkpoint_hash(_native_scope(cp))
+            or terminal_parent.get("status") not in {"paused", "completed"}
+            or type(terminal_parent.get("cli_rc")) is not int
+            or terminal_parent["cli_rc"] != (0 if terminal_parent["status"] == "completed" else 1)
+            or any(
+                not isinstance(terminal_parent.get(key), str) or not terminal_parent[key]
+                for key in ("job_name", "job_uid", "pod_name", "pod_uid")
+            )
+            or any(
+                not isinstance(terminal_parent.get(key), str)
+                or re.fullmatch(r"[0-9a-f]{64}", terminal_parent[key]) is None
+                for key in ("receipt_sha256", "checkpoint_sha256")
+            )
+        ):
+            raise BlockedError("supervision timeout terminal predecessor differs")
+        parent_ref, current_ref = (
+            timestamp(terminal_parent.get("reference_time")),
+            timestamp(cp.get("reference_time")),
+        )
+        finished, started = (
+            timestamp(terminal_parent.get("finished_at")),
+            timestamp(previous.get("started_at")),
+        )
+        if (
+            parent_ref is None
+            or current_ref is None
+            or finished is None
+            or started is None
+            or not finished <= started <= blocked
+            or (
+                terminal_parent["status"] == "paused"
+                and (terminal_parent["run_id"] != cp["run_id"] or parent_ref != current_ref)
+            )
+            or (
+                terminal_parent["status"] == "completed"
+                and (terminal_parent["run_id"] == cp["run_id"] or parent_ref >= current_ref)
+            )
+        ):
+            raise BlockedError("supervision timeout terminal predecessor lineage differs")
+    else:
+        if len(parents) != 1:
+            raise BlockedError("supervision timeout predecessor archive binding missing")
+        parent_key, prefix = parents[0]
+        if (
+            not isinstance(previous[parent_key], str)
+            or re.fullmatch(r"[0-9a-f]{64}", previous[parent_key]) is None
+        ):
+            raise BlockedError("supervision timeout predecessor archive digest invalid")
+        parent_archive = prefix + previous[parent_key] + ".json"
+    return {
+        "phase": "bootstrap",
+        "source": "operator_supervision_timeout_resume",
+        "approved": True,
+        "status": "paused",
+        "cli_rc": None,
+        "next_action": "resume",
+        "observed_at": approval["approved_at"],
+        "run_id": cp["run_id"],
+        "options_fingerprint": cp["options_fingerprint"],
+        "reference_time": cp["reference_time"],
+        "checkpoint_sha256": checkpoint_hash(cp),
+        "resource_baseline": baseline,
+        "resource_policy_sha256": checkpoint_hash({"memory_limit_bytes": limit}),
+        "supervision_timeout_resume": {
+            "previous_raw": previous_raw,
+            "previous_log": previous_log,
+            "observation_raw": observation_raw,
+            "predecessor_archive_key": parent_archive,
+            "terminal_predecessor": terminal_parent,
+            "approval": approval,
+        },
+    }
+
+
+def supervision_timeout_resume_matches(receipt: Any, cp: Any) -> bool:
+    if (
+        not isinstance(receipt, dict)
+        or receipt.get("source") != "operator_supervision_timeout_resume"
+    ):
+        return False
+    try:
+        audit = receipt["supervision_timeout_resume"]
+        expected = supervision_timeout_resume_seed(
+            audit["previous_raw"],
+            audit["previous_log"],
+            cp,
+            approval=audit["approval"],
+            observation_raw=audit.get("observation_raw"),
+        )
+        return canonical(receipt) == canonical(expected)
+    except (BlockedError, KeyError, ValueError, TypeError, AttributeError):
+        return False
+
+
 def _completed_semantic_identity(cp: dict[str, Any]) -> dict[str, Any]:
     clean_checkpoint(cp)
     if (
@@ -1993,6 +2320,10 @@ def completed_semantic_handoff_matches(receipt: Any, cp: Any) -> bool:
 
 
 def select_command(receipt: dict[str, Any], cp: dict[str, Any], log: str | None) -> list[str]:
+    if receipt.get("source") == "operator_supervision_timeout_resume":
+        if not supervision_timeout_resume_matches(receipt, cp):
+            raise BlockedError("supervision timeout approval or checkpoint diverged")
+        return ["smem", "consolidate", "--brain", "default", "--resume"]
     if receipt.get("source") == "operator_completed_semantic_handoff":
         if not completed_semantic_handoff_matches(receipt, cp):
             raise BlockedError("completed semantic handoff approval or checkpoint diverged")
