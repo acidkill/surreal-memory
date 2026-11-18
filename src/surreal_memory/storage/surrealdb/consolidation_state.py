@@ -36,7 +36,28 @@ class SurrealDBConsolidationStateMixin:
             "SELECT * FROM consolidation_progress WHERE brain_id = $brain_id LIMIT 1",
             brain_id=resolved_brain_id,
         )
-        return dict(rows[0]) if rows else None
+        if not rows:
+            return None
+        state = dict(rows[0])
+        record_id = state.get("id")
+        if record_id is None or isinstance(record_id, str):
+            return state
+        try:
+            from surrealdb import RecordID
+        except ImportError:
+            # The SDK is optional for core/mock storage; keep existing JSON rows intact.
+            return state
+        if isinstance(RecordID, type) and isinstance(record_id, RecordID):
+            native_id: Any = record_id  # The optional SDK is not installed in core type-check jobs.
+            if (
+                native_id.table_name != "consolidation_progress"
+                or type(native_id.id) is not str
+                or native_id.id != self._consolidation_record_id(resolved_brain_id)
+            ):
+                raise ValueError("checkpoint transport record identity does not match its brain")
+            # Only this copied transport field changes. Payload values remain strict.
+            state["id"] = str(record_id)
+        return state
 
     async def get_consolidation_run_ids(
         self, *, statuses: Collection[str], brain_id: str | None = None
