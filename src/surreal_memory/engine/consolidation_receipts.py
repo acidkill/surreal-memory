@@ -1802,13 +1802,14 @@ def hourly_options_fingerprint() -> str:
     )
 
 
-def supervision_timeout_resume_seed(
+def _supervision_timeout_resume_seed(
     previous_raw: str,
     previous_log: str,
     cp: dict[str, Any],
     *,
     approval: dict[str, Any],
     observation_raw: str | None = None,
+    forced: bool = False,
 ) -> dict[str, Any]:
     """Approve one exact paused ALL after a proved DB-Pod supervision read stop."""
     from surreal_memory.engine.consolidation import ConsolidationStrategy
@@ -1830,6 +1831,7 @@ def supervision_timeout_resume_seed(
     except (ValueError, TypeError) as exc:
         raise BlockedError("supervision timeout evidence is malformed") from exc
     clean_checkpoint(cp)
+    expected_rc = -15 if forced else 130
     expected = sorted(
         item.value for item in ConsolidationStrategy if item is not ConsolidationStrategy.ALL
     )
@@ -1863,16 +1865,27 @@ def supervision_timeout_resume_seed(
         or cp["work_progress_seq"] < 1
     ):
         raise BlockedError("supervision timeout requires the exact clean paused ALL checkpoint")
+    if forced and (
+        cp.get("phase") != "retention_change_log"
+        or current != "prune"
+        or completed != ["dedup", "learn_habits", "process_reasoning_traces", "process_tool_events"]
+        or states["prune"].get("pending") != []
+    ):
+        raise BlockedError("forced supervision recovery requires closed retention_change_log")
     if (
         not isinstance(previous, dict)
         or previous.get("phase") != "blocked"
         or type(previous.get("cli_rc")) is not int
-        or previous["cli_rc"] != 130
+        or previous["cli_rc"] != expected_rc
     ):
-        raise BlockedError("supervision timeout requires the retained blocked CLI130")
+        raise BlockedError(
+            "forced supervision timeout requires retained child -15"
+            if forced
+            else "supervision timeout requires the retained blocked CLI130"
+        )
     reason = previous.get("reason")
     typed_reason = "database pod supervision read timed out"
-    if reason not in {"TimeoutError", typed_reason}:
+    if reason not in ({typed_reason} if forced else {"TimeoutError", typed_reason}):
         raise BlockedError("supervision timeout stop classification differs")
     suffix = "HOURLY_BLOCKED " + reason + "\n"
     if not previous_log.endswith(suffix) or MARKER in previous_log:
@@ -1932,9 +1945,9 @@ def supervision_timeout_resume_seed(
             not isinstance(proof, dict)
             or any(proof.get(key) != incident.get(key) for key in common)
             or proof.get("child_was_running") is not True
-            or proof.get("stop_graceful") is not True
+            or proof.get("stop_graceful") is not (not forced)
             or type(proof.get("actual_child_rc")) is not int
-            or proof["actual_child_rc"] != 130
+            or proof["actual_child_rc"] != expected_rc
         ):
             raise BlockedError("supervision timeout typed interruption proof differs")
     else:
@@ -1966,6 +1979,41 @@ def supervision_timeout_resume_seed(
         ):
             raise BlockedError("legacy supervision timeout fault chronology differs")
 
+    forced_source = approval.get("forced_source")
+    if forced:
+        if (
+            not isinstance(forced_source, dict)
+            or type(forced_source.get("version")) is not int
+            or forced_source["version"] != 1
+            or any(forced_source.get(key) != previous[key] for key in ("job_uid", "pod_uid"))
+            or type(forced_source.get("pod_exit_code")) is not int
+            or forced_source["pod_exit_code"] != 255
+            or forced_source.get("pod_reason") != "Unknown"
+            or forced_source.get("job_failed_reason") != "BackoffLimitExceeded"
+            or type(forced_source.get("pod_restart_count")) is not int
+            or forced_source["pod_restart_count"] != 0
+            or not isinstance(forced_source.get("pod_container_id"), str)
+            or not forced_source["pod_container_id"]
+            or type(forced_source.get("active_leases")) is not int
+            or forced_source["active_leases"] != 0
+            or forced_source.get("native_sha256") != _native_digest(cp)
+            or forced_source.get("receipt_raw_sha256")
+            != hashlib.sha256(previous_raw.encode()).hexdigest()
+            or forced_source.get("log_sha256") != hashlib.sha256(previous_log.encode()).hexdigest()
+            or approval.get("forced_source_sha256") != checkpoint_hash(forced_source)
+        ):
+            raise BlockedError("forced supervision source proof differs")
+        finished = timestamp(forced_source.get("pod_finished_at"))
+        failed = timestamp(forced_source.get("job_failed_at"))
+        native_at = timestamp(forced_source.get("native_observed_at"))
+        if (
+            finished is None
+            or failed is None
+            or native_at is None
+            or not blocked <= finished <= failed <= native_at <= approved
+        ):
+            raise BlockedError("forced supervision source/native chronology is stale or invalid")
+
     def raw_hash(raw: str | None) -> str | None:
         return hashlib.sha256(raw.encode()).hexdigest() if raw is not None else None
 
@@ -1984,7 +2032,8 @@ def supervision_timeout_resume_seed(
     if (
         approval.get("version") != 1
         or type(approval.get("version")) is not int
-        or approval.get("kind") != "supervision_timeout_resume"
+        or approval.get("kind")
+        != ("forced_supervision_timeout_resume" if forced else "supervision_timeout_resume")
         or any(approval.get(key) != value for key, value in bindings.items())
         or type(limit) is not int
         or limit <= 3 * 1024**3
@@ -2013,6 +2062,7 @@ def supervision_timeout_resume_seed(
         for key, prefix in (
             ("completed_semantic_handoff_sha256", "completed_semantic_handoff_"),
             ("supervision_timeout_resume_sha256", "supervision_timeout_resume_"),
+            ("forced_supervision_timeout_resume_sha256", "forced_supervision_timeout_resume_"),
         )
         if key in previous
     ]
@@ -2086,7 +2136,9 @@ def supervision_timeout_resume_seed(
         parent_archive = prefix + previous[parent_key] + ".json"
     return {
         "phase": "bootstrap",
-        "source": "operator_supervision_timeout_resume",
+        "source": "operator_forced_supervision_timeout_resume"
+        if forced
+        else "operator_supervision_timeout_resume",
         "approved": True,
         "status": "paused",
         "cli_rc": None,
@@ -2098,7 +2150,7 @@ def supervision_timeout_resume_seed(
         "checkpoint_sha256": checkpoint_hash(cp),
         "resource_baseline": baseline,
         "resource_policy_sha256": checkpoint_hash({"memory_limit_bytes": limit}),
-        "supervision_timeout_resume": {
+        ("forced_supervision_timeout_resume" if forced else "supervision_timeout_resume"): {
             "previous_raw": previous_raw,
             "previous_log": previous_log,
             "observation_raw": observation_raw,
@@ -2107,6 +2159,59 @@ def supervision_timeout_resume_seed(
             "approval": approval,
         },
     }
+
+
+def supervision_timeout_resume_seed(
+    previous_raw: str,
+    previous_log: str,
+    cp: dict[str, Any],
+    *,
+    approval: dict[str, Any],
+    observation_raw: str | None = None,
+) -> dict[str, Any]:
+    """Approve the existing graceful CLI130 supervision stop without rewriting it."""
+    return _supervision_timeout_resume_seed(
+        previous_raw, previous_log, cp, approval=approval, observation_raw=observation_raw
+    )
+
+
+def forced_supervision_timeout_resume_seed(
+    previous_raw: str,
+    previous_log: str,
+    cp: dict[str, Any],
+    *,
+    approval: dict[str, Any],
+    observation_raw: str | None = None,
+) -> dict[str, Any]:
+    """Approve only the explicitly evidenced reaped child -15 / executor255 case."""
+    return _supervision_timeout_resume_seed(
+        previous_raw,
+        previous_log,
+        cp,
+        approval=approval,
+        observation_raw=observation_raw,
+        forced=True,
+    )
+
+
+def forced_supervision_timeout_resume_matches(receipt: Any, cp: Any) -> bool:
+    if (
+        not isinstance(receipt, dict)
+        or receipt.get("source") != "operator_forced_supervision_timeout_resume"
+    ):
+        return False
+    try:
+        audit = receipt["forced_supervision_timeout_resume"]
+        expected = forced_supervision_timeout_resume_seed(
+            audit["previous_raw"],
+            audit["previous_log"],
+            cp,
+            approval=audit["approval"],
+            observation_raw=audit.get("observation_raw"),
+        )
+        return canonical(receipt) == canonical(expected)
+    except (BlockedError, KeyError, ValueError, TypeError, AttributeError):
+        return False
 
 
 def supervision_timeout_resume_matches(receipt: Any, cp: Any) -> bool:
@@ -2320,6 +2425,10 @@ def completed_semantic_handoff_matches(receipt: Any, cp: Any) -> bool:
 
 
 def select_command(receipt: dict[str, Any], cp: dict[str, Any], log: str | None) -> list[str]:
+    if receipt.get("source") == "operator_forced_supervision_timeout_resume":
+        if not forced_supervision_timeout_resume_matches(receipt, cp):
+            raise BlockedError("forced supervision timeout approval or checkpoint diverged")
+        return ["smem", "consolidate", "--brain", "default", "--resume"]
     if receipt.get("source") == "operator_supervision_timeout_resume":
         if not supervision_timeout_resume_matches(receipt, cp):
             raise BlockedError("supervision timeout approval or checkpoint diverged")
