@@ -37,6 +37,8 @@ from surreal_memory.engine.consolidation_receipts import (
     completed_semantic_handoff_seed,
     confirmed_success,
     failed_runtime_resume_matches,
+    forced_supervision_timeout_resume_matches,
+    forced_supervision_timeout_resume_seed,
     lease_loss_resume_matches,
     lease_loss_resume_seed,
     native_handoff_anchor,
@@ -171,7 +173,7 @@ class Kubernetes:
         else:
             containers = pod.get("status", {}).get("containerStatuses", [])
             if (
-                expected_exit_code != 2
+                expected_exit_code not in {2, 255}
                 or status.get("active", 0)
                 or status.get("failed") != 1
                 or status.get("succeeded", 0)
@@ -181,9 +183,18 @@ class Kubernetes:
                 or type(containers[0].get("state", {}).get("terminated", {}).get("exitCode"))
                 is not int
                 or containers[0]["state"]["terminated"]["exitCode"] != expected_exit_code
+                or (
+                    expected_exit_code == 255
+                    and (
+                        containers[0]["state"]["terminated"].get("reason") != "Unknown"
+                        or containers[0].get("restartCount") != 0
+                    )
+                )
             ):
                 raise BlockedError(
-                    "capacity resume failed predecessor has not exited with wrapper2"
+                    "forced supervision predecessor lacks terminal255/Unknown"
+                    if expected_exit_code == 255
+                    else "capacity resume failed predecessor has not exited with wrapper2"
                 )
         return cast(
             "str", self.request(self.path("pods/" + receipt["pod_name"] + "/log"), raw=True)
@@ -771,14 +782,23 @@ async def admit_supervision_timeout(
     )
 
 
-async def verify_supervision_timeout_resume(
-    api: Kubernetes, storage: Any, safety: Safety, receipt: dict[str, Any], cp: dict[str, Any]
+async def _verify_supervision_timeout_resume(
+    api: Kubernetes,
+    storage: Any,
+    safety: Safety,
+    receipt: dict[str, Any],
+    cp: dict[str, Any],
+    *,
+    forced: bool = False,
 ) -> None:
     from surreal_memory.engine.consolidation_receipts import _native_digest
 
-    if not supervision_timeout_resume_matches(receipt, cp):
+    matches = (
+        forced_supervision_timeout_resume_matches if forced else supervision_timeout_resume_matches
+    )
+    if not matches(receipt, cp):
         raise BlockedError("supervision timeout resume seed is invalid")
-    audit = receipt["supervision_timeout_resume"]
+    audit = receipt["forced_supervision_timeout_resume" if forced else "supervision_timeout_resume"]
     approval = audit["approval"]
     _verify_reviewed_resume_runtime(
         api, safety, receipt, approval, label="supervision timeout resume"
@@ -795,7 +815,7 @@ async def verify_supervision_timeout_resume(
     if incident["path"] != api.path("pods/" + os.environ["DB_POD"]):
         raise BlockedError("supervision timeout database endpoint changed")
     previous = json.loads(audit["previous_raw"])
-    if api.previous_log(previous, expected_exit_code=2) != audit["previous_log"]:
+    if api.previous_log(previous, expected_exit_code=255 if forced else 2) != audit["previous_log"]:
         raise BlockedError("supervision timeout previous log changed")
     pod = api.request(api.path("pods/" + previous["pod_name"]))
     specs, statuses = (
@@ -811,6 +831,50 @@ async def verify_supervision_timeout_resume(
         or statuses[0].get("restartCount") != 0
     ):
         raise BlockedError("supervision timeout previous runtime changed")
+    if forced:
+        proof = approval["forced_source"]
+        terminated = statuses[0].get("state", {}).get("terminated", {})
+        job = api.request(f"/apis/batch/v1/namespaces/{api.namespace}/jobs/{previous['job_name']}")
+        status = job.get("status", {})
+        failed = [
+            c
+            for c in status.get("conditions", [])
+            if c.get("type") == "Failed" and c.get("status") == "True"
+        ]
+        owners = [
+            o
+            for o in pod.get("metadata", {}).get("ownerReferences", [])
+            if o.get("kind") == "Job" and o.get("controller") is True
+        ]
+        if (
+            pod.get("status", {}).get("phase") != "Failed"
+            or len(owners) != 1
+            or owners[0].get("uid") != previous["job_uid"]
+            or owners[0].get("name") != previous["job_name"]
+            or job.get("metadata", {}).get("name") != previous["job_name"]
+            or job.get("metadata", {}).get("uid") != proof["job_uid"]
+            or pod.get("metadata", {}).get("uid") != proof["pod_uid"]
+            or status.get("active", 0)
+            or status.get("succeeded", 0)
+            or status.get("failed") != 1
+            or len(failed) != 1
+            or any(
+                c.get("type") == "Complete" and c.get("status") == "True"
+                for c in status.get("conditions", [])
+            )
+            or terminated.get("exitCode") != proof["pod_exit_code"]
+            or terminated.get("reason") != proof["pod_reason"]
+            or terminated.get("containerID") != proof["pod_container_id"]
+            or (
+                statuses[0].get("containerID") is not None
+                and statuses[0]["containerID"] != proof["pod_container_id"]
+            )
+            or statuses[0].get("restartCount") != proof["pod_restart_count"]
+            or timestamp(terminated.get("finishedAt")) != timestamp(proof["pod_finished_at"])
+            or timestamp(failed[0].get("lastTransitionTime")) != timestamp(proof["job_failed_at"])
+            or failed[0].get("reason") != proof["job_failed_reason"]
+        ):
+            raise BlockedError("forced supervision executor termination proof changed")
     db_env = [e.get("value") for e in specs[0].get("env", []) if e.get("name") == "DB_POD"]
     if db_env != [os.environ["DB_POD"]]:
         raise BlockedError("supervision timeout previous database target differs")
@@ -879,6 +943,26 @@ async def verify_supervision_timeout_resume(
         raise BlockedError("supervision timeout predecessor archive changed")
 
 
+async def verify_supervision_timeout_resume(
+    api: Kubernetes, storage: Any, safety: Safety, receipt: dict[str, Any], cp: dict[str, Any]
+) -> None:
+    await _verify_supervision_timeout_resume(api, storage, safety, receipt, cp)
+
+
+async def verify_forced_supervision_timeout_resume(
+    api: Kubernetes, storage: Any, safety: Safety, receipt: dict[str, Any], cp: dict[str, Any]
+) -> None:
+    await _verify_supervision_timeout_resume(api, storage, safety, receipt, cp, forced=True)
+
+
+async def admit_forced_supervision_timeout(
+    api: Kubernetes, storage: Any, safety: Safety, args: argparse.Namespace
+) -> int:
+    return await _admit_reviewed_resume(
+        api, storage, safety, args, lease_loss=False, forced_supervision_timeout=True
+    )
+
+
 async def _admit_reviewed_resume(
     api: Kubernetes,
     storage: Any,
@@ -887,28 +971,44 @@ async def _admit_reviewed_resume(
     *,
     lease_loss: bool,
     supervision_timeout: bool = False,
+    forced_supervision_timeout: bool = False,
 ) -> int:
     """Archive one failed receipt and CAS a reviewed resume intent; never launch a CLI."""
+    if sum((lease_loss, supervision_timeout, forced_supervision_timeout)) > 1:
+        raise BlockedError("resume admission modes conflict")
+    is_supervision = supervision_timeout or forced_supervision_timeout
     label = (
-        "supervision timeout resume"
-        if supervision_timeout
-        else "lease loss resume"
-        if lease_loss
-        else "capacity resume"
+        "forced supervision timeout resume"
+        if forced_supervision_timeout
+        else (
+            "supervision timeout resume"
+            if supervision_timeout
+            else "lease loss resume"
+            if lease_loss
+            else "capacity resume"
+        )
     )
     verifier = (
-        verify_supervision_timeout_resume
-        if supervision_timeout
-        else verify_lease_loss_resume
-        if lease_loss
-        else verify_capacity_resume
+        verify_forced_supervision_timeout_resume
+        if forced_supervision_timeout
+        else (
+            verify_supervision_timeout_resume
+            if supervision_timeout
+            else verify_lease_loss_resume
+            if lease_loss
+            else verify_capacity_resume
+        )
     )
     prefix = (
-        "supervision_timeout_resume_"
-        if supervision_timeout
-        else "lease_loss_resume_"
-        if lease_loss
-        else "capacity_resume_"
+        "forced_supervision_timeout_resume_"
+        if forced_supervision_timeout
+        else (
+            "supervision_timeout_resume_"
+            if supervision_timeout
+            else "lease_loss_resume_"
+            if lease_loss
+            else "capacity_resume_"
+        )
     )
     cm = api.state()
     raw = cm["data"]["receipt.json"]
@@ -917,29 +1017,37 @@ async def _admit_reviewed_resume(
     if len(approval_raw.encode()) > 128 * 1024:
         raise BlockedError(f"{label} approval is oversized")
     approval = json.loads(approval_raw)
-    if supervision_timeout and cm.get("metadata", {}).get("resourceVersion") != approval.get(
+    if forced_supervision_timeout and hashlib.sha256(raw.encode()).hexdigest() != approval.get(
+        "previous_receipt_raw_sha256"
+    ):
+        raise BlockedError("forced supervision source receipt changed")
+    if is_supervision and cm.get("metadata", {}).get("resourceVersion") != approval.get(
         "state_resource_version"
     ):
         raise BlockedError("supervision timeout state changed since approval")
     cp, leases = await live(storage)
-    if leases or (supervision_timeout and leases != []):
+    if leases or (is_supervision and leases != []):
         raise BlockedError(f"{label} requires zero active leases")
     identity = api.identity()
     api.no_other_jobs(identity["job_uid"])
     log = (
-        api.previous_log(previous, expected_exit_code=2)
-        if lease_loss or supervision_timeout
+        api.previous_log(previous, expected_exit_code=255 if forced_supervision_timeout else 2)
+        if lease_loss or is_supervision
         else capacity_predecessor_log(api, previous, approval)
     )
     observation_raw = cm["data"].get("last_observation.json")
     observation_log = (
         api.previous_log(json.loads(observation_raw), expected_exit_code=2)
-        if observation_raw is not None and not lease_loss and not supervision_timeout
+        if observation_raw is not None and not lease_loss and not is_supervision
         else None
     )
     safety.sample(initial=True)
     seed = (
-        supervision_timeout_resume_seed(
+        forced_supervision_timeout_resume_seed(
+            raw, log, cp, approval=approval, observation_raw=observation_raw
+        )
+        if forced_supervision_timeout
+        else supervision_timeout_resume_seed(
             raw, log, cp, approval=approval, observation_raw=observation_raw
         )
         if supervision_timeout
@@ -971,11 +1079,13 @@ async def _admit_reviewed_resume(
     if key in cm["data"]:
         raise BlockedError(f"{label} archive already exists")
     data = dict(cm["data"], **{key: canonical(seed)})
-    if (lease_loss or supervision_timeout) and observation_raw is not None:
+    if (lease_loss or is_supervision) and observation_raw is not None:
         observation_key = (
             (
-                "supervision_timeout_observation_"
-                if supervision_timeout
+                "forced_supervision_timeout_observation_"
+                if forced_supervision_timeout
+                else "supervision_timeout_observation_"
+                if is_supervision
                 else "lease_loss_observation_"
             )
             + hashlib.sha256(observation_raw.encode()).hexdigest()
@@ -1001,8 +1111,10 @@ async def _admit_reviewed_resume(
         raise BlockedError(f"{label} outcome uncertain; inspect state without retry") from exc
     print(
         (
-            "HOURLY_SUPERVISION_TIMEOUT_ADMISSION "
-            if supervision_timeout
+            "HOURLY_FORCED_SUPERVISION_TIMEOUT_ADMISSION "
+            if forced_supervision_timeout
+            else "HOURLY_SUPERVISION_TIMEOUT_ADMISSION "
+            if is_supervision
             else "HOURLY_LEASE_LOSS_ADMISSION "
             if lease_loss
             else "HOURLY_CAPACITY_ADMISSION "
@@ -1384,6 +1496,16 @@ async def run(api: Kubernetes, storage: Any, safety: Safety) -> int:
             if cm["data"].get(archive) != canonical(receipt):
                 raise BlockedError("completed semantic handoff archive missing or stale")
             await verify_completed_semantic_handoff(api, storage, safety, receipt, cp)
+        forced_supervision_authorization = (
+            receipt
+            if receipt.get("source") == "operator_forced_supervision_timeout_resume"
+            else None
+        )
+        if forced_supervision_authorization is not None:
+            archive = "forced_supervision_timeout_resume_" + checkpoint_hash(receipt) + ".json"
+            if cm["data"].get(archive) != canonical(receipt):
+                raise BlockedError("forced supervision timeout archive missing or stale")
+            await verify_forced_supervision_timeout_resume(api, storage, safety, receipt, cp)
         supervision_authorization = (
             receipt if receipt.get("source") == "operator_supervision_timeout_resume" else None
         )
@@ -1400,6 +1522,7 @@ async def run(api: Kubernetes, storage: Any, safety: Safety) -> int:
             failed_runtime
             or lease_authorization is not None
             or supervision_authorization is not None
+            or forced_supervision_authorization is not None
         )
         capacity_authorization = (
             receipt if receipt.get("source") == "operator_capacity_resume" else None
@@ -1450,6 +1573,7 @@ async def run(api: Kubernetes, storage: Any, safety: Safety) -> int:
             or capacity_authorization is not None
             or handoff_authorization is not None
             or supervision_authorization is not None
+            or forced_supervision_authorization is not None
         ):
             safety.sample(initial=True)
             api.no_other_jobs(api.identity()["job_uid"])
@@ -1502,6 +1626,15 @@ async def run(api: Kubernetes, storage: Any, safety: Safety) -> int:
                 ),
             )
         receipt = {
+            **(
+                {
+                    "forced_supervision_timeout_resume_sha256": checkpoint_hash(
+                        forced_supervision_authorization
+                    )
+                }
+                if forced_supervision_authorization is not None
+                else {}
+            ),
             **({"terminal_predecessor": terminal_parent} if terminal_parent is not None else {}),
             **(
                 {"supervision_timeout_resume_sha256": checkpoint_hash(supervision_authorization)}
@@ -1541,6 +1674,7 @@ async def run(api: Kubernetes, storage: Any, safety: Safety) -> int:
             or capacity_authorization is not None
             or handoff_authorization is not None
             or supervision_authorization is not None
+            or forced_supervision_authorization is not None
         ):
             safety.sample(initial=True)
             api.no_other_jobs(api.identity()["job_uid"])
@@ -1553,6 +1687,10 @@ async def run(api: Kubernetes, storage: Any, safety: Safety) -> int:
         if supervision_authorization is not None:
             await verify_supervision_timeout_resume(
                 api, storage, safety, supervision_authorization, cp
+            )
+        if forced_supervision_authorization is not None:
+            await verify_forced_supervision_timeout_resume(
+                api, storage, safety, forced_supervision_authorization, cp
             )
         awaiting_native_claim = runtime_resume
         native_owner = None
@@ -1792,6 +1930,7 @@ async def main(argv: list[str] | None = None) -> int:
     operator.add_argument("--admit-lease-loss-resume", action="store_true")
     operator.add_argument("--admit-completed-semantic-handoff", action="store_true")
     operator.add_argument("--admit-supervision-timeout", action="store_true")
+    operator.add_argument("--admit-forced-supervision-timeout", action="store_true")
     parser.add_argument("--approval-file", help="Reviewed exact-state operator admission JSON")
     parser.add_argument("--confirm-run-id")
     parser.add_argument("--checkpoint-sha256")
@@ -1813,6 +1952,7 @@ async def main(argv: list[str] | None = None) -> int:
         or args.admit_lease_loss_resume
         or args.admit_completed_semantic_handoff
         or args.admit_supervision_timeout
+        or args.admit_forced_supervision_timeout
     ) != (args.approval_file is not None):
         parser.error("operator admission requires its mode and --approval-file")
     api = Kubernetes()
@@ -1824,6 +1964,7 @@ async def main(argv: list[str] | None = None) -> int:
         or args.admit_lease_loss_resume
         or args.admit_completed_semantic_handoff
         or args.admit_supervision_timeout
+        or args.admit_forced_supervision_timeout
     ):
         # A normal storage factory initializes schema and can migrate brain data.
         # The operator path must only authenticate/select the existing database.
@@ -1833,6 +1974,8 @@ async def main(argv: list[str] | None = None) -> int:
         storage.set_brain("default")
         try:
             await storage._reconnect()
+            if args.admit_forced_supervision_timeout:
+                return await admit_forced_supervision_timeout(api, storage, safety, args)
             if args.admit_supervision_timeout:
                 return await admit_supervision_timeout(api, storage, safety, args)
             if args.admit_completed_semantic_handoff:
